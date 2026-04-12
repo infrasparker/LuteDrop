@@ -385,3 +385,131 @@ pub fn extract_peaks(
     peak_cache.insert(audio_path.to_path_buf(), cached.clone());
     Ok(downsample_peaks(&cached, width, start, end))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a CachedPeaks with known values for testing.
+    fn make_test_peaks(peaks: Vec<f32>) -> CachedPeaks {
+        CachedPeaks {
+            sample_rate: 44100,
+            samples_per_peak: SAMPLES_PER_PEAK,
+            total_samples: peaks.len() as u64 * SAMPLES_PER_PEAK as u64,
+            peaks,
+        }
+    }
+
+    #[test]
+    fn downsample_identity_when_width_equals_len() {
+        let cached = make_test_peaks(vec![0.2, 0.8, 0.4, 0.6]);
+        let (result, dur) = downsample_peaks(&cached, 4, None, None);
+        assert_eq!(result.len(), 4);
+        // After normalization, max (0.8) becomes 1.0
+        assert!((result[1] - 1.0).abs() < 0.001);
+        assert!(dur > 0.0);
+    }
+
+    #[test]
+    fn downsample_reduces_width() {
+        // 8 peaks downsampled to 2 bins: each bin takes max of 4 peaks
+        let cached = make_test_peaks(vec![0.1, 0.3, 0.2, 0.5, 0.4, 0.9, 0.1, 0.2]);
+        let (result, _) = downsample_peaks(&cached, 2, None, None);
+        assert_eq!(result.len(), 2);
+        // Bin 0: max(0.1,0.3,0.2,0.5) = 0.5 → 0.5/0.9 ≈ 0.556
+        // Bin 1: max(0.4,0.9,0.1,0.2) = 0.9 → 0.9/0.9 = 1.0
+        assert!((result[1] - 1.0).abs() < 0.001);
+        assert!(result[0] < result[1]);
+    }
+
+    #[test]
+    fn downsample_with_time_range() {
+        // 100 peaks at 44100 Hz, 256 samples/peak → each peak ≈ 5.8ms
+        let mut peaks_data = vec![0.1_f32; 100];
+        peaks_data[50] = 0.9; // spike in the middle
+        let cached = make_test_peaks(peaks_data);
+
+        let dur = cached.duration_seconds();
+        let mid = dur / 2.0;
+
+        // Request only the second half — should contain the spike
+        let (result, _) = downsample_peaks(&cached, 10, Some(mid), None);
+        let max_val = result.iter().cloned().fold(0.0_f32, f32::max);
+        assert!((max_val - 1.0).abs() < 0.001, "spike should be in the second half");
+
+        // Request only the first quarter — should NOT contain the spike
+        let (result2, _) = downsample_peaks(&cached, 10, None, Some(dur * 0.25));
+        // All values are 0.1 → normalized, all become 1.0 (they're all equal)
+        // That's fine — the point is the spike isn't here
+        assert_eq!(result2.len(), 10);
+    }
+
+    #[test]
+    fn downsample_empty_peaks() {
+        let cached = make_test_peaks(vec![]);
+        let (result, dur) = downsample_peaks(&cached, 100, None, None);
+        assert_eq!(result.len(), 100);
+        assert!(result.iter().all(|&v| v == 0.0));
+        assert_eq!(dur, 0.0);
+    }
+
+    #[test]
+    fn cache_round_trip() {
+        // Create a temp file to act as the "audio source" for metadata
+        let dir = std::env::temp_dir().join("lutedrop_test_cache");
+        let _ = fs::create_dir_all(&dir);
+        let fake_audio = dir.join("test.mp3");
+        {
+            let mut f = File::create(&fake_audio).unwrap();
+            f.write_all(b"fake audio data for testing").unwrap();
+        }
+
+        let original = make_test_peaks(vec![0.1, 0.5, 0.9, 0.3, 0.7]);
+
+        // Write cache
+        write_cache(&fake_audio, &original).unwrap();
+
+        // Read it back
+        let loaded = read_cache(&fake_audio).expect("should read back successfully");
+        assert_eq!(loaded.sample_rate, original.sample_rate);
+        assert_eq!(loaded.samples_per_peak, original.samples_per_peak);
+        assert_eq!(loaded.total_samples, original.total_samples);
+        assert_eq!(loaded.peaks.len(), original.peaks.len());
+        for (a, b) in loaded.peaks.iter().zip(original.peaks.iter()) {
+            assert!((a - b).abs() < 0.0001);
+        }
+
+        // Clean up
+        let _ = fs::remove_file(cache_path(&fake_audio));
+        let _ = fs::remove_file(&fake_audio);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn cache_invalidation_on_size_change() {
+        let dir = std::env::temp_dir().join("lutedrop_test_invalidation");
+        let _ = fs::create_dir_all(&dir);
+        let fake_audio = dir.join("test2.mp3");
+        {
+            let mut f = File::create(&fake_audio).unwrap();
+            f.write_all(b"original content").unwrap();
+        }
+
+        let original = make_test_peaks(vec![0.5, 0.5]);
+        write_cache(&fake_audio, &original).unwrap();
+
+        // Modify the source file (different size)
+        {
+            let mut f = File::create(&fake_audio).unwrap();
+            f.write_all(b"modified content that is longer now").unwrap();
+        }
+
+        // Cache should be stale
+        assert!(read_cache(&fake_audio).is_none(), "cache should be invalidated after source change");
+
+        // Clean up
+        let _ = fs::remove_file(cache_path(&fake_audio));
+        let _ = fs::remove_file(&fake_audio);
+        let _ = fs::remove_dir(&dir);
+    }
+}
