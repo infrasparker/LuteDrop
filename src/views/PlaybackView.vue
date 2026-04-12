@@ -83,11 +83,10 @@ async function createComp(): Promise<void> {
           v-for="(group, i) in groups"
           :key="group.id"
           :value="i"
+          :text="group.name"
           @contextmenu.prevent="openContextMenu($event, group)"
-          style="max-width: 150px;"
-        >
-          <span class="text-truncate">{{ group.name }}</span>
-        </VTab>
+          max-width="150"
+        />
       </VTabs>
       <VBtn
         icon="mdi-plus"
