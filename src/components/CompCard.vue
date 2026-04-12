@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue';
 import type { Comp } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
@@ -33,11 +33,28 @@ const contextMenuX = ref(0);
 const contextMenuY = ref(0);
 const showDeleteConfirm = ref(false);
 
-function openContextMenu(event: MouseEvent): void {
+function closeMenu(): void {
+  contextMenu.value = false;
+}
+
+async function openContextMenu(event: MouseEvent): Promise<void> {
+  contextMenu.value = false;
+  await nextTick();
   contextMenuX.value = event.clientX;
   contextMenuY.value = event.clientY;
   contextMenu.value = true;
 }
+
+onMounted(() => {
+  // Close menu when clicking or right-clicking anywhere else
+  document.addEventListener('click', closeMenu);
+  document.addEventListener('contextmenu', closeMenu);
+});
+
+onUnmounted(() => {
+  document.removeEventListener('click', closeMenu);
+  document.removeEventListener('contextmenu', closeMenu);
+});
 
 async function deleteComp(): Promise<void> {
   showDeleteConfirm.value = false;
