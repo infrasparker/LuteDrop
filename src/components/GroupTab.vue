@@ -49,6 +49,7 @@ async function deleteGroup(): Promise<void> {
 </script>
 
 <template>
+  <div>
   <div class="d-flex" style="height: calc(100vh - 120px);">
     <!-- Left pane: group header + comp grid -->
     <div style="width: 300px; min-width: 300px; overflow-y: auto;" class="pr-3">
