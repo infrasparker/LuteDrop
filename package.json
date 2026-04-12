@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "dev:remote": "vite --config vite.remote.config.ts",
+    "dev:all": "concurrently \"cargo tauri dev\" \"npm run dev:remote\"",
     "build": "vue-tsc --noEmit && vite build",
     "build:remote": "vite build --config vite.remote.config.ts",
     "tauri": "tauri"
@@ -22,6 +23,7 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2",
     "@vitejs/plugin-vue": "^6.0.2",
+    "concurrently": "^9.2.1",
     "typescript": "^5.9.3",
     "vite": "^7.2.6",
     "vite-plugin-vuetify": "^2.1.3",
