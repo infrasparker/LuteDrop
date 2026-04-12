@@ -59,7 +59,6 @@ async function importTracksToComp(): Promise<void> {
         <VBtn
           prepend-icon="mdi-plus"
           variant="tonal"
-          size="small"
           @click="importTracksToComp"
         >
           Add Track
@@ -68,7 +67,6 @@ async function importTracksToComp(): Promise<void> {
           prepend-icon="mdi-delete"
           variant="tonal"
           color="error"
-          size="small"
           @click="confirmDeleteComp"
         >
           Delete

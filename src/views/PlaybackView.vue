@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick } from 'vue';
+import { ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useAppStore } from '../stores/appStore';
 import GroupTab from '../components/GroupTab.vue';
@@ -14,49 +14,6 @@ const showNewCompDialog = ref(false);
 const newCompName = ref('');
 const newCompGroupId = ref('');
 
-// Context menu state
-const contextMenu = ref(false);
-const contextMenuX = ref(0);
-const contextMenuY = ref(0);
-const contextGroupId = ref('');
-const contextGroupName = ref('');
-
-// Rename dialog state
-const showRenameDialog = ref(false);
-const renameGroupName = ref('');
-
-// Delete confirmation dialog state
-const showDeleteDialog = ref(false);
-
-function openContextMenu(event: MouseEvent, groupId: string, groupName: string): void {
-  event.preventDefault();
-  contextGroupId.value = groupId;
-  contextGroupName.value = groupName;
-  contextMenuX.value = event.clientX;
-  contextMenuY.value = event.clientY;
-  nextTick(() => {
-    contextMenu.value = true;
-  });
-}
-
-function openRenameDialog(): void {
-  contextMenu.value = false;
-  renameGroupName.value = contextGroupName.value;
-  showRenameDialog.value = true;
-}
-
-async function renameGroup(): Promise<void> {
-  if (!renameGroupName.value.trim()) return;
-  await store.command('rename_group', { groupId: contextGroupId.value, name: renameGroupName.value.trim() });
-  renameGroupName.value = '';
-  showRenameDialog.value = false;
-}
-
-function openDeleteDialog(): void {
-  contextMenu.value = false;
-  showDeleteDialog.value = true;
-}
-
 async function createGroup(): Promise<void> {
   if (!newGroupName.value.trim()) return;
   await store.command('add_group', { name: newGroupName.value.trim() });
@@ -64,9 +21,7 @@ async function createGroup(): Promise<void> {
   showNewGroupDialog.value = false;
 }
 
-async function deleteGroup(): Promise<void> {
-  showDeleteDialog.value = false;
-  await store.command('delete_group', { groupId: contextGroupId.value });
+function onGroupDeleted(): void {
   if (activeTab.value >= groups.value.length) {
     activeTab.value = Math.max(0, groups.value.length - 1);
   }
@@ -94,7 +49,6 @@ async function createComp(): Promise<void> {
           v-for="(group, i) in groups"
           :key="group.id"
           :value="i"
-          @contextmenu="openContextMenu($event, group.id, group.name)"
         >
           {{ group.name }}
         </VTab>
@@ -111,64 +65,12 @@ async function createComp(): Promise<void> {
       v-if="groups.length > 0 && groups[activeTab]"
       :group="groups[activeTab]"
       @add-comp="openNewCompDialog"
+      @group-deleted="onGroupDeleted"
     />
 
     <div v-else class="text-center text-medium-emphasis pa-8">
       No groups yet. Click + to create one.
     </div>
-
-    <!-- Right-click context menu for tabs -->
-    <VMenu
-      v-model="contextMenu"
-      :style="{ position: 'fixed', left: contextMenuX + 'px', top: contextMenuY + 'px' }"
-      :target="[contextMenuX, contextMenuY]"
-      location="bottom start"
-    >
-      <VList density="compact">
-        <VListItem prepend-icon="mdi-pencil" @click="openRenameDialog">
-          Rename
-        </VListItem>
-        <VListItem prepend-icon="mdi-delete" class="text-error" @click="openDeleteDialog">
-          Delete Group
-        </VListItem>
-      </VList>
-    </VMenu>
-
-    <!-- Rename group dialog -->
-    <VDialog v-model="showRenameDialog" max-width="400">
-      <VCard>
-        <VCardTitle>Rename Group</VCardTitle>
-        <VCardText>
-          <VTextField
-            v-model="renameGroupName"
-            label="Group Name"
-            variant="outlined"
-            autofocus
-            @keydown.enter="renameGroup"
-          />
-        </VCardText>
-        <VCardActions>
-          <VSpacer />
-          <VBtn @click="showRenameDialog = false">Cancel</VBtn>
-          <VBtn color="primary" @click="renameGroup">Rename</VBtn>
-        </VCardActions>
-      </VCard>
-    </VDialog>
-
-    <!-- Delete group confirmation dialog -->
-    <VDialog v-model="showDeleteDialog" max-width="450">
-      <VCard>
-        <VCardTitle>Delete Group</VCardTitle>
-        <VCardText>
-          Are you sure you want to delete group "{{ contextGroupName }}"? This will remove all compositions and tracks in it.
-        </VCardText>
-        <VCardActions>
-          <VSpacer />
-          <VBtn @click="showDeleteDialog = false">Cancel</VBtn>
-          <VBtn color="error" @click="deleteGroup">Delete</VBtn>
-        </VCardActions>
-      </VCard>
-    </VDialog>
 
     <!-- New group dialog -->
     <VDialog v-model="showNewGroupDialog" max-width="400">
