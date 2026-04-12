@@ -49,62 +49,68 @@ async function deleteGroup(): Promise<void> {
 </script>
 
 <template>
-  <div>
-    <!-- Group toolbar -->
-    <div class="d-flex align-center mb-4 ga-3">
-      <span class="text-h6 font-weight-bold">{{ group.name }}</span>
-      <VBtn
-        icon="mdi-pencil"
-        variant="text"
-        size="small"
-        @click="openRenameDialog"
-      />
-      <VBtn
-        icon="mdi-delete"
-        variant="text"
-        size="small"
-        color="error"
-        @click="showDeleteDialog = true"
-      />
-      <VSpacer />
-      <VBtn
-        prepend-icon="mdi-plus"
-        variant="tonal"
-        @click="emit('add-comp', group.id)"
-      >
-        Add Comp
-      </VBtn>
-    </div>
-
-    <div class="d-flex" style="height: calc(100vh - 170px);">
-      <div style="width: 300px; min-width: 300px; overflow-y: auto;" class="pr-3">
-        <div class="d-flex flex-wrap ga-2">
-          <CompCard
-            v-for="comp in group.comps"
-            :key="comp.id"
-            :comp="comp"
-            :selected="comp.id === selectedCompId"
-            @select="selectedCompId = $event"
-          />
-        </div>
-
-        <div v-if="group.comps.length === 0" class="text-medium-emphasis text-center pa-4">
-          No comps yet.
-        </div>
-      </div>
-
-      <VDivider vertical class="mx-2" />
-      <div style="flex: 1; overflow-y: auto;" class="pl-3">
-        <CompDetails
-          v-if="selectedComp"
-          :comp="selectedComp"
-          :group-id="group.id"
+  <div class="d-flex" style="height: calc(100vh - 120px);">
+    <!-- Left pane: group header + comp grid -->
+    <div style="width: 300px; min-width: 300px; overflow-y: auto;" class="pr-3">
+      <!-- Group header row -->
+      <div class="d-flex align-center mb-3 pb-2" style="border-bottom: 1px solid rgba(232, 228, 220, 0.1);">
+        <span class="text-subtitle-1 font-weight-bold flex-grow-1">{{ group.name }}</span>
+        <VBtn
+          icon="mdi-pencil"
+          variant="text"
+          size="x-small"
+          @click="openRenameDialog"
         />
-        <div v-else class="text-medium-emphasis text-center pa-8">
-          Select a composition to see its tracks.
-        </div>
+        <VBtn
+          icon="mdi-delete"
+          variant="text"
+          size="x-small"
+          color="error"
+          @click="showDeleteDialog = true"
+        />
+      </div>
+
+      <!-- Add comp + comp cards -->
+      <div class="d-flex align-center mb-3">
+        <VSpacer />
+        <VBtn
+          prepend-icon="mdi-plus"
+          variant="tonal"
+          size="small"
+          @click="emit('add-comp', group.id)"
+        >
+          Add Comp
+        </VBtn>
+      </div>
+
+      <div class="d-flex flex-wrap ga-2">
+        <CompCard
+          v-for="comp in group.comps"
+          :key="comp.id"
+          :comp="comp"
+          :selected="comp.id === selectedCompId"
+          @select="selectedCompId = $event"
+        />
+      </div>
+
+      <div v-if="group.comps.length === 0" class="text-medium-emphasis text-center pa-4">
+        No comps yet.
       </div>
     </div>
+
+    <!-- Right pane: comp details -->
+    <VDivider vertical class="mx-2" />
+    <div style="flex: 1; overflow-y: auto;" class="pl-3">
+      <CompDetails
+        v-if="selectedComp"
+        :comp="selectedComp"
+        :group-id="group.id"
+      />
+      <div v-else class="text-medium-emphasis text-center pa-8">
+        Select a composition to see its tracks.
+      </div>
+    </div>
+  </div>
 
     <!-- Rename group dialog -->
     <VDialog v-model="showRenameDialog" max-width="400">

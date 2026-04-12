@@ -6,6 +6,7 @@ export const vuetify = createVuetify({
   defaults: {
     VCard: { variant: 'flat', rounded: 'lg' },
     VBtn: { rounded: 'pill' },
+    VTab: { rounded: 0 },
     VTextField: { variant: 'solo-filled', rounded: 'lg' },
     VSelect: { variant: 'solo-filled', rounded: 'lg' },
     VSlider: { color: 'primary', trackColor: 'surface-light' },
