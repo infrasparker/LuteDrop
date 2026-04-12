@@ -8,7 +8,6 @@ import PlaybackView from './views/PlaybackView.vue';
 
 const store = useAppStore();
 const audio = useAudio();
-const masterVolume = ref(1);
 const serverUrl = ref('');
 
 onMounted(async () => {
@@ -24,7 +23,7 @@ onMounted(async () => {
 });
 
 function setMasterVolume(v: number): void {
-  masterVolume.value = v;
+  audio.masterVolume.value = v;
   audio.setMasterVolume(v);
 }
 
@@ -46,7 +45,7 @@ function stopAll(): void {
       <template #append>
         <VIcon class="mr-1">mdi-volume-high</VIcon>
         <VSlider
-          :model-value="masterVolume"
+          :model-value="audio.masterVolume.value"
           @update:model-value="setMasterVolume"
           :min="0"
           :max="1"

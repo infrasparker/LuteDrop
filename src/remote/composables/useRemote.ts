@@ -7,11 +7,13 @@ interface StateSnapshot {
   type: string;
   appState: AppState;
   playbackStates: TrackPlaybackState[];
+  masterVolume: number;
 }
 
 const groups = ref<AppState['groups']>([]);
 const playbackStates = reactive(new Map<string, TrackPlaybackState>());
 const connected = ref(false);
+const masterVolume = ref(1);
 
 let ws: WebSocket | null = null;
 let initialized = false;
@@ -42,6 +44,9 @@ function connect(): void {
         playbackStates.clear();
         for (const ps of data.playbackStates) {
           playbackStates.set(ps.trackId, ps);
+        }
+        if (data.masterVolume !== undefined) {
+          masterVolume.value = data.masterVolume;
         }
       }
     } catch (e) {
@@ -93,6 +98,7 @@ export function useRemote() {
     groups,
     playbackStates,
     connected,
+    masterVolume,
     getCompStatus,
 
     activateComp: (compId: string) => send({ command: 'activate_comp', compId }),

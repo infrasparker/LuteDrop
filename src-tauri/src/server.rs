@@ -21,6 +21,7 @@ struct StateSnapshot {
     r#type: String,
     app_state: crate::models::AppState,
     playback_states: Vec<TrackPlaybackState>,
+    master_volume: f64,
 }
 
 /// A command received from a remote client.
@@ -166,14 +167,15 @@ fn build_snapshot(container: &AppStateContainer) -> Result<StateSnapshot, String
         let data = container.data.read().map_err(|e| e.to_string())?;
         data.clone()
     };
-    let playback_states = {
+    let (playback_states, master_volume) = {
         let audio = container.audio.lock().map_err(|e| e.to_string())?;
-        audio.get_all_playback_states()
+        (audio.get_all_playback_states(), audio.get_master_volume())
     };
     Ok(StateSnapshot {
         r#type: "state".to_string(),
         app_state,
         playback_states,
+        master_volume,
     })
 }
 

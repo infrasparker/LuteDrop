@@ -1,10 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue';
 import { useRemote } from './composables/useRemote';
 import RemotePlaybackView from './views/RemotePlaybackView.vue';
 
 const remote = useRemote();
-const masterVolume = ref(1);
 </script>
 
 <template>
@@ -25,8 +23,8 @@ const masterVolume = ref(1);
       <template #append>
         <VIcon class="mr-1">mdi-volume-high</VIcon>
         <VSlider
-          :model-value="masterVolume"
-          @update:model-value="(v: number) => { masterVolume = v; remote.setMasterVolume(v); }"
+          :model-value="remote.masterVolume.value"
+          @update:model-value="(v: number) => { remote.masterVolume.value = v; remote.setMasterVolume(v); }"
           :min="0"
           :max="1"
           :step="0.01"

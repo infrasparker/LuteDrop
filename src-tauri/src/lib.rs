@@ -107,14 +107,16 @@ fn playback_polling_loop(app_handle: tauri::AppHandle, container: Arc<AppStateCo
             }
         }
 
-        // Get all playback states and emit to the frontend
+        // Get all playback states and master volume, then emit to the frontend
         let states = audio.get_all_playback_states();
+        let master_vol = audio.get_master_volume();
         drop(audio); // Release the lock before emitting
 
         // Emit to desktop frontend
         for state in &states {
             let _ = app_handle.emit("playback-state-update", state);
         }
+        let _ = app_handle.emit("master-volume-update", master_vol);
 
         // Broadcast to remote clients
         server::broadcast_state(&container);

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref } from 'vue';
 import type { Comp } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
@@ -15,7 +16,14 @@ const props = defineProps<{
 const store = useAppStore();
 const audio = useAudio();
 
+const showDeleteDialog = ref(false);
+
+function confirmDeleteComp(): void {
+  showDeleteDialog.value = true;
+}
+
 async function deleteComp(): Promise<void> {
+  showDeleteDialog.value = false;
   await audio.stopComp(props.comp.id);
   await store.command('delete_comp', { groupId: props.groupId, compId: props.comp.id });
 }
@@ -44,27 +52,28 @@ async function importTracksToComp(): Promise<void> {
 
 <template>
   <div>
-    <div class="d-flex align-center mb-3">
+    <div class="d-flex align-center mb-4">
       <span class="text-h6 font-weight-bold">{{ comp.name }}</span>
       <VSpacer />
-      <VBtn
-        prepend-icon="mdi-plus"
-        variant="tonal"
-        size="small"
-        class="mr-2"
-        @click="importTracksToComp"
-      >
-        Add Track
-      </VBtn>
-      <VBtn
-        prepend-icon="mdi-delete"
-        variant="tonal"
-        color="error"
-        size="small"
-        @click="deleteComp"
-      >
-        Delete
-      </VBtn>
+      <div class="d-flex ga-3">
+        <VBtn
+          prepend-icon="mdi-plus"
+          variant="tonal"
+          size="small"
+          @click="importTracksToComp"
+        >
+          Add Track
+        </VBtn>
+        <VBtn
+          prepend-icon="mdi-delete"
+          variant="tonal"
+          color="error"
+          size="small"
+          @click="confirmDeleteComp"
+        >
+          Delete
+        </VBtn>
+      </div>
     </div>
 
     <TrackControl
@@ -77,5 +86,19 @@ async function importTracksToComp(): Promise<void> {
     <div v-if="comp.tracks.length === 0" class="text-medium-emphasis text-center pa-8">
       No tracks yet. Click "Add Track" to import audio files.
     </div>
+
+    <VDialog v-model="showDeleteDialog" max-width="450">
+      <VCard>
+        <VCardTitle>Delete Composition</VCardTitle>
+        <VCardText>
+          Are you sure you want to delete "{{ comp.name }}"? This will remove all tracks in it.
+        </VCardText>
+        <VCardActions>
+          <VSpacer />
+          <VBtn @click="showDeleteDialog = false">Cancel</VBtn>
+          <VBtn color="error" @click="deleteComp">Delete</VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
   </div>
 </template>

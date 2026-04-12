@@ -22,7 +22,7 @@ const selectedComp = computed(() =>
 <template>
   <div class="d-flex" style="height: calc(100vh - 120px);">
     <div style="width: 300px; min-width: 300px; overflow-y: auto;" class="pr-3">
-      <div class="d-flex align-center mb-3">
+      <div class="d-flex align-center mb-4">
         <VSpacer />
         <VBtn
           prepend-icon="mdi-plus"

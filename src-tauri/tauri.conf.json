@@ -13,10 +13,12 @@
     "windows": [
       {
         "title": "LuteDrop",
-        "width": 1200,
-        "height": 800,
+        "width": 1920,
+        "height": 1080,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "maximizable": true,
+        "maximized": true
       }
     ],
     "security": {

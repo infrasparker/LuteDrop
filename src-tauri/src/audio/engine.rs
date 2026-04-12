@@ -212,6 +212,11 @@ impl AudioEngine {
         }
     }
 
+    /// Returns the current master volume.
+    pub fn get_master_volume(&self) -> f64 {
+        self.master_volume
+    }
+
     /// Set the master volume (0.0 - 1.0). Updates all active sounds.
     pub fn set_master_volume(&mut self, volume: f64) {
         self.master_volume = volume.clamp(0.0, 1.0);

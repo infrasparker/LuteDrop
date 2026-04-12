@@ -1,9 +1,11 @@
+import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../stores/appStore';
 import type { TrackPlaybackState } from '@generated/index';
 
 let listenerRegistered = false;
+const masterVolume = ref(1);
 
 function registerListener(): void {
   if (listenerRegistered) return;
@@ -14,6 +16,10 @@ function registerListener(): void {
   listen<TrackPlaybackState>('playback-state-update', (event) => {
     const payload = event.payload;
     store.setTrackPlaybackState(payload.trackId, payload);
+  });
+
+  listen<number>('master-volume-update', (event) => {
+    masterVolume.value = event.payload;
   });
 }
 
@@ -57,6 +63,7 @@ export function useAudio() {
   }
 
   return {
+    masterVolume,
     playTrack,
     pauseTrack,
     stopTrack,
