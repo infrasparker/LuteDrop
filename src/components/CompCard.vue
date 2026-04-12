@@ -111,10 +111,11 @@ function stopComp(): void {
         <VCardText>
           Are you sure you want to delete "{{ comp.name }}"? This will remove all tracks in it.
         </VCardText>
+        <VDivider />
         <VCardActions>
           <VSpacer />
-          <VBtn text="Cancel" @click="showDeleteConfirm = false" />
-          <VBtn text="Delete" color="error" @click="deleteComp" />
+          <VBtn text="Cancel" variant="plain" @click="showDeleteConfirm = false" />
+          <VBtn text="Delete" color="error" variant="tonal" @click="deleteComp" />
         </VCardActions>
       </VCard>
     </VDialog>

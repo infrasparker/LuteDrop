@@ -130,10 +130,11 @@ async function createComp(): Promise<void> {
             @keydown.enter="createGroup"
           />
         </VCardText>
+        <VDivider />
         <VCardActions>
           <VSpacer />
-          <VBtn text="Cancel" @click="showNewGroupDialog = false" />
-          <VBtn text="Create" color="primary" @click="createGroup" />
+          <VBtn text="Cancel" variant="plain" @click="showNewGroupDialog = false" />
+          <VBtn text="Create" color="primary" variant="tonal" @click="createGroup" />
         </VCardActions>
       </VCard>
     </VDialog>
@@ -164,10 +165,11 @@ async function createComp(): Promise<void> {
             @keydown.enter="renameGroup"
           />
         </VCardText>
+        <VDivider />
         <VCardActions>
           <VSpacer />
-          <VBtn text="Cancel" @click="showRenameDialog = false" />
-          <VBtn text="Rename" color="primary" @click="renameGroup" />
+          <VBtn text="Cancel" variant="plain" @click="showRenameDialog = false" />
+          <VBtn text="Rename" color="primary" variant="tonal" @click="renameGroup" />
         </VCardActions>
       </VCard>
     </VDialog>
@@ -178,10 +180,11 @@ async function createComp(): Promise<void> {
         <VCardText>
           Are you sure you want to delete group "{{ contextGroupName }}"? This will remove all compositions and tracks in it.
         </VCardText>
+        <VDivider />
         <VCardActions>
           <VSpacer />
-          <VBtn text="Cancel" @click="showDeleteConfirm = false" />
-          <VBtn text="Delete" color="error" @click="deleteGroup" />
+          <VBtn text="Cancel" variant="plain" @click="showDeleteConfirm = false" />
+          <VBtn text="Delete" color="error" variant="tonal" @click="deleteGroup" />
         </VCardActions>
       </VCard>
     </VDialog>
@@ -198,10 +201,11 @@ async function createComp(): Promise<void> {
             @keydown.enter="createComp"
           />
         </VCardText>
+        <VDivider />
         <VCardActions>
           <VSpacer />
-          <VBtn text="Cancel" @click="showNewCompDialog = false" />
-          <VBtn text="Create" color="primary" @click="createComp" />
+          <VBtn text="Cancel" variant="plain" @click="showNewCompDialog = false" />
+          <VBtn text="Create" color="primary" variant="tonal" @click="createComp" />
         </VCardActions>
       </VCard>
     </VDialog>
