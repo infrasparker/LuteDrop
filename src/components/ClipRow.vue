@@ -40,18 +40,20 @@ async function remove(): Promise<void> {
     <span class="text-body-2 text-truncate">{{ clip.name }}</span>
 
     <template #append>
-      <VSlider
-        :model-value="clip.volume"
-        @update:model-value="updateVolume"
-        :min="0"
-        :max="1"
-        :step="0.01"
-        hide-details
-        density="compact"
-        style="max-width: 120px"
-        prepend-icon="mdi-volume-high"
-      />
-      <VBtn icon="mdi-delete" variant="text" size="x-small" color="error" @click="remove" />
+      <div class="d-flex align-center ga-2" style="min-width: 180px;">
+        <VIcon size="small">mdi-volume-high</VIcon>
+        <VSlider
+          :model-value="clip.volume"
+          @update:model-value="updateVolume"
+          :min="0"
+          :max="1"
+          :step="0.01"
+          hide-details
+          density="compact"
+          style="width: 120px;"
+        />
+        <VBtn icon="mdi-delete" variant="text" size="x-small" color="error" @click="remove" />
+      </div>
     </template>
   </VListItem>
 </template>
