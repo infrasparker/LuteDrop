@@ -1,0 +1,104 @@
+import { ref, reactive } from 'vue';
+import type { AppState, TrackPlaybackState } from '@generated/index';
+
+type CompStatus = 'active' | 'partial' | 'inactive';
+
+interface StateSnapshot {
+  type: string;
+  appState: AppState;
+  playbackStates: TrackPlaybackState[];
+}
+
+const groups = ref<AppState['groups']>([]);
+const playbackStates = reactive(new Map<string, TrackPlaybackState>());
+const connected = ref(false);
+
+let ws: WebSocket | null = null;
+let initialized = false;
+
+function getWsUrl(): string {
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${location.host}/ws`;
+}
+
+function connect(): void {
+  if (ws) return;
+
+  ws = new WebSocket(getWsUrl());
+
+  ws.onopen = () => {
+    connected.value = true;
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const data: StateSnapshot = JSON.parse(event.data);
+      if (data.type === 'state') {
+        groups.value = data.appState.groups;
+        playbackStates.clear();
+        for (const ps of data.playbackStates) {
+          playbackStates.set(ps.trackId, ps);
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to parse state update:', e);
+    }
+  };
+
+  ws.onclose = () => {
+    connected.value = false;
+    ws = null;
+    // Reconnect after a delay
+    setTimeout(connect, 2000);
+  };
+
+  ws.onerror = () => {
+    ws?.close();
+  };
+}
+
+function send(command: Record<string, unknown>): void {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(command));
+  }
+}
+
+function getCompStatus(compId: string): CompStatus {
+  const comp = groups.value
+    .flatMap((g) => g.comps)
+    .find((c) => c.id === compId);
+  if (!comp || comp.tracks.length === 0) return 'inactive';
+
+  const playing = comp.tracks.filter((t) => {
+    const state = playbackStates.get(t.id);
+    return state?.isPlaying;
+  });
+
+  if (playing.length === 0) return 'inactive';
+  if (playing.length === comp.tracks.length) return 'active';
+  return 'partial';
+}
+
+export function useRemote() {
+  if (!initialized) {
+    initialized = true;
+    connect();
+  }
+
+  return {
+    groups,
+    playbackStates,
+    connected,
+    getCompStatus,
+
+    activateComp: (compId: string) => send({ command: 'activate_comp', compId }),
+    stopComp: (compId: string) => send({ command: 'stop_comp', compId }),
+    playTrack: (trackId: string) => send({ command: 'play_track', trackId }),
+    pauseTrack: (trackId: string) => send({ command: 'pause_track', trackId }),
+    stopTrack: (trackId: string) => send({ command: 'stop_track', trackId }),
+    setMasterVolume: (volume: number) => send({ command: 'set_master_volume', volume }),
+    setTrackVolume: (trackId: string, volume: number) => send({ command: 'set_track_volume', trackId, volume }),
+    setClipVolume: (clipId: string, volume: number) => send({ command: 'set_clip_volume', clipId, volume }),
+    stopAll: () => send({ command: 'stop_all' }),
+  };
+}

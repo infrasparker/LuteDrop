@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:remote": "vite --config vite.remote.config.ts",
     "build": "vue-tsc --noEmit && vite build",
+    "build:remote": "vite build --config vite.remote.config.ts",
     "tauri": "tauri"
   },
   "dependencies": {
