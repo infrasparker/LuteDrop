@@ -32,28 +32,20 @@ async function remove(): Promise<void> {
 </script>
 
 <template>
-  <VListItem class="px-0">
-    <template #prepend>
-      <VIcon size="small" class="text-medium-emphasis drag-handle" style="cursor: grab;">mdi-drag</VIcon>
-    </template>
-
-    <span class="text-body-2 text-truncate">{{ clip.name }}</span>
-
-    <template #append>
-      <div class="d-flex align-center ga-2" style="min-width: 180px;">
-        <VIcon size="small">mdi-volume-high</VIcon>
-        <VSlider
-          :model-value="clip.volume"
-          @update:model-value="updateVolume"
-          :min="0"
-          :max="1"
-          :step="0.01"
-          hide-details
-          density="compact"
-          style="width: 120px;"
-        />
-        <VBtn icon="mdi-delete" variant="text" size="x-small" color="error" @click="remove" />
-      </div>
-    </template>
-  </VListItem>
+  <div class="d-flex align-center ga-2 py-2 px-1" style="border-bottom: 1px solid rgba(232, 228, 220, 0.05);">
+    <VIcon size="small" class="text-medium-emphasis drag-handle" style="cursor: grab;">mdi-drag</VIcon>
+    <span class="text-body-2 flex-grow-1 text-truncate">{{ clip.name }}</span>
+    <VIcon size="small" class="text-medium-emphasis">mdi-volume-high</VIcon>
+    <VSlider
+      :model-value="clip.volume"
+      @update:model-value="updateVolume"
+      :min="0"
+      :max="1"
+      :step="0.01"
+      hide-details
+      density="compact"
+      style="width: 120px; flex: 0 0 120px;"
+    />
+    <VBtn icon="mdi-delete" variant="text" size="x-small" color="error" @click="remove" />
+  </div>
 </template>

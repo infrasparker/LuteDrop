@@ -362,9 +362,9 @@ async function deleteTrack(): Promise<void> {
             Add Clip
           </VBtn>
         </div>
-        <VList v-if="hasClips" density="compact" class="pa-0 bg-transparent">
+        <div v-if="hasClips">
           <ClipRow :clip="seamlessClip!" :track-id="track.id" :comp-id="compId" />
-        </VList>
+        </div>
         <div v-else class="text-caption text-medium-emphasis">
           No clip yet. Seamless mode uses a single clip.
         </div>
@@ -380,18 +380,16 @@ async function deleteTrack(): Promise<void> {
           </VBtn>
         </div>
 
-        <VList density="compact" class="pa-0 bg-transparent">
-          <draggable
-            :model-value="track.clips"
-            @update:model-value="(newClips: Clip[]) => updateField({ clips: newClips })"
-            item-key="id"
-            handle=".drag-handle"
-          >
-            <template #item="{ element: clip }">
-              <ClipRow :clip="clip" :track-id="track.id" :comp-id="compId" />
-            </template>
-          </draggable>
-        </VList>
+        <draggable
+          :model-value="track.clips"
+          @update:model-value="(newClips: Clip[]) => updateField({ clips: newClips })"
+          item-key="id"
+          handle=".drag-handle"
+        >
+          <template #item="{ element: clip }">
+            <ClipRow :clip="clip" :track-id="track.id" :comp-id="compId" />
+          </template>
+        </draggable>
 
         <div v-if="track.clips.length === 0" class="text-caption text-medium-emphasis">
           No clips yet.
