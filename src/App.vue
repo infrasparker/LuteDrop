@@ -9,10 +9,18 @@ import PlaybackView from './views/PlaybackView.vue';
 const store = useAppStore();
 const audio = useAudio();
 const masterVolume = ref(1);
+const serverUrl = ref('');
 
 onMounted(async () => {
   const state = await invoke<AppState>('load_data');
   store.hydrate(state);
+
+  try {
+    const info = await invoke<{ ip: string; port: number }>('get_server_info');
+    serverUrl.value = `http://${info.ip}:${info.port}`;
+  } catch (e) {
+    console.warn('Could not get server info:', e);
+  }
 });
 
 function setMasterVolume(v: number): void {
@@ -30,6 +38,9 @@ function stopAll(): void {
     <VAppBar density="compact" color="surface">
       <VAppBarTitle>
         <span class="text-primary font-weight-bold">LuteDrop</span>
+        <span v-if="serverUrl" class="text-caption text-medium-emphasis ml-3">
+          Remote: {{ serverUrl }}
+        </span>
       </VAppBarTitle>
 
       <template #append>
