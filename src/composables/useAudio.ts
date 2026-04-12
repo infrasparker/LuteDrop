@@ -44,6 +44,14 @@ export function useAudio() {
     }
   }
 
+  async function playTrackClip(trackId: string, clipId: string): Promise<void> {
+    try {
+      await invoke('play_track_clip', { trackId, clipId });
+    } catch (e) {
+      toast.showError(String(e));
+    }
+  }
+
   async function pauseTrack(trackId: string): Promise<void> {
     try {
       await invoke('pause_track', { trackId });
@@ -128,6 +136,7 @@ export function useAudio() {
     masterVolume,
     playTrack,
     playTrackFrom,
+    playTrackClip,
     pauseTrack,
     stopTrack,
     setMasterVolume,

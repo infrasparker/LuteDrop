@@ -77,6 +77,7 @@ pub fn run() {
             commands::delete_clip,
             commands::play_track,
             commands::play_track_from,
+            commands::play_track_clip,
             commands::pause_track,
             commands::stop_track,
             commands::set_master_volume,

@@ -112,6 +112,23 @@ impl AudioEngine {
         self.tracks.contains_key(track_id)
     }
 
+    /// Play a track starting from a specific clip (by clip ID).
+    pub fn play_track_clip(&mut self, track_id: &str, clip_id: &str) -> Result<(), String> {
+        let active = self
+            .tracks
+            .get(track_id)
+            .ok_or_else(|| format!("Track not found: {}", track_id))?;
+
+        let clip_index = active
+            .config
+            .clips
+            .iter()
+            .position(|c| c.id == clip_id)
+            .ok_or_else(|| format!("Clip not found: {}", clip_id))?;
+
+        self.start_clip(track_id, clip_index)
+    }
+
     /// Play a track from a specific time position (in seconds).
     /// Always starts fresh (stops any current sound, ignores pause state).
     pub fn play_track_from(&mut self, track_id: &str, start_position: f64) -> Result<(), String> {

@@ -215,6 +215,20 @@ pub fn play_track_audio(container: &AppStateContainer, track_id: &str) -> Result
     audio.play_track(track_id)
 }
 
+pub fn play_track_clip(container: &AppStateContainer, track_id: &str, clip_id: &str) -> Result<(), String> {
+    let track_config = {
+        let data = container.data.read().map_err(|e| e.to_string())?;
+        find_track_ref(&data, track_id)?.clone()
+    };
+    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    if !audio.has_track(track_id) {
+        audio.setup_track(&track_config)?;
+    } else {
+        audio.update_track_config(&track_config);
+    }
+    audio.play_track_clip(track_id, clip_id)
+}
+
 pub fn play_track_from_position(container: &AppStateContainer, track_id: &str, position: f64) -> Result<(), String> {
     let track_config = {
         let data = container.data.read().map_err(|e| e.to_string())?;

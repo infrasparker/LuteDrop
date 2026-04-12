@@ -20,7 +20,14 @@ const { menuVisible, menuX, menuY, openMenu } = useContextMenuState();
 
 const playbackState = computed(() => store.playbackStates.get(props.track.id));
 const isPlaying = computed(() => playbackState.value?.isPlaying ?? false);
+const isActive = computed(() => isPlaying.value || (playbackState.value?.isPaused ?? false));
 const isSeamless = computed(() => props.track.mode.type === 'seamless');
+
+const currentClipName = computed(() => {
+  const clipId = playbackState.value?.currentClipId;
+  if (!clipId) return null;
+  return props.track.clips.find((c) => c.id === clipId)?.name ?? null;
+});
 
 // Rename state
 const showRenameDialog = ref(false);
@@ -79,7 +86,13 @@ async function setVolume(v: number): Promise<void> {
 <template>
   <div>
     <VExpansionPanels>
-      <VExpansionPanel color="surface-light" rounded="0" elevation="0" @contextmenu.prevent="openContextMenu">
+      <VExpansionPanel
+        color="surface-light"
+        rounded="0"
+        elevation="0"
+        :style="isActive ? { outline: '1px solid rgb(var(--v-theme-primary))', outlineOffset: '-1px' } : {}"
+        @contextmenu.prevent="openContextMenu"
+      >
         <template #title>
           <div
             class="d-flex align-center ga-2"
@@ -105,6 +118,9 @@ async function setVolume(v: number): Promise<void> {
 
             <VSpacer />
 
+            <span v-if="currentClipName" class="text-caption text-primary" style="white-space: nowrap;">
+              {{ currentClipName }}
+            </span>
             <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
               {{ track.clips.length }} clip{{ track.clips.length !== 1 ? 's' : '' }}
               &middot; {{ track.mode.type }}

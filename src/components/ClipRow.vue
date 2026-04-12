@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 import type { Clip } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
@@ -11,6 +12,14 @@ const props = defineProps<{
 
 const store = useAppStore();
 const audio = useAudio();
+
+const playbackState = computed(() => store.playbackStates.get(props.trackId));
+const isCurrentClip = computed(() => playbackState.value?.currentClipId === props.clip.id);
+const isPlaying = computed(() => isCurrentClip.value && playbackState.value?.isPlaying);
+
+function playClip(): void {
+  audio.playTrackClip(props.trackId, props.clip.id);
+}
 
 async function updateVolume(volume: number): Promise<void> {
   const track = store.findTrack(props.trackId);
@@ -32,9 +41,25 @@ async function remove(): Promise<void> {
 </script>
 
 <template>
-  <div class="d-flex align-center ga-2 py-2 px-1" style="border-bottom: 1px solid rgba(232, 228, 220, 0.05);">
+  <div
+    class="d-flex align-center ga-2 py-2 px-1"
+    :style="{
+      borderBottom: '1px solid rgba(232, 228, 220, 0.05)',
+      backgroundColor: isCurrentClip ? 'rgba(240, 168, 48, 0.08)' : 'transparent',
+    }"
+  >
     <VIcon size="small" class="text-medium-emphasis drag-handle" style="cursor: grab;">mdi-drag</VIcon>
-    <span class="text-body-2 flex-grow-1 text-truncate">{{ clip.name }}</span>
+    <VBtn
+      :icon="isPlaying ? 'mdi-pause' : 'mdi-play'"
+      variant="text"
+      size="x-small"
+      :color="isCurrentClip ? 'primary' : undefined"
+      @click="isPlaying ? audio.pauseTrack(trackId) : playClip()"
+    />
+    <span
+      class="text-body-2 flex-grow-1 text-truncate"
+      :class="{ 'text-primary': isCurrentClip }"
+    >{{ clip.name }}</span>
     <VIcon size="small" class="text-medium-emphasis">mdi-volume-high</VIcon>
     <VSlider
       :model-value="clip.volume"
