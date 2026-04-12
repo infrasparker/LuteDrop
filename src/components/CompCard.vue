@@ -69,7 +69,7 @@ function stopComp(): void {
 
 <template>
   <VCard
-    :color="selected ? 'surface-variant' : 'surface-light'"
+    :color="selected ? 'primary' : 'surface-light'"
     variant="flat"
     class="comp-card pa-2 text-center"
     :style="{ width: '130px', cursor: 'pointer', border: borderStyle }"
