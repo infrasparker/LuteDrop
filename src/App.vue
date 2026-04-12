@@ -163,11 +163,11 @@ async function createGroup(): Promise<void> {
             :value="i"
             @contextmenu.prevent="openContextMenu($event, group)"
             class="tab-truncate"
-            :class="{ 'text-success': isGroupActive(group) }"
+            :style="isGroupActive(group) ? { color: '#4CAF50' } : {}"
           >
             {{ group.name }}
           </VTab>
-          <VTab :value="'__add__'" @click.stop="showNewGroupDialog = true" style="min-width: 0;" class="px-2">
+          <VTab :value="activeTab" @click.stop.prevent="showNewGroupDialog = true" style="min-width: 0;" class="px-2">
             <VIcon>mdi-plus</VIcon>
           </VTab>
         </VTabs>
