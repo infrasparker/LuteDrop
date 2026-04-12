@@ -11,12 +11,24 @@ const props = defineProps<{
 const remote = useRemote();
 const playbackState = computed(() => remote.playbackStates.get(props.track.id));
 const isPlaying = computed(() => playbackState.value?.isPlaying ?? false);
+const isActive = computed(() => isPlaying.value || (playbackState.value?.isPaused ?? false));
+
+const currentClipName = computed(() => {
+  const clipId = playbackState.value?.currentClipId;
+  if (!clipId) return null;
+  return props.track.clips.find((c) => c.id === clipId)?.name ?? null;
+});
 </script>
 
 <template>
   <div>
     <VExpansionPanels>
-      <VExpansionPanel color="surface-light" rounded="0" elevation="0">
+      <VExpansionPanel
+        color="surface-light"
+        rounded="0"
+        elevation="0"
+        :style="isActive ? { borderLeft: '3px solid rgb(var(--v-theme-primary))' } : { borderLeft: '3px solid transparent' }"
+      >
         <template #title>
           <div class="d-flex align-center ga-2" style="width: 100%;">
             <VBtn
@@ -39,6 +51,9 @@ const isPlaying = computed(() => playbackState.value?.isPlaying ?? false);
 
             <VSpacer />
 
+            <span v-if="currentClipName" class="text-caption text-primary" style="white-space: nowrap;">
+              {{ currentClipName }}
+            </span>
             <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
               {{ track.clips.length }} clip{{ track.clips.length !== 1 ? 's' : '' }}
               &middot; {{ track.mode.type }}
@@ -66,6 +81,7 @@ const isPlaying = computed(() => playbackState.value?.isPlaying ?? false);
               v-for="clip in track.clips"
               :key="clip.id"
               :clip="clip"
+              :track-id="track.id"
             />
           </div>
           <div v-else class="text-medium-emphasis text-center pa-4">

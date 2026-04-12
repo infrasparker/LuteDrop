@@ -128,6 +128,11 @@ fn handle_remote_command(container: &AppStateContainer, text: &str) {
             let id = cmd.track_id.as_deref().unwrap_or("");
             actions::stop_track_audio(container, id)
         }
+        "play_track_clip" => {
+            let track_id = cmd.track_id.as_deref().unwrap_or("");
+            let clip_id = cmd.clip_id.as_deref().unwrap_or("");
+            actions::play_track_clip(container, track_id, clip_id)
+        }
         "set_master_volume" => {
             let vol = cmd.volume.unwrap_or(1.0);
             actions::set_master_volume_action(container, vol)
