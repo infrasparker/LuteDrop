@@ -461,8 +461,11 @@ onUnmounted(() => {
 <template>
   <div class="waveform-editor">
     <div class="waveform-container">
-      <div v-if="data.loading.value" class="waveform-overlay text-caption text-medium-emphasis">
-        Loading waveform...
+      <div v-if="data.loading.value" class="waveform-overlay">
+        <div style="width: 60%; text-align: center;">
+          <VProgressLinear indeterminate color="primary" rounded height="4" />
+          <div class="text-caption text-medium-emphasis mt-2">Loading waveform...</div>
+        </div>
       </div>
       <div v-else-if="data.error.value" class="waveform-overlay text-caption text-error">
         {{ data.error.value }}
