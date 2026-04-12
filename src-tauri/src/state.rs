@@ -16,14 +16,14 @@ pub struct AppStateContainer {
 }
 
 impl AppStateContainer {
-    pub fn new(initial: AppState, save_path: PathBuf, audio: AudioEngine) -> Self {
+    pub fn new(initial: AppState, save_path: PathBuf, audio: AudioEngine, peak_cache_dir: PathBuf) -> Self {
         let (broadcast_tx, _) = broadcast::channel(64);
         Self {
             data: RwLock::new(initial),
             audio: Mutex::new(audio),
             save_path,
             broadcast_tx,
-            peak_cache: PeakCache::new(),
+            peak_cache: PeakCache::new(peak_cache_dir),
         }
     }
 }

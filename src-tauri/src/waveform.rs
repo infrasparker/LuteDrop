@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File};
+use std::hash::{Hash, Hasher};
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
@@ -41,14 +43,18 @@ impl CachedPeaks {
 }
 
 /// In-memory cache so we don't re-read .peaks files from disk on every zoom/pan.
+/// Also owns the `cache_dir` where .peaks files are stored on disk.
 pub struct PeakCache {
     entries: RwLock<HashMap<PathBuf, CachedPeaks>>,
+    cache_dir: PathBuf,
 }
 
 impl PeakCache {
-    pub fn new() -> Self {
+    pub fn new(cache_dir: PathBuf) -> Self {
+        fs::create_dir_all(&cache_dir).ok();
         Self {
             entries: RwLock::new(HashMap::new()),
+            cache_dir,
         }
     }
 
@@ -76,20 +82,23 @@ fn source_file_meta(path: &Path) -> Result<(u64, u64), String> {
     Ok((size, mtime))
 }
 
-/// Path to the sidecar cache file for a given audio file.
-fn cache_path(audio_path: &Path) -> PathBuf {
-    let mut p = audio_path.as_os_str().to_owned();
-    p.push(".peaks");
-    PathBuf::from(p)
+/// Path to the cache file for a given audio file, inside the app's cache directory.
+/// Uses a hash of the absolute audio path as the filename.
+fn cache_path(audio_path: &Path, cache_dir: &Path) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    audio_path.hash(&mut hasher);
+    let hash = hasher.finish();
+    cache_dir.join(format!("{:016x}.peaks", hash))
 }
 
-/// Write a CachedPeaks to the binary .peaks sidecar file.
+/// Write a CachedPeaks to the binary .peaks cache file.
 fn write_cache(
     audio_path: &Path,
     cached: &CachedPeaks,
+    cache_dir: &Path,
 ) -> Result<(), String> {
     let (src_size, src_mtime) = source_file_meta(audio_path)?;
-    let out_path = cache_path(audio_path);
+    let out_path = cache_path(audio_path, cache_dir);
 
     let file = File::create(&out_path)
         .map_err(|e| format!("Cannot create {}: {}", out_path.display(), e))?;
@@ -114,10 +123,10 @@ fn write_cache(
     Ok(())
 }
 
-/// Read and validate a .peaks sidecar cache file.
+/// Read and validate a .peaks cache file.
 /// Returns None if the file is missing, corrupt, or stale.
-fn read_cache(audio_path: &Path) -> Option<CachedPeaks> {
-    let cp = cache_path(audio_path);
+fn read_cache(audio_path: &Path, cache_dir: &Path) -> Option<CachedPeaks> {
+    let cp = cache_path(audio_path, cache_dir);
     let mut file = File::open(&cp).ok()?;
 
     let (src_size, src_mtime) = source_file_meta(audio_path).ok()?;
@@ -177,8 +186,8 @@ fn read_cache(audio_path: &Path) -> Option<CachedPeaks> {
 }
 
 /// Decode the entire audio file and generate the peak cache.
-/// Writes the .peaks sidecar file and returns the CachedPeaks.
-fn generate_cache(audio_path: &Path) -> Result<CachedPeaks, String> {
+/// Writes the .peaks file to cache_dir and returns the CachedPeaks.
+fn generate_cache(audio_path: &Path, cache_dir: &Path) -> Result<CachedPeaks, String> {
     let file = File::open(audio_path)
         .map_err(|e| format!("Failed to open file: {}", e))?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
@@ -291,7 +300,7 @@ fn generate_cache(audio_path: &Path) -> Result<CachedPeaks, String> {
     };
 
     // Write to disk (best-effort — if it fails we still return the data)
-    if let Err(e) = write_cache(audio_path, &cached) {
+    if let Err(e) = write_cache(audio_path, &cached, cache_dir) {
         log::warn!("Failed to write peak cache for {}: {}", audio_path.display(), e);
     }
 
@@ -375,13 +384,13 @@ pub fn extract_peaks(
     }
 
     // Tier 2: disk cache
-    if let Some(cached) = read_cache(audio_path) {
+    if let Some(cached) = read_cache(audio_path, &peak_cache.cache_dir) {
         peak_cache.insert(audio_path.to_path_buf(), cached.clone());
         return Ok(downsample_peaks(&cached, width, start, end));
     }
 
     // Tier 3: full decode -> write cache -> store in memory
-    let cached = generate_cache(audio_path)?;
+    let cached = generate_cache(audio_path, &peak_cache.cache_dir)?;
     peak_cache.insert(audio_path.to_path_buf(), cached.clone());
     Ok(downsample_peaks(&cached, width, start, end))
 }
@@ -455,9 +464,10 @@ mod tests {
 
     #[test]
     fn cache_round_trip() {
-        // Create a temp file to act as the "audio source" for metadata
         let dir = std::env::temp_dir().join("lutedrop_test_cache");
         let _ = fs::create_dir_all(&dir);
+        let cache_dir = dir.join("peaks");
+        let _ = fs::create_dir_all(&cache_dir);
         let fake_audio = dir.join("test.mp3");
         {
             let mut f = File::create(&fake_audio).unwrap();
@@ -467,10 +477,10 @@ mod tests {
         let original = make_test_peaks(vec![0.1, 0.5, 0.9, 0.3, 0.7]);
 
         // Write cache
-        write_cache(&fake_audio, &original).unwrap();
+        write_cache(&fake_audio, &original, &cache_dir).unwrap();
 
         // Read it back
-        let loaded = read_cache(&fake_audio).expect("should read back successfully");
+        let loaded = read_cache(&fake_audio, &cache_dir).expect("should read back successfully");
         assert_eq!(loaded.sample_rate, original.sample_rate);
         assert_eq!(loaded.samples_per_peak, original.samples_per_peak);
         assert_eq!(loaded.total_samples, original.total_samples);
@@ -480,15 +490,17 @@ mod tests {
         }
 
         // Clean up
-        let _ = fs::remove_file(cache_path(&fake_audio));
+        let _ = fs::remove_file(cache_path(&fake_audio, &cache_dir));
         let _ = fs::remove_file(&fake_audio);
-        let _ = fs::remove_dir(&dir);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn cache_invalidation_on_size_change() {
         let dir = std::env::temp_dir().join("lutedrop_test_invalidation");
         let _ = fs::create_dir_all(&dir);
+        let cache_dir = dir.join("peaks");
+        let _ = fs::create_dir_all(&cache_dir);
         let fake_audio = dir.join("test2.mp3");
         {
             let mut f = File::create(&fake_audio).unwrap();
@@ -496,7 +508,7 @@ mod tests {
         }
 
         let original = make_test_peaks(vec![0.5, 0.5]);
-        write_cache(&fake_audio, &original).unwrap();
+        write_cache(&fake_audio, &original, &cache_dir).unwrap();
 
         // Modify the source file (different size)
         {
@@ -505,11 +517,9 @@ mod tests {
         }
 
         // Cache should be stale
-        assert!(read_cache(&fake_audio).is_none(), "cache should be invalidated after source change");
+        assert!(read_cache(&fake_audio, &cache_dir).is_none(), "cache should be invalidated after source change");
 
         // Clean up
-        let _ = fs::remove_file(cache_path(&fake_audio));
-        let _ = fs::remove_file(&fake_audio);
-        let _ = fs::remove_dir(&dir);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

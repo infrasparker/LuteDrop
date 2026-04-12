@@ -28,11 +28,14 @@ pub fn run() {
             let path = persistence::data_file_path(&app.handle());
             let initial_state = persistence::load_from_disk(&path);
 
+            // Peak cache directory lives inside the app data folder
+            let peak_cache_dir = path.parent().unwrap_or(path.as_ref()).join("peaks");
+
             // Create the audio engine
             let audio_engine = audio::AudioEngine::new()
                 .expect("Failed to initialize audio engine");
 
-            let container = Arc::new(AppStateContainer::new(initial_state, path, audio_engine));
+            let container = Arc::new(AppStateContainer::new(initial_state, path, audio_engine, peak_cache_dir));
 
             // Share the Arc with Tauri's managed state
             app.manage(container.clone());
