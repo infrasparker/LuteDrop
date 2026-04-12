@@ -175,3 +175,125 @@ fn read_cache(audio_path: &Path) -> Option<CachedPeaks> {
         peaks,
     })
 }
+
+/// Decode the entire audio file and generate the peak cache.
+/// Writes the .peaks sidecar file and returns the CachedPeaks.
+fn generate_cache(audio_path: &Path) -> Result<CachedPeaks, String> {
+    let file = File::open(audio_path)
+        .map_err(|e| format!("Failed to open file: {}", e))?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+    let mut hint = Hint::new();
+    if let Some(ext) = audio_path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|e| format!("Failed to probe audio format: {}", e))?;
+
+    let mut format_reader = probed.format;
+
+    let track = format_reader
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
+        .ok_or_else(|| "No audio track found".to_string())?;
+
+    let track_id = track.id;
+    let codec_params = track.codec_params.clone();
+
+    let sample_rate = codec_params
+        .sample_rate
+        .ok_or_else(|| "Unknown sample rate".to_string())?;
+
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&codec_params, &DecoderOptions::default())
+        .map_err(|e| format!("Failed to create decoder: {}", e))?;
+
+    let mut peaks: Vec<f32> = Vec::new();
+    let mut current_peak: f32 = 0.0;
+    let mut samples_in_bucket: u32 = 0;
+    let mut total_samples: u64 = 0;
+
+    loop {
+        let packet = match format_reader.next_packet() {
+            Ok(packet) => packet,
+            Err(symphonia::core::errors::Error::IoError(ref e))
+                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                break;
+            }
+            Err(symphonia::core::errors::Error::ResetRequired) => break,
+            Err(e) => return Err(format!("Error reading packet: {}", e)),
+        };
+
+        if packet.track_id() != track_id {
+            continue;
+        }
+
+        let decoded = match decoder.decode(&packet) {
+            Ok(buf) => buf,
+            Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
+            Err(e) => return Err(format!("Decode error: {}", e)),
+        };
+
+        let spec = *decoded.spec();
+        let num_frames = decoded.frames();
+        let num_channels = spec.channels.count();
+
+        if num_frames == 0 || num_channels == 0 {
+            continue;
+        }
+
+        let mut sample_buf = SampleBuffer::<f32>::new(num_frames as u64, spec);
+        sample_buf.copy_interleaved_ref(decoded);
+        let samples = sample_buf.samples();
+
+        for frame_idx in 0..num_frames {
+            // Mix to mono
+            let mut mono_sum: f32 = 0.0;
+            for ch in 0..num_channels {
+                mono_sum += samples[frame_idx * num_channels + ch];
+            }
+            let mono_val = (mono_sum / num_channels as f32).abs();
+
+            if mono_val > current_peak {
+                current_peak = mono_val;
+            }
+
+            samples_in_bucket += 1;
+            total_samples += 1;
+
+            if samples_in_bucket >= SAMPLES_PER_PEAK {
+                peaks.push(current_peak);
+                current_peak = 0.0;
+                samples_in_bucket = 0;
+            }
+        }
+    }
+
+    // Flush the last partial bucket
+    if samples_in_bucket > 0 {
+        peaks.push(current_peak);
+    }
+
+    let cached = CachedPeaks {
+        sample_rate,
+        samples_per_peak: SAMPLES_PER_PEAK,
+        total_samples,
+        peaks,
+    };
+
+    // Write to disk (best-effort — if it fails we still return the data)
+    if let Err(e) = write_cache(audio_path, &cached) {
+        log::warn!("Failed to write peak cache for {}: {}", audio_path.display(), e);
+    }
+
+    Ok(cached)
+}
