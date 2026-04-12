@@ -83,10 +83,11 @@ async function createComp(): Promise<void> {
           v-for="(group, i) in groups"
           :key="group.id"
           :value="i"
-          :text="group.name"
           @contextmenu.prevent="openContextMenu($event, group)"
-          max-width="150"
-        />
+          class="tab-truncate"
+        >
+          {{ group.name }}
+        </VTab>
       </VTabs>
       <VBtn
         icon="mdi-plus"
@@ -201,3 +202,15 @@ async function createComp(): Promise<void> {
     </VDialog>
   </VContainer>
 </template>
+
+<style>
+.tab-truncate {
+  max-width: 150px !important;
+}
+.tab-truncate .v-btn__content {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block !important;
+}
+</style>
