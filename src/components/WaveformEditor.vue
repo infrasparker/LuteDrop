@@ -427,6 +427,8 @@ function onDblClick(): void {
 
 // --- Lifecycle ---
 
+let resizeObserver: ResizeObserver | null = null;
+
 watch(canvasRef, (canvas) => {
   if (canvas && data.basePeaks.value.length > 0) drawWaveform();
 });
@@ -443,15 +445,20 @@ onMounted(() => {
   data.loadBasePeaks();
   window.addEventListener('mousemove', onMouseMove);
   window.addEventListener('mouseup', onMouseUp);
-  window.addEventListener('resize', drawWaveform);
+
+  // ResizeObserver catches expansion panel open, container resize, etc.
+  if (canvasRef.value) {
+    resizeObserver = new ResizeObserver(() => drawWaveform());
+    resizeObserver.observe(canvasRef.value);
+  }
 });
 
 onUnmounted(() => {
   data.cleanup();
   stopPlayheadLoop();
+  resizeObserver?.disconnect();
   window.removeEventListener('mousemove', onMouseMove);
   window.removeEventListener('mouseup', onMouseUp);
-  window.removeEventListener('resize', drawWaveform);
 });
 </script>
 
