@@ -23,14 +23,9 @@ const status = computed(() => store.getCompStatus(props.comp.id));
 const borderStyle = computed(() => {
   switch (status.value) {
     case 'active': return '3px solid #4CAF50';
-    case 'partial': return '3px solid #F0A830';
+    case 'partial': return '3px solid #FF6D00';
     default: return '3px solid transparent';
   }
-});
-
-const bgTint = computed(() => {
-  if (status.value === 'active') return 'rgba(76, 175, 80, 0.08)';
-  return undefined;
 });
 
 // Context menu state
@@ -74,10 +69,10 @@ function stopComp(): void {
 
 <template>
   <VCard
-    :color="selected ? 'primary' : 'surface-light'"
+    :color="selected ? 'surface-variant' : 'surface-light'"
     variant="flat"
     class="comp-card pa-2 text-center"
-    :style="{ width: '130px', cursor: 'pointer', border: borderStyle, background: bgTint }"
+    :style="{ width: '130px', cursor: 'pointer', border: borderStyle }"
     @click="emit('select', comp.id)"
     @contextmenu.prevent="openContextMenu($event)"
   >
