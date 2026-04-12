@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, watch, nextTick, onUnmounted } from 'vue';
 import type { Track, TrackMode, TrackTransition, Clip } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
 import { open } from '@tauri-apps/plugin-dialog';
-import { Sortable } from 'sortablejs-vue3';
+import Sortable from 'sortablejs';
 import ClipRow from './ClipRow.vue';
 import WaveformEditor from './WaveformEditor.vue';
 
@@ -160,13 +160,35 @@ async function deleteTrack(): Promise<void> {
   await store.command('delete_track', { compId: props.compId, trackId: props.track.id });
 }
 
-async function onClipReorder(event: { oldIndex: number; newIndex: number }): Promise<void> {
-  if (event.oldIndex === undefined || event.newIndex === undefined) return;
-  const clips = [...props.track.clips];
-  const [moved] = clips.splice(event.oldIndex, 1);
-  clips.splice(event.newIndex, 0, moved);
-  await updateField({ clips });
+const clipsContainer = ref<HTMLElement | null>(null);
+let sortableInstance: Sortable | null = null;
+
+function initSortable(): void {
+  if (sortableInstance) {
+    sortableInstance.destroy();
+    sortableInstance = null;
+  }
+  if (!clipsContainer.value) return;
+  sortableInstance = Sortable.create(clipsContainer.value, {
+    handle: '.drag-handle',
+    animation: 150,
+    onEnd: async (event) => {
+      if (event.oldIndex === undefined || event.newIndex === undefined) return;
+      const clips = [...props.track.clips];
+      const [moved] = clips.splice(event.oldIndex, 1);
+      clips.splice(event.newIndex, 0, moved);
+      await updateField({ clips });
+    },
+  });
 }
+
+watch(clipsContainer, (el) => {
+  if (el) nextTick(() => initSortable());
+});
+
+onUnmounted(() => {
+  if (sortableInstance) sortableInstance.destroy();
+});
 </script>
 
 <template>
@@ -388,16 +410,15 @@ async function onClipReorder(event: { oldIndex: number; newIndex: number }): Pro
           </VBtn>
         </div>
 
-        <Sortable
-          :list="track.clips"
-          item-key="id"
-          :options="{ handle: '.drag-handle', animation: 150 }"
-          @end="onClipReorder"
-        >
-          <template #item="{ element }">
-            <ClipRow :clip="element" :track-id="track.id" :comp-id="compId" />
-          </template>
-        </Sortable>
+        <div ref="clipsContainer">
+          <ClipRow
+            v-for="clip in track.clips"
+            :key="clip.id"
+            :clip="clip"
+            :track-id="track.id"
+            :comp-id="compId"
+          />
+        </div>
 
         <div v-if="track.clips.length === 0" class="text-caption text-medium-emphasis">
           No clips yet.
