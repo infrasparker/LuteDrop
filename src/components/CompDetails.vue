@@ -64,13 +64,11 @@ async function importTracksToComp(): Promise<void> {
           Add Track
         </VBtn>
         <VBtn
-          prepend-icon="mdi-delete"
+          icon="mdi-delete"
           variant="tonal"
           color="error"
           @click="confirmDeleteComp"
-        >
-          Delete
-        </VBtn>
+        />
       </div>
     </div>
 

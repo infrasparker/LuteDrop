@@ -48,6 +48,6 @@ async function remove(): Promise<void> {
       style="max-width: 100px"
       prepend-icon="mdi-volume-high"
     />
-    <VBtn icon="mdi-close" variant="text" size="x-small" @click="remove" />
+    <VBtn icon="mdi-delete" variant="text" size="x-small" @click="remove" />
   </div>
 </template>

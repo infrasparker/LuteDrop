@@ -33,7 +33,7 @@ function stopAll(): void {
 </script>
 
 <template>
-  <VApp>
+  <VApp @contextmenu.prevent>
     <VAppBar density="compact" color="surface">
       <VAppBarTitle>
         <span class="text-primary font-weight-bold">LuteDrop</span>

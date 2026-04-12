@@ -393,13 +393,11 @@ async function deleteTrack(): Promise<void> {
 
           <div class="d-flex justify-end mt-3">
             <VBtn
-              prepend-icon="mdi-delete"
+              icon="mdi-delete"
               variant="tonal"
               color="error"
               @click="deleteTrack"
-            >
-              Delete Track
-            </VBtn>
+            />
           </div>
         </div>
       </div>
