@@ -1,10 +1,13 @@
+mod actions;
 mod audio;
 mod commands;
 mod models;
 mod persistence;
+mod server;
 mod state;
 mod waveform;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use tauri::Emitter;
@@ -29,13 +32,27 @@ pub fn run() {
             let audio_engine = audio::AudioEngine::new()
                 .expect("Failed to initialize audio engine");
 
-            let container = AppStateContainer::new(initial_state, path, audio_engine);
-            app.manage(container);
+            let container = Arc::new(AppStateContainer::new(initial_state, path, audio_engine));
+
+            // Share the Arc with Tauri's managed state
+            app.manage(container.clone());
+
+            // Start the axum WebSocket server
+            let server_container = container.clone();
+            let remote_dist = std::env::current_dir()
+                .unwrap_or_default()
+                .join("dist-remote")
+                .to_string_lossy()
+                .to_string();
+            tokio::spawn(async move {
+                server::start_server(server_container, remote_dist).await;
+            });
 
             // Spawn the playback state polling task
+            let poll_container = container.clone();
             let app_handle = app.handle().clone();
             std::thread::spawn(move || {
-                playback_polling_loop(app_handle);
+                playback_polling_loop(app_handle, poll_container);
             });
 
             Ok(())
@@ -62,6 +79,7 @@ pub fn run() {
             commands::stop_comp,
             commands::stop_all,
             commands::get_waveform_data,
+            commands::get_server_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LuteDrop");
@@ -69,15 +87,9 @@ pub fn run() {
 
 /// Polling loop that checks for finished sounds and emits playback state updates.
 /// Runs on its own thread every 50ms.
-fn playback_polling_loop(app_handle: tauri::AppHandle) {
+fn playback_polling_loop(app_handle: tauri::AppHandle, container: Arc<AppStateContainer>) {
     loop {
         std::thread::sleep(Duration::from_millis(50));
-
-        // Try to get the state container
-        let container = match app_handle.try_state::<AppStateContainer>() {
-            Some(c) => c,
-            None => continue,
-        };
 
         // Lock the audio engine
         let mut audio = match container.audio.lock() {
@@ -97,8 +109,12 @@ fn playback_polling_loop(app_handle: tauri::AppHandle) {
         let states = audio.get_all_playback_states();
         drop(audio); // Release the lock before emitting
 
+        // Emit to desktop frontend
         for state in &states {
             let _ = app_handle.emit("playback-state-update", state);
         }
+
+        // Broadcast to remote clients
+        server::broadcast_state(&container);
     }
 }
