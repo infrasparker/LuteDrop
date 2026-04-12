@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed } from 'vue';
 import type { Comp } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
-import { closeAll, onCloseAll, offCloseAll } from '../composables/useContextMenu';
+import { useContextMenuState } from '../composables/useContextMenu';
 
 const props = defineProps<{
   comp: Comp;
@@ -29,24 +29,8 @@ const borderStyle = computed(() => {
 });
 
 // Context menu state
-const contextMenu = ref(false);
-const contextMenuX = ref(0);
-const contextMenuY = ref(0);
+const { menuVisible: contextMenu, menuX: contextMenuX, menuY: contextMenuY, openMenu: openContextMenu } = useContextMenuState();
 const showDeleteConfirm = ref(false);
-
-function closeMenu(): void {
-  contextMenu.value = false;
-}
-
-function openContextMenu(event: MouseEvent): void {
-  closeAll();
-  contextMenuX.value = event.clientX;
-  contextMenuY.value = event.clientY;
-  contextMenu.value = true;
-}
-
-onMounted(() => onCloseAll(closeMenu));
-onUnmounted(() => offCloseAll(closeMenu));
 
 async function deleteComp(): Promise<void> {
   showDeleteConfirm.value = false;

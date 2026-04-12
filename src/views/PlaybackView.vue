@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue';
+import { ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useAppStore } from '../stores/appStore';
 import type { Group } from '@generated/index';
 import GroupTab from '../components/GroupTab.vue';
-import { closeAll, onCloseAll, offCloseAll } from '../composables/useContextMenu';
+import { useContextMenuState } from '../composables/useContextMenu';
 
 const store = useAppStore();
 const { groups } = storeToRefs(store);
@@ -17,9 +17,7 @@ const newCompName = ref('');
 const newCompGroupId = ref('');
 
 // Context menu state
-const contextMenu = ref(false);
-const contextMenuX = ref(0);
-const contextMenuY = ref(0);
+const { menuVisible: contextMenu, menuX: contextMenuX, menuY: contextMenuY, openMenu } = useContextMenuState();
 const contextGroupId = ref('');
 const contextGroupName = ref('');
 
@@ -30,21 +28,11 @@ const renameGroupName = ref('');
 // Delete group state
 const showDeleteConfirm = ref(false);
 
-function closeMenu(): void {
-  contextMenu.value = false;
-}
-
 function openContextMenu(event: MouseEvent, group: Group): void {
-  closeAll();
-  contextMenuX.value = event.clientX;
-  contextMenuY.value = event.clientY;
   contextGroupId.value = group.id;
   contextGroupName.value = group.name;
-  contextMenu.value = true;
+  openMenu(event);
 }
-
-onMounted(() => onCloseAll(closeMenu));
-onUnmounted(() => offCloseAll(closeMenu));
 
 function openRenameDialog(): void {
   renameGroupName.value = contextGroupName.value;
