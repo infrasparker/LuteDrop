@@ -261,17 +261,39 @@ function drawWaveform(): void {
 
   if (basePeaks.value.length === 0) return;
 
-  // 2. Draw basePeaks (always-visible coarse layer)
   if (isZoomed.value) {
-    // When zoomed, draw basePeaks in a dimmer color as background
-    drawPeaksPath(ctx, basePeaks.value, basePeaksRangeStart.value, basePeaksRangeEnd.value, cssW, cssH, '#7A5418');
-
-    // 3. Draw zoomedPeaks on top in full gold if available
     if (zoomedPeaks.value.length > 0) {
+      // Draw base layer only for areas NOT covered by zoomed peaks
+      const zoomStartX = secondsToX(zoomedPeaksRangeStart.value, cssW);
+      const zoomEndX = secondsToX(zoomedPeaksRangeEnd.value, cssW);
+
+      // Left uncovered area
+      if (zoomStartX > 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(0, 0, zoomStartX, cssH);
+        ctx.clip();
+        drawPeaksPath(ctx, basePeaks.value, basePeaksRangeStart.value, basePeaksRangeEnd.value, cssW, cssH, '#7A5418');
+        ctx.restore();
+      }
+
+      // Right uncovered area
+      if (zoomEndX < cssW) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(zoomEndX, 0, cssW - zoomEndX, cssH);
+        ctx.clip();
+        drawPeaksPath(ctx, basePeaks.value, basePeaksRangeStart.value, basePeaksRangeEnd.value, cssW, cssH, '#7A5418');
+        ctx.restore();
+      }
+
+      // Draw zoomed detail in full gold
       drawPeaksPath(ctx, zoomedPeaks.value, zoomedPeaksRangeStart.value, zoomedPeaksRangeEnd.value, cssW, cssH, '#F0A830');
+    } else {
+      // No zoomed peaks yet — show base layer everywhere
+      drawPeaksPath(ctx, basePeaks.value, basePeaksRangeStart.value, basePeaksRangeEnd.value, cssW, cssH, '#7A5418');
     }
   } else {
-    // Not zoomed — draw basePeaks in full gold
     drawPeaksPath(ctx, basePeaks.value, basePeaksRangeStart.value, basePeaksRangeEnd.value, cssW, cssH, '#F0A830');
   }
 
