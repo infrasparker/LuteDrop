@@ -49,12 +49,14 @@ async function importTracksToComp(): Promise<void> {
       </VBtn>
     </div>
 
-    <TrackControl
-      v-for="track in comp.tracks"
-      :key="track.id"
-      :track="track"
-      :comp-id="comp.id"
-    />
+    <VExpansionPanels variant="accordion">
+      <TrackControl
+        v-for="track in comp.tracks"
+        :key="track.id"
+        :track="track"
+        :comp-id="comp.id"
+      />
+    </VExpansionPanels>
 
     <div v-if="comp.tracks.length === 0" class="text-medium-emphasis text-center pa-8">
       No tracks yet. Click "Add Track" to import audio files.

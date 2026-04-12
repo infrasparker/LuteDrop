@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { computed } from 'vue';
 import type { Track, TrackMode, TrackTransition, Clip } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
@@ -16,7 +16,6 @@ const props = defineProps<{
 const store = useAppStore();
 const audio = useAudio();
 
-const expanded = ref(false);
 const playbackState = computed(() => store.playbackStates.get(props.track.id));
 const isPlaying = computed(() => playbackState.value?.isPlaying ?? false);
 
@@ -163,253 +162,247 @@ async function deleteTrack(): Promise<void> {
 </script>
 
 <template>
-  <VCard class="mb-0" color="surface-light" rounded="0" style="border-bottom: 1px solid rgba(232, 228, 220, 0.1);">
-    <div class="d-flex align-center ga-2 pa-2">
-      <VBtn
-        :icon="isPlaying ? 'mdi-pause' : 'mdi-play'"
-        :color="isPlaying ? 'secondary' : 'primary'"
-        variant="tonal"
-        size="small"
-        rounded="circle"
-        @click="isPlaying ? pauseTrack() : playTrack()"
-      />
-      <VBtn
-        icon="mdi-stop"
-        variant="tonal"
-        size="small"
-        rounded="circle"
-        @click="stopTrack"
-      />
+  <VExpansionPanel color="surface-light" rounded="0" style="border-bottom: 1px solid rgba(232, 228, 220, 0.1);">
+    <template #title>
+      <div class="d-flex align-center ga-2" style="width: 100%;">
+        <VBtn
+          :icon="isPlaying ? 'mdi-pause' : 'mdi-play'"
+          :color="isPlaying ? 'secondary' : 'primary'"
+          variant="tonal"
+          size="small"
+          rounded="circle"
+          @click.stop="isPlaying ? pauseTrack() : playTrack()"
+        />
+        <VBtn
+          icon="mdi-stop"
+          variant="tonal"
+          size="small"
+          rounded="circle"
+          @click.stop="stopTrack"
+        />
 
-      <VTextField
-        :model-value="track.name"
-        @update:model-value="(v: string) => updateField({ name: v })"
-        variant="plain"
-        density="compact"
-        hide-details
-        class="text-subtitle-2 font-weight-bold"
-        style="flex: 1 1 0; min-width: 100px;"
-      />
+        <VTextField
+          :model-value="track.name"
+          @update:model-value="(v: string) => updateField({ name: v })"
+          @click.stop
+          @keydown.stop
+          variant="plain"
+          density="compact"
+          hide-details
+          class="text-subtitle-2 font-weight-bold"
+          style="flex: 1 1 0; min-width: 100px;"
+        />
 
-      <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
-        {{ track.clips.length }} clip{{ track.clips.length !== 1 ? 's' : '' }}
-        &middot; {{ track.mode.type }}
-      </span>
+        <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
+          {{ track.clips.length }} clip{{ track.clips.length !== 1 ? 's' : '' }}
+          &middot; {{ track.mode.type }}
+        </span>
 
-      <VSlider
-        :model-value="track.volume"
-        @update:model-value="setVolume"
-        :min="0"
-        :max="1"
-        :step="0.01"
-        hide-details
-        density="compact"
-        style="flex: 0 0 120px;"
-      />
+        <VSlider
+          :model-value="track.volume"
+          @update:model-value="setVolume"
+          @click.stop
+          @mousedown.stop
+          :min="0"
+          :max="1"
+          :step="0.01"
+          hide-details
+          density="compact"
+          style="flex: 0 0 120px;"
+        />
+      </div>
+    </template>
 
-      <VBtn
-        :icon="expanded ? 'mdi-chevron-up' : 'mdi-chevron-down'"
-        variant="text"
-        size="small"
-        @click="expanded = !expanded"
-      />
-    </div>
+    <template #text>
+      <VRow dense class="mb-2">
+        <VCol cols="3">
+          <VSelect
+            :model-value="modeType"
+            @update:model-value="updateMode"
+            :items="modeOptions"
+            label="Mode"
+            variant="outlined"
+            density="compact"
+            hide-details
+          />
+        </VCol>
+        <VCol cols="3" v-if="isSeamless">
+          <VTextField
+            :model-value="(track.mode as any).loopStart"
+            @update:model-value="updateLoopStart"
+            label="Loop Start (s)"
+            type="number"
+            variant="outlined"
+            density="compact"
+            hide-details
+          />
+        </VCol>
+        <VCol cols="3" v-if="isSeamless">
+          <VTextField
+            :model-value="(track.mode as any).loopEnd"
+            @update:model-value="updateLoopEnd"
+            label="Loop End (s)"
+            type="number"
+            variant="outlined"
+            density="compact"
+            hide-details
+          />
+        </VCol>
+        <VCol cols="3" v-if="hasTransition">
+          <VSelect
+            :model-value="transitionType"
+            @update:model-value="updateTransition"
+            :items="transitionOptions"
+            label="Transition"
+            variant="outlined"
+            density="compact"
+            hide-details
+          />
+        </VCol>
+        <VCol cols="3" v-if="hasTransition">
+          <VCheckbox
+            :model-value="(track.mode as any).repeat"
+            @update:model-value="updateRepeat"
+            label="Repeat"
+            density="compact"
+            hide-details
+          />
+        </VCol>
+      </VRow>
 
-    <VExpandTransition>
-      <div v-if="expanded">
-        <VDivider />
-        <div class="pa-3">
-          <VRow dense class="mb-2">
-            <VCol cols="3">
-              <VSelect
-                :model-value="modeType"
-                @update:model-value="updateMode"
-                :items="modeOptions"
-                label="Mode"
-                variant="outlined"
-                density="compact"
-                hide-details
-              />
-            </VCol>
-            <VCol cols="3" v-if="isSeamless">
-              <VTextField
-                :model-value="(track.mode as any).loopStart"
-                @update:model-value="updateLoopStart"
-                label="Loop Start (s)"
-                type="number"
-                variant="outlined"
-                density="compact"
-                hide-details
-              />
-            </VCol>
-            <VCol cols="3" v-if="isSeamless">
-              <VTextField
-                :model-value="(track.mode as any).loopEnd"
-                @update:model-value="updateLoopEnd"
-                label="Loop End (s)"
-                type="number"
-                variant="outlined"
-                density="compact"
-                hide-details
-              />
-            </VCol>
-            <VCol cols="3" v-if="hasTransition">
-              <VSelect
-                :model-value="transitionType"
-                @update:model-value="updateTransition"
-                :items="transitionOptions"
-                label="Transition"
-                variant="outlined"
-                density="compact"
-                hide-details
-              />
-            </VCol>
-            <VCol cols="3" v-if="hasTransition">
-              <VCheckbox
-                :model-value="(track.mode as any).repeat"
-                @update:model-value="updateRepeat"
-                label="Repeat"
-                density="compact"
-                hide-details
-              />
-            </VCol>
-          </VRow>
+      <VRow dense class="mb-2" v-if="hasTransition && transitionType === 'gap'">
+        <VCol cols="3">
+          <VTextField
+            :model-value="(track.mode as any).transition.min"
+            @update:model-value="updateGapMin"
+            label="Gap Min (s)"
+            type="number"
+            variant="outlined"
+            density="compact"
+            hide-details
+          />
+        </VCol>
+        <VCol cols="3">
+          <VTextField
+            :model-value="(track.mode as any).transition.max"
+            @update:model-value="updateGapMax"
+            label="Gap Max (s)"
+            type="number"
+            variant="outlined"
+            density="compact"
+            hide-details
+          />
+        </VCol>
+      </VRow>
 
-          <VRow dense class="mb-2" v-if="hasTransition && transitionType === 'gap'">
-            <VCol cols="3">
-              <VTextField
-                :model-value="(track.mode as any).transition.min"
-                @update:model-value="updateGapMin"
-                label="Gap Min (s)"
-                type="number"
-                variant="outlined"
-                density="compact"
-                hide-details
-              />
-            </VCol>
-            <VCol cols="3">
-              <VTextField
-                :model-value="(track.mode as any).transition.max"
-                @update:model-value="updateGapMax"
-                label="Gap Max (s)"
-                type="number"
-                variant="outlined"
-                density="compact"
-                hide-details
-              />
-            </VCol>
-          </VRow>
+      <VRow dense class="mb-2" v-if="hasTransition && transitionType === 'crossfade'">
+        <VCol cols="3">
+          <VTextField
+            :model-value="(track.mode as any).transition.duration"
+            @update:model-value="updateCrossfade"
+            label="Crossfade (s)"
+            type="number"
+            variant="outlined"
+            density="compact"
+            hide-details
+          />
+        </VCol>
+      </VRow>
 
-          <VRow dense class="mb-2" v-if="hasTransition && transitionType === 'crossfade'">
-            <VCol cols="3">
-              <VTextField
-                :model-value="(track.mode as any).transition.duration"
-                @update:model-value="updateCrossfade"
-                label="Crossfade (s)"
-                type="number"
-                variant="outlined"
-                density="compact"
-                hide-details
-              />
-            </VCol>
-          </VRow>
+      <VRow dense class="mb-3">
+        <VCol cols="3">
+          <VTextField
+            :model-value="track.fadeIn"
+            @update:model-value="updateFadeIn"
+            label="Fade In (s)"
+            type="number"
+            variant="outlined"
+            density="compact"
+            hide-details
+          />
+        </VCol>
+        <VCol cols="3">
+          <VTextField
+            :model-value="track.fadeOut"
+            @update:model-value="updateFadeOut"
+            label="Fade Out (s)"
+            type="number"
+            variant="outlined"
+            density="compact"
+            hide-details
+          />
+        </VCol>
+      </VRow>
 
-          <VRow dense class="mb-3">
-            <VCol cols="3">
-              <VTextField
-                :model-value="track.fadeIn"
-                @update:model-value="updateFadeIn"
-                label="Fade In (s)"
-                type="number"
-                variant="outlined"
-                density="compact"
-                hide-details
-              />
-            </VCol>
-            <VCol cols="3">
-              <VTextField
-                :model-value="track.fadeOut"
-                @update:model-value="updateFadeOut"
-                label="Fade Out (s)"
-                type="number"
-                variant="outlined"
-                density="compact"
-                hide-details
-              />
-            </VCol>
-          </VRow>
+      <!-- Waveform: only shown in seamless mode with exactly one clip -->
+      <div v-if="showWaveform" class="mb-3">
+        <div class="text-caption text-medium-emphasis mb-1">{{ seamlessClip!.name }}</div>
+        <WaveformEditor
+          :file-path="seamlessClip!.filePath"
+          :loop-start="(track.mode as any).loopStart"
+          :loop-end="(track.mode as any).loopEnd"
+          @update:loop-start="(v: number) => updateLoopStartFromWaveform(v)"
+          @update:loop-end="(v: number) => updateLoopEndFromWaveform(v)"
+        />
+      </div>
 
-          <!-- Waveform: only shown in seamless mode with exactly one clip -->
-          <div v-if="showWaveform" class="mb-3">
-            <div class="text-caption text-medium-emphasis mb-1">{{ seamlessClip!.name }}</div>
-            <WaveformEditor
-              :file-path="seamlessClip!.filePath"
-              :loop-start="(track.mode as any).loopStart"
-              :loop-end="(track.mode as any).loopEnd"
-              @update:loop-start="(v: number) => updateLoopStartFromWaveform(v)"
-              @update:loop-end="(v: number) => updateLoopEndFromWaveform(v)"
-            />
-          </div>
-
-          <!-- Seamless mode: single clip -->
-          <div v-if="isSeamless" class="mb-2">
-            <div class="d-flex align-center mb-2">
-              <span class="text-subtitle-2">Clip</span>
-              <VSpacer />
-              <VBtn
-                v-if="!hasClips"
-                prepend-icon="mdi-plus"
-                variant="tonal"
-                rounded="xl"
-                @click="addClips"
-              >
-                Add Clip
-              </VBtn>
-            </div>
-            <div v-if="hasClips">
-              <ClipRow :clip="seamlessClip!" :track-id="track.id" :comp-id="compId" />
-            </div>
-            <div v-else class="text-caption text-medium-emphasis">
-              No clip yet. Seamless mode uses a single clip.
-            </div>
-          </div>
-
-          <!-- Sequence/Shuffle mode: clips list with drag reorder -->
-          <div v-else>
-            <div class="d-flex align-center mb-2">
-              <span class="text-subtitle-2">Clips</span>
-              <VSpacer />
-              <VBtn prepend-icon="mdi-plus" variant="tonal" rounded="xl" @click="addClips">
-                Add Clips
-              </VBtn>
-            </div>
-
-            <draggable
-              :model-value="track.clips"
-              @update:model-value="(newClips: Clip[]) => updateField({ clips: newClips })"
-              item-key="id"
-              handle=".drag-handle"
-            >
-              <template #item="{ element: clip }">
-                <ClipRow :clip="clip" :track-id="track.id" :comp-id="compId" />
-              </template>
-            </draggable>
-
-            <div v-if="track.clips.length === 0" class="text-caption text-medium-emphasis">
-              No clips yet.
-            </div>
-          </div>
-
-          <div class="d-flex justify-end mt-3">
-            <VBtn
-              icon="mdi-delete"
-              variant="tonal"
-              color="error"
-              @click="deleteTrack"
-            />
-          </div>
+      <!-- Seamless mode: single clip -->
+      <div v-if="isSeamless" class="mb-2">
+        <div class="d-flex align-center mb-2">
+          <span class="text-subtitle-2">Clip</span>
+          <VSpacer />
+          <VBtn
+            v-if="!hasClips"
+            prepend-icon="mdi-plus"
+            variant="tonal"
+            rounded="xl"
+            @click="addClips"
+          >
+            Add Clip
+          </VBtn>
+        </div>
+        <div v-if="hasClips">
+          <ClipRow :clip="seamlessClip!" :track-id="track.id" :comp-id="compId" />
+        </div>
+        <div v-else class="text-caption text-medium-emphasis">
+          No clip yet. Seamless mode uses a single clip.
         </div>
       </div>
-    </VExpandTransition>
-  </VCard>
+
+      <!-- Sequence/Shuffle mode: clips list with drag reorder -->
+      <div v-else>
+        <div class="d-flex align-center mb-2">
+          <span class="text-subtitle-2">Clips</span>
+          <VSpacer />
+          <VBtn prepend-icon="mdi-plus" variant="tonal" rounded="xl" @click="addClips">
+            Add Clips
+          </VBtn>
+        </div>
+
+        <draggable
+          :model-value="track.clips"
+          @update:model-value="(newClips: Clip[]) => updateField({ clips: newClips })"
+          item-key="id"
+          handle=".drag-handle"
+        >
+          <template #item="{ element: clip }">
+            <ClipRow :clip="clip" :track-id="track.id" :comp-id="compId" />
+          </template>
+        </draggable>
+
+        <div v-if="track.clips.length === 0" class="text-caption text-medium-emphasis">
+          No clips yet.
+        </div>
+      </div>
+
+      <div class="d-flex justify-end mt-3">
+        <VBtn
+          icon="mdi-delete"
+          variant="tonal"
+          color="error"
+          @click="deleteTrack"
+        />
+      </div>
+    </template>
+  </VExpansionPanel>
 </template>
