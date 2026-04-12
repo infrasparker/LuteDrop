@@ -453,12 +453,21 @@ onUnmounted(() => {
 <style>
 /* Global styles for SortableJS (not scoped — SortableJS adds classes directly to DOM) */
 .sortable-ghost {
-  opacity: 0.3;
+  opacity: 0;
+  height: 2px !important;
+  overflow: hidden;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: none !important;
+  background: rgba(240, 168, 48, 0.5);
 }
 
 .sortable-chosen {
-  background: rgba(240, 168, 48, 0.1);
-  border-radius: 4px;
+  cursor: grabbing !important;
+}
+
+.sortable-chosen * {
+  cursor: grabbing !important;
 }
 
 .sortable-fallback {
@@ -466,5 +475,10 @@ onUnmounted(() => {
   background: #1E1E24;
   border-radius: 4px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  cursor: grabbing !important;
+}
+
+.sortable-fallback * {
+  cursor: grabbing !important;
 }
 </style>
