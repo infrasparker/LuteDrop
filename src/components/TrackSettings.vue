@@ -122,15 +122,6 @@ const showWaveform = computed(() => isSeamless.value && seamlessClip.value !== n
       />
     </div>
 
-    <VCheckbox
-      v-if="hasTransition"
-      :model-value="(track.mode as any).repeat"
-      @update:model-value="updateRepeat"
-      label="Repeat"
-      density="compact"
-      hide-details
-    />
-
     <template v-if="hasTransition && transitionType === 'gap'">
       <div style="min-width: 90px; max-width: 110px;">
         <VTextField
@@ -167,6 +158,15 @@ const showWaveform = computed(() => isSeamless.value && seamlessClip.value !== n
         hide-details
       />
     </div>
+
+    <VCheckbox
+      v-if="hasTransition"
+      :model-value="(track.mode as any).repeat"
+      @update:model-value="updateRepeat"
+      label="Repeat"
+      density="compact"
+      hide-details
+    />
   </div>
 
   <!-- Waveform: only shown in seamless mode with exactly one clip -->
