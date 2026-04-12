@@ -37,15 +37,17 @@ pub fn run() {
             // Share the Arc with Tauri's managed state
             app.manage(container.clone());
 
-            // Start the axum WebSocket server
+            // Start the axum WebSocket server on its own thread with a tokio runtime
             let server_container = container.clone();
             let remote_dist = std::env::current_dir()
                 .unwrap_or_default()
                 .join("dist-remote")
                 .to_string_lossy()
                 .to_string();
-            tokio::spawn(async move {
-                server::start_server(server_container, remote_dist).await;
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new()
+                    .expect("Failed to create tokio runtime for server");
+                rt.block_on(server::start_server(server_container, remote_dist));
             });
 
             // Spawn the playback state polling task
