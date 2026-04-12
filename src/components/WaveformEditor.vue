@@ -2,6 +2,7 @@
 import { ref, watch, onMounted, onUnmounted, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { useAudio } from '../composables/useAudio';
+import { useAppStore } from '../stores/appStore';
 
 interface WaveformData {
   peaks: number[];
@@ -21,11 +22,12 @@ const emit = defineEmits<{
 }>();
 
 const audio = useAudio();
+const store = useAppStore();
 
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 
 const CANVAS_HEIGHT = 80;
-const MARKER_GRAB_THRESHOLD_PX = 12; // in actual screen pixels
+const MARKER_GRAB_THRESHOLD_PX = 7; // in actual screen pixels
 const ZOOM_MIN = 1.0;
 const ZOOM_MAX = 50.0;
 const ZOOM_STEP = 1.15; // multiplier per wheel tick
@@ -57,6 +59,45 @@ const panStartViewStart = ref(0);
 // Click-to-preview: brief play cursor line
 const playCursorTime = ref<number | null>(null);
 let playCursorTimeout: ReturnType<typeof setTimeout> | null = null;
+
+// Playhead animation
+let rafId: number | null = null;
+
+const playbackState = computed(() => store.playbackStates.get(props.trackId));
+const isTrackActive = computed(() => {
+  const s = playbackState.value;
+  return s && (s.isPlaying || s.isPaused);
+});
+
+function startPlayheadLoop(): void {
+  if (rafId !== null) return;
+  function tick() {
+    drawWaveform();
+    const s = playbackState.value;
+    if (s?.isPlaying) {
+      rafId = requestAnimationFrame(tick);
+    } else {
+      rafId = null;
+    }
+  }
+  rafId = requestAnimationFrame(tick);
+}
+
+function stopPlayheadLoop(): void {
+  if (rafId !== null) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+}
+
+watch(() => playbackState.value?.isPlaying, (playing) => {
+  if (playing) {
+    startPlayheadLoop();
+  } else {
+    stopPlayheadLoop();
+    drawWaveform(); // one last draw to show paused position or clear
+  }
+});
 
 function showPlayCursor(seconds: number): void {
   playCursorTime.value = seconds;
@@ -327,9 +368,9 @@ function drawWaveform(): void {
     ctx.lineTo(loopStartX, cssH);
     ctx.stroke();
 
-    // Half-box handle pointing outward
+    // Half-box handle at top, pointing outward (left of line)
     ctx.fillStyle = '#4CAF50';
-    ctx.fillRect(loopStartX - 5, cssH - 8, 5, 8);
+    ctx.fillRect(loopStartX - 5, 0, 5, 8);
   }
 
   if (loopEndX >= -2 && loopEndX <= cssW + 2) {
@@ -340,9 +381,9 @@ function drawWaveform(): void {
     ctx.lineTo(loopEndX, cssH);
     ctx.stroke();
 
-    // Half-box handle pointing outward
+    // Half-box handle at top, pointing outward (right of line)
     ctx.fillStyle = '#4CAF50';
-    ctx.fillRect(loopEndX, cssH - 8, 5, 8);
+    ctx.fillRect(loopEndX, 0, 5, 8);
   }
 
   // 5. Center line
@@ -363,6 +404,30 @@ function drawWaveform(): void {
       ctx.moveTo(cursorX, 0);
       ctx.lineTo(cursorX, cssH);
       ctx.stroke();
+    }
+  }
+
+  // 7. Playhead (live playback position)
+  const ps = playbackState.value;
+  if (ps && (ps.isPlaying || ps.isPaused)) {
+    const phX = secondsToX(ps.currentTime, cssW);
+    if (phX >= 0 && phX <= cssW) {
+      // Vertical line
+      ctx.strokeStyle = '#E8E4DC';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(phX, 0);
+      ctx.lineTo(phX, cssH);
+      ctx.stroke();
+
+      // Small triangle at top
+      ctx.fillStyle = '#E8E4DC';
+      ctx.beginPath();
+      ctx.moveTo(phX - 4, 0);
+      ctx.lineTo(phX + 4, 0);
+      ctx.lineTo(phX, 6);
+      ctx.closePath();
+      ctx.fill();
     }
   }
 }
@@ -581,6 +646,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (zoomDebounce) clearTimeout(zoomDebounce);
   if (playCursorTimeout) clearTimeout(playCursorTimeout);
+  stopPlayheadLoop();
   window.removeEventListener('mousemove', onMouseMove);
   window.removeEventListener('mouseup', onMouseUp);
   window.removeEventListener('resize', onResize);
