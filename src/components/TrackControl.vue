@@ -385,6 +385,7 @@ async function deleteTrack(): Promise<void> {
           @update:model-value="(newClips: Clip[]) => updateField({ clips: newClips })"
           item-key="id"
           handle=".drag-handle"
+          @mousedown.stop
         >
           <template #item="{ element: clip }">
             <ClipRow :clip="clip" :track-id="track.id" :comp-id="compId" />
