@@ -26,14 +26,18 @@ const ZOOM_MIN = 1.0;
 const ZOOM_MAX = 50.0;
 const ZOOM_STEP = 1.15; // multiplier per wheel tick
 
-const peaks = ref<number[]>([]);
 const duration = ref(0);
 const loading = ref(false);
 const error = ref('');
 
-// Track what time range the current peaks represent
-const peaksRangeStart = ref(0);
-const peaksRangeEnd = ref(0);
+// Two-tier peaks: basePeaks (full file, always available) + zoomedPeaks (high-res visible range)
+const basePeaks = ref<number[]>([]);
+const basePeaksRangeStart = ref(0);
+const basePeaksRangeEnd = ref(0);
+
+const zoomedPeaks = ref<number[]>([]);
+const zoomedPeaksRangeStart = ref(0);
+const zoomedPeaksRangeEnd = ref(0);
 
 // Zoom & pan state
 const zoomLevel = ref(1.0);
@@ -78,19 +82,9 @@ function requestZoomedPeaks(): void {
     if (duration.value <= 0 || !props.filePath) return;
 
     if (!isZoomed.value) {
-      // Zoomed all the way out -- request full-file peaks at base resolution
-      try {
-        const data = await invoke<WaveformData>('get_waveform_data', {
-          filePath: props.filePath,
-          width: 1200,
-        });
-        peaks.value = data.peaks;
-        peaksRangeStart.value = 0;
-        peaksRangeEnd.value = data.duration;
-        drawWaveform();
-      } catch (_) {
-        // keep existing peaks on error
-      }
+      // Zoomed all the way out -- clear zoomed peaks, basePeaks are enough
+      zoomedPeaks.value = [];
+      drawWaveform();
       return;
     }
 
@@ -105,9 +99,9 @@ function requestZoomedPeaks(): void {
         start: reqStart,
         end: reqEnd,
       });
-      peaks.value = data.peaks;
-      peaksRangeStart.value = reqStart;
-      peaksRangeEnd.value = reqEnd;
+      zoomedPeaks.value = data.peaks;
+      zoomedPeaksRangeStart.value = reqStart;
+      zoomedPeaksRangeEnd.value = reqEnd;
       drawWaveform();
     } catch (_) {
       // keep existing peaks on error
@@ -152,19 +146,21 @@ async function loadWaveform(): Promise<void> {
   error.value = '';
 
   try {
-    // Request peaks at a reasonable resolution
+    // Request peaks at a reasonable resolution for full file
     const data = await invoke<WaveformData>('get_waveform_data', {
       filePath: props.filePath,
       width: 1200,
     });
-    peaks.value = data.peaks;
+    basePeaks.value = data.peaks;
+    basePeaksRangeStart.value = 0;
+    basePeaksRangeEnd.value = data.duration;
+    zoomedPeaks.value = [];
     duration.value = data.duration;
-    peaksRangeStart.value = 0;
-    peaksRangeEnd.value = data.duration;
     resetView();
   } catch (e: unknown) {
     error.value = String(e);
-    peaks.value = [];
+    basePeaks.value = [];
+    zoomedPeaks.value = [];
     duration.value = 0;
   } finally {
     loading.value = false;
@@ -182,6 +178,59 @@ function xToSeconds(x: number, w: number): number {
   if (visibleDuration <= 0 || w <= 0) return 0;
   const seconds = viewStart.value + (x / w) * visibleDuration;
   return Math.max(0, Math.min(duration.value, seconds));
+}
+
+function drawPeaksPath(
+  ctx: CanvasRenderingContext2D,
+  peaksArr: number[],
+  rangeStart: number,
+  rangeEnd: number,
+  cssW: number,
+  cssH: number,
+  color: string,
+): void {
+  const peakCount = peaksArr.length;
+  if (peakCount === 0) return;
+
+  const pDuration = rangeEnd - rangeStart;
+  if (pDuration <= 0) return;
+
+  const midY = cssH / 2;
+  const maxBarHeight = midY - 2;
+
+  // Only draw peaks that fall within the visible range
+  const startIdx = Math.max(0, Math.floor(((viewStart.value - rangeStart) / pDuration) * peakCount));
+  const endIdx = Math.min(peakCount, Math.ceil(((viewEnd.value - rangeStart) / pDuration) * peakCount));
+
+  if (startIdx >= endIdx) return;
+
+  ctx.fillStyle = color;
+
+  // Top half
+  ctx.beginPath();
+  const x0 = secondsToX(rangeStart + (startIdx / peakCount) * pDuration, cssW);
+  ctx.moveTo(x0, midY);
+  for (let i = startIdx; i < endIdx; i++) {
+    const peakTime = rangeStart + (i / peakCount) * pDuration;
+    const x = secondsToX(peakTime, cssW);
+    ctx.lineTo(x, midY - peaksArr[i] * maxBarHeight);
+  }
+  const xLast = secondsToX(rangeStart + ((endIdx - 1) / peakCount) * pDuration, cssW);
+  ctx.lineTo(xLast, midY);
+  ctx.closePath();
+  ctx.fill();
+
+  // Bottom half (mirror)
+  ctx.beginPath();
+  ctx.moveTo(x0, midY);
+  for (let i = startIdx; i < endIdx; i++) {
+    const peakTime = rangeStart + (i / peakCount) * pDuration;
+    const x = secondsToX(peakTime, cssW);
+    ctx.lineTo(x, midY + peaksArr[i] * maxBarHeight);
+  }
+  ctx.lineTo(xLast, midY);
+  ctx.closePath();
+  ctx.fill();
 }
 
 function drawWaveform(): void {
@@ -206,40 +255,27 @@ function drawWaveform(): void {
   const cssH = CANVAS_HEIGHT;
   const midY = cssH / 2;
 
-  // Background
+  // 1. Background
   ctx.fillStyle = '#141418';
   ctx.fillRect(0, 0, cssW, cssH);
 
-  if (peaks.value.length === 0) return;
+  if (basePeaks.value.length === 0) return;
 
-  const peakCount = peaks.value.length;
-  const pStart = peaksRangeStart.value;
-  const pEnd = peaksRangeEnd.value;
-  const pDuration = pEnd - pStart;
+  // 2. Draw basePeaks (always-visible coarse layer)
+  if (isZoomed.value) {
+    // When zoomed, draw basePeaks in a dimmer color as background
+    drawPeaksPath(ctx, basePeaks.value, basePeaksRangeStart.value, basePeaksRangeEnd.value, cssW, cssH, '#7A5418');
 
-  if (pDuration <= 0) return;
-
-  // Only draw peaks that fall within the visible range
-  const startPeakIndex = Math.max(0, Math.floor(((viewStart.value - pStart) / pDuration) * peakCount));
-  const endPeakIndex = Math.min(peakCount, Math.ceil(((viewEnd.value - pStart) / pDuration) * peakCount));
-
-  // Each peak maps to a time within [pStart, pEnd]; compute its X position
-  const maxBarHeight = midY - 2;
-
-  for (let i = startPeakIndex; i < endPeakIndex; i++) {
-    const peak = peaks.value[i];
-    const peakTime = pStart + (i / peakCount) * pDuration;
-    const nextPeakTime = pStart + ((i + 1) / peakCount) * pDuration;
-    const x = secondsToX(peakTime, cssW);
-    const xNext = secondsToX(nextPeakTime, cssW);
-    const barWidth = xNext - x;
-    const barHeight = peak * maxBarHeight;
-
-    ctx.fillStyle = '#F0A830';
-    ctx.fillRect(x, midY - barHeight, Math.max(barWidth - 0.5, 0.5), barHeight * 2);
+    // 3. Draw zoomedPeaks on top in full gold if available
+    if (zoomedPeaks.value.length > 0) {
+      drawPeaksPath(ctx, zoomedPeaks.value, zoomedPeaksRangeStart.value, zoomedPeaksRangeEnd.value, cssW, cssH, '#F0A830');
+    }
+  } else {
+    // Not zoomed — draw basePeaks in full gold
+    drawPeaksPath(ctx, basePeaks.value, basePeaksRangeStart.value, basePeaksRangeEnd.value, cssW, cssH, '#F0A830');
   }
 
-  // Draw loop markers (solid green lines) — only if visible
+  // 4. Draw loop markers (solid green lines) — only if visible
   const loopStartX = secondsToX(props.loopStart, cssW);
   const loopEndX = secondsToX(effectiveLoopEnd.value, cssW);
 
@@ -270,7 +306,7 @@ function drawWaveform(): void {
     ctx.fillRect(loopEndX, cssH - 8, 5, 8);
   }
 
-  // Center line
+  // 5. Center line
   ctx.strokeStyle = 'rgba(232, 228, 220, 0.15)';
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -429,12 +465,13 @@ function onResize(): void {
 
 // Draw when canvas becomes available
 watch(canvasRef, (canvas) => {
-  if (canvas && peaks.value.length > 0) {
+  if (canvas && basePeaks.value.length > 0) {
     drawWaveform();
   }
 });
 
-watch(peaks, () => drawWaveform());
+watch(basePeaks, () => drawWaveform());
+watch(zoomedPeaks, () => drawWaveform());
 watch(
   () => [props.loopStart, props.loopEnd],
   () => drawWaveform()
