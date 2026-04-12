@@ -271,34 +271,39 @@ onUnmounted(() => {
 
 <template>
   <div class="waveform-editor">
-    <div v-if="loading" class="waveform-loading text-caption text-medium-emphasis pa-2">
-      Loading waveform...
-    </div>
-    <div v-else-if="error" class="waveform-error text-caption text-error pa-2">
-      {{ error }}
-    </div>
-    <template v-else>
+    <div class="waveform-container">
+      <div v-if="loading" class="waveform-overlay text-caption text-medium-emphasis">
+        Loading waveform...
+      </div>
+      <div v-else-if="error" class="waveform-overlay text-caption text-error">
+        {{ error }}
+      </div>
       <canvas
         ref="canvasRef"
         class="waveform-canvas"
         :style="{ cursor: dragging ? 'grabbing' : 'pointer' }"
         @mousedown="onMouseDown"
       />
-      <div class="waveform-labels d-flex ga-4 mt-1">
-        <span class="text-caption text-medium-emphasis">
-          Loop: {{ loopStartDisplay }}s - {{ loopEndDisplay }}
-        </span>
-        <span class="text-caption text-medium-emphasis ml-auto">
-          {{ duration.toFixed(1) }}s
-        </span>
-      </div>
-    </template>
+    </div>
+    <div class="waveform-labels d-flex ga-4 mt-1">
+      <span class="text-caption text-medium-emphasis">
+        Loop: {{ loopStartDisplay }}s - {{ loopEndDisplay }}
+      </span>
+      <span class="text-caption text-medium-emphasis ml-auto">
+        {{ duration.toFixed(1) }}s
+      </span>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .waveform-editor {
   width: 100%;
+}
+
+.waveform-container {
+  position: relative;
+  height: 80px;
 }
 
 .waveform-canvas {
@@ -309,14 +314,15 @@ onUnmounted(() => {
   border: 1px solid rgba(232, 228, 220, 0.1);
 }
 
-.waveform-loading,
-.waveform-error {
-  height: 80px;
+.waveform-overlay {
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   background: #141418;
   border-radius: 8px;
   border: 1px solid rgba(232, 228, 220, 0.1);
+  z-index: 1;
 }
 </style>
