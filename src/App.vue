@@ -156,24 +156,21 @@ async function createGroup(): Promise<void> {
         />
       </template>
       <template #extension>
-        <VTabs v-model="activeTab" color="primary" v-if="groups.length > 0">
+        <VTabs v-model="activeTab" color="primary">
           <VTab
             v-for="(group, i) in groups"
             :key="group.id"
             :value="i"
             @contextmenu.prevent="openContextMenu($event, group)"
             class="tab-truncate"
-            :style="isGroupActive(group) ? { borderBottom: '3px solid rgb(var(--v-theme-primary))' } : {}"
+            :class="{ 'text-success': isGroupActive(group) }"
           >
             {{ group.name }}
           </VTab>
+          <VTab :value="'__add__'" @click.stop="showNewGroupDialog = true" style="min-width: 0;" class="px-2">
+            <VIcon>mdi-plus</VIcon>
+          </VTab>
         </VTabs>
-        <VBtn
-          icon="mdi-plus"
-          variant="tonal"
-          size="small"
-          @click="showNewGroupDialog = true"
-        />
       </template>
     </VAppBar>
 

@@ -99,7 +99,7 @@ function stopAll(): void {
             :key="group.id"
             :value="i"
             class="tab-truncate"
-            :style="isGroupActive(group) ? { borderBottom: '3px solid rgb(var(--v-theme-primary))' } : {}"
+            :class="{ 'text-success': isGroupActive(group) }"
           >
             {{ group.name }}
           </VTab>
