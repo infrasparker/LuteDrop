@@ -1,17 +1,38 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
+import { storeToRefs } from 'pinia';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from './stores/appStore';
 import { useAudio } from './composables/useAudio';
 import { useToast } from './composables/useToast';
-import type { AppState } from '@generated/index';
+import { useContextMenuState } from './composables/useContextMenu';
+import type { AppState, Group } from '@generated/index';
 import PlaybackView from './views/PlaybackView.vue';
 
 const store = useAppStore();
+const { groups } = storeToRefs(store);
 const audio = useAudio();
 const toast = useToast();
 const serverUrl = ref('');
 const paused = ref(false);
+
+const activeTab = ref(0);
+
+// New group dialog state
+const showNewGroupDialog = ref(false);
+const newGroupName = ref('');
+
+// Context menu state
+const { menuVisible: contextMenu, menuX: contextMenuX, menuY: contextMenuY, openMenu } = useContextMenuState();
+const contextGroupId = ref('');
+const contextGroupName = ref('');
+
+// Rename group state
+const showRenameDialog = ref(false);
+const renameGroupName = ref('');
+
+// Delete group state
+const showDeleteConfirm = ref(false);
 
 onMounted(async () => {
   const state = await invoke<AppState>('load_data');
@@ -43,6 +64,39 @@ function togglePause(): void {
     audio.pauseAll();
     paused.value = true;
   }
+}
+
+function openContextMenu(event: MouseEvent, group: Group): void {
+  contextGroupId.value = group.id;
+  contextGroupName.value = group.name;
+  openMenu(event);
+}
+
+function openRenameDialog(): void {
+  renameGroupName.value = contextGroupName.value;
+  showRenameDialog.value = true;
+}
+
+async function renameGroup(): Promise<void> {
+  if (!renameGroupName.value.trim()) return;
+  await store.command('rename_group', { groupId: contextGroupId.value, name: renameGroupName.value.trim() });
+  renameGroupName.value = '';
+  showRenameDialog.value = false;
+}
+
+async function deleteGroup(): Promise<void> {
+  showDeleteConfirm.value = false;
+  await store.command('delete_group', { groupId: contextGroupId.value });
+  if (activeTab.value >= groups.value.length) {
+    activeTab.value = Math.max(0, groups.value.length - 1);
+  }
+}
+
+async function createGroup(): Promise<void> {
+  if (!newGroupName.value.trim()) return;
+  await store.command('add_group', { name: newGroupName.value.trim() });
+  newGroupName.value = '';
+  showNewGroupDialog.value = false;
 }
 </script>
 
@@ -83,14 +137,116 @@ function togglePause(): void {
           @click="stopAll"
         />
       </template>
+      <template #extension>
+        <VTabs v-model="activeTab" color="primary" v-if="groups.length > 0">
+          <VTab
+            v-for="(group, i) in groups"
+            :key="group.id"
+            :value="i"
+            @contextmenu.prevent="openContextMenu($event, group)"
+            class="tab-truncate"
+          >
+            {{ group.name }}
+          </VTab>
+        </VTabs>
+        <VBtn
+          icon="mdi-plus"
+          variant="tonal"
+          size="small"
+          @click="showNewGroupDialog = true"
+        />
+      </template>
     </VAppBar>
 
     <VMain class="d-flex flex-column" style="height: 100vh;">
-      <PlaybackView class="flex-grow-1" style="overflow: hidden;" />
+      <PlaybackView :active-tab="activeTab" class="flex-grow-1" style="overflow: hidden;" />
     </VMain>
+
+    <!-- New group dialog -->
+    <VDialog v-model="showNewGroupDialog" max-width="400">
+      <VCard title="New Group">
+        <VCardText>
+          <VTextField
+            v-model="newGroupName"
+            label="Group Name"
+            variant="outlined"
+            autofocus
+            @keydown.enter="createGroup"
+          />
+        </VCardText>
+        <VDivider />
+        <VCardActions>
+          <VSpacer />
+          <VBtn text="Cancel" variant="plain" @click="showNewGroupDialog = false" />
+          <VBtn text="Create" color="primary" variant="tonal" @click="createGroup" />
+        </VCardActions>
+      </VCard>
+    </VDialog>
+
+    <!-- Group tab context menu -->
+    <VMenu v-model="contextMenu" :target="[contextMenuX, contextMenuY]" close-on-content-click>
+      <VList density="compact">
+        <VListItem @click="openRenameDialog">
+          <template #prepend><VIcon>mdi-pencil</VIcon></template>
+          <VListItemTitle>Rename</VListItemTitle>
+        </VListItem>
+        <VListItem @click="showDeleteConfirm = true" class="text-error">
+          <template #prepend><VIcon color="error">mdi-delete</VIcon></template>
+          <VListItemTitle>Delete</VListItemTitle>
+        </VListItem>
+      </VList>
+    </VMenu>
+
+    <!-- Rename group dialog -->
+    <VDialog v-model="showRenameDialog" max-width="400">
+      <VCard title="Rename Group">
+        <VCardText>
+          <VTextField
+            v-model="renameGroupName"
+            label="Group Name"
+            variant="outlined"
+            autofocus
+            @keydown.enter="renameGroup"
+          />
+        </VCardText>
+        <VDivider />
+        <VCardActions>
+          <VSpacer />
+          <VBtn text="Cancel" variant="plain" @click="showRenameDialog = false" />
+          <VBtn text="Rename" color="primary" variant="tonal" @click="renameGroup" />
+        </VCardActions>
+      </VCard>
+    </VDialog>
+
+    <!-- Delete group confirmation dialog -->
+    <VDialog v-model="showDeleteConfirm" max-width="450">
+      <VCard title="Delete Group">
+        <VCardText>
+          Are you sure you want to delete group "{{ contextGroupName }}"? This will remove all compositions and tracks in it.
+        </VCardText>
+        <VDivider />
+        <VCardActions>
+          <VSpacer />
+          <VBtn text="Cancel" variant="plain" @click="showDeleteConfirm = false" />
+          <VBtn text="Delete" color="error" variant="tonal" @click="deleteGroup" />
+        </VCardActions>
+      </VCard>
+    </VDialog>
 
     <VSnackbar v-model="toast.visible.value" :color="toast.color.value" :timeout="3000">
       {{ toast.message.value }}
     </VSnackbar>
   </VApp>
 </template>
+
+<style>
+.tab-truncate {
+  max-width: 150px !important;
+}
+.tab-truncate .v-btn__content {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block !important;
+}
+</style>
