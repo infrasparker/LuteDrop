@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { ref, computed } from 'vue';
 import type { Track } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
 import { useTrackUpdates } from '../composables/useTrackUpdates';
+import { useContextMenuState } from '../composables/useContextMenu';
 import TrackSettings from './TrackSettings.vue';
 import TrackClipList from './TrackClipList.vue';
 
@@ -15,10 +16,40 @@ const props = defineProps<{
 const store = useAppStore();
 const audio = useAudio();
 const { updateField } = useTrackUpdates(() => props.track.id, () => props.compId);
+const { menuVisible, menuX, menuY, openMenu } = useContextMenuState();
 
 const playbackState = computed(() => store.playbackStates.get(props.track.id));
 const isPlaying = computed(() => playbackState.value?.isPlaying ?? false);
 const isSeamless = computed(() => props.track.mode.type === 'seamless');
+
+// Rename state
+const showRenameDialog = ref(false);
+const renameTrackName = ref('');
+
+// Delete state
+const showDeleteConfirm = ref(false);
+
+function openContextMenu(event: MouseEvent): void {
+  event.stopPropagation();
+  openMenu(event);
+}
+
+function openRenameDialog(): void {
+  renameTrackName.value = props.track.name;
+  showRenameDialog.value = true;
+}
+
+async function renameTrack(): Promise<void> {
+  if (!renameTrackName.value.trim()) return;
+  await updateField({ name: renameTrackName.value.trim() });
+  showRenameDialog.value = false;
+}
+
+async function deleteTrack(): Promise<void> {
+  showDeleteConfirm.value = false;
+  await audio.stopTrack(props.track.id);
+  await store.command('delete_track', { compId: props.compId, trackId: props.track.id });
+}
 
 function playTrack(): void {
   audio.playTrack(props.track.id);
@@ -36,11 +67,6 @@ async function setVolume(v: number): Promise<void> {
   audio.setTrackVolume(props.track.id, v);
   await updateField({ volume: v });
 }
-
-async function deleteTrack(): Promise<void> {
-  await audio.stopTrack(props.track.id);
-  await store.command('delete_track', { compId: props.compId, trackId: props.track.id });
-}
 </script>
 
 <template>
@@ -48,7 +74,11 @@ async function deleteTrack(): Promise<void> {
     <VExpansionPanels>
       <VExpansionPanel color="surface-light" rounded="0" elevation="0">
         <template #title>
-          <div class="d-flex align-center ga-2" style="width: 100%;">
+          <div
+            class="d-flex align-center ga-2"
+            style="width: 100%;"
+            @contextmenu.prevent="openContextMenu"
+          >
             <VBtn
               :icon="isPlaying ? 'mdi-pause' : 'mdi-play'"
               :color="isPlaying ? 'secondary' : 'primary'"
@@ -65,17 +95,9 @@ async function deleteTrack(): Promise<void> {
               @click.stop="stopTrack"
             />
 
-            <VTextField
-              :model-value="track.name"
-              @update:model-value="(v: string) => updateField({ name: v })"
-              @click.stop
-              @keydown.stop
-              variant="underlined"
-              density="compact"
-              hide-details
-              class="text-subtitle-2 font-weight-bold"
-              style="flex: 0 1 200px; min-width: 80px;"
-            />
+            <span class="text-subtitle-2 font-weight-bold">{{ track.name }}</span>
+
+            <VSpacer />
 
             <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
               {{ track.clips.length }} clip{{ track.clips.length !== 1 ? 's' : '' }}
@@ -100,21 +122,62 @@ async function deleteTrack(): Promise<void> {
 
         <template #text>
           <div class="pt-2">
-          <TrackSettings :track="track" :comp-id="compId" />
-          <TrackClipList :track="track" :comp-id="compId" :is-seamless="isSeamless" />
-
-          <div class="d-flex justify-end mt-3">
-            <VBtn
-              icon="mdi-delete"
-              variant="tonal"
-              color="error"
-              @click="deleteTrack"
-            />
-          </div>
+            <TrackSettings :track="track" :comp-id="compId" />
+            <TrackClipList :track="track" :comp-id="compId" :is-seamless="isSeamless" />
           </div>
         </template>
       </VExpansionPanel>
     </VExpansionPanels>
+
+    <!-- Context menu -->
+    <VMenu v-model="menuVisible" :target="[menuX, menuY]" close-on-content-click>
+      <VList density="compact">
+        <VListItem @click="openRenameDialog">
+          <template #prepend><VIcon>mdi-pencil</VIcon></template>
+          <VListItemTitle>Rename</VListItemTitle>
+        </VListItem>
+        <VListItem @click="showDeleteConfirm = true" class="text-error">
+          <template #prepend><VIcon color="error">mdi-delete</VIcon></template>
+          <VListItemTitle>Delete</VListItemTitle>
+        </VListItem>
+      </VList>
+    </VMenu>
+
+    <!-- Rename dialog -->
+    <VDialog v-model="showRenameDialog" max-width="400">
+      <VCard title="Rename Track">
+        <VCardText>
+          <VTextField
+            v-model="renameTrackName"
+            label="Track Name"
+            variant="outlined"
+            autofocus
+            @keydown.enter="renameTrack"
+          />
+        </VCardText>
+        <VDivider />
+        <VCardActions>
+          <VSpacer />
+          <VBtn text="Cancel" variant="plain" @click="showRenameDialog = false" />
+          <VBtn text="Rename" color="primary" variant="tonal" @click="renameTrack" />
+        </VCardActions>
+      </VCard>
+    </VDialog>
+
+    <!-- Delete confirmation -->
+    <VDialog v-model="showDeleteConfirm" max-width="450">
+      <VCard title="Delete Track">
+        <VCardText>
+          Are you sure you want to delete "{{ track.name }}"?
+        </VCardText>
+        <VDivider />
+        <VCardActions>
+          <VSpacer />
+          <VBtn text="Cancel" variant="plain" @click="showDeleteConfirm = false" />
+          <VBtn text="Delete" color="error" variant="tonal" @click="deleteTrack" />
+        </VCardActions>
+      </VCard>
+    </VDialog>
   </div>
 </template>
 
