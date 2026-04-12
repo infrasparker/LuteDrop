@@ -113,3 +113,65 @@ fn write_cache(
     w.flush().map_err(|e| e.to_string())?;
     Ok(())
 }
+
+/// Read and validate a .peaks sidecar cache file.
+/// Returns None if the file is missing, corrupt, or stale.
+fn read_cache(audio_path: &Path) -> Option<CachedPeaks> {
+    let cp = cache_path(audio_path);
+    let mut file = File::open(&cp).ok()?;
+
+    let (src_size, src_mtime) = source_file_meta(audio_path).ok()?;
+
+    // Read header
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic).ok()?;
+    if &magic != MAGIC {
+        return None;
+    }
+
+    let mut version = [0u8; 1];
+    file.read_exact(&mut version).ok()?;
+    if version[0] != FORMAT_VERSION {
+        return None;
+    }
+
+    let mut buf4 = [0u8; 4];
+    let mut buf8 = [0u8; 8];
+
+    file.read_exact(&mut buf4).ok()?;
+    let samples_per_peak = u32::from_le_bytes(buf4);
+
+    file.read_exact(&mut buf4).ok()?;
+    let sample_rate = u32::from_le_bytes(buf4);
+
+    file.read_exact(&mut buf8).ok()?;
+    let total_samples = u64::from_le_bytes(buf8);
+
+    file.read_exact(&mut buf4).ok()?;
+    let total_peaks = u32::from_le_bytes(buf4) as usize;
+
+    file.read_exact(&mut buf8).ok()?;
+    let cached_src_size = u64::from_le_bytes(buf8);
+
+    file.read_exact(&mut buf8).ok()?;
+    let cached_src_mtime = u64::from_le_bytes(buf8);
+
+    // Invalidation check
+    if cached_src_size != src_size || cached_src_mtime != src_mtime {
+        return None;
+    }
+
+    // Read peak data
+    let mut peaks = Vec::with_capacity(total_peaks);
+    for _ in 0..total_peaks {
+        file.read_exact(&mut buf4).ok()?;
+        peaks.push(f32::from_le_bytes(buf4));
+    }
+
+    Some(CachedPeaks {
+        sample_rate,
+        samples_per_peak,
+        total_samples,
+        peaks,
+    })
+}
