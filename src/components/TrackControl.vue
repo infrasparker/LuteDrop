@@ -4,7 +4,7 @@ import type { Track, TrackMode, TrackTransition, Clip } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
 import { open } from '@tauri-apps/plugin-dialog';
-import draggable from 'vuedraggable';
+import { Sortable } from 'sortablejs-vue3';
 import ClipRow from './ClipRow.vue';
 import WaveformEditor from './WaveformEditor.vue';
 
@@ -158,6 +158,14 @@ async function setVolume(v: number): Promise<void> {
 async function deleteTrack(): Promise<void> {
   await audio.stopTrack(props.track.id);
   await store.command('delete_track', { compId: props.compId, trackId: props.track.id });
+}
+
+async function onClipReorder(event: { oldIndex: number; newIndex: number }): Promise<void> {
+  if (event.oldIndex === undefined || event.newIndex === undefined) return;
+  const clips = [...props.track.clips];
+  const [moved] = clips.splice(event.oldIndex, 1);
+  clips.splice(event.newIndex, 0, moved);
+  await updateField({ clips });
 }
 </script>
 
@@ -380,17 +388,16 @@ async function deleteTrack(): Promise<void> {
           </VBtn>
         </div>
 
-        <draggable
-          :model-value="track.clips"
-          @update:model-value="(newClips: Clip[]) => updateField({ clips: newClips })"
+        <Sortable
+          :list="track.clips"
           item-key="id"
-          handle=".drag-handle"
-          @mousedown.stop
+          :options="{ handle: '.drag-handle', animation: 150 }"
+          @end="onClipReorder"
         >
-          <template #item="{ element: clip }">
-            <ClipRow :clip="clip" :track-id="track.id" :comp-id="compId" />
+          <template #item="{ element }">
+            <ClipRow :clip="element" :track-id="track.id" :comp-id="compId" />
           </template>
-        </draggable>
+        </Sortable>
 
         <div v-if="track.clips.length === 0" class="text-caption text-medium-emphasis">
           No clips yet.

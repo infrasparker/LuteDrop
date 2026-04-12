@@ -33,9 +33,7 @@ async function remove(): Promise<void> {
 
 <template>
   <div class="d-flex align-center ga-2 py-2 px-1" style="border-bottom: 1px solid rgba(232, 228, 220, 0.05);">
-    <div class="drag-handle d-flex align-center" style="cursor: grab; touch-action: none; user-select: none;" @pointerdown.stop>
-      <VIcon size="small" class="text-medium-emphasis">mdi-drag</VIcon>
-    </div>
+    <VIcon size="small" class="text-medium-emphasis drag-handle" style="cursor: grab;">mdi-drag</VIcon>
     <span class="text-body-2 flex-grow-1 text-truncate">{{ clip.name }}</span>
     <VIcon size="small" class="text-medium-emphasis">mdi-volume-high</VIcon>
     <VSlider
