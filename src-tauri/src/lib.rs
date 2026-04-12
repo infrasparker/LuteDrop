@@ -89,6 +89,7 @@ pub fn run() {
             commands::pause_all,
             commands::resume_all,
             commands::get_waveform_data,
+            commands::toggle_debug_skip,
             commands::get_server_info,
         ])
         .run(tauri::generate_context!())

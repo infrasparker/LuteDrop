@@ -97,6 +97,8 @@ pub struct AudioEngine {
     manager: AudioManager,
     tracks: HashMap<String, ActiveTrack>,
     master_volume: f64,
+    /// Debug: when true, new clips start 15s before the end.
+    pub debug_skip_to_end: bool,
 }
 
 impl AudioEngine {
@@ -107,6 +109,7 @@ impl AudioEngine {
             manager,
             tracks: HashMap::new(),
             master_volume: 1.0,
+            debug_skip_to_end: false,
         })
     }
 
@@ -553,7 +556,15 @@ impl AudioEngine {
             .map_err(|e| format!("Failed to load audio file '{}': {}", clip.file_path, e))?;
 
         // Apply start position if provided (click-to-preview)
-        if let Some(pos) = start_position {
+        // Debug mode: skip to 15s before end for testing crossfades
+        let effective_start = if start_position.is_some() {
+            start_position
+        } else if self.debug_skip_to_end {
+            probe_duration(&clip.file_path).map(|d| (d - 15.0).max(0.0))
+        } else {
+            None
+        };
+        if let Some(pos) = effective_start {
             sound_data = sound_data.start_position(pos);
         }
 
