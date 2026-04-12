@@ -32,22 +32,26 @@ async function remove(): Promise<void> {
 </script>
 
 <template>
-  <div class="d-flex align-center ga-2 py-1">
-    <VIcon size="small" class="text-medium-emphasis drag-handle" style="cursor: grab;">mdi-drag</VIcon>
-    <span class="text-body-2 flex-grow-1 text-truncate" style="max-width: 200px;">
-      {{ clip.name }}
-    </span>
-    <VSlider
-      :model-value="clip.volume"
-      @update:model-value="updateVolume"
-      :min="0"
-      :max="1"
-      :step="0.01"
-      hide-details
-      density="compact"
-      style="max-width: 100px"
-      prepend-icon="mdi-volume-high"
-    />
-    <VBtn icon="mdi-delete" variant="text" size="x-small" @click="remove" />
-  </div>
+  <VListItem class="px-0">
+    <template #prepend>
+      <VIcon size="small" class="text-medium-emphasis drag-handle" style="cursor: grab;">mdi-drag</VIcon>
+    </template>
+
+    <span class="text-body-2 text-truncate">{{ clip.name }}</span>
+
+    <template #append>
+      <VSlider
+        :model-value="clip.volume"
+        @update:model-value="updateVolume"
+        :min="0"
+        :max="1"
+        :step="0.01"
+        hide-details
+        density="compact"
+        style="max-width: 120px"
+        prepend-icon="mdi-volume-high"
+      />
+      <VBtn icon="mdi-delete" variant="text" size="x-small" color="error" @click="remove" />
+    </template>
+  </VListItem>
 </template>

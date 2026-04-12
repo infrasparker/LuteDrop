@@ -208,14 +208,15 @@ async function deleteTrack(): Promise<void> {
           :step="0.01"
           hide-details
           density="compact"
+          class="mr-4"
           style="flex: 0 0 120px;"
         />
       </div>
     </template>
 
     <template #text>
-      <VRow dense class="mb-2">
-        <VCol cols="3">
+      <div class="d-flex flex-wrap ga-3 mb-2 align-center">
+        <div style="max-width: 150px; min-width: 120px;">
           <VSelect
             :model-value="modeType"
             @update:model-value="updateMode"
@@ -225,8 +226,8 @@ async function deleteTrack(): Promise<void> {
             density="compact"
             hide-details
           />
-        </VCol>
-        <VCol cols="3" v-if="isSeamless">
+        </div>
+        <div v-if="isSeamless" style="max-width: 150px; min-width: 120px;">
           <VTextField
             :model-value="(track.mode as any).loopStart"
             @update:model-value="updateLoopStart"
@@ -236,8 +237,8 @@ async function deleteTrack(): Promise<void> {
             density="compact"
             hide-details
           />
-        </VCol>
-        <VCol cols="3" v-if="isSeamless">
+        </div>
+        <div v-if="isSeamless" style="max-width: 150px; min-width: 120px;">
           <VTextField
             :model-value="(track.mode as any).loopEnd"
             @update:model-value="updateLoopEnd"
@@ -247,8 +248,8 @@ async function deleteTrack(): Promise<void> {
             density="compact"
             hide-details
           />
-        </VCol>
-        <VCol cols="3" v-if="hasTransition">
+        </div>
+        <div v-if="hasTransition" style="max-width: 150px; min-width: 120px;">
           <VSelect
             :model-value="transitionType"
             @update:model-value="updateTransition"
@@ -258,8 +259,8 @@ async function deleteTrack(): Promise<void> {
             density="compact"
             hide-details
           />
-        </VCol>
-        <VCol cols="3" v-if="hasTransition">
+        </div>
+        <div v-if="hasTransition" style="max-width: 150px; min-width: 120px;">
           <VCheckbox
             :model-value="(track.mode as any).repeat"
             @update:model-value="updateRepeat"
@@ -267,11 +268,11 @@ async function deleteTrack(): Promise<void> {
             density="compact"
             hide-details
           />
-        </VCol>
-      </VRow>
+        </div>
+      </div>
 
-      <VRow dense class="mb-2" v-if="hasTransition && transitionType === 'gap'">
-        <VCol cols="3">
+      <div v-if="hasTransition && transitionType === 'gap'" class="d-flex flex-wrap ga-3 mb-2 align-center">
+        <div style="max-width: 150px; min-width: 120px;">
           <VTextField
             :model-value="(track.mode as any).transition.min"
             @update:model-value="updateGapMin"
@@ -281,8 +282,8 @@ async function deleteTrack(): Promise<void> {
             density="compact"
             hide-details
           />
-        </VCol>
-        <VCol cols="3">
+        </div>
+        <div style="max-width: 150px; min-width: 120px;">
           <VTextField
             :model-value="(track.mode as any).transition.max"
             @update:model-value="updateGapMax"
@@ -292,11 +293,11 @@ async function deleteTrack(): Promise<void> {
             density="compact"
             hide-details
           />
-        </VCol>
-      </VRow>
+        </div>
+      </div>
 
-      <VRow dense class="mb-2" v-if="hasTransition && transitionType === 'crossfade'">
-        <VCol cols="3">
+      <div v-if="hasTransition && transitionType === 'crossfade'" class="d-flex flex-wrap ga-3 mb-2 align-center">
+        <div style="max-width: 150px; min-width: 120px;">
           <VTextField
             :model-value="(track.mode as any).transition.duration"
             @update:model-value="updateCrossfade"
@@ -306,11 +307,11 @@ async function deleteTrack(): Promise<void> {
             density="compact"
             hide-details
           />
-        </VCol>
-      </VRow>
+        </div>
+      </div>
 
-      <VRow dense class="mb-3">
-        <VCol cols="3">
+      <div class="d-flex flex-wrap ga-3 mb-3 align-center">
+        <div style="max-width: 150px; min-width: 120px;">
           <VTextField
             :model-value="track.fadeIn"
             @update:model-value="updateFadeIn"
@@ -320,8 +321,8 @@ async function deleteTrack(): Promise<void> {
             density="compact"
             hide-details
           />
-        </VCol>
-        <VCol cols="3">
+        </div>
+        <div style="max-width: 150px; min-width: 120px;">
           <VTextField
             :model-value="track.fadeOut"
             @update:model-value="updateFadeOut"
@@ -331,8 +332,8 @@ async function deleteTrack(): Promise<void> {
             density="compact"
             hide-details
           />
-        </VCol>
-      </VRow>
+        </div>
+      </div>
 
       <!-- Waveform: only shown in seamless mode with exactly one clip -->
       <div v-if="showWaveform" class="mb-3">
@@ -361,9 +362,9 @@ async function deleteTrack(): Promise<void> {
             Add Clip
           </VBtn>
         </div>
-        <div v-if="hasClips">
+        <VList v-if="hasClips" density="compact" class="pa-0 bg-transparent">
           <ClipRow :clip="seamlessClip!" :track-id="track.id" :comp-id="compId" />
-        </div>
+        </VList>
         <div v-else class="text-caption text-medium-emphasis">
           No clip yet. Seamless mode uses a single clip.
         </div>
@@ -379,16 +380,18 @@ async function deleteTrack(): Promise<void> {
           </VBtn>
         </div>
 
-        <draggable
-          :model-value="track.clips"
-          @update:model-value="(newClips: Clip[]) => updateField({ clips: newClips })"
-          item-key="id"
-          handle=".drag-handle"
-        >
-          <template #item="{ element: clip }">
-            <ClipRow :clip="clip" :track-id="track.id" :comp-id="compId" />
-          </template>
-        </draggable>
+        <VList density="compact" class="pa-0 bg-transparent">
+          <draggable
+            :model-value="track.clips"
+            @update:model-value="(newClips: Clip[]) => updateField({ clips: newClips })"
+            item-key="id"
+            handle=".drag-handle"
+          >
+            <template #item="{ element: clip }">
+              <ClipRow :clip="clip" :track-id="track.id" :comp-id="compId" />
+            </template>
+          </draggable>
+        </VList>
 
         <div v-if="track.clips.length === 0" class="text-caption text-medium-emphasis">
           No clips yet.

@@ -23,33 +23,36 @@ const selectedComp = computed(() =>
   <div>
   <div class="d-flex" style="height: calc(100vh - 140px); overflow: hidden;">
     <!-- Left pane: group header + comp grid -->
-    <div style="width: 300px; min-width: 300px; overflow-y: auto;" class="pr-3">
-      <!-- Add comp + comp cards -->
-      <div class="d-flex align-center mb-3">
-        <VSpacer />
+    <div style="width: 300px; min-width: 300px; display: flex; flex-direction: column;" class="pr-3">
+      <!-- Scrollable comp area -->
+      <div style="flex: 1; overflow-y: auto;">
+        <div class="d-flex flex-wrap ga-2">
+          <CompCard
+            v-for="comp in group.comps"
+            :key="comp.id"
+            :comp="comp"
+            :group-id="group.id"
+            :selected="comp.id === selectedCompId"
+            @select="selectedCompId = $event"
+          />
+        </div>
+
+        <div v-if="group.comps.length === 0" class="text-medium-emphasis text-center pa-4">
+          No comps yet.
+        </div>
+      </div>
+
+      <!-- Pinned Add Comp button at bottom -->
+      <div class="pt-3">
         <VBtn
           prepend-icon="mdi-plus"
           variant="tonal"
           rounded="xl"
+          block
           @click="emit('add-comp', group.id)"
         >
           Add Comp
         </VBtn>
-      </div>
-
-      <div class="d-flex flex-wrap ga-2">
-        <CompCard
-          v-for="comp in group.comps"
-          :key="comp.id"
-          :comp="comp"
-          :group-id="group.id"
-          :selected="comp.id === selectedCompId"
-          @select="selectedCompId = $event"
-        />
-      </div>
-
-      <div v-if="group.comps.length === 0" class="text-medium-emphasis text-center pa-4">
-        No comps yet.
       </div>
     </div>
 
