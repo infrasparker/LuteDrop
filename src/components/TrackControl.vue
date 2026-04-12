@@ -192,59 +192,61 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <VExpansionPanel color="surface-light" rounded="0" style="border-bottom: 1px solid rgba(232, 228, 220, 0.1);">
-    <template #title>
-      <div class="d-flex align-center ga-2" style="width: 100%;">
-        <VBtn
-          :icon="isPlaying ? 'mdi-pause' : 'mdi-play'"
-          :color="isPlaying ? 'secondary' : 'primary'"
-          variant="tonal"
-          size="small"
-          rounded="circle"
-          @click.stop="isPlaying ? pauseTrack() : playTrack()"
-        />
-        <VBtn
-          icon="mdi-stop"
-          variant="tonal"
-          size="small"
-          rounded="circle"
-          @click.stop="stopTrack"
-        />
+  <div class="mb-2" style="border-bottom: 1px solid rgba(232, 228, 220, 0.1);">
+    <VExpansionPanels>
+      <VExpansionPanel color="surface-light" rounded="0" elevation="0">
+        <template #title>
+          <div class="d-flex align-center ga-2" style="width: 100%;">
+            <VBtn
+              :icon="isPlaying ? 'mdi-pause' : 'mdi-play'"
+              :color="isPlaying ? 'secondary' : 'primary'"
+              variant="tonal"
+              size="small"
+              rounded="circle"
+              @click.stop="isPlaying ? pauseTrack() : playTrack()"
+            />
+            <VBtn
+              icon="mdi-stop"
+              variant="tonal"
+              size="small"
+              rounded="circle"
+              @click.stop="stopTrack"
+            />
 
-        <VTextField
-          :model-value="track.name"
-          @update:model-value="(v: string) => updateField({ name: v })"
-          @click.stop
-          @keydown.stop
-          variant="plain"
-          density="compact"
-          hide-details
-          class="text-subtitle-2 font-weight-bold"
-          style="flex: 1 1 0; min-width: 100px;"
-        />
+            <VTextField
+              :model-value="track.name"
+              @update:model-value="(v: string) => updateField({ name: v })"
+              @click.stop
+              @keydown.stop
+              variant="plain"
+              density="compact"
+              hide-details
+              class="text-subtitle-2 font-weight-bold"
+              style="flex: 1 1 0; min-width: 100px;"
+            />
 
-        <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
-          {{ track.clips.length }} clip{{ track.clips.length !== 1 ? 's' : '' }}
-          &middot; {{ track.mode.type }}
-        </span>
+            <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
+              {{ track.clips.length }} clip{{ track.clips.length !== 1 ? 's' : '' }}
+              &middot; {{ track.mode.type }}
+            </span>
 
-        <VSlider
-          :model-value="track.volume"
-          @update:model-value="setVolume"
-          @click.stop
-          @mousedown.stop
-          :min="0"
-          :max="1"
-          :step="0.01"
-          hide-details
-          density="compact"
-          class="mr-4"
-          style="flex: 0 0 120px;"
-        />
-      </div>
-    </template>
+            <VSlider
+              :model-value="track.volume"
+              @update:model-value="setVolume"
+              @click.stop
+              @mousedown.stop
+              :min="0"
+              :max="1"
+              :step="0.01"
+              hide-details
+              density="compact"
+              class="mr-4"
+              style="flex: 0 0 120px;"
+            />
+          </div>
+        </template>
 
-    <template #text>
+        <template #text>
       <div class="d-flex flex-wrap ga-3 mb-2 align-center">
         <div style="max-width: 150px; min-width: 120px;">
           <VSelect
@@ -377,54 +379,6 @@ onUnmounted(() => {
         />
       </div>
 
-      <!-- Seamless mode: single clip -->
-      <div v-if="isSeamless" class="mb-2">
-        <div class="d-flex align-center mb-2">
-          <span class="text-subtitle-2">Clip</span>
-          <VSpacer />
-          <VBtn
-            v-if="!hasClips"
-            prepend-icon="mdi-plus"
-            variant="tonal"
-            rounded="xl"
-            @click="addClips"
-          >
-            Add Clip
-          </VBtn>
-        </div>
-        <div v-if="hasClips">
-          <ClipRow :clip="seamlessClip!" :track-id="track.id" :comp-id="compId" />
-        </div>
-        <div v-else class="text-caption text-medium-emphasis">
-          No clip yet. Seamless mode uses a single clip.
-        </div>
-      </div>
-
-      <!-- Sequence/Shuffle mode: clips list with drag reorder -->
-      <div v-else>
-        <div class="d-flex align-center mb-2">
-          <span class="text-subtitle-2">Clips</span>
-          <VSpacer />
-          <VBtn prepend-icon="mdi-plus" variant="tonal" rounded="xl" @click="addClips">
-            Add Clips
-          </VBtn>
-        </div>
-
-        <div ref="clipsContainer" style="user-select: auto; -webkit-user-select: auto;">
-          <ClipRow
-            v-for="clip in track.clips"
-            :key="clip.id"
-            :clip="clip"
-            :track-id="track.id"
-            :comp-id="compId"
-          />
-        </div>
-
-        <div v-if="track.clips.length === 0" class="text-caption text-medium-emphasis">
-          No clips yet.
-        </div>
-      </div>
-
       <div class="d-flex justify-end mt-3">
         <VBtn
           icon="mdi-delete"
@@ -433,6 +387,57 @@ onUnmounted(() => {
           @click="deleteTrack"
         />
       </div>
-    </template>
-  </VExpansionPanel>
+        </template>
+      </VExpansionPanel>
+    </VExpansionPanels>
+
+    <!-- Clips section: OUTSIDE expansion panel so drag works -->
+    <!-- Seamless mode: single clip -->
+    <div v-if="isSeamless" class="pa-3">
+      <div class="d-flex align-center mb-2">
+        <span class="text-subtitle-2">Clip</span>
+        <VSpacer />
+        <VBtn
+          v-if="!hasClips"
+          prepend-icon="mdi-plus"
+          variant="tonal"
+          rounded="xl"
+          @click="addClips"
+        >
+          Add Clip
+        </VBtn>
+      </div>
+      <div v-if="hasClips">
+        <ClipRow :clip="seamlessClip!" :track-id="track.id" :comp-id="compId" />
+      </div>
+      <div v-else class="text-caption text-medium-emphasis">
+        No clip yet. Seamless mode uses a single clip.
+      </div>
+    </div>
+
+    <!-- Sequence/Shuffle mode: clips list with drag reorder -->
+    <div v-else class="pa-3">
+      <div class="d-flex align-center mb-2">
+        <span class="text-subtitle-2">Clips</span>
+        <VSpacer />
+        <VBtn prepend-icon="mdi-plus" variant="tonal" rounded="xl" @click="addClips">
+          Add Clips
+        </VBtn>
+      </div>
+
+      <div ref="clipsContainer">
+        <ClipRow
+          v-for="clip in track.clips"
+          :key="clip.id"
+          :clip="clip"
+          :track-id="track.id"
+          :comp-id="compId"
+        />
+      </div>
+
+      <div v-if="track.clips.length === 0" class="text-caption text-medium-emphasis">
+        No clips yet.
+      </div>
+    </div>
+  </div>
 </template>
