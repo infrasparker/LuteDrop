@@ -173,6 +173,12 @@ function drawWaveform(): void {
   if (!ctx) return;
 
   const displayWidth = canvas.getBoundingClientRect().width;
+
+  // Canvas not visible yet (expansion panel animating) — retry next frame
+  if (displayWidth <= 0) {
+    requestAnimationFrame(drawWaveform);
+    return;
+  }
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.round(displayWidth * dpr);
   canvas.height = Math.round(CANVAS_HEIGHT * dpr);
