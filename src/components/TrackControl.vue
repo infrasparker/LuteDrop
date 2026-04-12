@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, nextTick, onUnmounted } from 'vue';
+import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import type { Track, TrackMode, TrackTransition, Clip } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
@@ -172,6 +172,7 @@ function initSortable(): void {
   sortableInstance = Sortable.create(clipsContainer.value, {
     handle: '.drag-handle',
     animation: 150,
+    forceFallback: true,
     onEnd: async (event) => {
       if (event.oldIndex === undefined || event.newIndex === undefined) return;
       const clips = [...props.track.clips];
@@ -181,6 +182,10 @@ function initSortable(): void {
     },
   });
 }
+
+onMounted(() => {
+  nextTick(() => initSortable());
+});
 
 watch(clipsContainer, (el) => {
   if (el) nextTick(() => initSortable());
