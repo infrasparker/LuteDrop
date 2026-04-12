@@ -115,6 +115,7 @@ async function createGroup(): Promise<void> {
   await store.command('add_group', { name: newGroupName.value.trim() });
   newGroupName.value = '';
   showNewGroupDialog.value = false;
+  activeTab.value = groups.value.length - 1;
 }
 </script>
 
@@ -163,7 +164,7 @@ async function createGroup(): Promise<void> {
             :value="i"
             @contextmenu.prevent="openContextMenu($event, group)"
             class="tab-truncate"
-            :style="isGroupActive(group) ? { color: '#4CAF50' } : {}"
+            :style="isGroupActive(group) ? { color: '#FF6D00' } : {}"
           >
             {{ group.name }}
           </VTab>

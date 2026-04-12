@@ -90,7 +90,7 @@ async function setVolume(v: number): Promise<void> {
         color="surface-light"
         rounded="0"
         elevation="0"
-        :style="isActive ? { borderLeft: '3px solid rgb(var(--v-theme-primary))' } : { borderLeft: '3px solid transparent' }"
+        :style="isActive ? { borderLeft: '3px solid #FF6D00' } : { borderLeft: '3px solid transparent' }"
         @contextmenu.prevent="openContextMenu"
       >
         <template #title>

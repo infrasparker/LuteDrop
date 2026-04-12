@@ -16,11 +16,7 @@ const remote = useRemote();
 const status = computed(() => remote.getCompStatus(props.comp.id));
 
 const borderStyle = computed(() => {
-  switch (status.value) {
-    case 'active': return '3px solid #4CAF50';
-    case 'partial': return '3px solid #FF6D00';
-    default: return '3px solid transparent';
-  }
+  return status.value !== 'inactive' ? '3px solid #FF6D00' : '3px solid transparent';
 });
 </script>
 
