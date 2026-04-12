@@ -48,6 +48,14 @@ async function renameComp(): Promise<void> {
   showRenameDialog.value = false;
 }
 
+function confirmOrDeleteComp(): void {
+  if (props.comp.tracks.length === 0) {
+    deleteComp();
+  } else {
+    showDeleteConfirm.value = true;
+  }
+}
+
 async function deleteComp(): Promise<void> {
   showDeleteConfirm.value = false;
   await audio.stopComp(props.comp.id);
@@ -102,7 +110,7 @@ function stopComp(): void {
           <template #prepend><VIcon>mdi-pencil</VIcon></template>
           <VListItemTitle>Rename</VListItemTitle>
         </VListItem>
-        <VListItem @click="showDeleteConfirm = true" class="text-error">
+        <VListItem @click="confirmOrDeleteComp" class="text-error">
           <template #prepend><VIcon color="error">mdi-delete</VIcon></template>
           <VListItemTitle>Delete</VListItemTitle>
         </VListItem>

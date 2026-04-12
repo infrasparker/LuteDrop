@@ -45,6 +45,14 @@ async function renameTrack(): Promise<void> {
   showRenameDialog.value = false;
 }
 
+function confirmOrDeleteTrack(): void {
+  if (props.track.clips.length === 0) {
+    deleteTrack();
+  } else {
+    showDeleteConfirm.value = true;
+  }
+}
+
 async function deleteTrack(): Promise<void> {
   showDeleteConfirm.value = false;
   await audio.stopTrack(props.track.id);
@@ -136,7 +144,7 @@ async function setVolume(v: number): Promise<void> {
           <template #prepend><VIcon>mdi-pencil</VIcon></template>
           <VListItemTitle>Rename</VListItemTitle>
         </VListItem>
-        <VListItem @click="showDeleteConfirm = true" class="text-error">
+        <VListItem @click="confirmOrDeleteTrack" class="text-error">
           <template #prepend><VIcon color="error">mdi-delete</VIcon></template>
           <VListItemTitle>Delete</VListItemTitle>
         </VListItem>

@@ -5,6 +5,7 @@ import RemotePlaybackView from './views/RemotePlaybackView.vue';
 
 const remote = useRemote();
 const paused = ref(false);
+const activeTab = ref(0);
 
 const toastVisible = ref(false);
 const toastMessage = ref('');
@@ -81,10 +82,22 @@ function stopAll(): void {
           @click="stopAll"
         />
       </template>
+      <template #extension>
+        <VTabs v-model="activeTab" color="primary" v-if="remote.groups.value.length > 0">
+          <VTab
+            v-for="(group, i) in remote.groups.value"
+            :key="group.id"
+            :value="i"
+            class="tab-truncate"
+          >
+            {{ group.name }}
+          </VTab>
+        </VTabs>
+      </template>
     </VAppBar>
 
     <VMain class="d-flex flex-column" style="height: 100vh;">
-      <RemotePlaybackView class="flex-grow-1" style="overflow: hidden;" />
+      <RemotePlaybackView :active-tab="activeTab" class="flex-grow-1" style="overflow: hidden;" />
     </VMain>
 
     <VSnackbar v-model="toastVisible" :color="toastColor" :timeout="3000">
@@ -92,3 +105,15 @@ function stopAll(): void {
     </VSnackbar>
   </VApp>
 </template>
+
+<style>
+.tab-truncate {
+  max-width: 150px !important;
+}
+.tab-truncate .v-btn__content {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block !important;
+}
+</style>

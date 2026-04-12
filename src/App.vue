@@ -84,6 +84,15 @@ async function renameGroup(): Promise<void> {
   showRenameDialog.value = false;
 }
 
+function confirmOrDeleteGroup(): void {
+  const group = groups.value.find((g) => g.id === contextGroupId.value);
+  if (group && group.comps.length === 0) {
+    deleteGroup();
+  } else {
+    showDeleteConfirm.value = true;
+  }
+}
+
 async function deleteGroup(): Promise<void> {
   showDeleteConfirm.value = false;
   await store.command('delete_group', { groupId: contextGroupId.value });
@@ -190,7 +199,7 @@ async function createGroup(): Promise<void> {
           <template #prepend><VIcon>mdi-pencil</VIcon></template>
           <VListItemTitle>Rename</VListItemTitle>
         </VListItem>
-        <VListItem @click="showDeleteConfirm = true" class="text-error">
+        <VListItem @click="confirmOrDeleteGroup" class="text-error">
           <template #prepend><VIcon color="error">mdi-delete</VIcon></template>
           <VListItemTitle>Delete</VListItemTitle>
         </VListItem>

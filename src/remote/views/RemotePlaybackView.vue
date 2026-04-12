@@ -4,11 +4,14 @@ import { useRemote } from '../composables/useRemote';
 import RemoteCompCard from '../components/RemoteCompCard.vue';
 import RemoteTrackControl from '../components/RemoteTrackControl.vue';
 
+const props = defineProps<{
+  activeTab: number;
+}>();
+
 const remote = useRemote();
-const activeTab = ref(0);
 const selectedCompId = ref<string | null>(null);
 
-const currentGroup = computed(() => remote.groups.value[activeTab.value] ?? null);
+const currentGroup = computed(() => remote.groups.value[props.activeTab] ?? null);
 const selectedComp = computed(() =>
   currentGroup.value?.comps.find((c) => c.id === selectedCompId.value) ?? null
 );
@@ -16,19 +19,6 @@ const selectedComp = computed(() =>
 
 <template>
   <VContainer fluid class="d-flex flex-column" style="height: 100%;">
-    <div class="d-flex align-center mb-4 ga-3">
-      <VTabs v-model="activeTab" density="compact" v-if="remote.groups.value.length > 0">
-        <VTab
-          v-for="(group, i) in remote.groups.value"
-          :key="group.id"
-          :value="i"
-          class="tab-truncate"
-        >
-          {{ group.name }}
-        </VTab>
-      </VTabs>
-    </div>
-
     <div v-if="currentGroup" class="d-flex flex-grow-1" style="overflow: hidden;">
       <!-- Comp grid -->
       <div style="width: 300px; min-width: 300px; display: flex; flex-direction: column;" class="pr-3">
@@ -74,14 +64,3 @@ const selectedComp = computed(() =>
   </VContainer>
 </template>
 
-<style>
-.tab-truncate {
-  max-width: 150px !important;
-}
-.tab-truncate .v-btn__content {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  display: block !important;
-}
-</style>
