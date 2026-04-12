@@ -37,11 +37,11 @@ const selectedComp = computed(() =>
         </div>
 
         <div v-if="group.comps.length === 0" class="text-medium-emphasis text-center pa-4">
-          No comps yet.
+          No compositions yet.
         </div>
       </div>
 
-      <!-- Pinned Add Comp button at bottom -->
+      <!-- Pinned Add Composition button at bottom -->
       <div class="pt-3">
         <VBtn
           prepend-icon="mdi-plus"
@@ -50,7 +50,7 @@ const selectedComp = computed(() =>
           block
           @click="emit('add-comp', group.id)"
         >
-          Add Comp
+          Add Composition
         </VBtn>
       </div>
     </div>

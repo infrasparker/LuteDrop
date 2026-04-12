@@ -35,7 +35,7 @@ const selectedComp = computed(() =>
           />
         </div>
         <div v-if="currentGroup.comps.length === 0" class="text-medium-emphasis text-center pa-4">
-          No comps.
+          No compositions.
         </div>
       </div>
 

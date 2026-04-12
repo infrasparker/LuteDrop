@@ -70,11 +70,11 @@ async function deleteTrack(): Promise<void> {
               @update:model-value="(v: string) => updateField({ name: v })"
               @click.stop
               @keydown.stop
-              variant="plain"
+              variant="underlined"
               density="compact"
               hide-details
               class="text-subtitle-2 font-weight-bold"
-              style="flex: 1 1 0; min-width: 100px;"
+              style="flex: 0 1 200px; min-width: 80px;"
             />
 
             <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
@@ -99,6 +99,7 @@ async function deleteTrack(): Promise<void> {
         </template>
 
         <template #text>
+          <div class="pt-2">
           <TrackSettings :track="track" :comp-id="compId" />
           <TrackClipList :track="track" :comp-id="compId" :is-seamless="isSeamless" />
 
@@ -109,6 +110,7 @@ async function deleteTrack(): Promise<void> {
               color="error"
               @click="deleteTrack"
             />
+          </div>
           </div>
         </template>
       </VExpansionPanel>

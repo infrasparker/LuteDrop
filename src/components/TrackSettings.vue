@@ -48,8 +48,9 @@ const showWaveform = computed(() => isSeamless.value && seamlessClip.value !== n
 </script>
 
 <template>
-  <div class="d-flex flex-wrap ga-3 mb-2 align-center">
-    <div style="max-width: 150px; min-width: 120px;">
+  <!-- All settings on one row, wraps if needed -->
+  <div class="d-flex flex-wrap ga-3 mb-3 align-center">
+    <div style="min-width: 110px; max-width: 130px;">
       <VSelect
         :model-value="modeType"
         @update:model-value="updateMode"
@@ -60,106 +61,107 @@ const showWaveform = computed(() => isSeamless.value && seamlessClip.value !== n
         hide-details
       />
     </div>
-    <div v-if="isSeamless" style="max-width: 150px; min-width: 120px;">
-      <VTextField
-        :model-value="(track.mode as any).loopStart"
-        @update:model-value="updateLoopStart"
-        label="Loop Start (s)"
-        type="number"
-        variant="outlined"
-        density="compact"
-        hide-details
-      />
-    </div>
-    <div v-if="isSeamless" style="max-width: 150px; min-width: 120px;">
-      <VTextField
-        :model-value="(track.mode as any).loopEnd"
-        @update:model-value="updateLoopEnd"
-        label="Loop End (s)"
-        type="number"
-        variant="outlined"
-        density="compact"
-        hide-details
-      />
-    </div>
-    <div v-if="hasTransition" style="max-width: 150px; min-width: 120px;">
-      <VSelect
-        :model-value="transitionType"
-        @update:model-value="updateTransition"
-        :items="transitionOptions"
-        label="Transition"
-        variant="outlined"
-        density="compact"
-        hide-details
-      />
-    </div>
-    <div v-if="hasTransition" style="max-width: 150px; min-width: 120px;">
+
+    <template v-if="isSeamless">
+      <div style="min-width: 100px; max-width: 120px;">
+        <VTextField
+          :model-value="(track.mode as any).loopStart"
+          @update:model-value="updateLoopStart"
+          label="Loop Start"
+          type="number"
+          variant="outlined"
+          density="compact"
+          hide-details
+        />
+      </div>
+      <div style="min-width: 100px; max-width: 120px;">
+        <VTextField
+          :model-value="(track.mode as any).loopEnd"
+          @update:model-value="updateLoopEnd"
+          label="Loop End"
+          type="number"
+          variant="outlined"
+          density="compact"
+          hide-details
+        />
+      </div>
+    </template>
+
+    <template v-if="hasTransition">
+      <div style="min-width: 110px; max-width: 130px;">
+        <VSelect
+          :model-value="transitionType"
+          @update:model-value="updateTransition"
+          :items="transitionOptions"
+          label="Transition"
+          variant="outlined"
+          density="compact"
+          hide-details
+        />
+      </div>
       <VCheckbox
+        v-if="hasTransition"
         :model-value="(track.mode as any).repeat"
         @update:model-value="updateRepeat"
         label="Repeat"
         density="compact"
         hide-details
       />
-    </div>
-  </div>
+    </template>
 
-  <div v-if="hasTransition && transitionType === 'gap'" class="d-flex flex-wrap ga-3 mb-2 align-center">
-    <div style="max-width: 150px; min-width: 120px;">
-      <VTextField
-        :model-value="(track.mode as any).transition.min"
-        @update:model-value="updateGapMin"
-        label="Gap Min (s)"
-        type="number"
-        variant="outlined"
-        density="compact"
-        hide-details
-      />
-    </div>
-    <div style="max-width: 150px; min-width: 120px;">
-      <VTextField
-        :model-value="(track.mode as any).transition.max"
-        @update:model-value="updateGapMax"
-        label="Gap Max (s)"
-        type="number"
-        variant="outlined"
-        density="compact"
-        hide-details
-      />
-    </div>
-  </div>
+    <template v-if="hasTransition && transitionType === 'gap'">
+      <div style="min-width: 90px; max-width: 110px;">
+        <VTextField
+          :model-value="(track.mode as any).transition.min"
+          @update:model-value="updateGapMin"
+          label="Gap Min"
+          type="number"
+          variant="outlined"
+          density="compact"
+          hide-details
+        />
+      </div>
+      <div style="min-width: 90px; max-width: 110px;">
+        <VTextField
+          :model-value="(track.mode as any).transition.max"
+          @update:model-value="updateGapMax"
+          label="Gap Max"
+          type="number"
+          variant="outlined"
+          density="compact"
+          hide-details
+        />
+      </div>
+    </template>
 
-  <div v-if="hasTransition && transitionType === 'crossfade'" class="d-flex flex-wrap ga-3 mb-2 align-center">
-    <div style="max-width: 150px; min-width: 120px;">
+    <div v-if="hasTransition && transitionType === 'crossfade'" style="min-width: 100px; max-width: 120px;">
       <VTextField
         :model-value="(track.mode as any).transition.duration"
         @update:model-value="updateCrossfade"
-        label="Crossfade (s)"
+        label="Crossfade"
         type="number"
         variant="outlined"
         density="compact"
         hide-details
       />
     </div>
-  </div>
 
-  <div class="d-flex flex-wrap ga-3 mb-3 align-center">
-    <div style="max-width: 150px; min-width: 120px;">
+    <div style="min-width: 90px; max-width: 110px;">
       <VTextField
         :model-value="track.fadeIn"
         @update:model-value="updateFadeIn"
-        label="Fade In (s)"
+        label="Fade In"
         type="number"
         variant="outlined"
         density="compact"
         hide-details
       />
     </div>
-    <div style="max-width: 150px; min-width: 120px;">
+    <div style="min-width: 90px; max-width: 110px;">
       <VTextField
         :model-value="track.fadeOut"
         @update:model-value="updateFadeOut"
-        label="Fade Out (s)"
+        label="Fade Out"
         type="number"
         variant="outlined"
         density="compact"
