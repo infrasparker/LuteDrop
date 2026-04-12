@@ -360,7 +360,7 @@ async function deleteTrack(): Promise<void> {
                 v-if="!hasClips"
                 prepend-icon="mdi-plus"
                 variant="tonal"
-                rounded="pill"
+                rounded="xl"
                 @click="addClips"
               >
                 Add Clip
@@ -379,7 +379,7 @@ async function deleteTrack(): Promise<void> {
             <div class="d-flex align-center mb-2">
               <span class="text-subtitle-2">Clips</span>
               <VSpacer />
-              <VBtn prepend-icon="mdi-plus" variant="tonal" rounded="pill" @click="addClips">
+              <VBtn prepend-icon="mdi-plus" variant="tonal" rounded="xl" @click="addClips">
                 Add Clips
               </VBtn>
             </div>

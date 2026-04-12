@@ -42,7 +42,7 @@ async function importTracksToComp(): Promise<void> {
       <VBtn
         prepend-icon="mdi-plus"
         variant="tonal"
-        rounded="pill"
+        rounded="xl"
         @click="importTracksToComp"
       >
         Add Track
