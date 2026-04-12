@@ -84,8 +84,9 @@ async function createComp(): Promise<void> {
           :key="group.id"
           :value="i"
           @contextmenu.prevent="openContextMenu($event, group)"
+          style="max-width: 150px;"
         >
-          {{ group.name }}
+          <span class="text-truncate">{{ group.name }}</span>
         </VTab>
       </VTabs>
       <VBtn
