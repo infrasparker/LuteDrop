@@ -722,13 +722,13 @@ impl AudioEngine {
         // Drop any previous outgoing handle
         active.outgoing_handle = None;
 
-        // Equal-power crossfade: fade-out stays loud longer (InPowi),
-        // fade-in ramps up faster (OutPowi). This keeps combined volume
-        // near constant through the overlap instead of dipping at midpoint.
+        // Equal-power crossfade: both clips stay near full volume longer.
+        // InPowi(3) fade-out holds loud until the last third, OutPowi(3)
+        // fade-in reaches near-full quickly. Combined energy stays constant.
         if let Some(ref mut handle) = old_handle {
             let _ = handle.stop(Tween {
                 duration: Duration::from_secs_f64(crossfade_duration),
-                easing: Easing::InPowi(2),
+                easing: Easing::InPowi(3),
                 ..Default::default()
             });
         }
@@ -750,7 +750,7 @@ impl AudioEngine {
         sound_data = sound_data.volume(amplitude_to_decibels(combined_volume));
         sound_data = sound_data.fade_in_tween(Tween {
             duration: Duration::from_secs_f64(crossfade_duration),
-            easing: Easing::OutPowi(2),
+            easing: Easing::OutPowi(3),
             ..Default::default()
         });
 
