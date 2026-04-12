@@ -34,7 +34,7 @@ function stopAll(): void {
 
 <template>
   <VApp @contextmenu.prevent>
-    <VAppBar density="compact" color="surface">
+    <VAppBar color="surface">
       <VAppBarTitle>
         <span class="text-primary font-weight-bold">LuteDrop</span>
         <span v-if="serverUrl" class="text-caption text-medium-emphasis ml-3">
