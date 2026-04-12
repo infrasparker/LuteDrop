@@ -14,6 +14,11 @@ export default defineConfig({
     },
   },
   root: 'src/remote',
+  server: {
+    port: 1421,
+    strictPort: true,
+    host: true,
+  },
   build: {
     outDir: '../../dist-remote',
     emptyOutDir: true,
