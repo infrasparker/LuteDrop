@@ -15,27 +15,36 @@ const selectedComp = computed(() =>
 </script>
 
 <template>
-  <VContainer fluid>
-    <VTabs v-model="activeTab" density="compact" v-if="remote.groups.value.length > 0" class="mb-4">
-      <VTab v-for="(group, i) in remote.groups.value" :key="group.id" :value="i">
-        {{ group.name }}
-      </VTab>
-    </VTabs>
+  <VContainer fluid class="d-flex flex-column" style="height: 100%;">
+    <div class="d-flex align-center mb-4 ga-3">
+      <VTabs v-model="activeTab" density="compact" v-if="remote.groups.value.length > 0">
+        <VTab
+          v-for="(group, i) in remote.groups.value"
+          :key="group.id"
+          :value="i"
+          class="tab-truncate"
+        >
+          {{ group.name }}
+        </VTab>
+      </VTabs>
+    </div>
 
-    <div v-if="currentGroup" class="d-flex" style="height: calc(100vh - 120px);">
+    <div v-if="currentGroup" class="d-flex flex-grow-1" style="overflow: hidden;">
       <!-- Comp grid -->
-      <div style="width: 300px; min-width: 300px; overflow-y: auto;" class="pr-3">
-        <div class="d-flex flex-wrap ga-2">
-          <RemoteCompCard
-            v-for="comp in currentGroup.comps"
-            :key="comp.id"
-            :comp="comp"
-            :selected="comp.id === selectedCompId"
-            @select="selectedCompId = $event"
-          />
-        </div>
-        <div v-if="currentGroup.comps.length === 0" class="text-medium-emphasis text-center pa-4">
-          No compositions.
+      <div style="width: 300px; min-width: 300px; display: flex; flex-direction: column;" class="pr-3">
+        <div style="flex: 1; overflow-y: auto;">
+          <div class="d-flex flex-wrap ga-2">
+            <RemoteCompCard
+              v-for="comp in currentGroup.comps"
+              :key="comp.id"
+              :comp="comp"
+              :selected="comp.id === selectedCompId"
+              @select="selectedCompId = $event"
+            />
+          </div>
+          <div v-if="currentGroup.comps.length === 0" class="text-medium-emphasis text-center pa-4">
+            No compositions.
+          </div>
         </div>
       </div>
 
@@ -54,7 +63,7 @@ const selectedComp = computed(() =>
           </div>
         </div>
         <div v-else class="text-medium-emphasis text-center pa-8">
-          Select a composition.
+          Select a composition to see its tracks.
         </div>
       </div>
     </div>
@@ -64,3 +73,15 @@ const selectedComp = computed(() =>
     </div>
   </VContainer>
 </template>
+
+<style>
+.tab-truncate {
+  max-width: 150px !important;
+}
+.tab-truncate .v-btn__content {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block !important;
+}
+</style>

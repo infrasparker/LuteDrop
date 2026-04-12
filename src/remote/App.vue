@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import { useRemote } from './composables/useRemote';
 import RemotePlaybackView from './views/RemotePlaybackView.vue';
 
@@ -9,6 +9,20 @@ const paused = ref(false);
 const toastVisible = ref(false);
 const toastMessage = ref('');
 const toastColor = ref('error');
+
+function showToast(message: string, color = 'error'): void {
+  toastMessage.value = message;
+  toastColor.value = color;
+  toastVisible.value = true;
+}
+
+watch(remote.connected, (connected, wasConnected) => {
+  if (wasConnected && !connected) {
+    showToast('Disconnected from server', 'error');
+  } else if (!wasConnected && connected) {
+    showToast('Connected to server', 'success');
+  }
+});
 
 function togglePause(): void {
   if (paused.value) {
@@ -27,15 +41,14 @@ function stopAll(): void {
 </script>
 
 <template>
-  <VApp>
-    <VAppBar density="compact" color="surface">
+  <VApp @contextmenu.prevent>
+    <VAppBar color="surface">
       <VAppBarTitle>
-        <span class="text-primary font-weight-bold">LuteDrop</span>
-        <span class="text-caption text-medium-emphasis ml-2">Remote</span>
+        <span class="text-primary font-weight-bold">LuteDrop Remote</span>
         <VIcon
           :color="remote.connected.value ? 'success' : 'error'"
           size="x-small"
-          class="ml-2"
+          class="ml-3"
         >
           {{ remote.connected.value ? 'mdi-wifi' : 'mdi-wifi-off' }}
         </VIcon>
@@ -70,8 +83,8 @@ function stopAll(): void {
       </template>
     </VAppBar>
 
-    <VMain>
-      <RemotePlaybackView />
+    <VMain class="d-flex flex-column" style="height: 100vh;">
+      <RemotePlaybackView class="flex-grow-1" style="overflow: hidden;" />
     </VMain>
 
     <VSnackbar v-model="toastVisible" :color="toastColor" :timeout="3000">
