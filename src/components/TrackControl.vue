@@ -175,9 +175,12 @@ function initSortable(): void {
     forceFallback: true,
     fallbackClass: 'sortable-fallback',
     ghostClass: 'sortable-ghost',
-    chosenClass: 'sortable-chosen',
     fallbackOnBody: true,
+    onStart: () => {
+      document.body.classList.add('sortable-dragging');
+    },
     onEnd: async (event) => {
+      document.body.classList.remove('sortable-dragging');
       if (event.oldIndex === undefined || event.newIndex === undefined) return;
       const clips = [...props.track.clips];
       const [moved] = clips.splice(event.oldIndex, 1);
@@ -453,21 +456,7 @@ onUnmounted(() => {
 <style>
 /* Global styles for SortableJS (not scoped — SortableJS adds classes directly to DOM) */
 .sortable-ghost {
-  opacity: 0;
-  height: 2px !important;
-  overflow: hidden;
-  padding: 0 !important;
-  margin: 0 !important;
-  border: none !important;
-  background: rgba(240, 168, 48, 0.5);
-}
-
-.sortable-chosen {
-  cursor: grabbing !important;
-}
-
-.sortable-chosen * {
-  cursor: grabbing !important;
+  visibility: hidden;
 }
 
 .sortable-fallback {
@@ -475,10 +464,11 @@ onUnmounted(() => {
   background: #1E1E24;
   border-radius: 4px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-  cursor: grabbing !important;
 }
 
-.sortable-fallback * {
+/* Force grabbing cursor on everything while dragging */
+body.sortable-dragging,
+body.sortable-dragging * {
   cursor: grabbing !important;
 }
 </style>
