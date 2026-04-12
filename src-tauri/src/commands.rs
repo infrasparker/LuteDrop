@@ -135,13 +135,15 @@ pub fn resume_all(state: State<'_, Arc<AppStateContainer>>) -> Result<(), String
 
 #[tauri::command]
 pub async fn get_waveform_data(
+    state: State<'_, Arc<AppStateContainer>>,
     file_path: String,
     width: u32,
     start: Option<f64>,
     end: Option<f64>,
 ) -> Result<WaveformData, String> {
+    let state_clone = state.inner().clone();
     tokio::task::spawn_blocking(move || -> Result<WaveformData, String> {
-        let (peaks, duration) = waveform::extract_peaks(&file_path, width, start, end)?;
+        let (peaks, duration) = waveform::extract_peaks(&file_path, width, start, end, &state_clone.peak_cache)?;
         Ok(WaveformData { peaks, duration })
     })
     .await
