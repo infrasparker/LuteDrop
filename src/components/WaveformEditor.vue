@@ -438,7 +438,10 @@ let resizeObserver: ResizeObserver | null = null;
 watch(canvasRef, (canvas) => {
   if (canvas && data.basePeaks.value.length > 0) drawWaveform();
 });
-watch(data.basePeaks, () => drawWaveform());
+watch(data.basePeaks, () => {
+  if (data.basePeaks.value.length > 0) zoom.resetView();
+  drawWaveform();
+});
 watch(data.zoomedPeaks, () => drawWaveform());
 watch(() => [props.loopStart, props.loopEnd], () => drawWaveform());
 
