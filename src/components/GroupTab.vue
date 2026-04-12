@@ -20,7 +20,7 @@ const selectedComp = computed(() =>
 </script>
 
 <template>
-  <div class="d-flex" style="height: calc(100vh - 140px); overflow: hidden;">
+  <div class="d-flex" style="height: 100%;">
     <!-- Left pane: group header + comp grid -->
     <div style="width: 300px; min-width: 300px; display: flex; flex-direction: column;" class="pr-3">
       <!-- Scrollable comp area -->

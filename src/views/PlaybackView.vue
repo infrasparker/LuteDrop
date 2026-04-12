@@ -76,7 +76,7 @@ async function createComp(): Promise<void> {
 </script>
 
 <template>
-  <VContainer fluid>
+  <VContainer fluid class="d-flex flex-column" style="height: 100%;">
     <div class="d-flex align-center mb-4 ga-3">
       <VTabs v-model="activeTab" density="compact" v-if="groups.length > 0">
         <VTab
@@ -100,6 +100,8 @@ async function createComp(): Promise<void> {
       v-if="groups.length > 0 && groups[activeTab]"
       :group="groups[activeTab]"
       @add-comp="openNewCompDialog"
+      class="flex-grow-1"
+      style="overflow: hidden;"
     />
 
     <div v-else class="text-center text-medium-emphasis pa-8">

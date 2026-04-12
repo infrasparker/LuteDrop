@@ -64,8 +64,8 @@ function stopAll(): void {
       </template>
     </VAppBar>
 
-    <VMain>
-      <PlaybackView />
+    <VMain class="d-flex flex-column" style="height: 100vh;">
+      <PlaybackView class="flex-grow-1" style="overflow: hidden;" />
     </VMain>
   </VApp>
 </template>
