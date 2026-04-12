@@ -183,7 +183,7 @@ impl AudioEngine {
             .position(|c| c.id == clip_id)
             .ok_or_else(|| format!("Clip not found: {}", clip_id))?;
 
-        self.start_clip(track_id, clip_index)
+        self.start_clip_fresh(track_id, clip_index)
     }
 
     /// Play a track from a specific time position (in seconds).
@@ -209,10 +209,10 @@ impl AudioEngine {
             return self.resume_track(track_id);
         }
 
-        // Pick the first clip and start it
+        // Pick the first clip and start it (fresh start = apply track fade)
         let clip_index = self.pick_first_clip(track_id)?;
         match clip_index {
-            Some(idx) => self.start_clip(track_id, idx),
+            Some(idx) => self.start_clip_fresh(track_id, idx),
             None => Err(format!("Track {} has no clips", track_id)),
         }
     }
@@ -518,18 +518,30 @@ impl AudioEngine {
 
     // --- Internal methods ---
 
-    /// Start a specific clip on a track, applying volume, loop region, trim, and fade in.
+    /// Start a clip as part of a transition (no track fade-in).
     fn start_clip(&mut self, track_id: &str, clip_index: usize) -> Result<(), String> {
-        self.start_clip_at(track_id, clip_index, None)
+        self.start_clip_inner(track_id, clip_index, None, false)
     }
 
-    /// Start a specific clip on a track with an optional start position offset.
-    /// If `start_position` is Some, playback begins at that time (in seconds).
-    fn start_clip_at(
+    /// Start a clip as a fresh track start (applies track fade-in).
+    fn start_clip_fresh(&mut self, track_id: &str, clip_index: usize) -> Result<(), String> {
+        self.start_clip_inner(track_id, clip_index, None, true)
+    }
+
+    /// Start a clip from a position (applies track fade-in).
+    fn start_clip_at(&mut self, track_id: &str, clip_index: usize, start_position: Option<f64>) -> Result<(), String> {
+        self.start_clip_inner(track_id, clip_index, start_position, true)
+    }
+
+    /// Internal: start a specific clip on a track.
+    /// `apply_track_fade` controls whether the track's fade_in is applied
+    /// (true for fresh starts, false for clip-to-clip transitions).
+    fn start_clip_inner(
         &mut self,
         track_id: &str,
         clip_index: usize,
         start_position: Option<f64>,
+        apply_track_fade: bool,
     ) -> Result<(), String> {
         let active = self
             .tracks
@@ -593,14 +605,16 @@ impl AudioEngine {
             _ => {}
         }
 
-        // Apply fade in
-        let fade_in = active.config.fade_in;
-        if fade_in > 0.0 {
-            sound_data = sound_data.fade_in_tween(Tween {
-                duration: Duration::from_secs_f64(fade_in),
-                easing: Easing::InPowi(2),
-                ..Default::default()
-            });
+        // Apply track fade-in only on fresh starts, not clip-to-clip transitions
+        if apply_track_fade {
+            let fade_in = active.config.fade_in;
+            if fade_in > 0.0 {
+                sound_data = sound_data.fade_in_tween(Tween {
+                    duration: Duration::from_secs_f64(fade_in),
+                    easing: Easing::InPowi(2),
+                    ..Default::default()
+                });
+            }
         }
 
         // Set volume
