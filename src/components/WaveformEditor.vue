@@ -31,6 +31,10 @@ const duration = ref(0);
 const loading = ref(false);
 const error = ref('');
 
+// Track what time range the current peaks represent
+const peaksRangeStart = ref(0);
+const peaksRangeEnd = ref(0);
+
 // Zoom & pan state
 const zoomLevel = ref(1.0);
 const viewStart = ref(0);
@@ -64,6 +68,52 @@ const canvasCursor = computed(() => {
   if (isZoomed.value) return 'grab';
   return 'pointer';
 });
+
+// Debounced zoom peak request
+let zoomDebounce: ReturnType<typeof setTimeout> | null = null;
+
+function requestZoomedPeaks(): void {
+  if (zoomDebounce) clearTimeout(zoomDebounce);
+  zoomDebounce = setTimeout(async () => {
+    if (duration.value <= 0 || !props.filePath) return;
+
+    if (!isZoomed.value) {
+      // Zoomed all the way out -- request full-file peaks at base resolution
+      try {
+        const data = await invoke<WaveformData>('get_waveform_data', {
+          filePath: props.filePath,
+          width: 1200,
+        });
+        peaks.value = data.peaks;
+        peaksRangeStart.value = 0;
+        peaksRangeEnd.value = data.duration;
+        drawWaveform();
+      } catch (_) {
+        // keep existing peaks on error
+      }
+      return;
+    }
+
+    // Request high-res peaks for only the visible range
+    const canvasPixelWidth = Math.round(getCanvasWidth() * (window.devicePixelRatio || 1));
+    try {
+      const reqStart = viewStart.value;
+      const reqEnd = viewEnd.value;
+      const data = await invoke<WaveformData>('get_waveform_data', {
+        filePath: props.filePath,
+        width: canvasPixelWidth,
+        start: reqStart,
+        end: reqEnd,
+      });
+      peaks.value = data.peaks;
+      peaksRangeStart.value = reqStart;
+      peaksRangeEnd.value = reqEnd;
+      drawWaveform();
+    } catch (_) {
+      // keep existing peaks on error
+    }
+  }, 150);
+}
 
 // Get the actual pixel width of the canvas element
 function getCanvasWidth(): number {
@@ -109,6 +159,8 @@ async function loadWaveform(): Promise<void> {
     });
     peaks.value = data.peaks;
     duration.value = data.duration;
+    peaksRangeStart.value = 0;
+    peaksRangeEnd.value = data.duration;
     resetView();
   } catch (e: unknown) {
     error.value = String(e);
@@ -160,20 +212,24 @@ function drawWaveform(): void {
 
   if (peaks.value.length === 0) return;
 
-  const dur = duration.value;
   const peakCount = peaks.value.length;
+  const pStart = peaksRangeStart.value;
+  const pEnd = peaksRangeEnd.value;
+  const pDuration = pEnd - pStart;
 
-  // Only draw peaks within the visible range
-  const startPeakIndex = Math.max(0, Math.floor((viewStart.value / dur) * peakCount));
-  const endPeakIndex = Math.min(peakCount, Math.ceil((viewEnd.value / dur) * peakCount));
+  if (pDuration <= 0) return;
 
-  // Each peak maps to a time; compute its X position in the zoomed view
+  // Only draw peaks that fall within the visible range
+  const startPeakIndex = Math.max(0, Math.floor(((viewStart.value - pStart) / pDuration) * peakCount));
+  const endPeakIndex = Math.min(peakCount, Math.ceil(((viewEnd.value - pStart) / pDuration) * peakCount));
+
+  // Each peak maps to a time within [pStart, pEnd]; compute its X position
   const maxBarHeight = midY - 2;
 
   for (let i = startPeakIndex; i < endPeakIndex; i++) {
     const peak = peaks.value[i];
-    const peakTime = (i / peakCount) * dur;
-    const nextPeakTime = ((i + 1) / peakCount) * dur;
+    const peakTime = pStart + (i / peakCount) * pDuration;
+    const nextPeakTime = pStart + ((i + 1) / peakCount) * pDuration;
     const x = secondsToX(peakTime, cssW);
     const xNext = secondsToX(nextPeakTime, cssW);
     const barWidth = xNext - x;
@@ -325,8 +381,12 @@ function onMouseMove(event: MouseEvent): void {
 }
 
 function onMouseUp(): void {
+  const wasPanning = panning.value;
   dragging.value = null;
   panning.value = false;
+  if (wasPanning && isZoomed.value) {
+    requestZoomedPeaks();
+  }
 }
 
 function onWheel(event: WheelEvent): void {
@@ -353,12 +413,14 @@ function onWheel(event: WheelEvent): void {
   zoomLevel.value = newZoom;
   clampView();
   drawWaveform();
+  requestZoomedPeaks();
 }
 
 function onDblClick(): void {
   if (duration.value <= 0) return;
   resetView();
   drawWaveform();
+  requestZoomedPeaks();
 }
 
 function onResize(): void {
@@ -391,6 +453,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  if (zoomDebounce) clearTimeout(zoomDebounce);
   window.removeEventListener('mousemove', onMouseMove);
   window.removeEventListener('mouseup', onMouseUp);
   window.removeEventListener('resize', onResize);
