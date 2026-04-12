@@ -171,8 +171,12 @@ function initSortable(): void {
   if (!clipsContainer.value) return;
   sortableInstance = Sortable.create(clipsContainer.value, {
     handle: '.drag-handle',
-    animation: 150,
+    animation: 200,
     forceFallback: true,
+    fallbackClass: 'sortable-fallback',
+    ghostClass: 'sortable-ghost',
+    chosenClass: 'sortable-chosen',
+    fallbackOnBody: true,
     onEnd: async (event) => {
       if (event.oldIndex === undefined || event.newIndex === undefined) return;
       const clips = [...props.track.clips];
@@ -445,3 +449,22 @@ onUnmounted(() => {
     </VExpansionPanels>
   </div>
 </template>
+
+<style>
+/* Global styles for SortableJS (not scoped — SortableJS adds classes directly to DOM) */
+.sortable-ghost {
+  opacity: 0.3;
+}
+
+.sortable-chosen {
+  background: rgba(240, 168, 48, 0.1);
+  border-radius: 4px;
+}
+
+.sortable-fallback {
+  opacity: 0.9;
+  background: #1E1E24;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+</style>
