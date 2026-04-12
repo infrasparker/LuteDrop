@@ -66,6 +66,15 @@ function togglePause(): void {
   }
 }
 
+function isGroupActive(group: Group): boolean {
+  return group.comps.some((comp) =>
+    comp.tracks.some((track) => {
+      const s = store.playbackStates.get(track.id);
+      return s?.isPlaying || s?.isPaused;
+    })
+  );
+}
+
 function openContextMenu(event: MouseEvent, group: Group): void {
   contextGroupId.value = group.id;
   contextGroupName.value = group.name;
@@ -154,6 +163,7 @@ async function createGroup(): Promise<void> {
             :value="i"
             @contextmenu.prevent="openContextMenu($event, group)"
             class="tab-truncate"
+            :style="isGroupActive(group) ? { borderBottom: '3px solid rgb(var(--v-theme-primary))' } : {}"
           >
             {{ group.name }}
           </VTab>

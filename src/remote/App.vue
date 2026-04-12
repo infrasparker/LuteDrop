@@ -1,9 +1,19 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue';
+import type { Group } from '@generated/index';
 import { useRemote } from './composables/useRemote';
 import RemotePlaybackView from './views/RemotePlaybackView.vue';
 
 const remote = useRemote();
+
+function isGroupActive(group: Group): boolean {
+  return group.comps.some((comp) =>
+    comp.tracks.some((track) => {
+      const s = remote.playbackStates.get(track.id);
+      return s?.isPlaying || s?.isPaused;
+    })
+  );
+}
 const paused = ref(false);
 const activeTab = ref(0);
 
@@ -89,6 +99,7 @@ function stopAll(): void {
             :key="group.id"
             :value="i"
             class="tab-truncate"
+            :style="isGroupActive(group) ? { borderBottom: '3px solid rgb(var(--v-theme-primary))' } : {}"
           >
             {{ group.name }}
           </VTab>
