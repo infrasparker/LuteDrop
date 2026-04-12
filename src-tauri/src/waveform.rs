@@ -11,9 +11,10 @@ use symphonia::core::units::Time;
 /// Extract waveform peaks from an audio file using seek-based sampling.
 ///
 /// Instead of decoding the entire file, this seeks to evenly-spaced positions
-/// and decodes one packet at each to compute the peak value. For a 1-hour file
-/// with 1200 peaks, this decodes ~31 seconds of audio instead of 3600 — roughly
-/// 100x faster.
+/// and decodes multiple consecutive packets at each to compute the peak value.
+/// For a 1-hour file with 1200 peaks and 8 packets per sample, this decodes
+/// ~9600 packets (~7% of a typical MP3) — much faster than full decode but
+/// much more accurate than single-frame sampling.
 ///
 /// - `width`: number of peak bins
 /// - `start`/`end`: optional time range in seconds (None = full file)
@@ -35,7 +36,8 @@ pub fn extract_peaks(
     }
 }
 
-/// Fast path: seek to evenly-spaced positions and decode one packet each.
+/// Fast path: seek to evenly-spaced positions and decode multiple packets each
+/// for accurate peak representation.
 fn extract_peaks_seek(
     file_path: &str,
     width: usize,
@@ -143,8 +145,15 @@ fn extract_peaks_seek(
     Ok((peaks, duration_seconds))
 }
 
-/// Seek to a position, decode one packet, and return the peak absolute value
-/// (mixed to mono). Returns 0.0 on any error (EOF, seek failure, etc.).
+/// Number of consecutive packets to decode at each sample position.
+/// More packets = more accurate peak representation at each position.
+/// For 1200 peaks this means ~9600 packets total — still a small fraction
+/// of a typical file (~140k frames for a 1-hour MP3).
+const PACKETS_PER_SAMPLE: usize = 8;
+
+/// Seek to a position, decode multiple consecutive packets, and return the
+/// max peak absolute value (mixed to mono) across all of them. Returns 0.0
+/// on any error (EOF, seek failure, etc.).
 fn seek_and_sample(
     format_reader: &mut Box<dyn FormatReader>,
     decoder: &mut Box<dyn symphonia::core::codecs::Decoder>,
@@ -163,11 +172,15 @@ fn seek_and_sample(
         return 0.0;
     }
 
-    // Read packets until we get one for our track (usually the first one)
-    for _ in 0..3 {
+    let mut overall_max: f32 = 0.0;
+    let mut packets_decoded: usize = 0;
+
+    // Decode up to PACKETS_PER_SAMPLE consecutive packets from this position
+    // and take the max peak across all of them.
+    while packets_decoded < PACKETS_PER_SAMPLE {
         let packet = match format_reader.next_packet() {
             Ok(p) => p,
-            Err(_) => return 0.0,
+            Err(_) => break,
         };
 
         if packet.track_id() != track_id {
@@ -176,7 +189,7 @@ fn seek_and_sample(
 
         let decoded = match decoder.decode(&packet) {
             Ok(buf) => buf,
-            Err(_) => return 0.0,
+            Err(_) => break,
         };
 
         let spec = *decoded.spec();
@@ -184,30 +197,30 @@ fn seek_and_sample(
         let num_channels = spec.channels.count();
 
         if num_frames == 0 || num_channels == 0 {
-            return 0.0;
+            packets_decoded += 1;
+            continue;
         }
 
         let mut sample_buf = SampleBuffer::<f32>::new(num_frames as u64, spec);
         sample_buf.copy_interleaved_ref(decoded);
         let samples = sample_buf.samples();
 
-        // Find max absolute value, mixing to mono
-        let mut max_abs: f32 = 0.0;
+        // Find max absolute value in this packet, mixing to mono
         for frame_idx in 0..num_frames {
             let mut mono_sum: f32 = 0.0;
             for ch in 0..num_channels {
                 mono_sum += samples[frame_idx * num_channels + ch];
             }
             let mono_val = (mono_sum / num_channels as f32).abs();
-            if mono_val > max_abs {
-                max_abs = mono_val;
+            if mono_val > overall_max {
+                overall_max = mono_val;
             }
         }
 
-        return max_abs;
+        packets_decoded += 1;
     }
 
-    0.0
+    overall_max
 }
 
 /// Fallback: decode the entire file and compute peaks from all samples.

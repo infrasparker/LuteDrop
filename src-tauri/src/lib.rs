@@ -73,6 +73,7 @@ pub fn run() {
             commands::add_clip,
             commands::delete_clip,
             commands::play_track,
+            commands::play_track_from,
             commands::pause_track,
             commands::stop_track,
             commands::set_master_volume,

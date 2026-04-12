@@ -112,6 +112,16 @@ impl AudioEngine {
         self.tracks.contains_key(track_id)
     }
 
+    /// Play a track from a specific time position (in seconds).
+    /// Always starts fresh (stops any current sound, ignores pause state).
+    pub fn play_track_from(&mut self, track_id: &str, start_position: f64) -> Result<(), String> {
+        let clip_index = self.pick_first_clip(track_id)?;
+        match clip_index {
+            Some(idx) => self.start_clip_at(track_id, idx, Some(start_position)),
+            None => Err(format!("Track {} has no clips", track_id)),
+        }
+    }
+
     /// Play a track. If paused, resume. Otherwise start from the first clip.
     pub fn play_track(&mut self, track_id: &str) -> Result<(), String> {
         // Check if paused first
@@ -420,6 +430,17 @@ impl AudioEngine {
 
     /// Start a specific clip on a track, applying volume, loop region, trim, and fade in.
     fn start_clip(&mut self, track_id: &str, clip_index: usize) -> Result<(), String> {
+        self.start_clip_at(track_id, clip_index, None)
+    }
+
+    /// Start a specific clip on a track with an optional start position offset.
+    /// If `start_position` is Some, playback begins at that time (in seconds).
+    fn start_clip_at(
+        &mut self,
+        track_id: &str,
+        clip_index: usize,
+        start_position: Option<f64>,
+    ) -> Result<(), String> {
         let active = self
             .tracks
             .get_mut(track_id)
@@ -443,6 +464,11 @@ impl AudioEngine {
         // Load the audio file (streaming: decodes in chunks from disk, no upfront delay)
         let mut sound_data = StreamingSoundData::from_file(&clip.file_path)
             .map_err(|e| format!("Failed to load audio file '{}': {}", clip.file_path, e))?;
+
+        // Apply start position if provided (click-to-preview)
+        if let Some(pos) = start_position {
+            sound_data = sound_data.start_position(pos);
+        }
 
         // Calculate combined volume: master * track * clip
         let combined_volume = self.master_volume * active.config.volume * clip.volume;

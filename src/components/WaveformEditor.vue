@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { useAudio } from '../composables/useAudio';
 
 interface WaveformData {
   peaks: number[];
@@ -11,12 +12,15 @@ const props = defineProps<{
   filePath: string;
   loopStart: number;
   loopEnd: number;
+  trackId: string;
 }>();
 
 const emit = defineEmits<{
   'update:loopStart': [value: number];
   'update:loopEnd': [value: number];
 }>();
+
+const audio = useAudio();
 
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 
@@ -50,6 +54,20 @@ const panning = ref(false);
 const panStartX = ref(0);
 const panStartViewStart = ref(0);
 
+// Click-to-preview: brief play cursor line
+const playCursorTime = ref<number | null>(null);
+let playCursorTimeout: ReturnType<typeof setTimeout> | null = null;
+
+function showPlayCursor(seconds: number): void {
+  playCursorTime.value = seconds;
+  if (playCursorTimeout) clearTimeout(playCursorTimeout);
+  playCursorTimeout = setTimeout(() => {
+    playCursorTime.value = null;
+    drawWaveform();
+  }, 600);
+  drawWaveform();
+}
+
 const effectiveLoopEnd = computed(() => {
   return props.loopEnd === 0 ? duration.value : props.loopEnd;
 });
@@ -69,7 +87,6 @@ const viewRangeDisplay = computed(() => {
 const canvasCursor = computed(() => {
   if (dragging.value) return 'grabbing';
   if (panning.value) return 'grabbing';
-  if (isZoomed.value) return 'grab';
   return 'pointer';
 });
 
@@ -335,6 +352,19 @@ function drawWaveform(): void {
   ctx.moveTo(0, midY);
   ctx.lineTo(cssW, midY);
   ctx.stroke();
+
+  // 6. Play cursor (brief visual feedback on click-to-preview)
+  if (playCursorTime.value !== null) {
+    const cursorX = secondsToX(playCursorTime.value, cssW);
+    if (cursorX >= 0 && cursorX <= cssW) {
+      ctx.strokeStyle = '#E8E4DC';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(cursorX, 0);
+      ctx.lineTo(cursorX, cssH);
+      ctx.stroke();
+    }
+  }
 }
 
 function getCanvasXInCssPixels(event: MouseEvent): number {
@@ -398,21 +428,32 @@ function clampAndEmit(marker: MarkerType, seconds: number): void {
   }
 }
 
+// Track click vs drag: if mouse doesn't move significantly, treat as click-to-play
+const mouseDownX = ref(0);
+const mouseDownWasMarker = ref(false);
+const PAN_DRAG_THRESHOLD = 4; // px movement before we consider it a drag
+
 function onMouseDown(event: MouseEvent): void {
   if (duration.value <= 0) return;
   const x = getCanvasXInCssPixels(event);
   const marker = findNearestMarker(x);
 
+  mouseDownX.value = event.clientX;
+
   if (marker) {
     // Drag a marker
+    mouseDownWasMarker.value = true;
     dragging.value = marker;
     const cssW = getCanvasWidth();
     clampAndEmit(marker, xToSeconds(x, cssW));
-  } else if (isZoomed.value) {
-    // Start panning
-    panning.value = true;
-    panStartX.value = event.clientX;
-    panStartViewStart.value = viewStart.value;
+  } else {
+    mouseDownWasMarker.value = false;
+    if (isZoomed.value) {
+      // Start panning (will check in mouseup if it was actually a click)
+      panning.value = true;
+      panStartX.value = event.clientX;
+      panStartViewStart.value = viewStart.value;
+    }
   }
 }
 
@@ -438,12 +479,38 @@ function onMouseMove(event: MouseEvent): void {
   }
 }
 
-function onMouseUp(): void {
+function onMouseUp(event: MouseEvent): void {
   const wasPanning = panning.value;
+  const wasMarker = mouseDownWasMarker.value;
+  const dragDistance = Math.abs(event.clientX - mouseDownX.value);
+
   dragging.value = null;
   panning.value = false;
+  mouseDownWasMarker.value = false;
+
   if (wasPanning && isZoomed.value) {
-    requestZoomedPeaks();
+    if (dragDistance <= PAN_DRAG_THRESHOLD) {
+      // It was a click, not a pan drag -- restore view and play from position
+      viewStart.value = panStartViewStart.value;
+      clampView();
+      const x = getCanvasXInCssPixels(event);
+      const cssW = getCanvasWidth();
+      const clickTime = xToSeconds(x, cssW);
+      audio.playTrackFrom(props.trackId, clickTime);
+      showPlayCursor(clickTime);
+    } else {
+      requestZoomedPeaks();
+    }
+    return;
+  }
+
+  // Not zoomed, not a marker drag -- click-to-play
+  if (!wasMarker && dragDistance <= PAN_DRAG_THRESHOLD && duration.value > 0) {
+    const x = getCanvasXInCssPixels(event);
+    const cssW = getCanvasWidth();
+    const clickTime = xToSeconds(x, cssW);
+    audio.playTrackFrom(props.trackId, clickTime);
+    showPlayCursor(clickTime);
   }
 }
 
@@ -513,6 +580,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (zoomDebounce) clearTimeout(zoomDebounce);
+  if (playCursorTimeout) clearTimeout(playCursorTimeout);
   window.removeEventListener('mousemove', onMouseMove);
   window.removeEventListener('mouseup', onMouseUp);
   window.removeEventListener('resize', onResize);

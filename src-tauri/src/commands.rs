@@ -79,6 +79,11 @@ pub fn play_track(state: State<'_, Arc<AppStateContainer>>, track_id: String) ->
 }
 
 #[tauri::command]
+pub fn play_track_from(state: State<'_, Arc<AppStateContainer>>, track_id: String, position: f64) -> Result<(), String> {
+    actions::play_track_from_position(&state, &track_id, position)
+}
+
+#[tauri::command]
 pub fn pause_track(state: State<'_, Arc<AppStateContainer>>, track_id: String) -> Result<(), String> {
     actions::pause_track_audio(&state, &track_id)
 }

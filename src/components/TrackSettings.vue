@@ -176,6 +176,7 @@ const showWaveform = computed(() => isSeamless.value && seamlessClip.value !== n
       :file-path="seamlessClip!.filePath"
       :loop-start="(track.mode as any).loopStart"
       :loop-end="(track.mode as any).loopEnd"
+      :track-id="track.id"
       @update:loop-start="(v: number) => updateLoopStartFromWaveform(v)"
       @update:loop-end="(v: number) => updateLoopEndFromWaveform(v)"
     />
