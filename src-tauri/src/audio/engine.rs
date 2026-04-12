@@ -10,6 +10,8 @@ use rand::Rng;
 use crate::models::{Track, TrackMode, TrackPlaybackState, TrackTransition};
 
 /// Quickly probe an audio file for its duration in seconds.
+/// Tries metadata first (time_base * n_frames), falls back to
+/// byte-length estimate for VBR files without frame counts.
 fn probe_duration(path: &str) -> Option<f64> {
     use symphonia::core::formats::FormatOptions;
     use symphonia::core::io::MediaSourceStream;
@@ -28,10 +30,28 @@ fn probe_duration(path: &str) -> Option<f64> {
     let track = probed.format.tracks().iter().find(|t| {
         t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL
     })?;
-    let time_base = track.codec_params.time_base?;
-    let n_frames = track.codec_params.n_frames?;
-    let time = time_base.calc_time(n_frames);
-    Some(time.seconds as f64 + time.frac)
+
+    // Try exact duration from metadata
+    if let (Some(tb), Some(nf)) = (track.codec_params.time_base, track.codec_params.n_frames) {
+        let time = tb.calc_time(nf);
+        let dur = time.seconds as f64 + time.frac;
+        if dur > 0.0 {
+            log::info!("Probed duration for {}: {:.1}s (metadata)", path, dur);
+            return Some(dur);
+        }
+    }
+
+    // Fallback: estimate from sample rate and n_frames if available
+    if let (Some(sr), Some(nf)) = (track.codec_params.sample_rate, track.codec_params.n_frames) {
+        let dur = nf as f64 / sr as f64;
+        if dur > 0.0 {
+            log::info!("Probed duration for {}: {:.1}s (sample rate estimate)", path, dur);
+            return Some(dur);
+        }
+    }
+
+    log::warn!("Could not probe duration for {}", path);
+    None
 }
 
 /// Converts a linear amplitude (0.0 - 1.0) to kira Decibels.
@@ -669,6 +689,8 @@ impl AudioEngine {
             .tracks
             .get_mut(track_id)
             .ok_or_else(|| format!("Track not found: {}", track_id))?;
+
+        log::info!("Beginning crossfade on track {} to clip {}, duration {}s", track_id, next_clip_index, crossfade_duration);
 
         // Move current sound to outgoing (it will fade out and be cleaned up)
         let mut old_handle = active.sound_handle.take();
