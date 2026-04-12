@@ -120,8 +120,7 @@ async function createComp(): Promise<void> {
 
     <!-- New group dialog -->
     <VDialog v-model="showNewGroupDialog" max-width="400">
-      <VCard>
-        <VCardTitle>New Group</VCardTitle>
+      <VCard title="New Group">
         <VCardText>
           <VTextField
             v-model="newGroupName"
@@ -133,8 +132,8 @@ async function createComp(): Promise<void> {
         </VCardText>
         <VCardActions>
           <VSpacer />
-          <VBtn @click="showNewGroupDialog = false">Cancel</VBtn>
-          <VBtn color="primary" @click="createGroup">Create</VBtn>
+          <VBtn text="Cancel" @click="showNewGroupDialog = false" />
+          <VBtn text="Create" color="primary" @click="createGroup" />
         </VCardActions>
       </VCard>
     </VDialog>
@@ -155,8 +154,7 @@ async function createComp(): Promise<void> {
 
     <!-- Rename group dialog -->
     <VDialog v-model="showRenameDialog" max-width="400">
-      <VCard>
-        <VCardTitle>Rename Group</VCardTitle>
+      <VCard title="Rename Group">
         <VCardText>
           <VTextField
             v-model="renameGroupName"
@@ -168,31 +166,29 @@ async function createComp(): Promise<void> {
         </VCardText>
         <VCardActions>
           <VSpacer />
-          <VBtn @click="showRenameDialog = false">Cancel</VBtn>
-          <VBtn color="primary" @click="renameGroup">Rename</VBtn>
+          <VBtn text="Cancel" @click="showRenameDialog = false" />
+          <VBtn text="Rename" color="primary" @click="renameGroup" />
         </VCardActions>
       </VCard>
     </VDialog>
 
     <!-- Delete group confirmation dialog -->
     <VDialog v-model="showDeleteConfirm" max-width="450">
-      <VCard>
-        <VCardTitle>Delete Group</VCardTitle>
+      <VCard title="Delete Group">
         <VCardText>
           Are you sure you want to delete group "{{ contextGroupName }}"? This will remove all compositions and tracks in it.
         </VCardText>
         <VCardActions>
           <VSpacer />
-          <VBtn @click="showDeleteConfirm = false">Cancel</VBtn>
-          <VBtn color="error" @click="deleteGroup">Delete</VBtn>
+          <VBtn text="Cancel" @click="showDeleteConfirm = false" />
+          <VBtn text="Delete" color="error" @click="deleteGroup" />
         </VCardActions>
       </VCard>
     </VDialog>
 
     <!-- New comp dialog -->
     <VDialog v-model="showNewCompDialog" max-width="400">
-      <VCard>
-        <VCardTitle>New Composition</VCardTitle>
+      <VCard title="New Composition">
         <VCardText>
           <VTextField
             v-model="newCompName"
@@ -204,8 +200,8 @@ async function createComp(): Promise<void> {
         </VCardText>
         <VCardActions>
           <VSpacer />
-          <VBtn @click="showNewCompDialog = false">Cancel</VBtn>
-          <VBtn color="primary" @click="createComp">Create</VBtn>
+          <VBtn text="Cancel" @click="showNewCompDialog = false" />
+          <VBtn text="Create" color="primary" @click="createComp" />
         </VCardActions>
       </VCard>
     </VDialog>
