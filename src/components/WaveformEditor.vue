@@ -1,13 +1,9 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, computed } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
+import { ref, watch, onMounted, onUnmounted, computed, toRef } from 'vue';
 import { useAudio } from '../composables/useAudio';
 import { useAppStore } from '../stores/appStore';
-
-interface WaveformData {
-  peaks: number[];
-  duration: number;
-}
+import { useWaveformData } from '../composables/useWaveformData';
+import { useWaveformZoom } from '../composables/useWaveformZoom';
 
 const props = defineProps<{
   filePath: string;
@@ -27,50 +23,24 @@ const store = useAppStore();
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 
 const CANVAS_HEIGHT = 80;
-const MARKER_GRAB_THRESHOLD_PX = 7; // in actual screen pixels
-const ZOOM_MIN = 1.0;
-const ZOOM_MAX = 50.0;
-const ZOOM_STEP = 1.15; // multiplier per wheel tick
+const MARKER_GRAB_THRESHOLD_PX = 7;
 
-const duration = ref(0);
-const loading = ref(false);
-const error = ref('');
+// --- Composables ---
 
-// Two-tier peaks: basePeaks (full file, always available) + zoomedPeaks (high-res visible range)
-const basePeaks = ref<number[]>([]);
-const basePeaksRangeStart = ref(0);
-const basePeaksRangeEnd = ref(0);
+const data = useWaveformData(toRef(props, 'filePath'));
+const zoom = useWaveformZoom(data.duration);
 
-const zoomedPeaks = ref<number[]>([]);
-const zoomedPeaksRangeStart = ref(0);
-const zoomedPeaksRangeEnd = ref(0);
+// --- Playhead ---
 
-// Zoom & pan state
-const zoomLevel = ref(1.0);
-const viewStart = ref(0);
-const viewEnd = ref(0);
-
-type MarkerType = 'loopStart' | 'loopEnd' | null;
-const dragging = ref<MarkerType>(null);
-const panning = ref(false);
-const panStartX = ref(0);
-const panStartViewStart = ref(0);
-
-// Playhead animation
 let rafId: number | null = null;
 
 const playbackState = computed(() => store.playbackStates.get(props.trackId));
-const isTrackActive = computed(() => {
-  const s = playbackState.value;
-  return s && (s.isPlaying || s.isPaused);
-});
 
 function startPlayheadLoop(): void {
   if (rafId !== null) return;
   function tick() {
     drawWaveform();
-    const s = playbackState.value;
-    if (s?.isPlaying) {
+    if (playbackState.value?.isPlaying) {
       rafId = requestAnimationFrame(tick);
     } else {
       rafId = null;
@@ -91,12 +61,14 @@ watch(() => playbackState.value?.isPlaying, (playing) => {
     startPlayheadLoop();
   } else {
     stopPlayheadLoop();
-    drawWaveform(); // one last draw to show paused position or clear
+    drawWaveform();
   }
 });
 
+// --- Derived state ---
+
 const effectiveLoopEnd = computed(() => {
-  return props.loopEnd === 0 ? duration.value : props.loopEnd;
+  return props.loopEnd === 0 ? data.duration.value : props.loopEnd;
 });
 
 const loopStartDisplay = computed(() => props.loopStart.toFixed(2));
@@ -104,11 +76,9 @@ const loopEndDisplay = computed(() => {
   return props.loopEnd === 0 ? 'end' : props.loopEnd.toFixed(2);
 });
 
-const isZoomed = computed(() => zoomLevel.value > 1.0);
-
 const viewRangeDisplay = computed(() => {
-  if (!isZoomed.value) return '';
-  return `Viewing: ${viewStart.value.toFixed(1)}s – ${viewEnd.value.toFixed(1)}s / ${duration.value.toFixed(1)}s`;
+  if (!zoom.isZoomed.value) return '';
+  return `Viewing: ${zoom.viewStart.value.toFixed(1)}s – ${zoom.viewEnd.value.toFixed(1)}s / ${data.duration.value.toFixed(1)}s`;
 });
 
 const canvasCursor = computed(() => {
@@ -117,112 +87,31 @@ const canvasCursor = computed(() => {
   return 'pointer';
 });
 
-// Debounced zoom peak request
-let zoomDebounce: ReturnType<typeof setTimeout> | null = null;
+// --- Canvas helpers ---
 
-function requestZoomedPeaks(): void {
-  if (zoomDebounce) clearTimeout(zoomDebounce);
-  zoomDebounce = setTimeout(async () => {
-    if (duration.value <= 0 || !props.filePath) return;
-
-    if (!isZoomed.value) {
-      // Zoomed all the way out -- clear zoomed peaks, basePeaks are enough
-      zoomedPeaks.value = [];
-      drawWaveform();
-      return;
-    }
-
-    // Request high-res peaks for only the visible range
-    const canvasPixelWidth = Math.round(getCanvasWidth() * (window.devicePixelRatio || 1));
-    try {
-      const reqStart = viewStart.value;
-      const reqEnd = viewEnd.value;
-      const data = await invoke<WaveformData>('get_waveform_data', {
-        filePath: props.filePath,
-        width: canvasPixelWidth,
-        start: reqStart,
-        end: reqEnd,
-      });
-      zoomedPeaks.value = data.peaks;
-      zoomedPeaksRangeStart.value = reqStart;
-      zoomedPeaksRangeEnd.value = reqEnd;
-      drawWaveform();
-    } catch (_) {
-      // keep existing peaks on error
-    }
-  }, 150);
-}
-
-// Get the actual pixel width of the canvas element
 function getCanvasWidth(): number {
   const canvas = canvasRef.value;
   if (!canvas) return 800;
   return canvas.getBoundingClientRect().width;
 }
 
-// Sync viewStart/viewEnd from zoomLevel, keeping them consistent
-function resetView(): void {
-  zoomLevel.value = 1.0;
-  viewStart.value = 0;
-  viewEnd.value = duration.value;
+function getCanvasXInCssPixels(event: MouseEvent): number {
+  const canvas = canvasRef.value;
+  if (!canvas) return 0;
+  return event.clientX - canvas.getBoundingClientRect().left;
 }
 
-function clampView(): void {
-  const dur = duration.value;
-  if (dur <= 0) return;
-
-  const visibleDuration = dur / zoomLevel.value;
-
-  // Clamp viewStart so the window stays within [0, dur]
-  if (viewStart.value < 0) viewStart.value = 0;
-  if (viewStart.value + visibleDuration > dur) {
-    viewStart.value = dur - visibleDuration;
-  }
-  if (viewStart.value < 0) viewStart.value = 0;
-
-  viewEnd.value = viewStart.value + visibleDuration;
+function fireZoomedPeaks(): void {
+  const canvasPixelWidth = Math.round(getCanvasWidth() * (window.devicePixelRatio || 1));
+  data.requestZoomedPeaks(
+    zoom.isZoomed.value,
+    zoom.viewStart.value,
+    zoom.viewEnd.value,
+    canvasPixelWidth,
+  );
 }
 
-async function loadWaveform(): Promise<void> {
-  if (!props.filePath) return;
-
-  loading.value = true;
-  error.value = '';
-
-  try {
-    // Request peaks at a reasonable resolution for full file
-    const data = await invoke<WaveformData>('get_waveform_data', {
-      filePath: props.filePath,
-      width: 1200,
-    });
-    basePeaks.value = data.peaks;
-    basePeaksRangeStart.value = 0;
-    basePeaksRangeEnd.value = data.duration;
-    zoomedPeaks.value = [];
-    duration.value = data.duration;
-    resetView();
-  } catch (e: unknown) {
-    error.value = String(e);
-    basePeaks.value = [];
-    zoomedPeaks.value = [];
-    duration.value = 0;
-  } finally {
-    loading.value = false;
-  }
-}
-
-function secondsToX(seconds: number, w: number): number {
-  const visibleDuration = viewEnd.value - viewStart.value;
-  if (visibleDuration <= 0) return 0;
-  return ((seconds - viewStart.value) / visibleDuration) * w;
-}
-
-function xToSeconds(x: number, w: number): number {
-  const visibleDuration = viewEnd.value - viewStart.value;
-  if (visibleDuration <= 0 || w <= 0) return 0;
-  const seconds = viewStart.value + (x / w) * visibleDuration;
-  return Math.max(0, Math.min(duration.value, seconds));
-}
+// --- Canvas drawing ---
 
 function drawPeaksPath(
   ctx: CanvasRenderingContext2D,
@@ -242,9 +131,8 @@ function drawPeaksPath(
   const midY = cssH / 2;
   const maxBarHeight = midY - 2;
 
-  // Only draw peaks that fall within the visible range
-  const startIdx = Math.max(0, Math.floor(((viewStart.value - rangeStart) / pDuration) * peakCount));
-  const endIdx = Math.min(peakCount, Math.ceil(((viewEnd.value - rangeStart) / pDuration) * peakCount));
+  const startIdx = Math.max(0, Math.floor(((zoom.viewStart.value - rangeStart) / pDuration) * peakCount));
+  const endIdx = Math.min(peakCount, Math.ceil(((zoom.viewEnd.value - rangeStart) / pDuration) * peakCount));
 
   if (startIdx >= endIdx) return;
 
@@ -252,14 +140,14 @@ function drawPeaksPath(
 
   // Top half
   ctx.beginPath();
-  const x0 = secondsToX(rangeStart + (startIdx / peakCount) * pDuration, cssW);
+  const x0 = zoom.secondsToX(rangeStart + (startIdx / peakCount) * pDuration, cssW);
   ctx.moveTo(x0, midY);
   for (let i = startIdx; i < endIdx; i++) {
     const peakTime = rangeStart + (i / peakCount) * pDuration;
-    const x = secondsToX(peakTime, cssW);
+    const x = zoom.secondsToX(peakTime, cssW);
     ctx.lineTo(x, midY - peaksArr[i] * maxBarHeight);
   }
-  const xLast = secondsToX(rangeStart + ((endIdx - 1) / peakCount) * pDuration, cssW);
+  const xLast = zoom.secondsToX(rangeStart + ((endIdx - 1) / peakCount) * pDuration, cssW);
   ctx.lineTo(xLast, midY);
   ctx.closePath();
   ctx.fill();
@@ -269,7 +157,7 @@ function drawPeaksPath(
   ctx.moveTo(x0, midY);
   for (let i = startIdx; i < endIdx; i++) {
     const peakTime = rangeStart + (i / peakCount) * pDuration;
-    const x = secondsToX(peakTime, cssW);
+    const x = zoom.secondsToX(peakTime, cssW);
     ctx.lineTo(x, midY + peaksArr[i] * maxBarHeight);
   }
   ctx.lineTo(xLast, midY);
@@ -284,66 +172,57 @@ function drawWaveform(): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
-  // Match canvas resolution to display size (avoids stretching)
   const displayWidth = canvas.getBoundingClientRect().width;
   const dpr = window.devicePixelRatio || 1;
-  const w = Math.round(displayWidth * dpr);
-  const h = Math.round(CANVAS_HEIGHT * dpr);
-
-  canvas.width = w;
-  canvas.height = h;
+  canvas.width = Math.round(displayWidth * dpr);
+  canvas.height = Math.round(CANVAS_HEIGHT * dpr);
   ctx.scale(dpr, dpr);
 
-  // Draw in CSS pixels from here
   const cssW = displayWidth;
   const cssH = CANVAS_HEIGHT;
   const midY = cssH / 2;
 
-  // 1. Background
+  // Background
   ctx.fillStyle = '#141418';
   ctx.fillRect(0, 0, cssW, cssH);
 
-  if (basePeaks.value.length === 0) return;
+  if (data.basePeaks.value.length === 0) return;
 
-  if (isZoomed.value) {
-    if (zoomedPeaks.value.length > 0) {
-      // Draw base layer only for areas NOT covered by zoomed peaks
-      const zoomStartX = secondsToX(zoomedPeaksRangeStart.value, cssW);
-      const zoomEndX = secondsToX(zoomedPeaksRangeEnd.value, cssW);
+  // Waveform peaks
+  if (zoom.isZoomed.value) {
+    if (data.zoomedPeaks.value.length > 0) {
+      const zoomStartX = zoom.secondsToX(data.zoomedPeaksRangeStart.value, cssW);
+      const zoomEndX = zoom.secondsToX(data.zoomedPeaksRangeEnd.value, cssW);
 
-      // Left uncovered area
       if (zoomStartX > 0) {
         ctx.save();
         ctx.beginPath();
         ctx.rect(0, 0, zoomStartX, cssH);
         ctx.clip();
-        drawPeaksPath(ctx, basePeaks.value, basePeaksRangeStart.value, basePeaksRangeEnd.value, cssW, cssH, '#7A5418');
+        drawPeaksPath(ctx, data.basePeaks.value, data.basePeaksRangeStart.value, data.basePeaksRangeEnd.value, cssW, cssH, '#7A5418');
         ctx.restore();
       }
 
-      // Right uncovered area
       if (zoomEndX < cssW) {
         ctx.save();
         ctx.beginPath();
         ctx.rect(zoomEndX, 0, cssW - zoomEndX, cssH);
         ctx.clip();
-        drawPeaksPath(ctx, basePeaks.value, basePeaksRangeStart.value, basePeaksRangeEnd.value, cssW, cssH, '#7A5418');
+        drawPeaksPath(ctx, data.basePeaks.value, data.basePeaksRangeStart.value, data.basePeaksRangeEnd.value, cssW, cssH, '#7A5418');
         ctx.restore();
       }
 
-      // Draw zoomed detail in full gold
-      drawPeaksPath(ctx, zoomedPeaks.value, zoomedPeaksRangeStart.value, zoomedPeaksRangeEnd.value, cssW, cssH, '#F0A830');
+      drawPeaksPath(ctx, data.zoomedPeaks.value, data.zoomedPeaksRangeStart.value, data.zoomedPeaksRangeEnd.value, cssW, cssH, '#F0A830');
     } else {
-      // No zoomed peaks yet — show base layer everywhere
-      drawPeaksPath(ctx, basePeaks.value, basePeaksRangeStart.value, basePeaksRangeEnd.value, cssW, cssH, '#7A5418');
+      drawPeaksPath(ctx, data.basePeaks.value, data.basePeaksRangeStart.value, data.basePeaksRangeEnd.value, cssW, cssH, '#7A5418');
     }
   } else {
-    drawPeaksPath(ctx, basePeaks.value, basePeaksRangeStart.value, basePeaksRangeEnd.value, cssW, cssH, '#F0A830');
+    drawPeaksPath(ctx, data.basePeaks.value, data.basePeaksRangeStart.value, data.basePeaksRangeEnd.value, cssW, cssH, '#F0A830');
   }
 
-  // 4. Draw loop markers (solid green lines) — only if visible
-  const loopStartX = secondsToX(props.loopStart, cssW);
-  const loopEndX = secondsToX(effectiveLoopEnd.value, cssW);
+  // Loop markers
+  const loopStartX = zoom.secondsToX(props.loopStart, cssW);
+  const loopEndX = zoom.secondsToX(effectiveLoopEnd.value, cssW);
 
   ctx.strokeStyle = '#4CAF50';
   ctx.lineWidth = 2;
@@ -353,8 +232,6 @@ function drawWaveform(): void {
     ctx.moveTo(loopStartX, 0);
     ctx.lineTo(loopStartX, cssH);
     ctx.stroke();
-
-    // Half-box handle at top, pointing outward (left of line)
     ctx.fillStyle = '#4CAF50';
     ctx.fillRect(loopStartX - 5, 0, 5, 8);
   }
@@ -366,13 +243,11 @@ function drawWaveform(): void {
     ctx.moveTo(loopEndX, 0);
     ctx.lineTo(loopEndX, cssH);
     ctx.stroke();
-
-    // Half-box handle at top, pointing outward (right of line)
     ctx.fillStyle = '#4CAF50';
     ctx.fillRect(loopEndX, 0, 5, 8);
   }
 
-  // 5. Center line
+  // Center line
   ctx.strokeStyle = 'rgba(232, 228, 220, 0.15)';
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -380,12 +255,11 @@ function drawWaveform(): void {
   ctx.lineTo(cssW, midY);
   ctx.stroke();
 
-  // 6. Playhead (live playback position)
+  // Playhead
   const ps = playbackState.value;
   if (ps && (ps.isPlaying || ps.isPaused)) {
-    const phX = secondsToX(ps.currentTime, cssW);
+    const phX = zoom.secondsToX(ps.currentTime, cssW);
     if (phX >= 0 && phX <= cssW) {
-      // Vertical line
       ctx.strokeStyle = '#E8E4DC';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
@@ -393,7 +267,6 @@ function drawWaveform(): void {
       ctx.lineTo(phX, cssH);
       ctx.stroke();
 
-      // Small triangle at top
       ctx.fillStyle = '#E8E4DC';
       ctx.beginPath();
       ctx.moveTo(phX - 4, 0);
@@ -405,12 +278,16 @@ function drawWaveform(): void {
   }
 }
 
-function getCanvasXInCssPixels(event: MouseEvent): number {
-  const canvas = canvasRef.value;
-  if (!canvas) return 0;
-  const rect = canvas.getBoundingClientRect();
-  return event.clientX - rect.left;
-}
+// --- Marker interaction ---
+
+type MarkerType = 'loopStart' | 'loopEnd' | null;
+const dragging = ref<MarkerType>(null);
+const panning = ref(false);
+const panStartX = ref(0);
+const panStartViewStart = ref(0);
+const mouseDownX = ref(0);
+const mouseDownWasMarker = ref(false);
+const PAN_DRAG_THRESHOLD = 4;
 
 function findNearestMarker(x: number): MarkerType {
   const cssW = getCanvasWidth();
@@ -418,32 +295,27 @@ function findNearestMarker(x: number): MarkerType {
   type Candidate = { type: MarkerType; dist: number };
   const candidates: Candidate[] = [];
 
-  const loopStartDist = Math.abs(x - secondsToX(props.loopStart, cssW));
+  const loopStartDist = Math.abs(x - zoom.secondsToX(props.loopStart, cssW));
   if (loopStartDist < MARKER_GRAB_THRESHOLD_PX) {
     candidates.push({ type: 'loopStart', dist: loopStartDist });
   }
 
-  const loopEndDist = Math.abs(x - secondsToX(effectiveLoopEnd.value, cssW));
+  const loopEndDist = Math.abs(x - zoom.secondsToX(effectiveLoopEnd.value, cssW));
   if (loopEndDist < MARKER_GRAB_THRESHOLD_PX) {
     candidates.push({ type: 'loopEnd', dist: loopEndDist });
   }
 
-  if (candidates.length === 0) {
-    return null;
-  }
-
+  if (candidates.length === 0) return null;
   candidates.sort((a, b) => a.dist - b.dist);
   return candidates[0].type;
 }
 
 function clampAndEmit(marker: MarkerType, seconds: number): void {
-  const dur = duration.value;
-  const ls = props.loopStart;
+  const dur = data.duration.value;
   const le = effectiveLoopEnd.value;
 
   let clamped = Math.max(0, Math.min(dur, seconds));
   const round = (v: number) => Math.round(v * 100) / 100;
-
   const snapThreshold = dur * 0.01;
 
   switch (marker) {
@@ -458,7 +330,7 @@ function clampAndEmit(marker: MarkerType, seconds: number): void {
         emit('update:loopEnd', 0);
         return;
       }
-      clamped = Math.max(clamped, ls + 0.01);
+      clamped = Math.max(clamped, props.loopStart + 0.01);
       clamped = Math.min(clamped, dur);
       emit('update:loopEnd', round(clamped));
       break;
@@ -466,54 +338,46 @@ function clampAndEmit(marker: MarkerType, seconds: number): void {
   }
 }
 
-// Track click vs drag: if mouse doesn't move significantly, treat as click-to-play
-const mouseDownX = ref(0);
-const mouseDownWasMarker = ref(false);
-const PAN_DRAG_THRESHOLD = 4; // px movement before we consider it a drag
+// --- Mouse events ---
 
 function onMouseDown(event: MouseEvent): void {
-  if (duration.value <= 0) return;
+  if (data.duration.value <= 0) return;
   const x = getCanvasXInCssPixels(event);
   const marker = findNearestMarker(x);
 
   mouseDownX.value = event.clientX;
 
   if (marker) {
-    // Drag a marker
     mouseDownWasMarker.value = true;
     dragging.value = marker;
-    const cssW = getCanvasWidth();
-    clampAndEmit(marker, xToSeconds(x, cssW));
+    clampAndEmit(marker, zoom.xToSeconds(x, getCanvasWidth()));
   } else {
     mouseDownWasMarker.value = false;
-    if (isZoomed.value) {
-      // Start panning (will check in mouseup if it was actually a click)
+    if (zoom.isZoomed.value) {
       panning.value = true;
       panStartX.value = event.clientX;
-      panStartViewStart.value = viewStart.value;
+      panStartViewStart.value = zoom.viewStart.value;
     }
   }
 }
 
 function onMouseMove(event: MouseEvent): void {
-  if (duration.value <= 0) return;
+  if (data.duration.value <= 0) return;
 
   if (dragging.value) {
     const x = getCanvasXInCssPixels(event);
-    const cssW = getCanvasWidth();
-    clampAndEmit(dragging.value, xToSeconds(x, cssW));
+    clampAndEmit(dragging.value, zoom.xToSeconds(x, getCanvasWidth()));
     return;
   }
 
   if (panning.value) {
     const cssW = getCanvasWidth();
     const deltaX = event.clientX - panStartX.value;
-    const visibleDuration = viewEnd.value - viewStart.value;
+    const visibleDuration = zoom.viewEnd.value - zoom.viewStart.value;
     const deltaSec = -(deltaX / cssW) * visibleDuration;
-    viewStart.value = panStartViewStart.value + deltaSec;
-    clampView();
+    zoom.viewStart.value = panStartViewStart.value + deltaSec;
+    zoom.clampView();
     drawWaveform();
-    return;
   }
 }
 
@@ -526,111 +390,79 @@ function onMouseUp(event: MouseEvent): void {
   panning.value = false;
   mouseDownWasMarker.value = false;
 
-  if (wasPanning && isZoomed.value) {
+  if (wasPanning && zoom.isZoomed.value) {
     if (dragDistance <= PAN_DRAG_THRESHOLD) {
-      // It was a click, not a pan drag -- restore view and play from position
-      viewStart.value = panStartViewStart.value;
-      clampView();
-      const x = getCanvasXInCssPixels(event);
-      const cssW = getCanvasWidth();
-      const clickTime = xToSeconds(x, cssW);
+      zoom.viewStart.value = panStartViewStart.value;
+      zoom.clampView();
+      const clickTime = zoom.xToSeconds(getCanvasXInCssPixels(event), getCanvasWidth());
       audio.playTrackFrom(props.trackId, clickTime);
     } else {
-      requestZoomedPeaks();
+      fireZoomedPeaks();
     }
     return;
   }
 
-  // Not zoomed, not a marker drag -- click-to-play
-  if (!wasMarker && dragDistance <= PAN_DRAG_THRESHOLD && duration.value > 0) {
-    const x = getCanvasXInCssPixels(event);
-    const cssW = getCanvasWidth();
-    const clickTime = xToSeconds(x, cssW);
+  if (!wasMarker && dragDistance <= PAN_DRAG_THRESHOLD && data.duration.value > 0) {
+    const clickTime = zoom.xToSeconds(getCanvasXInCssPixels(event), getCanvasWidth());
     audio.playTrackFrom(props.trackId, clickTime);
   }
 }
 
 function onWheel(event: WheelEvent): void {
-  if (duration.value <= 0) return;
+  if (data.duration.value <= 0) return;
   event.preventDefault();
 
-  const cssW = getCanvasWidth();
   const x = getCanvasXInCssPixels(event);
-  const timeAtCursor = xToSeconds(x, cssW);
-
-  // Determine zoom direction
-  const factor = event.deltaY > 0 ? 1 / ZOOM_STEP : ZOOM_STEP;
-  let newZoom = zoomLevel.value * factor;
-  newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, newZoom));
-
-  // If effectively at 1.0, snap to exact 1.0
-  if (newZoom < 1.005) newZoom = 1.0;
-
-  const newVisibleDuration = duration.value / newZoom;
-
-  // Keep timeAtCursor at the same fractional position on screen
-  const cursorFraction = x / cssW;
-  viewStart.value = timeAtCursor - cursorFraction * newVisibleDuration;
-  zoomLevel.value = newZoom;
-  clampView();
+  zoom.applyZoom(getCanvasWidth(), x, event.deltaY < 0);
   drawWaveform();
-  requestZoomedPeaks();
+  fireZoomedPeaks();
 }
 
 function onDblClick(): void {
-  if (duration.value <= 0) return;
-  resetView();
+  if (data.duration.value <= 0) return;
+  zoom.resetView();
   drawWaveform();
-  requestZoomedPeaks();
+  fireZoomedPeaks();
 }
 
-function onResize(): void {
-  drawWaveform();
-}
+// --- Lifecycle ---
 
-// Draw when canvas becomes available
 watch(canvasRef, (canvas) => {
-  if (canvas && basePeaks.value.length > 0) {
-    drawWaveform();
-  }
+  if (canvas && data.basePeaks.value.length > 0) drawWaveform();
 });
-
-watch(basePeaks, () => drawWaveform());
-watch(zoomedPeaks, () => drawWaveform());
-watch(
-  () => [props.loopStart, props.loopEnd],
-  () => drawWaveform()
-);
+watch(data.basePeaks, () => drawWaveform());
+watch(data.zoomedPeaks, () => drawWaveform());
+watch(() => [props.loopStart, props.loopEnd], () => drawWaveform());
 
 watch(() => props.filePath, () => {
-  resetView();
-  loadWaveform();
+  zoom.resetView();
+  data.loadBasePeaks();
 });
 
 onMounted(() => {
-  loadWaveform();
+  data.loadBasePeaks();
   window.addEventListener('mousemove', onMouseMove);
   window.addEventListener('mouseup', onMouseUp);
-  window.addEventListener('resize', onResize);
+  window.addEventListener('resize', drawWaveform);
 });
 
 onUnmounted(() => {
-  if (zoomDebounce) clearTimeout(zoomDebounce);
+  data.cleanup();
   stopPlayheadLoop();
   window.removeEventListener('mousemove', onMouseMove);
   window.removeEventListener('mouseup', onMouseUp);
-  window.removeEventListener('resize', onResize);
+  window.removeEventListener('resize', drawWaveform);
 });
 </script>
 
 <template>
   <div class="waveform-editor">
     <div class="waveform-container">
-      <div v-if="loading" class="waveform-overlay text-caption text-medium-emphasis">
+      <div v-if="data.loading.value" class="waveform-overlay text-caption text-medium-emphasis">
         Loading waveform...
       </div>
-      <div v-else-if="error" class="waveform-overlay text-caption text-error">
-        {{ error }}
+      <div v-else-if="data.error.value" class="waveform-overlay text-caption text-error">
+        {{ data.error.value }}
       </div>
       <canvas
         ref="canvasRef"
@@ -646,8 +478,8 @@ onUnmounted(() => {
         Loop: {{ loopStartDisplay }}s - {{ loopEndDisplay }}
       </span>
       <span class="text-caption text-medium-emphasis ml-auto">
-        <template v-if="isZoomed">{{ viewRangeDisplay }}</template>
-        <template v-else>{{ duration.toFixed(1) }}s</template>
+        <template v-if="zoom.isZoomed.value">{{ viewRangeDisplay }}</template>
+        <template v-else>{{ data.duration.value.toFixed(1) }}s</template>
       </span>
     </div>
   </div>
