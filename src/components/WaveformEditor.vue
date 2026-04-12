@@ -56,10 +56,6 @@ const panning = ref(false);
 const panStartX = ref(0);
 const panStartViewStart = ref(0);
 
-// Click-to-preview: brief play cursor line
-const playCursorTime = ref<number | null>(null);
-let playCursorTimeout: ReturnType<typeof setTimeout> | null = null;
-
 // Playhead animation
 let rafId: number | null = null;
 
@@ -98,16 +94,6 @@ watch(() => playbackState.value?.isPlaying, (playing) => {
     drawWaveform(); // one last draw to show paused position or clear
   }
 });
-
-function showPlayCursor(seconds: number): void {
-  playCursorTime.value = seconds;
-  if (playCursorTimeout) clearTimeout(playCursorTimeout);
-  playCursorTimeout = setTimeout(() => {
-    playCursorTime.value = null;
-    drawWaveform();
-  }, 600);
-  drawWaveform();
-}
 
 const effectiveLoopEnd = computed(() => {
   return props.loopEnd === 0 ? duration.value : props.loopEnd;
@@ -394,20 +380,7 @@ function drawWaveform(): void {
   ctx.lineTo(cssW, midY);
   ctx.stroke();
 
-  // 6. Play cursor (brief visual feedback on click-to-preview)
-  if (playCursorTime.value !== null) {
-    const cursorX = secondsToX(playCursorTime.value, cssW);
-    if (cursorX >= 0 && cursorX <= cssW) {
-      ctx.strokeStyle = '#E8E4DC';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(cursorX, 0);
-      ctx.lineTo(cursorX, cssH);
-      ctx.stroke();
-    }
-  }
-
-  // 7. Playhead (live playback position)
+  // 6. Playhead (live playback position)
   const ps = playbackState.value;
   if (ps && (ps.isPlaying || ps.isPaused)) {
     const phX = secondsToX(ps.currentTime, cssW);
@@ -562,7 +535,6 @@ function onMouseUp(event: MouseEvent): void {
       const cssW = getCanvasWidth();
       const clickTime = xToSeconds(x, cssW);
       audio.playTrackFrom(props.trackId, clickTime);
-      showPlayCursor(clickTime);
     } else {
       requestZoomedPeaks();
     }
@@ -575,7 +547,6 @@ function onMouseUp(event: MouseEvent): void {
     const cssW = getCanvasWidth();
     const clickTime = xToSeconds(x, cssW);
     audio.playTrackFrom(props.trackId, clickTime);
-    showPlayCursor(clickTime);
   }
 }
 
@@ -645,7 +616,6 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (zoomDebounce) clearTimeout(zoomDebounce);
-  if (playCursorTimeout) clearTimeout(playCursorTimeout);
   stopPlayheadLoop();
   window.removeEventListener('mousemove', onMouseMove);
   window.removeEventListener('mouseup', onMouseUp);
