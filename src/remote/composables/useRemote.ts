@@ -17,8 +17,12 @@ let ws: WebSocket | null = null;
 let initialized = false;
 
 function getWsUrl(): string {
+  // In dev mode (Vite on port 1421), connect to the Rust server on port 3333
+  // In production (served by axum), use the same host
+  const isDev = location.port === '1421';
+  const host = isDev ? `${location.hostname}:3333` : location.host;
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${location.host}/ws`;
+  return `${protocol}//${host}/ws`;
 }
 
 function connect(): void {
