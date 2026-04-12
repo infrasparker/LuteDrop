@@ -107,6 +107,14 @@ fn playback_polling_loop(app_handle: tauri::AppHandle, container: Arc<AppStateCo
             Err(_) => continue,
         };
 
+        // Check for crossfade triggers (approaching end of clip)
+        let crossfades = audio.check_crossfade_triggers();
+        for (track_id, next_idx, duration) in crossfades {
+            if let Err(e) = audio.begin_crossfade(&track_id, next_idx, duration) {
+                log::warn!("Failed to start crossfade for track {}: {}", track_id, e);
+            }
+        }
+
         // Check for sounds that finished naturally and advance/stop tracks
         let finished = audio.check_finished_sounds();
         for (track_id, next_clip_index) in finished {

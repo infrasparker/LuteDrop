@@ -9,6 +9,31 @@ use rand::Rng;
 
 use crate::models::{Track, TrackMode, TrackPlaybackState, TrackTransition};
 
+/// Quickly probe an audio file for its duration in seconds.
+fn probe_duration(path: &str) -> Option<f64> {
+    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+    use symphonia::core::probe::Hint;
+
+    let file = std::fs::File::open(path).ok()?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(ext) = std::path::Path::new(path).extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+    let probed = symphonia::default::get_probe()
+        .format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default())
+        .ok()?;
+    let track = probed.format.tracks().iter().find(|t| {
+        t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL
+    })?;
+    let time_base = track.codec_params.time_base?;
+    let n_frames = track.codec_params.n_frames?;
+    let time = time_base.calc_time(n_frames);
+    Some(time.seconds as f64 + time.frac)
+}
+
 /// Converts a linear amplitude (0.0 - 1.0) to kira Decibels.
 /// Uses the standard formula: dB = 20 * log10(amplitude).
 /// Clamps very small values to silence.
@@ -26,6 +51,12 @@ struct ActiveTrack {
     track_handle: TrackHandle,
     /// Handle to the currently playing sound, if any.
     sound_handle: Option<StreamingSoundHandle<FromFileError>>,
+    /// Handle to the previous sound that's fading out during a crossfade.
+    outgoing_handle: Option<StreamingSoundHandle<FromFileError>>,
+    /// Duration of the currently playing clip in seconds (for crossfade timing).
+    current_clip_duration: Option<f64>,
+    /// Whether we've already started the crossfade for the current clip.
+    crossfade_started: bool,
     /// The track configuration snapshot (clips, mode, volume, fades).
     config: Track,
     /// Index of the currently playing clip within config.clips.
@@ -77,6 +108,9 @@ impl AudioEngine {
             ActiveTrack {
                 track_handle,
                 sound_handle: None,
+                outgoing_handle: None,
+                current_clip_duration: None,
+                crossfade_started: false,
                 config: track.clone(),
                 current_clip_index: None,
                 is_paused: false,
@@ -393,6 +427,13 @@ impl AudioEngine {
                 continue;
             }
 
+            // Clean up finished outgoing crossfade handle
+            if let Some(ref handle) = active.outgoing_handle {
+                if matches!(handle.state(), PlaybackState::Stopped) {
+                    // Will be cleaned up in the mutable pass below
+                }
+            }
+
             // Check if the sound has stopped naturally
             if let Some(ref handle) = active.sound_handle {
                 let state = handle.state();
@@ -403,6 +444,15 @@ impl AudioEngine {
                         active.current_clip_index,
                     );
                     finished.push((track_id.clone(), next));
+                }
+            }
+        }
+
+        // Clean up stopped outgoing handles
+        for active in self.tracks.values_mut() {
+            if let Some(ref handle) = active.outgoing_handle {
+                if matches!(handle.state(), PlaybackState::Stopped) {
+                    active.outgoing_handle = None;
                 }
             }
         }
@@ -533,6 +583,8 @@ impl AudioEngine {
 
         active.sound_handle = Some(sound_handle);
         active.current_clip_index = Some(clip_index);
+        active.current_clip_duration = probe_duration(&clip.file_path);
+        active.crossfade_started = false;
         active.is_paused = false;
         active.pending_start = None;
 
@@ -599,31 +651,114 @@ impl AudioEngine {
                 Ok(())
             }
             TrackTransition::Crossfade { duration } => {
-                // The old clip has already stopped naturally. Start the new one with a fade in.
-                // We temporarily override the track's fade_in for this clip start.
-                let original_fade_in = {
-                    let active = self
-                        .tracks
-                        .get(track_id)
-                        .ok_or_else(|| format!("Track not found: {}", track_id))?;
-                    active.config.fade_in
-                };
-
-                // Set fade_in to crossfade duration for this transition
-                if let Some(active) = self.tracks.get_mut(track_id) {
-                    active.config.fade_in = duration;
-                }
-
-                let result = self.start_clip(track_id, next_clip_index);
-
-                // Restore original fade_in
-                if let Some(active) = self.tracks.get_mut(track_id) {
-                    active.config.fade_in = original_fade_in;
-                }
-
-                result
+                // Old clip already stopped — just start new one with fade in
+                self.begin_crossfade(track_id, next_clip_index, duration)
             }
         }
+    }
+
+    /// Begin a crossfade: fade out the current sound and start the next clip with fade in.
+    /// The old sound keeps playing (fading out) while the new one fades in.
+    pub fn begin_crossfade(
+        &mut self,
+        track_id: &str,
+        next_clip_index: usize,
+        crossfade_duration: f64,
+    ) -> Result<(), String> {
+        let active = self
+            .tracks
+            .get_mut(track_id)
+            .ok_or_else(|| format!("Track not found: {}", track_id))?;
+
+        // Move current sound to outgoing (it will fade out and be cleaned up)
+        let mut old_handle = active.sound_handle.take();
+        // Drop any previous outgoing handle
+        active.outgoing_handle = None;
+
+        if let Some(ref mut handle) = old_handle {
+            let _ = handle.stop(Tween {
+                duration: Duration::from_secs_f64(crossfade_duration),
+                easing: Easing::OutPowi(2),
+                ..Default::default()
+            });
+        }
+        active.outgoing_handle = old_handle;
+        active.crossfade_started = true;
+
+        // Load and start the next clip with fade in
+        let clip = active
+            .config
+            .clips
+            .get(next_clip_index)
+            .ok_or_else(|| format!("Clip index {} out of range", next_clip_index))?
+            .clone();
+
+        let mut sound_data = StreamingSoundData::from_file(&clip.file_path)
+            .map_err(|e| format!("Failed to load audio file '{}': {}", clip.file_path, e))?;
+
+        let combined_volume = self.master_volume * active.config.volume * clip.volume;
+        sound_data = sound_data.volume(amplitude_to_decibels(combined_volume));
+        sound_data = sound_data.fade_in_tween(Tween {
+            duration: Duration::from_secs_f64(crossfade_duration),
+            easing: Easing::InPowi(2),
+            ..Default::default()
+        });
+
+        let sound_handle = active
+            .track_handle
+            .play(sound_data)
+            .map_err(|e| format!("Failed to play sound: {}", e))?;
+
+        active.sound_handle = Some(sound_handle);
+        active.current_clip_index = Some(next_clip_index);
+        active.current_clip_duration = probe_duration(&clip.file_path);
+        active.crossfade_started = false;
+
+        Ok(())
+    }
+
+    /// Check for tracks that need to start a crossfade (approaching end of clip).
+    /// Returns list of (track_id, next_clip_index, crossfade_duration) to process.
+    pub fn check_crossfade_triggers(&mut self) -> Vec<(String, usize, f64)> {
+        let mut triggers = Vec::new();
+
+        for (track_id, active) in &self.tracks {
+            if active.is_paused || active.crossfade_started {
+                continue;
+            }
+
+            // Only applies to tracks with crossfade transition
+            let crossfade_duration = match &active.config.mode {
+                TrackMode::Sequence { transition: TrackTransition::Crossfade { duration }, .. } => *duration,
+                TrackMode::Shuffle { transition: TrackTransition::Crossfade { duration }, .. } => *duration,
+                _ => continue,
+            };
+
+            let clip_duration = match active.current_clip_duration {
+                Some(d) => d,
+                None => continue,
+            };
+
+            let position = match &active.sound_handle {
+                Some(handle) => {
+                    if !matches!(handle.state(), PlaybackState::Playing | PlaybackState::Resuming) {
+                        continue;
+                    }
+                    handle.position()
+                }
+                None => continue,
+            };
+
+            // Trigger crossfade when we're within crossfade_duration of the end
+            if position >= clip_duration - crossfade_duration {
+                let next = pick_next_clip_index(&active.config, active.current_clip_index);
+                if let Some(next_idx) = next {
+                    triggers.push((track_id.clone(), next_idx, crossfade_duration));
+                }
+            }
+        }
+
+        triggers
     }
 
     /// Recalculate and apply the combined volume to a track's active sound.
