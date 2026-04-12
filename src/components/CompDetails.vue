@@ -1,8 +1,6 @@
 <script setup lang="ts">
-import { ref } from 'vue';
 import type { Comp } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
-import { useAudio } from '../composables/useAudio';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import type { AppState } from '@generated/index';
@@ -14,19 +12,6 @@ const props = defineProps<{
 }>();
 
 const store = useAppStore();
-const audio = useAudio();
-
-const showDeleteDialog = ref(false);
-
-function confirmDeleteComp(): void {
-  showDeleteDialog.value = true;
-}
-
-async function deleteComp(): Promise<void> {
-  showDeleteDialog.value = false;
-  await audio.stopComp(props.comp.id);
-  await store.command('delete_comp', { groupId: props.groupId, compId: props.comp.id });
-}
 
 async function importTracksToComp(): Promise<void> {
   const paths = await open({
@@ -53,23 +38,14 @@ async function importTracksToComp(): Promise<void> {
 <template>
   <div>
     <div class="d-flex align-center mb-4">
-      <span class="text-h6 font-weight-bold">{{ comp.name }}</span>
       <VSpacer />
-      <div class="d-flex ga-3">
-        <VBtn
-          prepend-icon="mdi-plus"
-          variant="tonal"
-          @click="importTracksToComp"
-        >
-          Add Track
-        </VBtn>
-        <VBtn
-          icon="mdi-delete"
-          variant="tonal"
-          color="error"
-          @click="confirmDeleteComp"
-        />
-      </div>
+      <VBtn
+        prepend-icon="mdi-plus"
+        variant="tonal"
+        @click="importTracksToComp"
+      >
+        Add Track
+      </VBtn>
     </div>
 
     <TrackControl
@@ -83,18 +59,5 @@ async function importTracksToComp(): Promise<void> {
       No tracks yet. Click "Add Track" to import audio files.
     </div>
 
-    <VDialog v-model="showDeleteDialog" max-width="450">
-      <VCard title="Delete Composition">
-        <VCardText>
-          Are you sure you want to delete "{{ comp.name }}"? This will remove all tracks in it.
-        </VCardText>
-        <VDivider />
-        <VCardActions>
-          <VSpacer />
-          <VBtn text="Cancel" variant="plain" @click="showDeleteDialog = false" />
-          <VBtn text="Delete" color="error" variant="tonal" @click="deleteComp" />
-        </VCardActions>
-      </VCard>
-    </VDialog>
   </div>
 </template>

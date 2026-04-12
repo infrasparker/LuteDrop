@@ -21,7 +21,7 @@ const selectedComp = computed(() =>
 
 <template>
   <div>
-  <div class="d-flex" style="height: calc(100vh - 120px);">
+  <div class="d-flex" style="height: calc(100vh - 140px); overflow: hidden;">
     <!-- Left pane: group header + comp grid -->
     <div style="width: 300px; min-width: 300px; overflow-y: auto;" class="pr-3">
       <!-- Add comp + comp cards -->

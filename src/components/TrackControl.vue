@@ -181,7 +181,15 @@ async function deleteTrack(): Promise<void> {
         @click="stopTrack"
       />
 
-      <span class="text-subtitle-2 font-weight-bold flex-grow-1">{{ track.name }}</span>
+      <VTextField
+        :model-value="track.name"
+        @update:model-value="(v: string) => updateField({ name: v })"
+        variant="plain"
+        density="compact"
+        hide-details
+        class="flex-grow-1 text-subtitle-2 font-weight-bold"
+        style="max-width: 300px;"
+      />
 
       <span class="text-caption text-medium-emphasis">
         {{ track.clips.length }} clip{{ track.clips.length !== 1 ? 's' : '' }}
