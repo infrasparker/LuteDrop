@@ -163,7 +163,7 @@ async function deleteTrack(): Promise<void> {
 </script>
 
 <template>
-  <VCard class="mb-2" color="surface-light">
+  <VCard class="mb-0" color="surface-light" rounded="0" style="border-bottom: 1px solid rgba(232, 228, 220, 0.1);">
     <div class="d-flex align-center ga-2 pa-2">
       <VBtn
         :icon="isPlaying ? 'mdi-pause' : 'mdi-play'"
@@ -187,11 +187,11 @@ async function deleteTrack(): Promise<void> {
         variant="plain"
         density="compact"
         hide-details
-        class="flex-grow-1 text-subtitle-2 font-weight-bold"
-        style="max-width: 300px;"
+        class="text-subtitle-2 font-weight-bold"
+        style="flex: 1 1 0; min-width: 100px;"
       />
 
-      <span class="text-caption text-medium-emphasis">
+      <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
         {{ track.clips.length }} clip{{ track.clips.length !== 1 ? 's' : '' }}
         &middot; {{ track.mode.type }}
       </span>
@@ -204,7 +204,7 @@ async function deleteTrack(): Promise<void> {
         :step="0.01"
         hide-details
         density="compact"
-        style="max-width: 120px"
+        style="flex: 0 0 120px;"
       />
 
       <VBtn
@@ -360,6 +360,7 @@ async function deleteTrack(): Promise<void> {
                 v-if="!hasClips"
                 prepend-icon="mdi-plus"
                 variant="tonal"
+                rounded="pill"
                 @click="addClips"
               >
                 Add Clip
@@ -378,7 +379,7 @@ async function deleteTrack(): Promise<void> {
             <div class="d-flex align-center mb-2">
               <span class="text-subtitle-2">Clips</span>
               <VSpacer />
-              <VBtn prepend-icon="mdi-plus" variant="tonal" @click="addClips">
+              <VBtn prepend-icon="mdi-plus" variant="tonal" rounded="pill" @click="addClips">
                 Add Clips
               </VBtn>
             </div>

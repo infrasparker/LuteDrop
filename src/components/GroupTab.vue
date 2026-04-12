@@ -30,6 +30,7 @@ const selectedComp = computed(() =>
         <VBtn
           prepend-icon="mdi-plus"
           variant="tonal"
+          rounded="pill"
           @click="emit('add-comp', group.id)"
         >
           Add Comp
