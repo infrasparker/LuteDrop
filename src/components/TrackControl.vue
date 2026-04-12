@@ -197,7 +197,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="mb-2" style="border-bottom: 1px solid rgba(232, 228, 220, 0.1);">
+  <div>
     <VExpansionPanels>
       <VExpansionPanel color="surface-light" rounded="0" elevation="0">
         <template #title>
@@ -384,6 +384,54 @@ onUnmounted(() => {
         />
       </div>
 
+      <!-- Seamless mode: single clip -->
+      <div v-if="isSeamless">
+        <div class="d-flex align-center mb-2">
+          <span class="text-subtitle-2">Clip</span>
+          <VSpacer />
+          <VBtn
+            v-if="!hasClips"
+            prepend-icon="mdi-plus"
+            variant="tonal"
+            rounded="xl"
+            @click="addClips"
+          >
+            Add Clip
+          </VBtn>
+        </div>
+        <div v-if="hasClips">
+          <ClipRow :clip="seamlessClip!" :track-id="track.id" :comp-id="compId" />
+        </div>
+        <div v-else class="text-caption text-medium-emphasis">
+          No clip yet. Seamless mode uses a single clip.
+        </div>
+      </div>
+
+      <!-- Sequence/Shuffle mode: clips list with drag reorder -->
+      <div v-else>
+        <div class="d-flex align-center mb-2">
+          <span class="text-subtitle-2">Clips</span>
+          <VSpacer />
+          <VBtn prepend-icon="mdi-plus" variant="tonal" rounded="xl" @click="addClips">
+            Add Clips
+          </VBtn>
+        </div>
+
+        <div ref="clipsContainer">
+          <ClipRow
+            v-for="clip in track.clips"
+            :key="clip.id"
+            :clip="clip"
+            :track-id="track.id"
+            :comp-id="compId"
+          />
+        </div>
+
+        <div v-if="track.clips.length === 0" class="text-caption text-medium-emphasis">
+          No clips yet.
+        </div>
+      </div>
+
       <div class="d-flex justify-end mt-3">
         <VBtn
           icon="mdi-delete"
@@ -395,54 +443,5 @@ onUnmounted(() => {
         </template>
       </VExpansionPanel>
     </VExpansionPanels>
-
-    <!-- Clips section: OUTSIDE expansion panel so drag works -->
-    <!-- Seamless mode: single clip -->
-    <div v-if="isSeamless" class="pa-3">
-      <div class="d-flex align-center mb-2">
-        <span class="text-subtitle-2">Clip</span>
-        <VSpacer />
-        <VBtn
-          v-if="!hasClips"
-          prepend-icon="mdi-plus"
-          variant="tonal"
-          rounded="xl"
-          @click="addClips"
-        >
-          Add Clip
-        </VBtn>
-      </div>
-      <div v-if="hasClips">
-        <ClipRow :clip="seamlessClip!" :track-id="track.id" :comp-id="compId" />
-      </div>
-      <div v-else class="text-caption text-medium-emphasis">
-        No clip yet. Seamless mode uses a single clip.
-      </div>
-    </div>
-
-    <!-- Sequence/Shuffle mode: clips list with drag reorder -->
-    <div v-else class="pa-3">
-      <div class="d-flex align-center mb-2">
-        <span class="text-subtitle-2">Clips</span>
-        <VSpacer />
-        <VBtn prepend-icon="mdi-plus" variant="tonal" rounded="xl" @click="addClips">
-          Add Clips
-        </VBtn>
-      </div>
-
-      <div ref="clipsContainer">
-        <ClipRow
-          v-for="clip in track.clips"
-          :key="clip.id"
-          :clip="clip"
-          :track-id="track.id"
-          :comp-id="compId"
-        />
-      </div>
-
-      <div v-if="track.clips.length === 0" class="text-caption text-medium-emphasis">
-        No clips yet.
-      </div>
-    </div>
   </div>
 </template>
