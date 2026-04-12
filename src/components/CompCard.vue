@@ -107,7 +107,7 @@ function stopComp(): void {
 
     <!-- Delete confirmation dialog -->
     <VDialog v-model="showDeleteConfirm" max-width="450">
-      <VCard>
+      <VCard variant="elevated" color="surface-light" class="pa-2">
         <VCardTitle>Delete Composition</VCardTitle>
         <VCardText>
           Are you sure you want to delete "{{ comp.name }}"? This will remove all tracks in it.
