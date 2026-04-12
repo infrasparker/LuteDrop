@@ -30,7 +30,6 @@ const renameTrackName = ref('');
 const showDeleteConfirm = ref(false);
 
 function openContextMenu(event: MouseEvent): void {
-  event.stopPropagation();
   openMenu(event);
 }
 
@@ -80,12 +79,11 @@ async function setVolume(v: number): Promise<void> {
 <template>
   <div>
     <VExpansionPanels>
-      <VExpansionPanel color="surface-light" rounded="0" elevation="0">
+      <VExpansionPanel color="surface-light" rounded="0" elevation="0" @contextmenu.prevent="openContextMenu">
         <template #title>
           <div
             class="d-flex align-center ga-2"
             style="width: 100%;"
-            @contextmenu.prevent="openContextMenu"
           >
             <VBtn
               :icon="isPlaying ? 'mdi-pause' : 'mdi-play'"
