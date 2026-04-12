@@ -410,7 +410,7 @@ onUnmounted(() => {
           </VBtn>
         </div>
 
-        <div ref="clipsContainer">
+        <div ref="clipsContainer" style="user-select: auto; -webkit-user-select: auto;">
           <ClipRow
             v-for="clip in track.clips"
             :key="clip.id"
