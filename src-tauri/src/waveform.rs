@@ -297,3 +297,91 @@ fn generate_cache(audio_path: &Path) -> Result<CachedPeaks, String> {
 
     Ok(cached)
 }
+
+/// Downsample cached peaks to the requested width and optional time range.
+/// Returns (downsampled_peaks, duration_seconds).
+fn downsample_peaks(
+    cached: &CachedPeaks,
+    width: usize,
+    start: Option<f64>,
+    end: Option<f64>,
+) -> (Vec<f32>, f64) {
+    let duration = cached.duration_seconds();
+    if cached.peaks.is_empty() || duration <= 0.0 {
+        return (vec![0.0; width], duration);
+    }
+
+    let range_start = start.unwrap_or(0.0).max(0.0);
+    let range_end = end.unwrap_or(duration).min(duration);
+
+    if range_end <= range_start {
+        return (vec![0.0; width], duration);
+    }
+
+    // Convert time range to peak indices
+    let peaks_per_second = cached.sample_rate as f64 / cached.samples_per_peak as f64;
+    let start_idx = (range_start * peaks_per_second) as usize;
+    let end_idx = ((range_end * peaks_per_second).ceil() as usize).min(cached.peaks.len());
+
+    if end_idx <= start_idx {
+        return (vec![0.0; width], duration);
+    }
+
+    let slice = &cached.peaks[start_idx..end_idx];
+    let slice_len = slice.len();
+
+    let mut result = Vec::with_capacity(width);
+    for i in 0..width {
+        let bucket_start = i * slice_len / width;
+        let bucket_end = ((i + 1) * slice_len / width).max(bucket_start + 1).min(slice_len);
+
+        let mut max_val: f32 = 0.0;
+        for &v in &slice[bucket_start..bucket_end] {
+            if v > max_val {
+                max_val = v;
+            }
+        }
+        result.push(max_val);
+    }
+
+    // Normalize to 0.0–1.0
+    let global_max = result.iter().cloned().fold(0.0_f32, f32::max);
+    if global_max > 0.0 {
+        for v in &mut result {
+            *v /= global_max;
+        }
+    }
+
+    (result, duration)
+}
+
+/// Public entry point. Returns (peaks, duration_seconds).
+///
+/// Uses a three-tier lookup: in-memory cache -> disk .peaks file -> full decode.
+/// The `peak_cache` parameter is the shared in-memory cache from app state.
+pub fn extract_peaks(
+    file_path: &str,
+    width: u32,
+    start: Option<f64>,
+    end: Option<f64>,
+    peak_cache: &PeakCache,
+) -> Result<(Vec<f32>, f64), String> {
+    let width = width.max(1) as usize;
+    let audio_path = Path::new(file_path);
+
+    // Tier 1: in-memory cache
+    if let Some(cached) = peak_cache.get(audio_path) {
+        return Ok(downsample_peaks(&cached, width, start, end));
+    }
+
+    // Tier 2: disk cache
+    if let Some(cached) = read_cache(audio_path) {
+        peak_cache.insert(audio_path.to_path_buf(), cached.clone());
+        return Ok(downsample_peaks(&cached, width, start, end));
+    }
+
+    // Tier 3: full decode -> write cache -> store in memory
+    let cached = generate_cache(audio_path)?;
+    peak_cache.insert(audio_path.to_path_buf(), cached.clone());
+    Ok(downsample_peaks(&cached, width, start, end))
+}
