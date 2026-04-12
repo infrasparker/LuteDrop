@@ -34,6 +34,11 @@ pub fn rename_group(state: State<'_, Arc<AppStateContainer>>, group_id: String, 
 }
 
 #[tauri::command]
+pub fn rename_comp(state: State<'_, Arc<AppStateContainer>>, comp_id: String, name: String) -> Result<AppState, String> {
+    actions::rename_comp(&state, &comp_id, name)
+}
+
+#[tauri::command]
 pub fn add_comp(state: State<'_, Arc<AppStateContainer>>, group_id: String, name: String) -> Result<AppState, String> {
     actions::add_comp(&state, &group_id, name)
 }
@@ -111,6 +116,16 @@ pub fn stop_comp(state: State<'_, Arc<AppStateContainer>>, comp_id: String) -> R
 #[tauri::command]
 pub fn stop_all(state: State<'_, Arc<AppStateContainer>>) -> Result<(), String> {
     actions::stop_all_audio(&state)
+}
+
+#[tauri::command]
+pub fn pause_all(state: State<'_, Arc<AppStateContainer>>) -> Result<(), String> {
+    actions::pause_all_audio(&state)
+}
+
+#[tauri::command]
+pub fn resume_all(state: State<'_, Arc<AppStateContainer>>) -> Result<(), String> {
+    actions::resume_all_audio(&state)
 }
 
 #[tauri::command]

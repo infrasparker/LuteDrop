@@ -2,6 +2,7 @@ import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../stores/appStore';
+import { useToast } from './useToast';
 import type { TrackPlaybackState } from '@generated/index';
 
 let listenerRegistered = false;
@@ -25,41 +26,94 @@ function registerListener(): void {
 
 export function useAudio() {
   registerListener();
+  const toast = useToast();
 
   async function playTrack(trackId: string): Promise<void> {
-    await invoke('play_track', { trackId });
+    try {
+      await invoke('play_track', { trackId });
+    } catch (e) {
+      toast.showError(String(e));
+    }
   }
 
   async function pauseTrack(trackId: string): Promise<void> {
-    await invoke('pause_track', { trackId });
+    try {
+      await invoke('pause_track', { trackId });
+    } catch (e) {
+      toast.showError(String(e));
+    }
   }
 
   async function stopTrack(trackId: string): Promise<void> {
-    await invoke('stop_track', { trackId });
+    try {
+      await invoke('stop_track', { trackId });
+    } catch (e) {
+      toast.showError(String(e));
+    }
   }
 
   async function setMasterVolume(volume: number): Promise<void> {
-    await invoke('set_master_volume', { volume });
+    try {
+      await invoke('set_master_volume', { volume });
+    } catch (e) {
+      toast.showError(String(e));
+    }
   }
 
   async function setTrackVolume(trackId: string, volume: number): Promise<void> {
-    await invoke('set_track_volume', { trackId, volume });
+    try {
+      await invoke('set_track_volume', { trackId, volume });
+    } catch (e) {
+      toast.showError(String(e));
+    }
   }
 
   async function setClipVolume(clipId: string, volume: number): Promise<void> {
-    await invoke('set_clip_volume', { clipId, volume });
+    try {
+      await invoke('set_clip_volume', { clipId, volume });
+    } catch (e) {
+      toast.showError(String(e));
+    }
   }
 
   async function activateComp(compId: string): Promise<void> {
-    await invoke('activate_comp', { compId });
+    try {
+      await invoke('activate_comp', { compId });
+    } catch (e) {
+      toast.showError(String(e));
+    }
   }
 
   async function stopComp(compId: string): Promise<void> {
-    await invoke('stop_comp', { compId });
+    try {
+      await invoke('stop_comp', { compId });
+    } catch (e) {
+      toast.showError(String(e));
+    }
   }
 
   async function stopAll(): Promise<void> {
-    await invoke('stop_all');
+    try {
+      await invoke('stop_all');
+    } catch (e) {
+      toast.showError(String(e));
+    }
+  }
+
+  async function pauseAll(): Promise<void> {
+    try {
+      await invoke('pause_all');
+    } catch (e) {
+      toast.showError(String(e));
+    }
+  }
+
+  async function resumeAll(): Promise<void> {
+    try {
+      await invoke('resume_all');
+    } catch (e) {
+      toast.showError(String(e));
+    }
   }
 
   return {
@@ -73,5 +127,7 @@ export function useAudio() {
     activateComp,
     stopComp,
     stopAll,
+    pauseAll,
+    resumeAll,
   };
 }

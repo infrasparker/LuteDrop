@@ -65,6 +65,7 @@ pub fn run() {
             commands::delete_group,
             commands::rename_group,
             commands::add_comp,
+            commands::rename_comp,
             commands::delete_comp,
             commands::add_track,
             commands::delete_track,
@@ -80,6 +81,8 @@ pub fn run() {
             commands::activate_comp,
             commands::stop_comp,
             commands::stop_all,
+            commands::pause_all,
+            commands::resume_all,
             commands::get_waveform_data,
             commands::get_server_info,
         ])

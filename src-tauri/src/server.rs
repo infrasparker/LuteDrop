@@ -151,6 +151,8 @@ fn handle_remote_command(container: &AppStateContainer, text: &str) {
             actions::stop_comp_audio(container, id)
         }
         "stop_all" => actions::stop_all_audio(container),
+        "pause_all" => actions::pause_all_audio(container),
+        "resume_all" => actions::resume_all_audio(container),
         _ => {
             log::warn!("Unknown remote command: {}", cmd.command);
             Ok(())

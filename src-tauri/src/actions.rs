@@ -93,6 +93,14 @@ pub fn rename_group(container: &AppStateContainer, group_id: &str, name: String)
     save_and_return(container, &data)
 }
 
+pub fn rename_comp(container: &AppStateContainer, comp_id: &str, name: String) -> Result<AppState, String> {
+    let mut data = container.data.write().map_err(|e| e.to_string())?;
+    let comp = find_comp_mut(&mut data, comp_id)?;
+    comp.name = name;
+    data.last_saved_at = Some(chrono_now());
+    save_and_return(container, &data)
+}
+
 pub fn add_comp(container: &AppStateContainer, group_id: &str, name: String) -> Result<AppState, String> {
     let mut data = container.data.write().map_err(|e| e.to_string())?;
     let group = find_group_mut(&mut data, group_id)?;
@@ -269,5 +277,17 @@ pub fn stop_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result<(
 pub fn stop_all_audio(container: &AppStateContainer) -> Result<(), String> {
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
     audio.stop_all();
+    Ok(())
+}
+
+pub fn pause_all_audio(container: &AppStateContainer) -> Result<(), String> {
+    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    audio.pause_all();
+    Ok(())
+}
+
+pub fn resume_all_audio(container: &AppStateContainer) -> Result<(), String> {
+    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    audio.resume_all();
     Ok(())
 }

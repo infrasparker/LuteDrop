@@ -212,6 +212,40 @@ impl AudioEngine {
         }
     }
 
+    /// Pause all tracks that are currently playing.
+    pub fn pause_all(&mut self) {
+        let track_ids: Vec<String> = self.tracks.keys().cloned().collect();
+        for track_id in track_ids {
+            let is_playing = self.tracks.get(&track_id)
+                .map(|t| {
+                    if t.is_paused { return false; }
+                    match &t.sound_handle {
+                        Some(handle) => matches!(handle.state(), PlaybackState::Playing | PlaybackState::Resuming),
+                        None => t.pending_start.is_some(),
+                    }
+                })
+                .unwrap_or(false);
+
+            if is_playing {
+                let _ = self.pause_track(&track_id);
+            }
+        }
+    }
+
+    /// Resume all tracks that are currently paused.
+    pub fn resume_all(&mut self) {
+        let track_ids: Vec<String> = self.tracks.keys().cloned().collect();
+        for track_id in track_ids {
+            let is_paused = self.tracks.get(&track_id)
+                .map(|t| t.is_paused)
+                .unwrap_or(false);
+
+            if is_paused {
+                let _ = self.resume_track(&track_id);
+            }
+        }
+    }
+
     /// Returns the current master volume.
     pub fn get_master_volume(&self) -> f64 {
         self.master_volume

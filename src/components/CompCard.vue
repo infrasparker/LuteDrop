@@ -22,15 +22,36 @@ const status = computed(() => store.getCompStatus(props.comp.id));
 
 const borderStyle = computed(() => {
   switch (status.value) {
-    case 'active': return '2px solid #FF6D00';
-    case 'partial': return '2px solid #BF360C';
-    default: return '2px solid transparent';
+    case 'active': return '3px solid #4CAF50';
+    case 'partial': return '3px solid #F0A830';
+    default: return '3px solid transparent';
   }
+});
+
+const bgTint = computed(() => {
+  if (status.value === 'active') return 'rgba(76, 175, 80, 0.08)';
+  return undefined;
 });
 
 // Context menu state
 const { menuVisible: contextMenu, menuX: contextMenuX, menuY: contextMenuY, openMenu: openContextMenu } = useContextMenuState();
 const showDeleteConfirm = ref(false);
+
+// Rename state
+const showRenameDialog = ref(false);
+const renameCompName = ref('');
+
+function openRenameDialog(): void {
+  renameCompName.value = props.comp.name;
+  showRenameDialog.value = true;
+}
+
+async function renameComp(): Promise<void> {
+  if (!renameCompName.value.trim()) return;
+  await store.command('rename_comp', { compId: props.comp.id, name: renameCompName.value.trim() });
+  renameCompName.value = '';
+  showRenameDialog.value = false;
+}
 
 async function deleteComp(): Promise<void> {
   showDeleteConfirm.value = false;
@@ -56,7 +77,7 @@ function stopComp(): void {
     :color="selected ? 'primary' : 'surface-light'"
     variant="flat"
     class="comp-card pa-2 text-center"
-    :style="{ width: '130px', cursor: 'pointer', border: borderStyle }"
+    :style="{ width: '130px', cursor: 'pointer', border: borderStyle, background: bgTint }"
     @click="emit('select', comp.id)"
     @contextmenu.prevent="openContextMenu($event)"
   >
@@ -82,12 +103,37 @@ function stopComp(): void {
     <!-- Context menu -->
     <VMenu v-model="contextMenu" :target="[contextMenuX, contextMenuY]" close-on-content-click>
       <VList density="compact">
+        <VListItem @click="openRenameDialog">
+          <template #prepend><VIcon>mdi-pencil</VIcon></template>
+          <VListItemTitle>Rename</VListItemTitle>
+        </VListItem>
         <VListItem @click="showDeleteConfirm = true" class="text-error">
           <template #prepend><VIcon color="error">mdi-delete</VIcon></template>
           <VListItemTitle>Delete</VListItemTitle>
         </VListItem>
       </VList>
     </VMenu>
+
+    <!-- Rename dialog -->
+    <VDialog v-model="showRenameDialog" max-width="400">
+      <VCard title="Rename Composition">
+        <VCardText>
+          <VTextField
+            v-model="renameCompName"
+            label="Composition Name"
+            variant="outlined"
+            autofocus
+            @keydown.enter="renameComp"
+          />
+        </VCardText>
+        <VDivider />
+        <VCardActions>
+          <VSpacer />
+          <VBtn text="Cancel" variant="plain" @click="showRenameDialog = false" />
+          <VBtn text="Rename" color="primary" variant="tonal" @click="renameComp" />
+        </VCardActions>
+      </VCard>
+    </VDialog>
 
     <!-- Delete confirmation dialog -->
     <VDialog v-model="showDeleteConfirm" max-width="450">

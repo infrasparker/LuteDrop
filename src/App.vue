@@ -3,12 +3,15 @@ import { ref, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from './stores/appStore';
 import { useAudio } from './composables/useAudio';
+import { useToast } from './composables/useToast';
 import type { AppState } from '@generated/index';
 import PlaybackView from './views/PlaybackView.vue';
 
 const store = useAppStore();
 const audio = useAudio();
+const toast = useToast();
 const serverUrl = ref('');
+const paused = ref(false);
 
 onMounted(async () => {
   const state = await invoke<AppState>('load_data');
@@ -28,7 +31,18 @@ function setMasterVolume(v: number): void {
 }
 
 function stopAll(): void {
+  paused.value = false;
   audio.stopAll();
+}
+
+function togglePause(): void {
+  if (paused.value) {
+    audio.resumeAll();
+    paused.value = false;
+  } else {
+    audio.pauseAll();
+    paused.value = true;
+  }
 }
 </script>
 
@@ -55,6 +69,13 @@ function stopAll(): void {
           style="width: 120px"
         />
         <VBtn
+          :icon="paused ? 'mdi-play' : 'mdi-pause'"
+          variant="tonal"
+          size="small"
+          class="ml-2"
+          @click="togglePause"
+        />
+        <VBtn
           icon="mdi-stop"
           variant="tonal"
           size="small"
@@ -67,5 +88,9 @@ function stopAll(): void {
     <VMain class="d-flex flex-column" style="height: 100vh;">
       <PlaybackView class="flex-grow-1" style="overflow: hidden;" />
     </VMain>
+
+    <VSnackbar v-model="toast.visible.value" :color="toast.color.value" :timeout="3000">
+      {{ toast.message.value }}
+    </VSnackbar>
   </VApp>
 </template>

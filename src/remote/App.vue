@@ -1,8 +1,29 @@
 <script setup lang="ts">
+import { ref } from 'vue';
 import { useRemote } from './composables/useRemote';
 import RemotePlaybackView from './views/RemotePlaybackView.vue';
 
 const remote = useRemote();
+const paused = ref(false);
+
+const toastVisible = ref(false);
+const toastMessage = ref('');
+const toastColor = ref('error');
+
+function togglePause(): void {
+  if (paused.value) {
+    remote.resumeAll();
+    paused.value = false;
+  } else {
+    remote.pauseAll();
+    paused.value = true;
+  }
+}
+
+function stopAll(): void {
+  paused.value = false;
+  remote.stopAll();
+}
 </script>
 
 <template>
@@ -33,11 +54,18 @@ const remote = useRemote();
           style="width: 120px"
         />
         <VBtn
+          :icon="paused ? 'mdi-play' : 'mdi-pause'"
+          variant="tonal"
+          size="small"
+          class="ml-2"
+          @click="togglePause"
+        />
+        <VBtn
           icon="mdi-stop"
           variant="tonal"
           size="small"
           class="ml-2"
-          @click="remote.stopAll()"
+          @click="stopAll"
         />
       </template>
     </VAppBar>
@@ -45,5 +73,9 @@ const remote = useRemote();
     <VMain>
       <RemotePlaybackView />
     </VMain>
+
+    <VSnackbar v-model="toastVisible" :color="toastColor" :timeout="3000">
+      {{ toastMessage }}
+    </VSnackbar>
   </VApp>
 </template>

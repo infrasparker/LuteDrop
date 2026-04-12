@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { Group, Comp, Track, AppState, TrackPlaybackState, CompStatus } from '@generated/index';
+import { useToast } from '../composables/useToast';
 
 export const useAppStore = defineStore('app', () => {
   const groups = ref<Group[]>([]);
@@ -16,8 +17,13 @@ export const useAppStore = defineStore('app', () => {
   // --- Command helper: invoke a Rust command and hydrate ---
 
   async function command(cmd: string, args?: Record<string, unknown>): Promise<void> {
-    const state = await invoke<AppState>(cmd, args);
-    hydrate(state);
+    try {
+      const state = await invoke<AppState>(cmd, args);
+      hydrate(state);
+    } catch (e) {
+      const toast = useToast();
+      toast.showError(String(e));
+    }
   }
 
   // --- Playback state ---

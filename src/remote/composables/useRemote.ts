@@ -108,5 +108,7 @@ export function useRemote() {
     setTrackVolume: (trackId: string, volume: number) => send({ command: 'set_track_volume', trackId, volume }),
     setClipVolume: (clipId: string, volume: number) => send({ command: 'set_clip_volume', clipId, volume }),
     stopAll: () => send({ command: 'stop_all' }),
+    pauseAll: () => send({ command: 'pause_all' }),
+    resumeAll: () => send({ command: 'resume_all' }),
   };
 }

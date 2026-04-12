@@ -17,10 +17,15 @@ const status = computed(() => remote.getCompStatus(props.comp.id));
 
 const borderStyle = computed(() => {
   switch (status.value) {
-    case 'active': return '2px solid #FF6D00';
-    case 'partial': return '2px solid #BF360C';
-    default: return '2px solid transparent';
+    case 'active': return '3px solid #4CAF50';
+    case 'partial': return '3px solid #F0A830';
+    default: return '3px solid transparent';
   }
+});
+
+const bgTint = computed(() => {
+  if (status.value === 'active') return 'rgba(76, 175, 80, 0.08)';
+  return undefined;
 });
 </script>
 
@@ -29,7 +34,7 @@ const borderStyle = computed(() => {
     :color="selected ? 'primary' : 'surface-light'"
     variant="flat"
     class="pa-2 text-center"
-    :style="{ width: '130px', cursor: 'pointer', border: borderStyle }"
+    :style="{ width: '130px', cursor: 'pointer', border: borderStyle, background: bgTint }"
     @click="emit('select', comp.id)"
   >
     <div class="d-flex justify-center ga-1 mb-2">
