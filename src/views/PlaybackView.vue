@@ -120,7 +120,7 @@ async function createComp(): Promise<void> {
 
     <!-- New group dialog -->
     <VDialog v-model="showNewGroupDialog" max-width="400">
-      <VCard variant="elevated" color="surface-light" class="pa-2">
+      <VCard>
         <VCardTitle>New Group</VCardTitle>
         <VCardText>
           <VTextField
@@ -155,7 +155,7 @@ async function createComp(): Promise<void> {
 
     <!-- Rename group dialog -->
     <VDialog v-model="showRenameDialog" max-width="400">
-      <VCard variant="elevated" color="surface-light" class="pa-2">
+      <VCard>
         <VCardTitle>Rename Group</VCardTitle>
         <VCardText>
           <VTextField
@@ -176,7 +176,7 @@ async function createComp(): Promise<void> {
 
     <!-- Delete group confirmation dialog -->
     <VDialog v-model="showDeleteConfirm" max-width="450">
-      <VCard variant="elevated" color="surface-light" class="pa-2">
+      <VCard>
         <VCardTitle>Delete Group</VCardTitle>
         <VCardText>
           Are you sure you want to delete group "{{ contextGroupName }}"? This will remove all compositions and tracks in it.
@@ -191,7 +191,7 @@ async function createComp(): Promise<void> {
 
     <!-- New comp dialog -->
     <VDialog v-model="showNewCompDialog" max-width="400">
-      <VCard variant="elevated" color="surface-light" class="pa-2">
+      <VCard>
         <VCardTitle>New Composition</VCardTitle>
         <VCardText>
           <VTextField

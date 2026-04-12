@@ -84,7 +84,7 @@ async function importTracksToComp(): Promise<void> {
     </div>
 
     <VDialog v-model="showDeleteDialog" max-width="450">
-      <VCard variant="elevated" color="surface-light" class="pa-2">
+      <VCard>
         <VCardTitle>Delete Composition</VCardTitle>
         <VCardText>
           Are you sure you want to delete "{{ comp.name }}"? This will remove all tracks in it.
