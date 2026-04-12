@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue';
-import type { Track, TrackMode, TrackTransition, Clip } from '@generated/index';
+import type { Track, TrackMode, TrackTransition } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
 import { open } from '@tauri-apps/plugin-dialog';

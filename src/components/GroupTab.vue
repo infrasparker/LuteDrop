@@ -20,7 +20,6 @@ const selectedComp = computed(() =>
 </script>
 
 <template>
-  <div>
   <div class="d-flex" style="height: calc(100vh - 140px); overflow: hidden;">
     <!-- Left pane: group header + comp grid -->
     <div style="width: 300px; min-width: 300px; display: flex; flex-direction: column;" class="pr-3">
@@ -68,7 +67,5 @@ const selectedComp = computed(() =>
         Select a composition to see its tracks.
       </div>
     </div>
-  </div>
-
   </div>
 </template>

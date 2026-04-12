@@ -50,11 +50,6 @@ pub fn extract_peaks(file_path: &str, width: u32) -> Result<(Vec<f32>, f64), Str
         .sample_rate
         .ok_or_else(|| "Unknown sample rate".to_string())? as f64;
 
-    let _channels = codec_params
-        .channels
-        .map(|c| c.count())
-        .unwrap_or(1);
-
     // Create a decoder
     let mut decoder = symphonia::default::get_codecs()
         .make(&codec_params, &DecoderOptions::default())

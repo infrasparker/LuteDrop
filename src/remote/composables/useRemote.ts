@@ -1,7 +1,5 @@
 import { ref, reactive } from 'vue';
-import type { AppState, TrackPlaybackState } from '@generated/index';
-
-type CompStatus = 'active' | 'partial' | 'inactive';
+import type { AppState, TrackPlaybackState, CompStatus } from '@generated/index';
 
 interface StateSnapshot {
   type: string;
