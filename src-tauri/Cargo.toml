@@ -24,4 +24,6 @@ uuid = { version = "1", features = ["v4"] }
 kira = "0.12"
 rand = "0.8"
 symphonia = { version = "0.5", features = ["mp3", "wav", "flac", "ogg", "pcm", "vorbis"] }
-tokio = { version = "1", features = ["rt"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "sync"] }
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["fs"] }
