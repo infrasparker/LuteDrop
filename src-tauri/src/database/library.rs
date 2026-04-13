@@ -500,10 +500,17 @@ mod tests {
         )
         .expect("insert entry");
 
+        let config_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO configurations (id, name, created_at, sort_order) VALUES (?1, 'Test', '0', 1000)",
+            params![config_id],
+        )
+        .expect("insert config");
+
         let group_id = Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO groups (id, name, sort_order) VALUES (?1, 'G', 0)",
-            params![group_id],
+            "INSERT INTO groups (id, name, sort_order, configuration_id) VALUES (?1, 'G', 0, ?2)",
+            params![group_id, config_id],
         )
         .expect("insert group");
 

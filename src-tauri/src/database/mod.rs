@@ -7,7 +7,7 @@ use std::path::Path;
 use uuid::Uuid;
 
 use crate::models::{
-    AppState, Clip, Comp, Group, LibraryEntry, Track, TrackMode, TrackTransition,
+    AppState, Clip, Comp, Configuration, Group, LibraryEntry, Track, TrackMode, TrackTransition,
 };
 
 /// Opens (or creates) the SQLite database at `path`, enables WAL mode and
@@ -198,9 +198,42 @@ pub fn migrate_v1_to_v2(conn: &Connection) -> Result<(), String> {
 
 // ─── State Loading ────────────────────────────────────────────────────────────
 
+/// Reads the active configuration ID from the meta table.
+pub fn get_active_configuration_id(conn: &Connection) -> Result<String, String> {
+    conn.query_row(
+        "SELECT value FROM meta WHERE key = 'active_configuration_id'",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("Failed to read active_configuration_id: {e}"))
+}
+
+/// Loads all configurations ordered by sort_order.
+fn load_configurations(conn: &Connection) -> Result<Vec<Configuration>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id, name, created_at FROM configurations ORDER BY sort_order ASC")
+        .map_err(|e| format!("Failed to prepare load_configurations: {e}"))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(Configuration {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                created_at: row.get(2)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query configurations: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to collect configurations: {e}"))?;
+
+    Ok(rows)
+}
+
 /// Builds the complete nested AppState from SQLite.
 /// Called after every mutation to return the updated state to the frontend.
 pub fn load_full_state(conn: &Connection) -> Result<AppState, String> {
+    let active_configuration_id = get_active_configuration_id(conn)?;
+    let configurations = load_configurations(conn)?;
     let library_entries = load_library_entries(conn)?;
     let tags = library::list_all_tags(conn)?;
 
@@ -210,14 +243,14 @@ pub fn load_full_state(conn: &Connection) -> Result<AppState, String> {
         .map(|e| (e.id.clone(), e))
         .collect();
 
-    let groups = load_groups(conn, &entry_map)?;
+    let groups = load_groups(conn, &active_configuration_id, &entry_map)?;
 
     Ok(AppState {
         groups,
         library_entries,
         tags,
-        configurations: Vec::new(),      // TODO Task 3: load from DB
-        active_configuration_id: String::new(), // TODO Task 3: load from meta
+        configurations,
+        active_configuration_id,
     })
 }
 
@@ -280,17 +313,18 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
     Ok(entries)
 }
 
-/// Queries all groups ordered by sort_order and loads comps for each.
+/// Queries all groups for the given configuration_id ordered by sort_order and loads comps for each.
 fn load_groups(
     conn: &Connection,
+    configuration_id: &str,
     entry_map: &HashMap<String, &LibraryEntry>,
 ) -> Result<Vec<Group>, String> {
     let mut stmt = conn
-        .prepare("SELECT id, name FROM groups ORDER BY sort_order ASC")
+        .prepare("SELECT id, name FROM groups WHERE configuration_id = ?1 ORDER BY sort_order ASC")
         .map_err(|e| format!("Failed to prepare load_groups: {e}"))?;
 
     let rows = stmt
-        .query_map([], |row| {
+        .query_map(params![configuration_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(|e| format!("Failed to query groups: {e}"))?
@@ -510,6 +544,20 @@ pub fn open_memory_db() -> Connection {
 }
 
 #[cfg(test)]
+pub fn ensure_test_config(conn: &Connection) -> String {
+    let config_id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT OR IGNORE INTO configurations (id, name, created_at, sort_order) VALUES (?1, 'Test', '0', 1000)",
+        params![config_id],
+    ).expect("insert test config");
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('active_configuration_id', ?1)",
+        params![config_id],
+    ).expect("set active config");
+    config_id
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -564,10 +612,12 @@ mod tests {
     #[test]
     fn load_full_state_empty_db() {
         let conn = open_memory_db();
+        ensure_test_config(&conn);
         let state = load_full_state(&conn).expect("load_full_state should succeed on empty DB");
         assert!(state.groups.is_empty(), "groups should be empty");
         assert!(state.library_entries.is_empty(), "library_entries should be empty");
         assert!(state.tags.is_empty(), "tags should be empty");
+        assert_eq!(state.configurations.len(), 1);
     }
 
     #[test]
@@ -595,7 +645,8 @@ mod tests {
         library::add_tag_to_entry(&conn, &entry_id, "boss").expect("add boss");
 
         // Build hierarchy: group → comp → track → clip.
-        let group_id = hierarchy::insert_group(&conn, "Combat").expect("insert group");
+        let config_id = ensure_test_config(&conn);
+        let group_id = hierarchy::insert_group(&conn, "Combat", &config_id).expect("insert group");
         let comp_id = hierarchy::insert_comp(&conn, &group_id, "Act 1").expect("insert comp");
         let track_id = hierarchy::insert_track(&conn, &comp_id, "Battle Theme").expect("insert track");
         let _clip_id = hierarchy::insert_clip(&conn, &track_id, &entry_id).expect("insert clip");
@@ -652,6 +703,47 @@ mod tests {
             }
             other => panic!("expected Seamless mode, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn load_full_state_scoped_by_config() {
+        let conn = open_memory_db();
+        // Reset to v1 so migrate_v1_to_v2 actually runs and seeds the default config.
+        conn.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'", [])
+            .expect("set v1");
+        conn.execute_batch("PRAGMA foreign_keys=OFF;").expect("disable fk");
+        conn.execute_batch("PRAGMA foreign_keys=ON;").expect("re-enable fk");
+        migrate_v1_to_v2(&conn).expect("migrate");
+
+        let config_id: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'active_configuration_id'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("get active config");
+
+        let config2_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO configurations (id, name, created_at, sort_order) VALUES (?1, 'Other', '0', 2000)",
+            params![config2_id],
+        ).expect("insert config2");
+
+        conn.execute(
+            "INSERT INTO groups (id, name, sort_order, configuration_id) VALUES ('g1', 'Default Group', 1000, ?1)",
+            params![config_id],
+        ).expect("insert group in default config");
+
+        conn.execute(
+            "INSERT INTO groups (id, name, sort_order, configuration_id) VALUES ('g2', 'Other Group', 1000, ?1)",
+            params![config2_id],
+        ).expect("insert group in other config");
+
+        let state = load_full_state(&conn).expect("load state");
+        assert_eq!(state.groups.len(), 1, "should only see active config's groups");
+        assert_eq!(state.groups[0].name, "Default Group");
+        assert_eq!(state.active_configuration_id, config_id);
+        assert_eq!(state.configurations.len(), 2, "should see all configurations");
     }
 
     #[test]

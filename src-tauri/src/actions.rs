@@ -44,7 +44,8 @@ pub fn load_data(container: &AppStateContainer) -> Result<AppState, String> {
 
 pub fn add_group(container: &AppStateContainer, name: String) -> Result<AppState, String> {
     with_db(container, |conn| {
-        hierarchy::insert_group(conn, &name)?;
+        let config_id = database::get_active_configuration_id(conn)?;
+        hierarchy::insert_group(conn, &name, &config_id)?;
         database::load_full_state(conn)
     })
 }
