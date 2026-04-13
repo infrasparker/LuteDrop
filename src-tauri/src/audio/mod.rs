@@ -217,17 +217,27 @@ impl AudioEngine {
             self.library_sound = None;
         }
 
-        // Add library sound state
-        if let Some(ref snd) = self.library_sound {
-            let st = sound::state(snd);
-            states.push(TrackPlaybackState {
+        // Always emit library sound state so frontend can detect when it stops
+        let lib_state = match &self.library_sound {
+            Some(snd) => {
+                let st = sound::state(snd);
+                TrackPlaybackState {
+                    track_id: LIBRARY_TRACK_ID.to_string(),
+                    is_playing: matches!(st, kira::sound::PlaybackState::Playing | kira::sound::PlaybackState::Resuming),
+                    is_paused: matches!(st, kira::sound::PlaybackState::Paused | kira::sound::PlaybackState::Pausing),
+                    current_clip_id: None,
+                    current_time: sound::position(snd),
+                }
+            }
+            None => TrackPlaybackState {
                 track_id: LIBRARY_TRACK_ID.to_string(),
-                is_playing: matches!(st, kira::sound::PlaybackState::Playing | kira::sound::PlaybackState::Resuming),
-                is_paused: matches!(st, kira::sound::PlaybackState::Paused | kira::sound::PlaybackState::Pausing),
+                is_playing: false,
+                is_paused: false,
                 current_clip_id: None,
-                current_time: sound::position(snd),
-            });
-        }
+                current_time: 0.0,
+            },
+        };
+        states.push(lib_state);
 
         states
     }

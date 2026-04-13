@@ -50,42 +50,72 @@ function togglePause(): void {
 
 <template>
   <VFooter app color="surface" elevation="4" class="pa-2">
-    <div class="d-flex align-center ga-3 mx-auto" style="max-width: 450px; width: 100%;">
-      <span v-if="playingCount > 0" class="text-caption text-primary" style="white-space: nowrap;">
-        {{ playingCount }} playing
-      </span>
+    <div class="transport-grid">
+      <div class="transport-left">
+        <span style="white-space: nowrap;" :class="playingCount > 0 ? 'text-primary' : 'text-medium-emphasis'">
+          {{ playingCount === 1 ? '1 clip playing' : `${playingCount} clips playing` }}
+        </span>
+      </div>
 
-      <VSpacer />
+      <div class="transport-center">
+        <VBtn
+          :icon="showPlayIcon ? 'mdi-play' : 'mdi-pause'"
+          :disabled="!anyPlaying && !anyPaused"
+          variant="tonal"
+          size="small"
+          rounded="circle"
+          @click="togglePause"
+        />
+        <VBtn
+          icon="mdi-stop"
+          variant="tonal"
+          size="small"
+          rounded="circle"
+          @click="stopAll"
+        />
+      </div>
 
-      <VBtn
-        :icon="showPlayIcon ? 'mdi-play' : 'mdi-pause'"
-        :disabled="!anyPlaying && !anyPaused"
-        variant="tonal"
-        size="small"
-        rounded="circle"
-        @click="togglePause"
-      />
-      <VBtn
-        icon="mdi-stop"
-        variant="tonal"
-        size="small"
-        rounded="circle"
-        @click="stopAll"
-      />
-
-      <VSpacer />
-
-      <VIcon size="small" class="text-medium-emphasis">mdi-volume-high</VIcon>
-      <VSlider
-        :model-value="audio.masterVolume.value"
-        @update:model-value="setMasterVolume"
-        :min="0"
-        :max="1"
-        :step="0.01"
-        hide-details
-        density="compact"
-        style="max-width: 120px;"
-      />
+      <div class="transport-right">
+        <VIcon size="small" class="text-medium-emphasis">mdi-volume-high</VIcon>
+        <VSlider
+          :model-value="audio.masterVolume.value"
+          @update:model-value="setMasterVolume"
+          :min="0"
+          :max="1"
+          :step="0.01"
+          hide-details
+          density="compact"
+          style="max-width: 120px;"
+        />
+      </div>
     </div>
   </VFooter>
 </template>
+
+<style scoped>
+.transport-grid {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  width: 100%;
+  max-width: 450px;
+  margin: 0 auto;
+  gap: 12px;
+}
+
+.transport-left {
+  justify-self: start;
+}
+
+.transport-center {
+  display: flex;
+  gap: 8px;
+}
+
+.transport-right {
+  display: flex;
+  align-items: center;
+  justify-content: end;
+  gap: 8px;
+}
+</style>

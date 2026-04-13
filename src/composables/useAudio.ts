@@ -173,6 +173,8 @@ export function useAudio() {
   async function stopLibrarySound(): Promise<void> {
     try {
       await invoke('stop_library_sound');
+      // Clear the stale playback state so other components don't see a phantom playing state
+      store.playbackStates.delete('__library');
     } catch (e) {
       toast.showError(String(e));
     }

@@ -19,7 +19,16 @@ const router = useRouter();
 
 const showEditorDialog = computed({
   get: () => store.editEntryId !== null,
-  set: (v: boolean) => { if (!v) store.editEntryId = null; },
+  set: (v: boolean) => {
+    if (!v) {
+      // Stop library sound when closing dialog from Soundstage
+      if (router.currentRoute.value.path !== '/library') {
+        audio.stopLibrarySound();
+        store.libraryPlayingEntryId = null;
+      }
+      store.editEntryId = null;
+    }
+  },
 });
 
 watch(() => router.currentRoute.value.path, (newPath, oldPath) => {
