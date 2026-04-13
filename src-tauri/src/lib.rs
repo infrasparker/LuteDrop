@@ -42,6 +42,11 @@ pub fn run() {
                 log::error!("Schema migration v1->v2 failed: {}", e);
             }
 
+            // Ensure a default configuration exists (for fresh v2 databases)
+            if let Err(e) = database::ensure_default_configuration(&conn) {
+                log::error!("Failed to ensure default configuration: {}", e);
+            }
+
             // Recover data from backup JSON if DB is empty
             let backup_json_path = db_path.parent().unwrap_or(db_path.as_ref())
                 .join("lutedrop-data.backup.json");

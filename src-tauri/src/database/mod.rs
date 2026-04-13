@@ -108,6 +108,55 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
     ")
 }
 
+/// Ensures at least one configuration exists and active_configuration_id is set.
+/// Called after init_schema for fresh databases that skip the v1→v2 migration.
+pub fn ensure_default_configuration(conn: &Connection) -> Result<(), String> {
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM configurations", [], |row| row.get(0))
+        .map_err(|e| format!("Failed to count configurations: {e}"))?;
+
+    if count > 0 {
+        // Also ensure active_configuration_id is set
+        let has_active: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM meta WHERE key = 'active_configuration_id'",
+                [],
+                |row| row.get::<_, i64>(0).map(|c| c > 0),
+            )
+            .unwrap_or(false);
+        if !has_active {
+            let first_id: String = conn
+                .query_row("SELECT id FROM configurations ORDER BY sort_order LIMIT 1", [], |row| row.get(0))
+                .map_err(|e| format!("Failed to get first configuration: {e}"))?;
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('active_configuration_id', ?1)",
+                params![first_id],
+            ).map_err(|e| format!("Failed to set active configuration: {e}"))?;
+        }
+        return Ok(());
+    }
+
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let config_id = Uuid::new_v4().to_string();
+    let created_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before epoch")
+        .as_millis()
+        .to_string();
+
+    conn.execute(
+        "INSERT INTO configurations (id, name, created_at, sort_order) VALUES (?1, 'Default', ?2, 1000)",
+        params![config_id, created_at],
+    ).map_err(|e| format!("Failed to insert default configuration: {e}"))?;
+
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('active_configuration_id', ?1)",
+        params![config_id],
+    ).map_err(|e| format!("Failed to set active configuration: {e}"))?;
+
+    Ok(())
+}
+
 /// Migrates from schema v1 to v2: creates the configurations table,
 /// inserts a "Default" configuration, and adds configuration_id to groups.
 pub fn migrate_v1_to_v2(conn: &Connection) -> Result<(), String> {
