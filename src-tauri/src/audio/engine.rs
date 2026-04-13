@@ -73,6 +73,10 @@ struct ActiveTrack {
     sound_handle: Option<StreamingSoundHandle<FromFileError>>,
     /// Handle to the previous sound that's fading out during a crossfade.
     outgoing_handle: Option<StreamingSoundHandle<FromFileError>>,
+    /// When the outgoing crossfade started (for cleanup timing).
+    outgoing_fade_started: Option<Instant>,
+    /// Duration of the current outgoing crossfade.
+    outgoing_fade_duration: Option<f64>,
     /// Duration of the currently playing clip in seconds (for crossfade timing).
     current_clip_duration: Option<f64>,
     /// Whether we've already started the crossfade for the current clip.
@@ -132,6 +136,8 @@ impl AudioEngine {
                 track_handle,
                 sound_handle: None,
                 outgoing_handle: None,
+                outgoing_fade_started: None,
+                outgoing_fade_duration: None,
                 current_clip_duration: None,
                 crossfade_started: false,
                 config: track.clone(),
@@ -450,12 +456,6 @@ impl AudioEngine {
                 continue;
             }
 
-            // Clean up finished outgoing crossfade handle
-            if let Some(ref handle) = active.outgoing_handle {
-                if matches!(handle.state(), PlaybackState::Stopped) {
-                    // Will be cleaned up in the mutable pass below
-                }
-            }
 
             // Check if the sound has stopped naturally
             if let Some(ref handle) = active.sound_handle {
@@ -471,11 +471,23 @@ impl AudioEngine {
             }
         }
 
-        // Clean up stopped outgoing handles
+        // Clean up outgoing handles after crossfade duration has elapsed
         for active in self.tracks.values_mut() {
-            if let Some(ref handle) = active.outgoing_handle {
-                if matches!(handle.state(), PlaybackState::Stopped) {
+            if active.outgoing_handle.is_some() {
+                let should_cleanup = match (active.outgoing_fade_started, active.outgoing_fade_duration) {
+                    (Some(started), Some(dur)) => started.elapsed() >= Duration::from_secs_f64(dur + 0.5),
+                    _ => true, // no timing info, clean up immediately
+                };
+                if should_cleanup {
+                    if let Some(ref mut handle) = active.outgoing_handle {
+                        let _ = handle.stop(Tween {
+                            duration: Duration::from_millis(10),
+                            ..Default::default()
+                        });
+                    }
                     active.outgoing_handle = None;
+                    active.outgoing_fade_started = None;
+                    active.outgoing_fade_duration = None;
                 }
             }
         }
@@ -715,24 +727,35 @@ impl AudioEngine {
             .get_mut(track_id)
             .ok_or_else(|| format!("Track not found: {}", track_id))?;
 
-        log::info!("Beginning crossfade on track {} to clip {}, duration {}s", track_id, next_clip_index, crossfade_duration);
+        let old_position = active.sound_handle.as_ref().map(|h| h.position()).unwrap_or(0.0);
+        let old_state = active.sound_handle.as_ref().map(|h| format!("{:?}", h.state())).unwrap_or_default();
+        log::info!(
+            "Beginning crossfade on track {} to clip {}, duration {}s (old pos: {:.1}s, old state: {})",
+            track_id, next_clip_index, crossfade_duration, old_position, old_state
+        );
 
-        // Move current sound to outgoing (it will fade out and be cleaned up)
+        // Move current sound to outgoing — it keeps playing while fading out
         let mut old_handle = active.sound_handle.take();
         // Drop any previous outgoing handle
         active.outgoing_handle = None;
 
-        // Equal-power crossfade: both clips stay near full volume longer.
-        // InPowi(3) fade-out holds loud until the last third, OutPowi(3)
-        // fade-in reaches near-full quickly. Combined energy stays constant.
+        // Fade out the old sound over the crossfade duration.
+        // Use set_volume instead of stop() — stop() transitions to Stopped state
+        // which can interfere with cleanup. set_volume just fades the volume down
+        // while the sound keeps playing naturally.
         if let Some(ref mut handle) = old_handle {
-            let _ = handle.stop(Tween {
-                duration: Duration::from_secs_f64(crossfade_duration),
-                easing: Easing::InPowi(3),
-                ..Default::default()
-            });
+            handle.set_volume(
+                Decibels::SILENCE,
+                Tween {
+                    duration: Duration::from_secs_f64(crossfade_duration),
+                    easing: Easing::InPowi(3),
+                    ..Default::default()
+                },
+            );
         }
         active.outgoing_handle = old_handle;
+        active.outgoing_fade_started = Some(Instant::now());
+        active.outgoing_fade_duration = Some(crossfade_duration);
         active.crossfade_started = true;
 
         // Load and start the next clip with fade in
