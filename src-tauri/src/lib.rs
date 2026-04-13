@@ -42,6 +42,17 @@ pub fn run() {
                 log::error!("Schema migration v1->v2 failed: {}", e);
             }
 
+            // Recover data from backup JSON if DB is empty
+            let backup_json_path = db_path.parent().unwrap_or(db_path.as_ref())
+                .join("lutedrop-data.backup.json");
+            match database::recover_from_backup_json(&conn, &backup_json_path) {
+                Ok((groups, entries)) if groups > 0 => {
+                    log::info!("Recovered {} groups and {} library entries from backup JSON", groups, entries);
+                }
+                Err(e) => log::error!("Backup recovery failed: {}", e),
+                _ => {}
+            }
+
             // Backfill durations for any entries missing them
             match database::library::backfill_durations(&conn) {
                 Ok(n) if n > 0 => log::info!("Backfilled duration for {} library entries", n),

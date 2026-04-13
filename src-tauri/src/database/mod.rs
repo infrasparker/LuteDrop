@@ -208,6 +208,196 @@ pub fn migrate_v1_to_v2(conn: &Connection) -> Result<(), String> {
     result
 }
 
+// ─── One-time Recovery from Backup JSON ──────────────────────────────────────
+
+/// Imports data from a legacy backup JSON file into the current v2 database.
+/// Only runs if the groups table is empty and the JSON file exists.
+/// This restores data after a botched migration.
+pub fn recover_from_backup_json(conn: &Connection, json_path: &std::path::Path) -> Result<(usize, usize), String> {
+    use sha2::{Digest, Sha256};
+    use std::collections::HashMap;
+    use std::io::Read;
+
+    if !json_path.exists() {
+        return Ok((0, 0));
+    }
+
+    // Only run if DB is empty
+    let group_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM groups", [], |row| row.get(0))
+        .map_err(|e| format!("Failed to count groups: {e}"))?;
+    if group_count > 0 {
+        return Ok((0, 0));
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct OldState { groups: Vec<OldGroup> }
+
+    #[derive(serde::Deserialize)]
+    struct OldGroup { id: String, name: String, comps: Vec<OldComp> }
+
+    #[derive(serde::Deserialize)]
+    struct OldComp { id: String, name: String, tracks: Vec<OldTrack> }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct OldTrack {
+        id: String, name: String, clips: Vec<OldClip>,
+        volume: f64, mode: serde_json::Value, fade_in: f64, fade_out: f64,
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct OldClip { id: String, name: String, file_path: String, volume: f64 }
+
+    let raw = std::fs::read_to_string(json_path)
+        .map_err(|e| format!("Failed to read backup JSON: {e}"))?;
+    let old_state: OldState = serde_json::from_str(&raw)
+        .map_err(|e| format!("Failed to parse backup JSON: {e}"))?;
+
+    let config_id = get_active_configuration_id(conn)?;
+
+    // Build file_path → entry_id map (dedup by hash)
+    let mut path_to_entry: HashMap<String, String> = HashMap::new();
+    let mut hash_to_entry: HashMap<String, String> = HashMap::new();
+    let mut entries_created: usize = 0;
+
+    for group in &old_state.groups {
+        for comp in &group.comps {
+            for track in &comp.tracks {
+                for clip in &track.clips {
+                    if path_to_entry.contains_key(&clip.file_path) { continue; }
+
+                    let hash_opt = (|| -> Option<String> {
+                        let mut file = std::fs::File::open(&clip.file_path).ok()?;
+                        let mut hasher = Sha256::new();
+                        let mut buf = [0u8; 65536];
+                        loop {
+                            match file.read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => hasher.update(&buf[..n]),
+                                Err(_) => return None,
+                            }
+                        }
+                        Some(format!("{:x}", hasher.finalize()))
+                    })();
+
+                    let entry_id = if let Some(ref hash) = hash_opt {
+                        if let Some(existing) = hash_to_entry.get(hash) {
+                            existing.clone()
+                        } else {
+                            let id = library::insert_library_entry(
+                                conn, &clip.file_path, Some(hash.as_str()), &clip.name, None, None, None,
+                            )?;
+                            hash_to_entry.insert(hash.clone(), id.clone());
+                            entries_created += 1;
+                            id
+                        }
+                    } else {
+                        let id = library::insert_library_entry(
+                            conn, &clip.file_path, None, &clip.name, None, None, None,
+                        )?;
+                        entries_created += 1;
+                        id
+                    };
+
+                    // Tag from folder structure: .../Category/Subcategory/file.mp3
+                    // Singularize and lowercase each folder component as a tag.
+                    let normalized_path = clip.file_path.replace('\\', "/");
+                    let path_parts: Vec<&str> = normalized_path
+                        .split('/')
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    // Find "D&D Playlists" anchor and take folders after it (excluding filename)
+                    if let Some(anchor) = path_parts.iter().position(|p| *p == "D&D Playlists") {
+                        let tag_folders = &path_parts[anchor + 1..path_parts.len().saturating_sub(1)];
+                        for folder in tag_folders {
+                            let tag = folder.to_lowercase();
+                            // Simple depluralization: strip trailing 's' for common cases
+                            let tag = if tag.ends_with('s') && !tag.ends_with("ss") && tag.len() > 2 {
+                                tag[..tag.len() - 1].to_string()
+                            } else {
+                                tag
+                            };
+                            let _ = library::add_tag_to_entry(conn, &entry_id, &tag);
+                        }
+                    }
+
+                    path_to_entry.insert(clip.file_path.clone(), entry_id);
+                }
+            }
+        }
+    }
+
+    // Recreate hierarchy
+    let groups_count = old_state.groups.len();
+    for (g_idx, group) in old_state.groups.iter().enumerate() {
+        let g_sort = ((g_idx + 1) * 1000) as i64;
+        conn.execute(
+            "INSERT INTO groups (id, name, sort_order, configuration_id) VALUES (?1, ?2, ?3, ?4)",
+            params![group.id, group.name, g_sort, config_id],
+        ).map_err(|e| format!("Failed to insert group: {e}"))?;
+
+        for (c_idx, comp) in group.comps.iter().enumerate() {
+            let c_sort = ((c_idx + 1) * 1000) as i64;
+            conn.execute(
+                "INSERT INTO comps (id, group_id, name, sort_order) VALUES (?1, ?2, ?3, ?4)",
+                params![comp.id, group.id, comp.name, c_sort],
+            ).map_err(|e| format!("Failed to insert comp: {e}"))?;
+
+            for (t_idx, track) in comp.tracks.iter().enumerate() {
+                let t_sort = ((t_idx + 1) * 1000) as i64;
+                let mode_type = track.mode.get("type").and_then(|v| v.as_str()).unwrap_or("sequence");
+                let repeat = track.mode.get("repeat").and_then(|v| v.as_bool()).map(|b| if b { 1i64 } else { 0 });
+                let transition = track.mode.get("transition");
+                let transition_type = transition.and_then(|t| t.get("type")).and_then(|v| v.as_str());
+                let gap_min = transition.and_then(|t| t.get("min")).and_then(|v| v.as_f64());
+                let gap_max = transition.and_then(|t| t.get("max")).and_then(|v| v.as_f64());
+
+                conn.execute(
+                    "INSERT INTO tracks (id, comp_id, name, volume, mode_type, repeat,
+                         transition_type, transition_gap_min, transition_gap_max,
+                         fade_in, fade_out, sort_order)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    params![
+                        track.id, comp.id, track.name, track.volume, mode_type,
+                        repeat, transition_type, gap_min, gap_max,
+                        track.fade_in, track.fade_out, t_sort,
+                    ],
+                ).map_err(|e| format!("Failed to insert track: {e}"))?;
+
+                // For seamless tracks, store loop points on the library entry
+                if mode_type == "seamless" {
+                    if let Some(clip) = track.clips.first() {
+                        if let Some(entry_id) = path_to_entry.get(&clip.file_path) {
+                            let loop_start = track.mode.get("loopStart").and_then(|v| v.as_f64());
+                            let loop_end = track.mode.get("loopEnd").and_then(|v| v.as_f64());
+                            if loop_start.is_some() || loop_end.is_some() {
+                                let _ = library::update_library_entry_markers(conn, entry_id, None, None, loop_start, loop_end);
+                            }
+                        }
+                    }
+                }
+
+                for (cl_idx, clip) in track.clips.iter().enumerate() {
+                    let cl_sort = ((cl_idx + 1) * 1000) as i64;
+                    let entry_id = path_to_entry.get(&clip.file_path)
+                        .ok_or_else(|| format!("No library entry for '{}'", clip.file_path))?;
+                    conn.execute(
+                        "INSERT INTO clips (id, track_id, library_entry_id, volume, sort_order)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![clip.id, track.id, entry_id, clip.volume, cl_sort],
+                    ).map_err(|e| format!("Failed to insert clip: {e}"))?;
+                }
+            }
+        }
+    }
+
+    Ok((groups_count, entries_created))
+}
+
 // ─── State Loading ────────────────────────────────────────────────────────────
 
 /// Reads the active configuration ID from the meta table.
