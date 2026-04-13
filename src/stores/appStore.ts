@@ -13,6 +13,11 @@ export const useAppStore = defineStore('app', () => {
   const libraryPlayingEntryId = ref<string | null>(null);
   const editEntryId = ref<string | null>(null);
 
+  // --- Mute state (mirrors audio engine, not persisted to DB) ---
+  const masterMuted = ref(false);
+  const mutedTracks = ref<Set<string>>(new Set());
+  const mutedClips = ref<Set<string>>(new Set());
+
   // --- Hydrate from Rust state ---
 
   function hydrate(state: AppState): void {
@@ -90,6 +95,42 @@ export const useAppStore = defineStore('app', () => {
     return missingEntryIds.value.has(entryId);
   }
 
+  // --- Mute helpers ---
+
+  function setMasterMuted(muted: boolean): void {
+    masterMuted.value = muted;
+  }
+
+  function setTrackMuted(trackId: string, muted: boolean): void {
+    if (muted) {
+      mutedTracks.value.add(trackId);
+    } else {
+      mutedTracks.value.delete(trackId);
+    }
+  }
+
+  function setClipMuted(clipId: string, muted: boolean): void {
+    if (muted) {
+      mutedClips.value.add(clipId);
+    } else {
+      mutedClips.value.delete(clipId);
+    }
+  }
+
+  function isTrackMuted(trackId: string): boolean {
+    return mutedTracks.value.has(trackId);
+  }
+
+  function isClipMuted(clipId: string): boolean {
+    return mutedClips.value.has(clipId);
+  }
+
+  function isCompMuted(compId: string): boolean {
+    const comp = findComp(compId);
+    if (!comp || comp.tracks.length === 0) return false;
+    return comp.tracks.every((t) => mutedTracks.value.has(t.id));
+  }
+
   async function checkMissingFiles(): Promise<void> {
     try {
       const missing = await invoke<string[]>('check_missing_files');
@@ -108,6 +149,9 @@ export const useAppStore = defineStore('app', () => {
     missingEntryIds,
     libraryPlayingEntryId,
     editEntryId,
+    masterMuted,
+    mutedTracks,
+    mutedClips,
     hydrate,
     command,
     setTrackPlaybackState,
@@ -118,5 +162,11 @@ export const useAppStore = defineStore('app', () => {
     findLibraryEntry,
     isEntryMissing,
     checkMissingFiles,
+    setMasterMuted,
+    setTrackMuted,
+    setClipMuted,
+    isTrackMuted,
+    isClipMuted,
+    isCompMuted,
   };
 });

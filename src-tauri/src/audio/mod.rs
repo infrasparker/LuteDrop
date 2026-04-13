@@ -125,18 +125,66 @@ impl AudioEngine {
 
     // --- Mute ---
 
-    #[allow(dead_code)]
     pub fn mute_master(&mut self) { self.mute_state.master = true; self.refresh_all_volumes(); }
-    #[allow(dead_code)]
     pub fn unmute_master(&mut self) { self.mute_state.master = false; self.refresh_all_volumes(); }
-    #[allow(dead_code)]
     pub fn mute_track(&mut self, track_id: &str) { self.mute_state.set_track_muted(track_id, true); self.refresh_track_volume(track_id); }
-    #[allow(dead_code)]
     pub fn unmute_track(&mut self, track_id: &str) { self.mute_state.set_track_muted(track_id, false); self.refresh_track_volume(track_id); }
-    #[allow(dead_code)]
     pub fn mute_clip(&mut self, clip_id: &str) { self.mute_state.set_clip_muted(clip_id, true); }
-    #[allow(dead_code)]
     pub fn unmute_clip(&mut self, clip_id: &str) { self.mute_state.set_clip_muted(clip_id, false); }
+
+    pub fn toggle_master_mute(&mut self) -> bool {
+        self.mute_state.master = !self.mute_state.master;
+        self.refresh_all_volumes();
+        self.mute_state.master
+    }
+
+    pub fn toggle_track_mute(&mut self, track_id: &str) -> bool {
+        let new_state = !self.mute_state.tracks.get(track_id).copied().unwrap_or(false);
+        self.mute_state.set_track_muted(track_id, new_state);
+        self.refresh_track_volume(track_id);
+        new_state
+    }
+
+    pub fn toggle_clip_mute(&mut self, clip_id: &str) -> bool {
+        let new_state = !self.mute_state.clips.get(clip_id).copied().unwrap_or(false);
+        self.mute_state.set_clip_muted(clip_id, new_state);
+        // Find which track owns this clip and refresh its volume
+        let track_id = self.tracks.iter()
+            .find(|(_, t)| t.config.clips.iter().any(|c| c.id == clip_id))
+            .map(|(id, _)| id.clone());
+        if let Some(tid) = track_id {
+            self.refresh_track_volume(&tid);
+        }
+        new_state
+    }
+
+    pub fn toggle_comp_mute(&mut self, track_ids: &[String]) -> bool {
+        let all_muted = track_ids.iter().all(|id| {
+            self.mute_state.tracks.get(id).copied().unwrap_or(false)
+        });
+        let new_state = !all_muted;
+        for id in track_ids {
+            self.mute_state.set_track_muted(id, new_state);
+            self.refresh_track_volume(id);
+        }
+        new_state
+    }
+
+    pub fn is_master_muted(&self) -> bool {
+        self.mute_state.master
+    }
+
+    pub fn is_track_muted(&self, track_id: &str) -> bool {
+        self.mute_state.tracks.get(track_id).copied().unwrap_or(false)
+    }
+
+    pub fn is_clip_muted(&self, clip_id: &str) -> bool {
+        self.mute_state.clips.get(clip_id).copied().unwrap_or(false)
+    }
+
+    pub fn get_mute_snapshot(&self) -> (bool, std::collections::HashMap<String, bool>, std::collections::HashMap<String, bool>) {
+        (self.mute_state.master, self.mute_state.tracks.clone(), self.mute_state.clips.clone())
+    }
 
     // --- Library playback ---
 
@@ -251,7 +299,7 @@ impl AudioEngine {
         }
     }
 
-    fn refresh_track_volume(&mut self, track_id: &str) {
+    pub(crate) fn refresh_track_volume(&mut self, track_id: &str) {
         if let Some(track) = self.tracks.get(track_id) {
             let vol = track.config.volume;
             orchestrator::set_track_volume(&mut self.tracks, track_id, vol, self.master_volume, &self.mute_state);

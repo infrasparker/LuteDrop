@@ -184,6 +184,52 @@ export function useAudio() {
     }
   }
 
+  async function toggleMasterMute(): Promise<void> {
+    try {
+      const muted = await invoke<boolean>('toggle_master_mute');
+      const appStore = useAppStore();
+      appStore.setMasterMuted(muted);
+    } catch (e) {
+      toast.showError(String(e));
+    }
+  }
+
+  async function toggleTrackMute(trackId: string): Promise<void> {
+    try {
+      const muted = await invoke<boolean>('toggle_track_mute', { trackId });
+      const appStore = useAppStore();
+      appStore.setTrackMuted(trackId, muted);
+    } catch (e) {
+      toast.showError(String(e));
+    }
+  }
+
+  async function toggleClipMute(clipId: string): Promise<void> {
+    try {
+      const muted = await invoke<boolean>('toggle_clip_mute', { clipId });
+      const appStore = useAppStore();
+      appStore.setClipMuted(clipId, muted);
+    } catch (e) {
+      toast.showError(String(e));
+    }
+  }
+
+  async function toggleCompMute(compId: string): Promise<void> {
+    try {
+      const muted = await invoke<boolean>('toggle_comp_mute', { compId });
+      const appStore = useAppStore();
+      // Update all tracks in the comp
+      const comp = appStore.findComp(compId);
+      if (comp) {
+        for (const track of comp.tracks) {
+          appStore.setTrackMuted(track.id, muted);
+        }
+      }
+    } catch (e) {
+      toast.showError(String(e));
+    }
+  }
+
   return {
     masterVolume,
     playTrack,
@@ -203,5 +249,9 @@ export function useAudio() {
     resumeAll,
     playLibrarySound,
     stopLibrarySound,
+    toggleMasterMute,
+    toggleTrackMute,
+    toggleClipMute,
+    toggleCompMute,
   };
 }

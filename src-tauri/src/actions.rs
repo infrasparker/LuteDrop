@@ -532,6 +532,46 @@ pub fn stop_library_sound(container: &AppStateContainer) -> Result<(), String> {
     Ok(())
 }
 
+// --- Mute actions ---
+
+pub fn toggle_master_mute(container: &AppStateContainer) -> Result<bool, String> {
+    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    Ok(audio.toggle_master_mute())
+}
+
+pub fn toggle_track_mute(container: &AppStateContainer, track_id: &str) -> Result<bool, String> {
+    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    Ok(audio.toggle_track_mute(track_id))
+}
+
+pub fn toggle_clip_mute(container: &AppStateContainer, clip_id: &str) -> Result<bool, String> {
+    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    Ok(audio.toggle_clip_mute(clip_id))
+}
+
+pub fn toggle_comp_mute(container: &AppStateContainer, comp_id: &str) -> Result<bool, String> {
+    let track_ids = {
+        let state = with_db(container, |conn| database::load_full_state(conn))?;
+        state.groups.iter()
+            .flat_map(|g| g.comps.iter())
+            .find(|c| c.id == comp_id)
+            .map(|c| c.tracks.iter().map(|t| t.id.clone()).collect::<Vec<_>>())
+            .ok_or_else(|| format!("Comp not found: {}", comp_id))?
+    };
+    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    Ok(audio.toggle_comp_mute(&track_ids))
+}
+
+pub fn get_mute_state(container: &AppStateContainer) -> Result<serde_json::Value, String> {
+    let audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let (master, tracks, clips) = audio.get_mute_snapshot();
+    Ok(serde_json::json!({
+        "master": master,
+        "tracks": tracks,
+        "clips": clips,
+    }))
+}
+
 pub fn preload_peaks(container: &AppStateContainer) -> Result<usize, String> {
     let paths = {
         let conn = container.db.lock().map_err(|e| e.to_string())?;

@@ -270,3 +270,30 @@ pub fn play_library_sound(
 pub fn stop_library_sound(state: State<'_, Arc<AppStateContainer>>) -> Result<(), String> {
     actions::stop_library_sound(&state)
 }
+
+// --- Mute commands ---
+
+#[tauri::command]
+pub fn toggle_master_mute(state: State<'_, Arc<AppStateContainer>>) -> Result<bool, String> {
+    actions::toggle_master_mute(&state)
+}
+
+#[tauri::command]
+pub fn toggle_track_mute(state: State<'_, Arc<AppStateContainer>>, track_id: String) -> Result<bool, String> {
+    actions::toggle_track_mute(&state, &track_id)
+}
+
+#[tauri::command]
+pub fn toggle_clip_mute(state: State<'_, Arc<AppStateContainer>>, clip_id: String) -> Result<bool, String> {
+    actions::toggle_clip_mute(&state, &clip_id)
+}
+
+#[tauri::command]
+pub fn toggle_comp_mute(state: State<'_, Arc<AppStateContainer>>, comp_id: String) -> Result<bool, String> {
+    actions::toggle_comp_mute(&state, &comp_id)
+}
+
+#[tauri::command]
+pub fn get_mute_state(state: State<'_, Arc<AppStateContainer>>) -> Result<serde_json::Value, String> {
+    actions::get_mute_state(&state)
+}

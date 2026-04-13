@@ -148,6 +148,11 @@ pub fn run() {
             commands::check_missing_files,
             commands::play_library_sound,
             commands::stop_library_sound,
+            commands::toggle_master_mute,
+            commands::toggle_track_mute,
+            commands::toggle_clip_mute,
+            commands::toggle_comp_mute,
+            commands::get_mute_state,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LuteDrop");
