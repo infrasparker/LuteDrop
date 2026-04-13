@@ -1,17 +1,22 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { Group, Comp, Track, AppState, TrackPlaybackState, CompStatus } from '@generated/index';
+import type { Group, Comp, Track, AppState, TrackPlaybackState, CompStatus, LibraryEntry } from '@generated/index';
 import { useToast } from '../composables/useToast';
 
 export const useAppStore = defineStore('app', () => {
   const groups = ref<Group[]>([]);
   const playbackStates = ref<Map<string, TrackPlaybackState>>(new Map());
+  const libraryEntries = ref<LibraryEntry[]>([]);
+  const tags = ref<string[]>([]);
+  const missingEntryIds = ref<Set<string>>(new Set());
 
   // --- Hydrate from Rust state ---
 
   function hydrate(state: AppState): void {
     groups.value = state.groups;
+    libraryEntries.value = state.libraryEntries;
+    tags.value = state.tags;
   }
 
   // --- Command helper: invoke a Rust command and hydrate ---
@@ -70,9 +75,30 @@ export const useAppStore = defineStore('app', () => {
     return undefined;
   }
 
+  function findLibraryEntry(entryId: string): LibraryEntry | undefined {
+    return libraryEntries.value.find((e) => e.id === entryId);
+  }
+
+  function isEntryMissing(entryId: string): boolean {
+    return missingEntryIds.value.has(entryId);
+  }
+
+  async function checkMissingFiles(): Promise<void> {
+    try {
+      const missing = await invoke<string[]>('check_missing_files');
+      missingEntryIds.value = new Set(missing);
+    } catch (e) {
+      const toast = useToast();
+      toast.showError(String(e));
+    }
+  }
+
   return {
     groups,
     playbackStates,
+    libraryEntries,
+    tags,
+    missingEntryIds,
     hydrate,
     command,
     setTrackPlaybackState,
@@ -80,5 +106,8 @@ export const useAppStore = defineStore('app', () => {
     getCompStatus,
     findComp,
     findTrack,
+    findLibraryEntry,
+    isEntryMissing,
+    checkMissingFiles,
   };
 });
