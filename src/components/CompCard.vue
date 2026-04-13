@@ -20,9 +20,10 @@ const audio = useAudio();
 
 const status = computed(() => store.getCompStatus(props.comp.id));
 
-const borderStyle = computed(() => {
-  return status.value !== 'inactive' ? '3px solid #FF6D00' : '3px solid transparent';
-});
+const cardClass = computed(() => ({
+  'comp-active': status.value === 'active',
+  'comp-partial': status.value === 'partial',
+}));
 
 // Context menu state
 const { menuVisible: contextMenu, menuX: contextMenuX, menuY: contextMenuY, openMenu: openContextMenu } = useContextMenuState();
@@ -76,7 +77,8 @@ function stopComp(): void {
     :color="selected ? 'primary' : 'surface-light'"
     variant="flat"
     class="comp-card pa-2 text-center"
-    :style="{ width: '130px', cursor: 'pointer', border: borderStyle }"
+    :class="cardClass"
+    :style="{ width: '130px', cursor: 'pointer' }"
     @click="emit('select', comp.id)"
     @contextmenu.prevent="openContextMenu($event)"
   >
@@ -150,3 +152,17 @@ function stopComp(): void {
     </VDialog>
   </VCard>
 </template>
+
+<style scoped>
+.comp-card {
+  border-left: 3px solid transparent;
+}
+.comp-active {
+  background: rgba(240, 168, 48, 0.08);
+  border-left: 3px solid #F0A830;
+}
+.comp-partial {
+  background: rgba(240, 168, 48, 0.04);
+  border-left: 3px solid rgba(240, 168, 48, 0.5);
+}
+</style>

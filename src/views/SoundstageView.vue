@@ -107,8 +107,7 @@ async function createComp(): Promise<void> {
         :key="group.id"
         :value="i"
         @contextmenu.prevent="openContextMenu($event, group)"
-        class="tab-truncate"
-        :style="isGroupActive(group) ? { color: '#FF6D00' } : {}"
+        :class="{ 'tab-truncate': true, 'tab-active': isGroupActive(group) }"
       >
         {{ group.name }}
       </VTab>
@@ -236,5 +235,9 @@ async function createComp(): Promise<void> {
   text-overflow: ellipsis;
   white-space: nowrap;
   display: block !important;
+}
+.tab-active {
+  border-left: 3px solid #F0A830;
+  background: rgba(240, 168, 48, 0.08);
 }
 </style>

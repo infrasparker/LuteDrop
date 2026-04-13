@@ -40,6 +40,7 @@ async function remove(): Promise<void> {
     class="d-flex align-center ga-2 py-2 px-1"
     :style="{
       borderBottom: '1px solid rgba(232, 228, 220, 0.05)',
+      borderLeft: isCurrentClip ? '3px solid #F0A830' : '3px solid transparent',
       backgroundColor: isCurrentClip ? 'rgba(240, 168, 48, 0.08)' : 'transparent',
     }"
   >

@@ -98,7 +98,7 @@ function setVolume(v: number): void {
         color="surface-light"
         rounded="0"
         elevation="0"
-        :style="isActive ? { borderLeft: '3px solid #FF6D00' } : { borderLeft: '3px solid transparent' }"
+        :class="{ 'track-panel': true, 'track-active': isActive }"
         @contextmenu.prevent="openContextMenu"
       >
         <template #title>
@@ -210,6 +210,16 @@ function setVolume(v: number): void {
     </VDialog>
   </div>
 </template>
+
+<style scoped>
+.track-panel {
+  border-left: 3px solid transparent;
+}
+.track-active {
+  background: rgba(240, 168, 48, 0.08);
+  border-left: 3px solid #F0A830;
+}
+</style>
 
 <style>
 /* Global styles for SortableJS (not scoped — SortableJS adds classes directly to DOM) */
