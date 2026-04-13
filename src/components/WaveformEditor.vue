@@ -54,7 +54,7 @@ let rafId: number | null = null;
 
 const playbackState = computed(() => {
   if (props.trackId) return store.playbackStates.get(props.trackId);
-  return store.playbackStates.get('__preview');
+  return store.playbackStates.get('__library');
 });
 
 function startPlayheadLoop(): void {
@@ -567,7 +567,7 @@ function onMouseUp(event: MouseEvent): void {
       if (props.trackId) {
         audio.playTrackFrom(props.trackId, clickTime);
       } else if (props.filePath) {
-        audio.playPreview(
+        audio.playLibrarySound(
           props.filePath, clickTime, 1.0,
           localTrimStart.value, localTrimEnd.value,
           props.loopEnabled !== false ? (localLoopStart.value === 0 ? null : localLoopStart.value) : null,
@@ -585,7 +585,7 @@ function onMouseUp(event: MouseEvent): void {
     if (props.trackId) {
       audio.playTrackFrom(props.trackId, clickTime);
     } else if (props.filePath) {
-      audio.playPreview(
+      audio.playLibrarySound(
         props.filePath, clickTime, 1.0,
         localTrimStart.value, localTrimEnd.value,
         props.loopEnabled !== false ? (localLoopStart.value === 0 ? null : localLoopStart.value) : null,

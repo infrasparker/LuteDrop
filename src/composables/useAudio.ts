@@ -148,7 +148,7 @@ export function useAudio() {
     }
   }
 
-  async function playPreview(
+  async function playLibrarySound(
     filePath: string,
     position: number,
     volume: number,
@@ -158,7 +158,7 @@ export function useAudio() {
     loopEnd?: number | null,
   ): Promise<void> {
     try {
-      await invoke('play_preview', {
+      await invoke('play_library_sound', {
         filePath, position, volume,
         trimStart: trimStart ?? null,
         trimEnd: trimEnd ?? null,
@@ -170,9 +170,9 @@ export function useAudio() {
     }
   }
 
-  async function stopPreview(): Promise<void> {
+  async function stopLibrarySound(): Promise<void> {
     try {
-      await invoke('stop_preview');
+      await invoke('stop_library_sound');
     } catch (e) {
       toast.showError(String(e));
     }
@@ -195,7 +195,7 @@ export function useAudio() {
     stopAll,
     pauseAll,
     resumeAll,
-    playPreview,
-    stopPreview,
+    playLibrarySound,
+    stopLibrarySound,
   };
 }

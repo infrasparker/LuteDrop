@@ -3,7 +3,6 @@ mod audio;
 mod commands;
 mod database;
 mod models;
-mod persistence;
 mod server;
 mod state;
 mod waveform;
@@ -26,8 +25,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Determine file paths
-            let db_path = persistence::db_file_path(&app.handle());
-            let json_path = persistence::json_data_file_path(&app.handle());
+            let db_path = {
+                let app_data = app.path().app_data_dir().expect("failed to get app data dir");
+                std::fs::create_dir_all(&app_data).ok();
+                app_data.join("lutedrop.db")
+            };
+            let json_path = {
+                let app_data = app.path().app_data_dir().expect("failed to get app data dir");
+                app_data.join("lutedrop-data.json")
+            };
 
             // Peak cache directory lives inside the app data folder
             let peak_cache_dir = db_path.parent().unwrap_or(db_path.as_ref()).join("peaks");

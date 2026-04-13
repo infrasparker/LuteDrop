@@ -24,8 +24,8 @@ const showEditorDialog = computed({
 
 watch(() => router.currentRoute.value.path, (newPath, oldPath) => {
   if (oldPath === '/library' && newPath !== '/library') {
-    audio.stopPreview();
-    store.previewEntryId = null;
+    audio.stopLibrarySound();
+    store.libraryPlayingEntryId = null;
   }
 });
 

@@ -18,28 +18,28 @@ const emit = defineEmits<{
 const store = useAppStore();
 const audio = useAudio();
 
-const previewState = computed(() => store.playbackStates.get('__preview'));
-const isPreviewPlaying = computed(() => store.previewEntryId === props.entry.id && previewState.value?.isPlaying);
+const previewState = computed(() => store.playbackStates.get('__library'));
+const isPreviewPlaying = computed(() => store.libraryPlayingEntryId === props.entry.id && previewState.value?.isPlaying);
 
 watch(previewState, (state) => {
-  if (!state?.isPlaying && store.previewEntryId === props.entry.id) {
-    store.previewEntryId = null;
+  if (!state?.isPlaying && store.libraryPlayingEntryId === props.entry.id) {
+    store.libraryPlayingEntryId = null;
   }
 });
 
 function togglePreview(): void {
   if (isPreviewPlaying.value) {
-    audio.stopPreview();
-    store.previewEntryId = null;
+    audio.stopLibrarySound();
+    store.libraryPlayingEntryId = null;
   } else {
-    audio.playPreview(
+    audio.playLibrarySound(
       props.entry.filePath,
       props.entry.trimStart ?? 0,
       props.entry.volume,
       props.entry.trimStart, props.entry.trimEnd,
       props.entry.loopStart, props.entry.loopEnd,
     );
-    store.previewEntryId = props.entry.id;
+    store.libraryPlayingEntryId = props.entry.id;
   }
 }
 

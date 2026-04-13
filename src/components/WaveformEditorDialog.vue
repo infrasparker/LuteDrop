@@ -53,28 +53,28 @@ const editName = ref('');
 const editTags = ref('');
 const localGain = ref(1.0);
 
-const previewState = computed(() => store.playbackStates.get('__preview'));
-const isPreviewPlaying = computed(() => store.previewEntryId === props.entryId && previewState.value?.isPlaying);
+const previewState = computed(() => store.playbackStates.get('__library'));
+const isPreviewPlaying = computed(() => store.libraryPlayingEntryId === props.entryId && previewState.value?.isPlaying);
 
 watch(previewState, (state) => {
-  if (!state?.isPlaying && store.previewEntryId === props.entryId) {
-    store.previewEntryId = null;
+  if (!state?.isPlaying && store.libraryPlayingEntryId === props.entryId) {
+    store.libraryPlayingEntryId = null;
   }
 });
 
 function togglePreview(): void {
   if (isPreviewPlaying.value) {
-    audio.stopPreview();
-    store.previewEntryId = null;
+    audio.stopLibrarySound();
+    store.libraryPlayingEntryId = null;
   } else if (entry.value) {
-    audio.playPreview(
+    audio.playLibrarySound(
       entry.value.filePath,
       entry.value.trimStart ?? 0,
       localGain.value,
       entry.value.trimStart, entry.value.trimEnd,
       entry.value.loopStart, entry.value.loopEnd,
     );
-    store.previewEntryId = props.entryId;
+    store.libraryPlayingEntryId = props.entryId;
   }
 }
 

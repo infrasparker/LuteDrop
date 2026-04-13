@@ -184,11 +184,6 @@ pub fn rename_group(conn: &Connection, id: &str, name: &str) -> Result<(), Strin
     Ok(())
 }
 
-#[allow(dead_code)]
-pub fn reorder_group(conn: &Connection, group_id: &str, new_index: usize) -> Result<(), String> {
-    reorder_item(conn, "groups", None, None, group_id, new_index)
-}
-
 // ─── Comps ────────────────────────────────────────────────────────────────────
 
 pub fn insert_comp(conn: &Connection, group_id: &str, name: &str) -> Result<String, String> {
@@ -215,16 +210,6 @@ pub fn rename_comp(conn: &Connection, id: &str, name: &str) -> Result<(), String
     )
     .map_err(|e| format!("Failed to rename comp: {e}"))?;
     Ok(())
-}
-
-#[allow(dead_code)]
-pub fn reorder_comp(
-    conn: &Connection,
-    group_id: &str,
-    comp_id: &str,
-    new_index: usize,
-) -> Result<(), String> {
-    reorder_item(conn, "comps", Some("group_id"), Some(group_id), comp_id, new_index)
 }
 
 // ─── Tracks ───────────────────────────────────────────────────────────────────
@@ -309,16 +294,6 @@ pub fn update_track_fades(
     )
     .map_err(|e| format!("Failed to update track fades: {e}"))?;
     Ok(())
-}
-
-#[allow(dead_code)]
-pub fn reorder_track(
-    conn: &Connection,
-    comp_id: &str,
-    track_id: &str,
-    new_index: usize,
-) -> Result<(), String> {
-    reorder_item(conn, "tracks", Some("comp_id"), Some(comp_id), track_id, new_index)
 }
 
 // ─── Clips ────────────────────────────────────────────────────────────────────
@@ -436,7 +411,7 @@ mod tests {
         let id_c = insert_group(&conn, "C").expect("insert C");
 
         // Move C (index 2) to position 1 → expected order: A, C, B
-        reorder_group(&conn, &id_c, 1).expect("reorder_group");
+        reorder_item(&conn, "groups", None, None, &id_c, 1).expect("reorder_item");
 
         let ordered: Vec<String> = {
             let mut stmt = conn
