@@ -875,9 +875,8 @@ impl AudioEngine {
         let mut sound_data = StreamingSoundData::from_file(file_path)
             .map_err(|e| format!("Failed to load preview: {}", e))?;
 
-        // Apply start position (respect trim_start as minimum)
-        let effective_start = trim_start.map(|ts| position.max(ts)).unwrap_or(position);
-        sound_data = sound_data.start_position(effective_start);
+        // Start from the exact click position — no trim clamping in preview
+        sound_data = sound_data.start_position(position);
 
         // Apply loop region if loop points are set
         if let (Some(ls), Some(le)) = (loop_start, loop_end) {

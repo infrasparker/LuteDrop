@@ -35,14 +35,15 @@ async function toggleLoop(): Promise<void> {
     });
   } else {
     // Turn on: set loop points to trim bounds (or file bounds)
+    // Use explicit numbers so the waveform draws markers at the right positions
     const ls = entry.value.trimStart ?? 0;
     const le = entry.value.trimEnd ?? (entry.value.duration ?? 0);
     await store.command('update_library_entry_markers', {
       entryId: props.entryId,
       trimStart: entry.value.trimStart ?? null,
       trimEnd: entry.value.trimEnd ?? null,
-      loopStart: ls > 0 ? ls : null,
-      loopEnd: le > 0 ? le : null,
+      loopStart: ls,
+      loopEnd: le,
     });
   }
 }
