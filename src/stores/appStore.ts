@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { Group, Comp, Track, AppState, TrackPlaybackState, CompStatus, LibraryEntry } from '@generated/index';
+import type { Group, Comp, Track, AppState, TrackPlaybackState, CompStatus, LibraryEntry, Configuration } from '@generated/index';
 import { useToast } from '../composables/useToast';
 
 export const useAppStore = defineStore('app', () => {
@@ -12,6 +12,8 @@ export const useAppStore = defineStore('app', () => {
   const missingEntryIds = ref<Set<string>>(new Set());
   const libraryPlayingEntryId = ref<string | null>(null);
   const editEntryId = ref<string | null>(null);
+  const configurations = ref<Configuration[]>([]);
+  const activeConfigurationId = ref<string>('');
 
   // --- Mute state (mirrors audio engine, not persisted to DB) ---
   const masterMuted = ref(false);
@@ -24,6 +26,8 @@ export const useAppStore = defineStore('app', () => {
     groups.value = state.groups;
     libraryEntries.value = state.libraryEntries;
     tags.value = state.tags;
+    configurations.value = state.configurations;
+    activeConfigurationId.value = state.activeConfigurationId;
   }
 
   // --- Command helper: invoke a Rust command and hydrate ---
@@ -145,6 +149,8 @@ export const useAppStore = defineStore('app', () => {
     missingEntryIds,
     libraryPlayingEntryId,
     editEntryId,
+    configurations,
+    activeConfigurationId,
     masterMuted,
     mutedTracks,
     mutedClips,
