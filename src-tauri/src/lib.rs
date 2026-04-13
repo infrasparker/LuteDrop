@@ -30,36 +30,12 @@ pub fn run() {
                 std::fs::create_dir_all(&app_data).ok();
                 app_data.join("lutedrop.db")
             };
-            let json_path = {
-                let app_data = app.path().app_data_dir().expect("failed to get app data dir");
-                app_data.join("lutedrop-data.json")
-            };
-
             // Peak cache directory lives inside the app data folder
             let peak_cache_dir = db_path.parent().unwrap_or(db_path.as_ref()).join("peaks");
 
             // Open (or create) the SQLite database
             let conn = database::open_db(&db_path)
                 .expect("Failed to open SQLite database");
-
-            // Check and run migration from JSON if needed
-            if database::migration::needs_migration(&conn, &json_path) {
-                log::info!("Migrating data from JSON to SQLite...");
-                match database::migration::migrate_from_json(&conn, &json_path) {
-                    Ok((groups, entries, missing)) => {
-                        log::info!(
-                            "Migration complete: {} groups, {} library entries, {} missing files",
-                            groups, entries, missing
-                        );
-                        if let Err(e) = database::migration::backup_json(&json_path) {
-                            log::warn!("Failed to backup JSON file: {}", e);
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("Migration failed: {}", e);
-                    }
-                }
-            }
 
             // Backfill durations for any entries missing them
             match database::library::backfill_durations(&conn) {

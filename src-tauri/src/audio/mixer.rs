@@ -23,11 +23,6 @@ impl MuteState {
             || self.clips.get(clip_id).copied().unwrap_or(false)
     }
 
-    pub fn toggle_master(&mut self) -> bool {
-        self.master = !self.master;
-        self.master
-    }
-
     pub fn set_track_muted(&mut self, track_id: &str, muted: bool) {
         self.tracks.insert(track_id.to_string(), muted);
     }

@@ -87,6 +87,7 @@ pub fn update_library_entry_name(
 /// Clamps loop points to existing trim bounds before writing.
 /// When both values are None, clears loop points (no validation needed).
 /// Returns an error if the clamped values result in loop_start >= loop_end.
+#[cfg(test)]
 pub fn update_library_entry_loop(
     conn: &Connection,
     id: &str,

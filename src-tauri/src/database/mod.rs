@@ -1,6 +1,5 @@
 pub mod hierarchy;
 pub mod library;
-pub mod migration;
 
 use rusqlite::{params, Connection, Result as SqlResult};
 use std::collections::HashMap;

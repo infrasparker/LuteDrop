@@ -125,13 +125,6 @@ impl AudioEngine {
 
     // --- Mute ---
 
-    pub fn mute_master(&mut self) { self.mute_state.master = true; self.refresh_all_volumes(); }
-    pub fn unmute_master(&mut self) { self.mute_state.master = false; self.refresh_all_volumes(); }
-    pub fn mute_track(&mut self, track_id: &str) { self.mute_state.set_track_muted(track_id, true); self.refresh_track_volume(track_id); }
-    pub fn unmute_track(&mut self, track_id: &str) { self.mute_state.set_track_muted(track_id, false); self.refresh_track_volume(track_id); }
-    pub fn mute_clip(&mut self, clip_id: &str) { self.mute_state.set_clip_muted(clip_id, true); }
-    pub fn unmute_clip(&mut self, clip_id: &str) { self.mute_state.set_clip_muted(clip_id, false); }
-
     pub fn toggle_master_mute(&mut self) -> bool {
         self.mute_state.master = !self.mute_state.master;
         self.refresh_all_volumes();
@@ -168,18 +161,6 @@ impl AudioEngine {
             self.refresh_track_volume(id);
         }
         new_state
-    }
-
-    pub fn is_master_muted(&self) -> bool {
-        self.mute_state.master
-    }
-
-    pub fn is_track_muted(&self, track_id: &str) -> bool {
-        self.mute_state.tracks.get(track_id).copied().unwrap_or(false)
-    }
-
-    pub fn is_clip_muted(&self, clip_id: &str) -> bool {
-        self.mute_state.clips.get(clip_id).copied().unwrap_or(false)
     }
 
     pub fn get_mute_snapshot(&self) -> (bool, std::collections::HashMap<String, bool>, std::collections::HashMap<String, bool>) {
