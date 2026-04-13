@@ -248,6 +248,7 @@ function close(): void {
 
         <!-- Waveform -->
         <WaveformEditor
+          :key="entryId"
           :file-path="entry.filePath"
           :entry-id="entryId"
           :loop-start="entry.loopStart ?? 0"
