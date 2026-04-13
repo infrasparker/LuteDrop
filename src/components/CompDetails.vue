@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref } from 'vue';
 import type { Comp } from '@generated/index';
 import { useTrackImport } from '../composables/useTrackImport';
 import TrackControl from './TrackControl.vue';
@@ -9,6 +10,15 @@ const props = defineProps<{
 }>();
 
 const { importTracks } = useTrackImport();
+
+// Library browser dialog state (will be implemented in Task 12)
+const showLibraryBrowser = ref(false);
+const libraryBrowserTrackId = ref('');
+
+function openLibraryBrowser(trackId: string): void {
+  libraryBrowserTrackId.value = trackId;
+  showLibraryBrowser.value = true;
+}
 </script>
 
 <template>
@@ -30,6 +40,7 @@ const { importTracks } = useTrackImport();
       :key="track.id"
       :track="track"
       :comp-id="comp.id"
+      @open-library-browser="openLibraryBrowser"
     />
 
     <div v-if="comp.tracks.length === 0" class="text-medium-emphasis text-center pa-8">

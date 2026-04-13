@@ -46,32 +46,62 @@ export function useTrackUpdates(trackId: () => string, compId: () => string) {
     await updateField({ mode: { ...mode, transition } });
   }
 
-  async function updateLoopStart(v: string): Promise<void> {
+  function getSeamlessClipEntryId(): string | undefined {
     const track = store.findTrack(trackId());
-    if (!track) return;
-    const currentMode = track.mode as { type: 'seamless'; loopStart: number; loopEnd: number };
-    await updateField({ mode: { type: 'seamless', loopStart: Number(v), loopEnd: currentMode.loopEnd } });
+    if (!track || track.clips.length === 0) return undefined;
+    return track.clips[0].libraryEntryId;
+  }
+
+  function getCurrentLoopStart(): number {
+    const track = store.findTrack(trackId());
+    if (!track || track.mode.type !== 'seamless') return 0;
+    return track.mode.loopStart;
+  }
+
+  function getCurrentLoopEnd(): number {
+    const track = store.findTrack(trackId());
+    if (!track || track.mode.type !== 'seamless') return 0;
+    return track.mode.loopEnd;
+  }
+
+  async function updateLoopStart(v: string): Promise<void> {
+    const entryId = getSeamlessClipEntryId();
+    if (!entryId) return;
+    await store.command('update_library_entry_loop_points', {
+      entryId,
+      loopStart: Number(v),
+      loopEnd: getCurrentLoopEnd(),
+    });
   }
 
   async function updateLoopEnd(v: string): Promise<void> {
-    const track = store.findTrack(trackId());
-    if (!track) return;
-    const currentMode = track.mode as { type: 'seamless'; loopStart: number; loopEnd: number };
-    await updateField({ mode: { type: 'seamless', loopStart: currentMode.loopStart, loopEnd: Number(v) } });
+    const entryId = getSeamlessClipEntryId();
+    if (!entryId) return;
+    await store.command('update_library_entry_loop_points', {
+      entryId,
+      loopStart: getCurrentLoopStart(),
+      loopEnd: Number(v),
+    });
   }
 
   async function updateLoopStartFromWaveform(v: number): Promise<void> {
-    const track = store.findTrack(trackId());
-    if (!track) return;
-    const currentMode = track.mode as { type: 'seamless'; loopStart: number; loopEnd: number };
-    await updateField({ mode: { type: 'seamless', loopStart: v, loopEnd: currentMode.loopEnd } });
+    const entryId = getSeamlessClipEntryId();
+    if (!entryId) return;
+    await store.command('update_library_entry_loop_points', {
+      entryId,
+      loopStart: v,
+      loopEnd: getCurrentLoopEnd(),
+    });
   }
 
   async function updateLoopEndFromWaveform(v: number): Promise<void> {
-    const track = store.findTrack(trackId());
-    if (!track) return;
-    const currentMode = track.mode as { type: 'seamless'; loopStart: number; loopEnd: number };
-    await updateField({ mode: { type: 'seamless', loopStart: currentMode.loopStart, loopEnd: v } });
+    const entryId = getSeamlessClipEntryId();
+    if (!entryId) return;
+    await store.command('update_library_entry_loop_points', {
+      entryId,
+      loopStart: getCurrentLoopStart(),
+      loopEnd: v,
+    });
   }
 
   async function updateRepeat(v: boolean): Promise<void> {

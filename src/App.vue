@@ -37,6 +37,7 @@ const showDeleteConfirm = ref(false);
 onMounted(async () => {
   const state = await invoke<AppState>('load_data');
   store.hydrate(state);
+  await store.checkMissingFiles();
 
   try {
     const info = await invoke<{ ip: string; port: number }>('get_server_info');

@@ -2,7 +2,6 @@
 import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import type { Track } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
-import { open } from '@tauri-apps/plugin-dialog';
 import Sortable from 'sortablejs';
 import ClipRow from './ClipRow.vue';
 
@@ -12,23 +11,18 @@ const props = defineProps<{
   isSeamless: boolean;
 }>();
 
+const emit = defineEmits<{
+  'open-library-browser': [trackId: string];
+}>();
+
 const store = useAppStore();
 
 const hasClips = computed(() => props.track.clips.length > 0);
 const seamlessClip = computed(() => props.track.clips[0] ?? null);
 const canAddClips = computed(() => !props.isSeamless || !hasClips.value);
 
-async function addClips(): Promise<void> {
-  const paths = await open({
-    multiple: !props.isSeamless,
-    filters: [{ name: 'Audio', extensions: ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'wma'] }],
-  });
-  if (!paths) return;
-  const pathList = Array.isArray(paths) ? paths : [paths];
-  for (const filePath of pathList) {
-    const fileName = filePath.split(/[/\\]/).pop()?.replace(/\.[^.]+$/, '') || 'Unknown';
-    await store.command('add_clip', { trackId: props.track.id, name: fileName, filePath });
-  }
+function addClips(): void {
+  emit('open-library-browser', props.track.id);
 }
 
 // --- SortableJS for sequence/shuffle clip reordering ---

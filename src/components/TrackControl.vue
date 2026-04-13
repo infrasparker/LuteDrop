@@ -13,6 +13,10 @@ const props = defineProps<{
   compId: string;
 }>();
 
+const emit = defineEmits<{
+  'open-library-browser': [trackId: string];
+}>();
+
 const store = useAppStore();
 const audio = useAudio();
 const { updateField } = useTrackUpdates(() => props.track.id, () => props.compId);
@@ -145,7 +149,7 @@ async function setVolume(v: number): Promise<void> {
         <template #text>
           <div class="pt-2">
             <TrackSettings :track="track" :comp-id="compId" />
-            <TrackClipList :track="track" :comp-id="compId" :is-seamless="isSeamless" />
+            <TrackClipList :track="track" :comp-id="compId" :is-seamless="isSeamless" @open-library-browser="(id) => emit('open-library-browser', id)" />
           </div>
         </template>
       </VExpansionPanel>
