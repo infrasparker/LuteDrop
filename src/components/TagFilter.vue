@@ -24,12 +24,12 @@ function toggleTag(tag: string): void {
 </script>
 
 <template>
-  <div class="d-flex flex-wrap gap-1">
+  <div class="d-flex flex-wrap ga-1">
     <VChip
       v-for="tag in tags"
       :key="tag"
       :color="selectedTags.includes(tag) ? 'primary' : undefined"
-      :variant="selectedTags.includes(tag) ? 'flat' : 'outlined'"
+      :variant="selectedTags.includes(tag) ? 'flat' : 'tonal'"
       size="small"
       clickable
       @click="toggleTag(tag)"
