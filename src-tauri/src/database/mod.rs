@@ -1,3 +1,4 @@
+pub mod configurations;
 pub mod hierarchy;
 pub mod library;
 
