@@ -92,7 +92,7 @@ function setVolume(v: number): void {
 </script>
 
 <template>
-  <div>
+  <div :class="{ 'track-wrapper': true, 'track-active': isActive }">
     <VExpansionPanels>
       <VExpansionPanel
         color="surface-light"
@@ -103,7 +103,7 @@ function setVolume(v: number): void {
         <template #title>
           <div
             class="d-flex align-center ga-2"
-            :class="{ 'track-title': true, 'track-active': isActive }"
+            class="track-title"
             style="width: 100%;"
           >
             <VBtn
@@ -212,16 +212,11 @@ function setVolume(v: number): void {
 </template>
 
 <style scoped>
-.track-title {
+.track-wrapper {
   border-left: 3px solid transparent;
-  margin-left: -16px;
-  padding-left: 13px;
 }
 .track-active {
   border-left: 3px solid #F0A830;
-  background: rgba(240, 168, 48, 0.08);
-  margin-left: -16px;
-  padding-left: 13px;
 }
 </style>
 

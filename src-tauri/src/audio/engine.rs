@@ -823,8 +823,18 @@ impl AudioEngine {
     }
 
     /// Play a preview of an audio file at a specific position.
+    /// Respects trim and loop points from the library entry.
     /// Stops any previous preview. Uses a reserved "__preview" track.
-    pub fn play_preview(&mut self, file_path: &str, position: f64, volume: f64) -> Result<(), String> {
+    pub fn play_preview(
+        &mut self,
+        file_path: &str,
+        position: f64,
+        volume: f64,
+        trim_start: Option<f64>,
+        trim_end: Option<f64>,
+        loop_start: Option<f64>,
+        loop_end: Option<f64>,
+    ) -> Result<(), String> {
         // Stop previous preview
         self.stop_preview();
 
@@ -864,13 +874,32 @@ impl AudioEngine {
 
         let mut sound_data = StreamingSoundData::from_file(file_path)
             .map_err(|e| format!("Failed to load preview: {}", e))?;
-        sound_data = sound_data.start_position(position);
+
+        // Apply start position (respect trim_start as minimum)
+        let effective_start = trim_start.map(|ts| position.max(ts)).unwrap_or(position);
+        sound_data = sound_data.start_position(effective_start);
+
+        // Apply loop region if loop points are set
+        if let (Some(ls), Some(le)) = (loop_start, loop_end) {
+            if le > ls {
+                let region_start = PlaybackPosition::Seconds(ls);
+                let region_end = EndPosition::Custom(PlaybackPosition::Seconds(le));
+                sound_data = sound_data.loop_region(Region {
+                    start: region_start,
+                    end: region_end,
+                });
+            }
+        }
+
         sound_data = sound_data.volume(amplitude_to_decibels(self.master_volume * volume));
 
         let handle = active.track_handle.play(sound_data)
             .map_err(|e| format!("Failed to play preview: {}", e))?;
         active.sound_handle = Some(handle);
-        active.current_clip_duration = probe_duration(file_path);
+        active.current_clip_duration = match trim_end {
+            Some(te) => Some(te),
+            None => probe_duration(file_path),
+        };
         active.is_paused = false;
 
         Ok(())

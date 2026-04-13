@@ -37,7 +37,11 @@ function togglePreview(): void {
     audio.stopPreview();
     store.previewEntryId = null;
   } else if (entry.value) {
-    audio.playPreview(entry.value.filePath, 0, localGain.value);
+    audio.playPreview(
+      entry.value.filePath, 0, localGain.value,
+      entry.value.trimStart, entry.value.trimEnd,
+      entry.value.loopStart, entry.value.loopEnd,
+    );
     store.previewEntryId = props.entryId;
   }
 }

@@ -556,7 +556,12 @@ function onMouseUp(event: MouseEvent): void {
       if (props.trackId) {
         audio.playTrackFrom(props.trackId, clickTime);
       } else if (props.filePath) {
-        audio.playPreview(props.filePath, clickTime, 1.0);
+        audio.playPreview(
+          props.filePath, clickTime, 1.0,
+          localTrimStart.value, localTrimEnd.value,
+          localLoopStart.value === 0 ? null : localLoopStart.value,
+          localLoopEnd.value === 0 ? null : localLoopEnd.value,
+        );
       }
     } else {
       fireZoomedPeaks();

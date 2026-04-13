@@ -31,7 +31,11 @@ function togglePreview(): void {
     audio.stopPreview();
     store.previewEntryId = null;
   } else {
-    audio.playPreview(props.entry.filePath, 0, props.entry.volume);
+    audio.playPreview(
+      props.entry.filePath, 0, props.entry.volume,
+      props.entry.trimStart, props.entry.trimEnd,
+      props.entry.loopStart, props.entry.loopEnd,
+    );
     store.previewEntryId = props.entry.id;
   }
 }

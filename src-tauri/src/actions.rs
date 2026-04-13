@@ -476,9 +476,18 @@ pub fn resume_all_audio(container: &AppStateContainer) -> Result<(), String> {
     Ok(())
 }
 
-pub fn play_preview_audio(container: &AppStateContainer, file_path: &str, position: f64, volume: f64) -> Result<(), String> {
+pub fn play_preview_audio(
+    container: &AppStateContainer,
+    file_path: &str,
+    position: f64,
+    volume: f64,
+    trim_start: Option<f64>,
+    trim_end: Option<f64>,
+    loop_start: Option<f64>,
+    loop_end: Option<f64>,
+) -> Result<(), String> {
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
-    audio.play_preview(file_path, position, volume)
+    audio.play_preview(file_path, position, volume, trim_start, trim_end, loop_start, loop_end)
 }
 
 pub fn stop_preview_audio(container: &AppStateContainer) -> Result<(), String> {

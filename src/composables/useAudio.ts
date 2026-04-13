@@ -132,9 +132,23 @@ export function useAudio() {
     }
   }
 
-  async function playPreview(filePath: string, position: number, volume: number): Promise<void> {
+  async function playPreview(
+    filePath: string,
+    position: number,
+    volume: number,
+    trimStart?: number | null,
+    trimEnd?: number | null,
+    loopStart?: number | null,
+    loopEnd?: number | null,
+  ): Promise<void> {
     try {
-      await invoke('play_preview', { filePath, position, volume });
+      await invoke('play_preview', {
+        filePath, position, volume,
+        trimStart: trimStart ?? null,
+        trimEnd: trimEnd ?? null,
+        loopStart: loopStart ?? null,
+        loopEnd: loopEnd ?? null,
+      });
     } catch (e) {
       toast.showError(String(e));
     }
