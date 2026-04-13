@@ -53,20 +53,24 @@ watch(() => props.trimEnd, (v) => { if (!dragging.value) localTrimEnd.value = v;
 
 let rafId: number | null = null;
 
-const playbackState = computed(() => {
+function getPlaybackState() {
   if (props.trackId) return store.playbackStates.get(props.trackId);
-  // Only show playhead if this entry is the one currently playing
   if (props.entryId && store.libraryPlayingEntryId === props.entryId) {
     return store.playbackStates.get('__library');
   }
   return undefined;
-});
+}
+
+function isPlayheadActive(): boolean {
+  const ps = getPlaybackState();
+  return ps?.isPlaying === true;
+}
 
 function startPlayheadLoop(): void {
   if (rafId !== null) return;
   function tick() {
     drawWaveform();
-    if (playbackState.value?.isPlaying) {
+    if (isPlayheadActive()) {
       rafId = requestAnimationFrame(tick);
     } else {
       rafId = null;
@@ -82,14 +86,22 @@ function stopPlayheadLoop(): void {
   }
 }
 
-watch(() => playbackState.value?.isPlaying, (playing) => {
-  if (playing) {
-    startPlayheadLoop();
-  } else {
-    stopPlayheadLoop();
-    drawWaveform();
-  }
-}, { immediate: true });
+// Watch the raw playback state for this entry — start/stop the RAF loop
+watch(
+  () => {
+    const ps = getPlaybackState();
+    return ps?.isPlaying === true;
+  },
+  (playing) => {
+    if (playing) {
+      startPlayheadLoop();
+    } else {
+      stopPlayheadLoop();
+      drawWaveform();
+    }
+  },
+  { immediate: true },
+);
 
 // --- Derived state ---
 
@@ -375,11 +387,8 @@ function drawWaveform(): void {
   ctx.lineTo(cssW, midY);
   ctx.stroke();
 
-  // Playhead — only draw if this entry is the one actually playing
-  const isThisEntryPlaying = props.trackId
-    ? true  // soundstage track — always show for matching trackId
-    : (props.entryId != null && store.libraryPlayingEntryId === props.entryId);
-  const ps = isThisEntryPlaying ? playbackState.value : undefined;
+  // Playhead
+  const ps = getPlaybackState();
   if (ps && (ps.isPlaying || ps.isPaused)) {
     const phX = zoom.secondsToX(ps.currentTime, cssW);
     if (phX >= 0 && phX <= cssW) {
