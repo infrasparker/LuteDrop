@@ -4,6 +4,7 @@ pub mod library;
 use rusqlite::{params, Connection, Result as SqlResult};
 use std::collections::HashMap;
 use std::path::Path;
+use uuid::Uuid;
 
 use crate::models::{
     AppState, Clip, Comp, Group, LibraryEntry, Track, TrackMode, TrackTransition,
@@ -58,10 +59,18 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
             PRIMARY KEY (library_entry_id, tag_id)
         );
 
-        CREATE TABLE IF NOT EXISTS groups (
+        CREATE TABLE IF NOT EXISTS configurations (
             id         TEXT PRIMARY KEY,
             name       TEXT NOT NULL,
+            created_at TEXT NOT NULL,
             sort_order INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS groups (
+            id               TEXT PRIMARY KEY,
+            name             TEXT NOT NULL,
+            sort_order       INTEGER NOT NULL,
+            configuration_id TEXT NOT NULL DEFAULT '' REFERENCES configurations(id) ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS comps (
@@ -94,8 +103,97 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
             sort_order       INTEGER NOT NULL
         );
 
-        INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '1');
+        INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '2');
     ")
+}
+
+/// Migrates from schema v1 to v2: creates the configurations table,
+/// inserts a "Default" configuration, and adds configuration_id to groups.
+pub fn migrate_v1_to_v2(conn: &Connection) -> Result<(), String> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let version: String = conn
+        .query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |row| row.get(0))
+        .map_err(|e| format!("Failed to read schema_version: {e}"))?;
+
+    if version != "1" {
+        return Ok(()); // Already migrated or newer
+    }
+
+    let config_id = Uuid::new_v4().to_string();
+    let created_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before epoch")
+        .as_millis()
+        .to_string();
+
+    conn.execute_batch("BEGIN TRANSACTION;")
+        .map_err(|e| format!("Failed to begin migration transaction: {e}"))?;
+
+    let result = (|| -> Result<(), String> {
+        // 1. Create configurations table
+        conn.execute_batch("
+            CREATE TABLE IF NOT EXISTS configurations (
+                id         TEXT PRIMARY KEY,
+                name       TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                sort_order INTEGER NOT NULL
+            );
+        ").map_err(|e| format!("Failed to create configurations table: {e}"))?;
+
+        // 2. Insert Default configuration
+        conn.execute(
+            "INSERT INTO configurations (id, name, created_at, sort_order) VALUES (?1, 'Default', ?2, 1000)",
+            params![config_id, created_at],
+        ).map_err(|e| format!("Failed to insert default configuration: {e}"))?;
+
+        // 3. Recreate groups table with configuration_id FK
+        conn.execute_batch("
+            CREATE TABLE groups_new (
+                id               TEXT PRIMARY KEY,
+                name             TEXT NOT NULL,
+                sort_order       INTEGER NOT NULL,
+                configuration_id TEXT NOT NULL REFERENCES configurations(id) ON DELETE CASCADE
+            );
+        ").map_err(|e| format!("Failed to create groups_new: {e}"))?;
+
+        conn.execute(
+            "INSERT INTO groups_new (id, name, sort_order, configuration_id)
+             SELECT id, name, sort_order, ?1 FROM groups",
+            params![config_id],
+        ).map_err(|e| format!("Failed to copy groups data: {e}"))?;
+
+        conn.execute_batch("
+            DROP TABLE groups;
+            ALTER TABLE groups_new RENAME TO groups;
+        ").map_err(|e| format!("Failed to swap groups table: {e}"))?;
+
+        // 4. Set active configuration
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('active_configuration_id', ?1)",
+            params![config_id],
+        ).map_err(|e| format!("Failed to set active configuration: {e}"))?;
+
+        // 5. Bump schema version
+        conn.execute(
+            "UPDATE meta SET value = '2' WHERE key = 'schema_version'",
+            [],
+        ).map_err(|e| format!("Failed to update schema version: {e}"))?;
+
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => {
+            conn.execute_batch("COMMIT;")
+                .map_err(|e| format!("Failed to commit migration: {e}"))?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK;");
+            Err(e)
+        }
+    }
 }
 
 // ─── State Loading ────────────────────────────────────────────────────────────
@@ -118,6 +216,8 @@ pub fn load_full_state(conn: &Connection) -> Result<AppState, String> {
         groups,
         library_entries,
         tags,
+        configurations: Vec::new(),      // TODO Task 3: load from DB
+        active_configuration_id: String::new(), // TODO Task 3: load from meta
     })
 }
 
@@ -422,6 +522,7 @@ mod tests {
             "library_entries",
             "tags",
             "library_entry_tags",
+            "configurations",
             "groups",
             "comps",
             "tracks",
@@ -457,7 +558,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("schema_version row should exist");
-        assert_eq!(version, "1");
+        assert_eq!(version, "2");
     }
 
     #[test]
@@ -551,5 +652,72 @@ mod tests {
             }
             other => panic!("expected Seamless mode, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn migrate_v1_to_v2_creates_default_config() {
+        // Create a v1 database (current schema)
+        let conn = open_memory_db();
+
+        // Reset to v1 schema version for migration testing
+        conn.execute("UPDATE meta SET value = '1' WHERE key = 'schema_version'", []).expect("set v1");
+
+        // Insert some v1 data — a group with no configuration_id.
+        // Disable FK enforcement temporarily so the empty DEFAULT '' is allowed.
+        conn.execute_batch("PRAGMA foreign_keys=OFF;").expect("disable fk");
+        conn.execute(
+            "INSERT INTO groups (id, name, sort_order) VALUES ('g1', 'Combat', 1000)",
+            [],
+        ).expect("insert v1 group");
+        conn.execute_batch("PRAGMA foreign_keys=ON;").expect("re-enable fk");
+
+        // Run migration
+        migrate_v1_to_v2(&conn).expect("migration should succeed");
+
+        // Verify configurations table has one row
+        let config_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM configurations", [], |row| row.get(0))
+            .expect("count configs");
+        assert_eq!(config_count, 1, "should have one default configuration");
+
+        // Verify the default config name
+        let config_name: String = conn
+            .query_row("SELECT name FROM configurations LIMIT 1", [], |row| row.get(0))
+            .expect("get config name");
+        assert_eq!(config_name, "Default");
+
+        // Verify the group now has configuration_id set
+        let group_config_id: String = conn
+            .query_row(
+                "SELECT configuration_id FROM groups WHERE id = 'g1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("get group config_id");
+
+        let config_id: String = conn
+            .query_row("SELECT id FROM configurations LIMIT 1", [], |row| row.get(0))
+            .expect("get config id");
+        assert_eq!(group_config_id, config_id, "group should reference the default config");
+
+        // Verify active_configuration_id is set in meta
+        let active_id: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'active_configuration_id'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("get active config id");
+        assert_eq!(active_id, config_id);
+
+        // Verify schema version bumped to 2
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("get schema version");
+        assert_eq!(version, "2");
     }
 }
