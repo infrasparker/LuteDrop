@@ -103,7 +103,6 @@ function setVolume(v: number): void {
         <template #title>
           <div
             class="d-flex align-center ga-2"
-            class="track-title"
             style="width: 100%;"
           >
             <VBtn
