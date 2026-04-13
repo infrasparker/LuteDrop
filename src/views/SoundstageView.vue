@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref } from 'vue';
 import { storeToRefs } from 'pinia';
-import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/appStore';
 import { useContextMenuState } from '../composables/useContextMenu';
 import type { Group } from '@generated/index';
@@ -10,7 +9,6 @@ import GroupTab from '../components/GroupTab.vue';
 const store = useAppStore();
 const { groups } = storeToRefs(store);
 
-const serverUrl = ref('');
 const activeTab = ref(0);
 
 // New group dialog state
@@ -33,15 +31,6 @@ const showDeleteConfirm = ref(false);
 const showNewCompDialog = ref(false);
 const newCompName = ref('');
 const newCompGroupId = ref('');
-
-onMounted(async () => {
-  try {
-    const info = await invoke<{ ip: string; port: number }>('get_server_info');
-    serverUrl.value = `http://${info.ip}:${info.port}`;
-  } catch (e) {
-    console.warn('Could not get server info:', e);
-  }
-});
 
 function isGroupActive(group: Group): boolean {
   return group.comps.some((comp) =>
@@ -112,15 +101,6 @@ async function createComp(): Promise<void> {
 <template>
   <div class="d-flex flex-column" style="height: 100%;">
     <!-- Group tabs bar -->
-    <VToolbar color="surface" density="compact" flat>
-      <VToolbarTitle>
-        <span class="text-primary font-weight-bold">LuteDrop</span>
-        <span v-if="serverUrl" class="text-caption text-medium-emphasis ml-3">
-          Remote: {{ serverUrl }}
-        </span>
-      </VToolbarTitle>
-    </VToolbar>
-
     <VTabs v-model="activeTab" color="primary" bg-color="surface">
       <VTab
         v-for="(group, i) in groups"

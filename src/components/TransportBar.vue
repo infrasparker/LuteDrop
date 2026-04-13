@@ -38,36 +38,36 @@ function togglePause(): void {
 </script>
 
 <template>
-  <VFooter app color="surface" elevation="4" class="pa-2 d-flex align-center gap-2">
-    <VBtn
-      :icon="paused ? 'mdi-play' : 'mdi-pause'"
-      variant="tonal"
-      size="small"
-      @click="togglePause"
-    />
-    <VBtn
-      icon="mdi-stop"
-      variant="tonal"
-      size="small"
-      @click="stopAll"
-    />
+  <VFooter app color="surface" elevation="4" class="pa-1">
+    <div class="d-flex align-center justify-center ga-3 mx-auto" style="max-width: 500px; width: 100%;">
+      <VBtn
+        :icon="paused ? 'mdi-play' : 'mdi-pause'"
+        variant="tonal"
+        size="x-small"
+        @click="togglePause"
+      />
+      <VBtn
+        icon="mdi-stop"
+        variant="tonal"
+        size="x-small"
+        @click="stopAll"
+      />
 
-    <span class="text-caption text-medium-emphasis ml-2">
-      {{ playingCount }} {{ playingCount === 1 ? 'track' : 'tracks' }} playing
-    </span>
+      <span v-if="playingCount > 0" class="text-caption text-primary" style="white-space: nowrap;">
+        {{ playingCount }} playing
+      </span>
 
-    <VSpacer />
-
-    <VIcon>mdi-volume-high</VIcon>
-    <VSlider
-      :model-value="audio.masterVolume.value"
-      @update:model-value="setMasterVolume"
-      :min="0"
-      :max="1"
-      :step="0.01"
-      hide-details
-      density="compact"
-      style="width: 120px"
-    />
+      <VIcon size="small" class="text-medium-emphasis">mdi-volume-high</VIcon>
+      <VSlider
+        :model-value="audio.masterVolume.value"
+        @update:model-value="setMasterVolume"
+        :min="0"
+        :max="1"
+        :step="0.01"
+        hide-details
+        density="compact"
+        style="max-width: 150px;"
+      />
+    </div>
   </VFooter>
 </template>
