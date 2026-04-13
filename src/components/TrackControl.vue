@@ -107,7 +107,6 @@ function setVolume(v: number): void {
           >
             <VBtn
               :icon="isPlaying ? 'mdi-pause' : 'mdi-play'"
-              :color="isPlaying ? 'secondary' : 'primary'"
               variant="tonal"
               size="small"
               rounded="circle"
