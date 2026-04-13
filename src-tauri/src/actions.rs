@@ -523,10 +523,8 @@ pub fn preload_peaks(container: &AppStateContainer) -> Result<usize, String> {
         let conn = container.db.lock().map_err(|e| e.to_string())?;
         library::get_all_file_paths(&conn)?
     };
-    let total = paths.len();
     let mut loaded = 0;
-    for (i, path) in paths.iter().enumerate() {
-        log::info!("Preloading peaks [{}/{}]: {}", i + 1, total, path);
+    for path in paths.iter() {
         match crate::waveform::extract_peaks(path, 1200, None, None, &container.peak_cache) {
             Ok(_) => loaded += 1,
             Err(e) => log::warn!("Failed to preload peaks for {}: {}", path, e),

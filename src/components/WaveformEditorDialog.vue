@@ -143,7 +143,7 @@ function close(): void {
 </script>
 
 <template>
-  <VDialog :model-value="modelValue" @update:model-value="emit('update:modelValue', $event)" max-width="1400" width="95%" persistent>
+  <VDialog :model-value="modelValue" @update:model-value="emit('update:modelValue', $event)" max-width="1400" width="95%">
     <VCard v-if="entry">
       <VCardTitle class="d-flex align-center">
         <span>Edit: {{ entry.name }}</span>
@@ -200,6 +200,7 @@ function close(): void {
           <span class="text-caption" style="min-width: 40px; text-align: right;">
             {{ localGain.toFixed(2) }}
           </span>
+          <VBtn icon="mdi-restore" variant="text" size="x-small" title="Reset to 1.0" @click="setGain(1.0); persistGain();" />
         </div>
 
         <!-- Waveform -->
@@ -222,7 +223,9 @@ function close(): void {
               variant="outlined"
               density="compact"
               hide-details
+              clearable
               @change="(e: Event) => updateMarkersFromNumeric({ trimStart: parseTrimField((e.target as HTMLInputElement).value) })"
+              @click:clear="updateMarkersFromNumeric({ trimStart: null })"
             />
           </div>
           <div style="min-width: 140px; max-width: 170px;">
@@ -233,7 +236,9 @@ function close(): void {
               variant="outlined"
               density="compact"
               hide-details
+              clearable
               @change="(e: Event) => updateMarkersFromNumeric({ trimEnd: parseTrimField((e.target as HTMLInputElement).value) })"
+              @click:clear="updateMarkersFromNumeric({ trimEnd: null })"
             />
           </div>
           <div style="min-width: 140px; max-width: 170px;">
@@ -244,7 +249,9 @@ function close(): void {
               variant="outlined"
               density="compact"
               hide-details
+              clearable
               @change="(e: Event) => updateMarkersFromNumeric({ loopStart: parseTrimField((e.target as HTMLInputElement).value) })"
+              @click:clear="updateMarkersFromNumeric({ loopStart: null })"
             />
           </div>
           <div style="min-width: 140px; max-width: 170px;">
@@ -255,7 +262,9 @@ function close(): void {
               variant="outlined"
               density="compact"
               hide-details
+              clearable
               @change="(e: Event) => updateMarkersFromNumeric({ loopEnd: parseTrimField((e.target as HTMLInputElement).value) })"
+              @click:clear="updateMarkersFromNumeric({ loopEnd: null })"
             />
           </div>
         </div>

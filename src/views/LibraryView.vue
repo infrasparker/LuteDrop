@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick, watch } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useAppStore } from '../stores/appStore';
@@ -14,10 +14,6 @@ const { importFiles, importFolder } = useLibraryImport();
 
 const searchQuery = ref('');
 const selectedTags = ref<string[]>([]);
-
-// Loading guard — prevents empty-state flash before store hydrates
-const showContent = ref(false);
-onMounted(() => { nextTick(() => { showContent.value = true; }); });
 
 const filteredEntries = computed(() => {
   return libraryEntries.value.filter((entry) => {
@@ -105,7 +101,7 @@ async function relocateEntry(entryId: string): Promise<void> {
     </div>
 
     <!-- Entry list -->
-    <VList v-if="showContent && filteredEntries.length > 0" class="overflow-y-auto" lines="two">
+    <VList v-if="filteredEntries.length > 0" class="overflow-y-auto" lines="two">
       <LibraryEntryRow
         v-for="entry in filteredEntries"
         :key="entry.id"
@@ -136,7 +132,7 @@ async function relocateEntry(entryId: string): Promise<void> {
 
     <!-- Empty state -->
     <div
-      v-else-if="showContent"
+      v-else
       class="d-flex flex-column align-center justify-center text-medium-emphasis pa-8"
     >
       <VIcon size="64" class="mb-4">mdi-music-box-multiple-outline</VIcon>

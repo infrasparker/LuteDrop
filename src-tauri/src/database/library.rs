@@ -375,6 +375,7 @@ pub fn add_tag_to_entry(
 
 /// Removes the association between a tag and a library entry.
 /// Does nothing if the association doesn't exist.
+/// Cleans up the tag row itself if no entries reference it anymore.
 pub fn remove_tag_from_entry(
     conn: &Connection,
     entry_id: &str,
@@ -389,6 +390,13 @@ pub fn remove_tag_from_entry(
         params![entry_id, normalised],
     )
     .map_err(|e| format!("Failed to remove tag from entry: {e}"))?;
+
+    // Clean up orphaned tag
+    conn.execute(
+        "DELETE FROM tags WHERE name = ?1 AND id NOT IN (SELECT tag_id FROM library_entry_tags)",
+        params![normalised],
+    )
+    .map_err(|e| format!("Failed to clean up orphaned tag: {e}"))?;
 
     Ok(())
 }
@@ -417,10 +425,14 @@ pub fn get_tags_for_entry(
     Ok(names)
 }
 
-/// Returns all tag names in the database, sorted.
+/// Returns all tag names that are associated with at least one library entry, sorted.
 pub fn list_all_tags(conn: &Connection) -> Result<Vec<String>, String> {
     let mut stmt = conn
-        .prepare("SELECT name FROM tags ORDER BY name ASC")
+        .prepare(
+            "SELECT DISTINCT t.name FROM tags t
+             JOIN library_entry_tags lt ON lt.tag_id = t.id
+             ORDER BY t.name ASC"
+        )
         .map_err(|e| format!("Failed to prepare list_all_tags: {e}"))?;
 
     let names = stmt
