@@ -55,7 +55,11 @@ let rafId: number | null = null;
 
 const playbackState = computed(() => {
   if (props.trackId) return store.playbackStates.get(props.trackId);
-  return store.playbackStates.get('__library');
+  // Only show playhead if this entry is the one currently playing
+  if (props.entryId && store.libraryPlayingEntryId === props.entryId) {
+    return store.playbackStates.get('__library');
+  }
+  return undefined;
 });
 
 function startPlayheadLoop(): void {
