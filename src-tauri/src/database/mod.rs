@@ -128,6 +128,13 @@ pub fn migrate_v1_to_v2(conn: &Connection) -> Result<(), String> {
         .as_millis()
         .to_string();
 
+    // Disable foreign keys BEFORE the transaction — SQLite ignores
+    // PRAGMA foreign_keys changes inside a transaction.  We must turn
+    // them off so that DROP TABLE groups does not cascade-delete all
+    // comps/tracks/clips via ON DELETE CASCADE.
+    conn.execute_batch("PRAGMA foreign_keys=OFF;")
+        .map_err(|e| format!("Failed to disable foreign keys: {e}"))?;
+
     conn.execute_batch("BEGIN TRANSACTION;")
         .map_err(|e| format!("Failed to begin migration transaction: {e}"))?;
 
@@ -184,17 +191,21 @@ pub fn migrate_v1_to_v2(conn: &Connection) -> Result<(), String> {
         Ok(())
     })();
 
-    match result {
+    match &result {
         Ok(()) => {
             conn.execute_batch("COMMIT;")
                 .map_err(|e| format!("Failed to commit migration: {e}"))?;
-            Ok(())
         }
-        Err(e) => {
+        Err(_) => {
             let _ = conn.execute_batch("ROLLBACK;");
-            Err(e)
         }
     }
+
+    // Re-enable foreign keys
+    conn.execute_batch("PRAGMA foreign_keys=ON;")
+        .map_err(|e| format!("Failed to re-enable foreign keys: {e}"))?;
+
+    result
 }
 
 // ─── State Loading ────────────────────────────────────────────────────────────
