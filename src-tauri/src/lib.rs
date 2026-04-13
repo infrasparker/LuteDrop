@@ -25,18 +25,41 @@ pub fn run() {
         )
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            // Load saved data from disk on startup
-            let path = persistence::data_file_path(&app.handle());
-            let initial_state = persistence::load_from_disk(&path);
+            // Determine file paths
+            let db_path = persistence::db_file_path(&app.handle());
+            let json_path = persistence::json_data_file_path(&app.handle());
 
             // Peak cache directory lives inside the app data folder
-            let peak_cache_dir = path.parent().unwrap_or(path.as_ref()).join("peaks");
+            let peak_cache_dir = db_path.parent().unwrap_or(db_path.as_ref()).join("peaks");
+
+            // Open (or create) the SQLite database
+            let conn = database::open_db(&db_path)
+                .expect("Failed to open SQLite database");
+
+            // Check and run migration from JSON if needed
+            if database::migration::needs_migration(&conn, &json_path) {
+                log::info!("Migrating data from JSON to SQLite...");
+                match database::migration::migrate_from_json(&conn, &json_path) {
+                    Ok((groups, entries, missing)) => {
+                        log::info!(
+                            "Migration complete: {} groups, {} library entries, {} missing files",
+                            groups, entries, missing
+                        );
+                        if let Err(e) = database::migration::backup_json(&json_path) {
+                            log::warn!("Failed to backup JSON file: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Migration failed: {}", e);
+                    }
+                }
+            }
 
             // Create the audio engine
             let audio_engine = audio::AudioEngine::new()
                 .expect("Failed to initialize audio engine");
 
-            let container = Arc::new(AppStateContainer::new(initial_state, path, audio_engine, peak_cache_dir));
+            let container = Arc::new(AppStateContainer::new(conn, audio_engine, peak_cache_dir));
 
             // Share the Arc with Tauri's managed state
             app.manage(container.clone());
@@ -91,6 +114,14 @@ pub fn run() {
             commands::resume_all,
             commands::get_waveform_data,
             commands::get_server_info,
+            commands::import_library_entry,
+            commands::update_library_entry_tags,
+            commands::update_library_entry_loop_points,
+            commands::update_library_entry_volume,
+            commands::rename_library_entry,
+            commands::delete_library_entry,
+            commands::relocate_library_entry,
+            commands::check_missing_files,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LuteDrop");
