@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { computed, watch } from 'vue';
 import type { LibraryEntry } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
@@ -17,22 +17,22 @@ const emit = defineEmits<{
 const store = useAppStore();
 const audio = useAudio();
 
-const isPreviewPlaying = ref(false);
-
 const previewState = computed(() => store.playbackStates.get('__preview'));
+const isPreviewPlaying = computed(() => store.previewEntryId === props.entry.id && previewState.value?.isPlaying);
+
 watch(previewState, (state) => {
-  if (!state?.isPlaying) {
-    isPreviewPlaying.value = false;
+  if (!state?.isPlaying && store.previewEntryId === props.entry.id) {
+    store.previewEntryId = null;
   }
 });
 
 function togglePreview(): void {
   if (isPreviewPlaying.value) {
     audio.stopPreview();
-    isPreviewPlaying.value = false;
+    store.previewEntryId = null;
   } else {
     audio.playPreview(props.entry.filePath, 0, props.entry.volume);
-    isPreviewPlaying.value = true;
+    store.previewEntryId = props.entry.id;
   }
 }
 
@@ -56,6 +56,7 @@ function handleClick(): void {
       selected ? 'bg-primary-lighten-4' : '',
       store.isEntryMissing(entry.id) ? 'opacity-50' : '',
       selectable ? 'cursor-pointer' : '',
+      isPreviewPlaying ? 'preview-active' : '',
     ]"
     rounded
     @click="handleClick"
@@ -91,3 +92,10 @@ function handleClick(): void {
     </template>
   </VListItem>
 </template>
+
+<style scoped>
+.preview-active {
+  background: rgba(240, 168, 48, 0.08) !important;
+  border-left: 3px solid #F0A830;
+}
+</style>

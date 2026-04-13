@@ -23,20 +23,22 @@ const editName = ref('');
 const editTags = ref('');
 const localGain = ref(1.0);
 
-const isPreviewPlaying = ref(false);
 const previewState = computed(() => store.playbackStates.get('__preview'));
+const isPreviewPlaying = computed(() => store.previewEntryId === props.entryId && previewState.value?.isPlaying);
 
 watch(previewState, (state) => {
-  if (!state?.isPlaying) isPreviewPlaying.value = false;
+  if (!state?.isPlaying && store.previewEntryId === props.entryId) {
+    store.previewEntryId = null;
+  }
 });
 
 function togglePreview(): void {
   if (isPreviewPlaying.value) {
     audio.stopPreview();
-    isPreviewPlaying.value = false;
+    store.previewEntryId = null;
   } else if (entry.value) {
     audio.playPreview(entry.value.filePath, 0, localGain.value);
-    isPreviewPlaying.value = true;
+    store.previewEntryId = props.entryId;
   }
 }
 
@@ -164,6 +166,7 @@ async function updateLoopEndNumeric(v: string | number): Promise<void> {
 
 function close(): void {
   audio.stopPreview();
+  store.previewEntryId = null;
   // Persist gain on close if changed
   if (entry.value && localGain.value !== entry.value.volume) {
     persistGain();

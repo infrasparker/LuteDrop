@@ -405,32 +405,45 @@ function clampLocal(marker: MarkerType, seconds: number): void {
       clamped = Math.max(0, clamped);
       clamped = Math.min(clamped, te - 0.01);
       const rounded = round(clamped);
+
+      // Calculate all new values first
+      let newLoopStart = localLoopStart.value;
+      let newLoopEnd = localLoopEnd.value;
+
+      if (rounded > newLoopStart) {
+        newLoopStart = rounded;
+      }
+      // Push loop end if loop start catches up
+      const curLoopEnd = newLoopEnd === 0 ? dur : newLoopEnd;
+      if (newLoopStart >= curLoopEnd - 0.01) {
+        newLoopEnd = round(Math.min(newLoopStart + 0.01, te));
+      }
+
+      // Apply all at once
       localTrimStart.value = rounded;
-      // Push loop start if trim passes it
-      if (rounded > localLoopStart.value) {
-        localLoopStart.value = rounded;
-      }
-      // Push loop end if loop start catches up to it
-      const curLoopEnd = effectiveLoopEnd.value;
-      if (localLoopStart.value >= curLoopEnd - 0.01) {
-        localLoopEnd.value = round(Math.min(localLoopStart.value + 0.01, te));
-      }
+      localLoopStart.value = newLoopStart;
+      localLoopEnd.value = newLoopEnd;
       break;
     }
     case 'trimEnd': {
       clamped = Math.max(ts + 0.01, clamped);
       clamped = Math.min(clamped, dur);
       const rounded = round(clamped);
-      localTrimEnd.value = rounded;
-      // Push loop end if trim passes it
-      const curLoopEnd = effectiveLoopEnd.value;
+
+      let newLoopStart = localLoopStart.value;
+      let newLoopEnd = localLoopEnd.value;
+
+      const curLoopEnd = newLoopEnd === 0 ? dur : newLoopEnd;
       if (rounded < curLoopEnd) {
-        localLoopEnd.value = round(rounded);
+        newLoopEnd = round(rounded);
       }
-      // Push loop start if loop end catches up to it
-      if (localLoopEnd.value !== 0 && localLoopEnd.value <= localLoopStart.value + 0.01) {
-        localLoopStart.value = round(Math.max(localLoopEnd.value - 0.01, ts));
+      if (newLoopEnd !== 0 && newLoopEnd <= newLoopStart + 0.01) {
+        newLoopStart = round(Math.max(newLoopEnd - 0.01, ts));
       }
+
+      localTrimEnd.value = rounded;
+      localLoopStart.value = newLoopStart;
+      localLoopEnd.value = newLoopEnd;
       break;
     }
     case 'loopStart': {
