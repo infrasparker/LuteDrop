@@ -37,6 +37,11 @@ pub fn run() {
             let conn = database::open_db(&db_path)
                 .expect("Failed to open SQLite database");
 
+            // Run schema migrations
+            if let Err(e) = database::migrate_v1_to_v2(&conn) {
+                log::error!("Schema migration v1->v2 failed: {}", e);
+            }
+
             // Backfill durations for any entries missing them
             match database::library::backfill_durations(&conn) {
                 Ok(n) if n > 0 => log::info!("Backfilled duration for {} library entries", n),
