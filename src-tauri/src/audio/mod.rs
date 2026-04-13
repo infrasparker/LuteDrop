@@ -195,6 +195,28 @@ impl AudioEngine {
             .map(orchestrator::get_playback_state)
             .collect();
 
+        // Check library sound: stop at trim_end if reached
+        let mut library_stopped = false;
+        if let Some(ref mut snd) = self.library_sound {
+            let st = sound::state(snd);
+            let pos = sound::position(snd);
+            let is_playing = matches!(st, kira::sound::PlaybackState::Playing | kira::sound::PlaybackState::Resuming);
+
+            // Stop if we've reached trim_end (duration stores trim_end when set)
+            // But only for non-looping sounds (loop_region handles its own end)
+            if is_playing {
+                if let Some(end) = snd.duration {
+                    if pos >= end {
+                        sound::stop_quick(snd);
+                        library_stopped = true;
+                    }
+                }
+            }
+        }
+        if library_stopped {
+            self.library_sound = None;
+        }
+
         // Add library sound state
         if let Some(ref snd) = self.library_sound {
             let st = sound::state(snd);
