@@ -12,6 +12,7 @@ const props = defineProps<{
   trimStart: number | null;
   trimEnd: number | null;
   trackId?: string;
+  loopEnabled?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -290,32 +291,34 @@ function drawWaveform(): void {
     }
   }
 
-  // Loop markers — compute effective end inline to avoid stale computed during drag
-  const loopStartX = zoom.secondsToX(localLoopStart.value, cssW);
-  const drawLoopEnd = localLoopEnd.value === 0 ? data.duration.value : localLoopEnd.value;
-  const loopEndX = zoom.secondsToX(drawLoopEnd, cssW);
+  // Loop markers — only draw if loop is enabled
+  if (props.loopEnabled !== false) {
+    const loopStartX = zoom.secondsToX(localLoopStart.value, cssW);
+    const drawLoopEnd = localLoopEnd.value === 0 ? data.duration.value : localLoopEnd.value;
+    const loopEndX = zoom.secondsToX(drawLoopEnd, cssW);
 
-  ctx.strokeStyle = '#4CAF50';
-  ctx.lineWidth = 2;
-
-  if (loopStartX >= -2 && loopStartX <= cssW + 2) {
-    ctx.beginPath();
-    ctx.moveTo(loopStartX, 0);
-    ctx.lineTo(loopStartX, cssH);
-    ctx.stroke();
-    ctx.fillStyle = '#4CAF50';
-    ctx.fillRect(loopStartX - 5, 0, 5, 8);
-  }
-
-  if (loopEndX >= -2 && loopEndX <= cssW + 2) {
     ctx.strokeStyle = '#4CAF50';
     ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(loopEndX, 0);
-    ctx.lineTo(loopEndX, cssH);
-    ctx.stroke();
-    ctx.fillStyle = '#4CAF50';
-    ctx.fillRect(loopEndX, 0, 5, 8);
+
+    if (loopStartX >= -2 && loopStartX <= cssW + 2) {
+      ctx.beginPath();
+      ctx.moveTo(loopStartX, 0);
+      ctx.lineTo(loopStartX, cssH);
+      ctx.stroke();
+      ctx.fillStyle = '#4CAF50';
+      ctx.fillRect(loopStartX - 5, 0, 5, 8);
+    }
+
+    if (loopEndX >= -2 && loopEndX <= cssW + 2) {
+      ctx.strokeStyle = '#4CAF50';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(loopEndX, 0);
+      ctx.lineTo(loopEndX, cssH);
+      ctx.stroke();
+      ctx.fillStyle = '#4CAF50';
+      ctx.fillRect(loopEndX, 0, 5, 8);
+    }
   }
 
   // Center line
@@ -376,14 +379,16 @@ function findNearestMarker(x: number): MarkerType {
     candidates.push({ type: 'trimEnd', dist: trimEndDist });
   }
 
-  const loopStartDist = Math.abs(x - zoom.secondsToX(localLoopStart.value, cssW));
-  if (loopStartDist < MARKER_GRAB_THRESHOLD_PX) {
-    candidates.push({ type: 'loopStart', dist: loopStartDist });
-  }
+  if (props.loopEnabled !== false) {
+    const loopStartDist = Math.abs(x - zoom.secondsToX(localLoopStart.value, cssW));
+    if (loopStartDist < MARKER_GRAB_THRESHOLD_PX) {
+      candidates.push({ type: 'loopStart', dist: loopStartDist });
+    }
 
-  const loopEndDist = Math.abs(x - zoom.secondsToX(effectiveLoopEnd.value, cssW));
-  if (loopEndDist < MARKER_GRAB_THRESHOLD_PX) {
-    candidates.push({ type: 'loopEnd', dist: loopEndDist });
+    const loopEndDist = Math.abs(x - zoom.secondsToX(effectiveLoopEnd.value, cssW));
+    if (loopEndDist < MARKER_GRAB_THRESHOLD_PX) {
+      candidates.push({ type: 'loopEnd', dist: loopEndDist });
+    }
   }
 
   if (candidates.length === 0) return null;
@@ -407,23 +412,26 @@ function clampLocal(marker: MarkerType, seconds: number): void {
       clamped = Math.min(clamped, te - 0.01);
       const rounded = round(clamped);
 
-      // Calculate all new values first
-      let newLoopStart = localLoopStart.value;
-      let newLoopEnd = localLoopEnd.value;
-
-      if (rounded > newLoopStart) {
-        newLoopStart = rounded;
-      }
-      // Push loop end if loop start catches up
-      const curLoopEnd = newLoopEnd === 0 ? dur : newLoopEnd;
-      if (newLoopStart >= curLoopEnd - 0.01) {
-        newLoopEnd = round(Math.min(newLoopStart + 0.01, te));
-      }
-
       // Apply all at once
       localTrimStart.value = rounded;
-      localLoopStart.value = newLoopStart;
-      localLoopEnd.value = newLoopEnd;
+
+      if (props.loopEnabled !== false) {
+        // Calculate all new values first
+        let newLoopStart = localLoopStart.value;
+        let newLoopEnd = localLoopEnd.value;
+
+        if (rounded > newLoopStart) {
+          newLoopStart = rounded;
+        }
+        // Push loop end if loop start catches up
+        const curLoopEnd = newLoopEnd === 0 ? dur : newLoopEnd;
+        if (newLoopStart >= curLoopEnd - 0.01) {
+          newLoopEnd = round(Math.min(newLoopStart + 0.01, te));
+        }
+
+        localLoopStart.value = newLoopStart;
+        localLoopEnd.value = newLoopEnd;
+      }
       break;
     }
     case 'trimEnd': {
@@ -431,20 +439,23 @@ function clampLocal(marker: MarkerType, seconds: number): void {
       clamped = Math.min(clamped, dur);
       const rounded = round(clamped);
 
-      let newLoopStart = localLoopStart.value;
-      let newLoopEnd = localLoopEnd.value;
-
-      const curLoopEnd = newLoopEnd === 0 ? dur : newLoopEnd;
-      if (rounded < curLoopEnd) {
-        newLoopEnd = round(rounded);
-      }
-      if (newLoopEnd !== 0 && newLoopEnd <= newLoopStart + 0.01) {
-        newLoopStart = round(Math.max(newLoopEnd - 0.01, ts));
-      }
-
       localTrimEnd.value = rounded;
-      localLoopStart.value = newLoopStart;
-      localLoopEnd.value = newLoopEnd;
+
+      if (props.loopEnabled !== false) {
+        let newLoopStart = localLoopStart.value;
+        let newLoopEnd = localLoopEnd.value;
+
+        const curLoopEnd = newLoopEnd === 0 ? dur : newLoopEnd;
+        if (rounded < curLoopEnd) {
+          newLoopEnd = round(rounded);
+        }
+        if (newLoopEnd !== 0 && newLoopEnd <= newLoopStart + 0.01) {
+          newLoopStart = round(Math.max(newLoopEnd - 0.01, ts));
+        }
+
+        localLoopStart.value = newLoopStart;
+        localLoopEnd.value = newLoopEnd;
+      }
       break;
     }
     case 'loopStart': {
@@ -552,7 +563,11 @@ function onMouseUp(event: MouseEvent): void {
     if (dragDistance <= PAN_DRAG_THRESHOLD) {
       zoom.viewStart.value = panStartViewStart.value;
       zoom.clampView();
-      const clickTime = zoom.xToSeconds(getCanvasXInCssPixels(event), getCanvasWidth());
+      let clickTime = zoom.xToSeconds(getCanvasXInCssPixels(event), getCanvasWidth());
+      // Clamp to trim bounds
+      const ts = effectiveTrimStart.value;
+      const te = effectiveTrimEnd.value;
+      clickTime = Math.max(ts, Math.min(te, clickTime));
       if (props.trackId) {
         audio.playTrackFrom(props.trackId, clickTime);
       } else if (props.filePath) {
@@ -570,7 +585,11 @@ function onMouseUp(event: MouseEvent): void {
   }
 
   if (!wasMarker && dragDistance <= PAN_DRAG_THRESHOLD && data.duration.value > 0) {
-    const clickTime = zoom.xToSeconds(getCanvasXInCssPixels(event), getCanvasWidth());
+    let clickTime = zoom.xToSeconds(getCanvasXInCssPixels(event), getCanvasWidth());
+    // Clamp to trim bounds
+    const ts = effectiveTrimStart.value;
+    const te = effectiveTrimEnd.value;
+    clickTime = Math.max(ts, Math.min(te, clickTime));
     if (props.trackId) {
       audio.playTrackFrom(props.trackId, clickTime);
     } else if (props.filePath) {

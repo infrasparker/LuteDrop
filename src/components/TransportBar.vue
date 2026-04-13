@@ -50,14 +50,16 @@ function togglePause(): void {
 
 <template>
   <VFooter app color="surface" elevation="4" class="pa-2">
-    <div class="d-flex align-center w-100" style="position: relative;">
-      <!-- Playing count on the left — absolutely positioned so it doesn't shift the buttons -->
-      <span v-if="playingCount > 0" class="text-caption text-primary" style="position: absolute; left: 0;">
-        {{ playingCount }} playing
-      </span>
+    <div class="d-flex align-center w-100">
+      <!-- Left: playing count -->
+      <div style="flex: 1; min-width: 0;">
+        <span v-if="playingCount > 0" class="text-caption text-primary">
+          {{ playingCount }} playing
+        </span>
+      </div>
 
-      <!-- Centered transport controls -->
-      <div class="d-flex align-center ga-2 mx-auto">
+      <!-- Center: transport buttons -->
+      <div class="d-flex align-center ga-2">
         <VBtn
           :icon="showPlayIcon ? 'mdi-play' : 'mdi-pause'"
           :disabled="!anyPlaying && !anyPaused"
@@ -75,8 +77,8 @@ function togglePause(): void {
         />
       </div>
 
-      <!-- Master volume on the right — absolutely positioned -->
-      <div class="d-flex align-center ga-2" style="position: absolute; right: 0;">
+      <!-- Right: master volume -->
+      <div class="d-flex align-center ga-2 justify-end" style="flex: 1; min-width: 0;">
         <VIcon size="small" class="text-medium-emphasis">mdi-volume-high</VIcon>
         <VSlider
           :model-value="audio.masterVolume.value"
@@ -86,7 +88,7 @@ function togglePause(): void {
           :step="0.01"
           hide-details
           density="compact"
-          style="width: 150px;"
+          style="max-width: 150px;"
         />
       </div>
     </div>

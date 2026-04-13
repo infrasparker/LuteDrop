@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, watch } from 'vue';
+import { computed, onMounted, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from './stores/appStore';
 import { useAudio } from './composables/useAudio';
@@ -7,6 +7,7 @@ import { useToast } from './composables/useToast';
 import { useRouter } from 'vue-router';
 import type { AppState } from '@generated/index';
 import TransportBar from './components/TransportBar.vue';
+import WaveformEditorDialog from './components/WaveformEditorDialog.vue';
 
 const store = useAppStore();
 const toast = useToast();
@@ -15,6 +16,11 @@ const toast = useToast();
 const audio = useAudio();
 
 const router = useRouter();
+
+const showEditorDialog = computed({
+  get: () => store.editEntryId !== null,
+  set: (v: boolean) => { if (!v) store.editEntryId = null; },
+});
 
 watch(() => router.currentRoute.value.path, (newPath, oldPath) => {
   if (oldPath === '/library' && newPath !== '/library') {
@@ -59,6 +65,12 @@ onMounted(async () => {
     </VMain>
 
     <TransportBar />
+
+    <WaveformEditorDialog
+      v-if="store.editEntryId"
+      v-model="showEditorDialog"
+      :entry-id="store.editEntryId!"
+    />
 
     <VSnackbar v-model="toast.visible.value" :color="toast.color.value" :timeout="3000">
       {{ toast.message.value }}

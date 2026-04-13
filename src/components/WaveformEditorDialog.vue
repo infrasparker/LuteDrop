@@ -18,6 +18,25 @@ const audio = useAudio();
 
 const entry = computed(() => store.findLibraryEntry(props.entryId));
 
+const loopEnabled = computed(() => {
+  return entry.value?.loopStart !== null || entry.value?.loopEnd !== null;
+});
+
+async function toggleLoop(): Promise<void> {
+  if (loopEnabled.value) {
+    // Turn off: clear loop points
+    await store.command('update_library_entry_markers', {
+      entryId: props.entryId,
+      trimStart: entry.value?.trimStart ?? null,
+      trimEnd: entry.value?.trimEnd ?? null,
+      loopStart: null,
+      loopEnd: null,
+    });
+  }
+  // If turning on, do nothing — user will drag loop markers to set them
+  // The loop markers will appear at default positions (trim bounds or file bounds)
+}
+
 // Local editable fields
 const editName = ref('');
 const editTags = ref('');
@@ -203,6 +222,18 @@ function close(): void {
           <VBtn icon="mdi-restore" variant="text" size="x-small" title="Reset to 1.0" @click="setGain(1.0); persistGain();" />
         </div>
 
+        <!-- Loop toggle -->
+        <div class="d-flex align-center ga-3 mb-3">
+          <VSwitch
+            :model-value="loopEnabled"
+            @update:model-value="toggleLoop"
+            label="Loop"
+            hide-details
+            density="compact"
+            color="primary"
+          />
+        </div>
+
         <!-- Waveform -->
         <WaveformEditor
           :file-path="entry.filePath"
@@ -210,6 +241,7 @@ function close(): void {
           :loop-end="entry.loopEnd ?? 0"
           :trim-start="entry.trimStart ?? null"
           :trim-end="entry.trimEnd ?? null"
+          :loop-enabled="loopEnabled"
           @commit="onWaveformCommit"
         />
 
@@ -241,32 +273,34 @@ function close(): void {
               @click:clear="updateMarkersFromNumeric({ trimEnd: null })"
             />
           </div>
-          <div style="min-width: 140px; max-width: 170px;">
-            <VTextField
-              :model-value="entry.loopStart ?? ''"
-              label="Loop Start (s)"
-              type="number"
-              variant="outlined"
-              density="compact"
-              hide-details
-              clearable
-              @change="(e: Event) => updateMarkersFromNumeric({ loopStart: parseTrimField((e.target as HTMLInputElement).value) })"
-              @click:clear="updateMarkersFromNumeric({ loopStart: null })"
-            />
-          </div>
-          <div style="min-width: 140px; max-width: 170px;">
-            <VTextField
-              :model-value="entry.loopEnd ?? ''"
-              label="Loop End (s)"
-              type="number"
-              variant="outlined"
-              density="compact"
-              hide-details
-              clearable
-              @change="(e: Event) => updateMarkersFromNumeric({ loopEnd: parseTrimField((e.target as HTMLInputElement).value) })"
-              @click:clear="updateMarkersFromNumeric({ loopEnd: null })"
-            />
-          </div>
+          <template v-if="loopEnabled">
+            <div style="min-width: 140px; max-width: 170px;">
+              <VTextField
+                :model-value="entry.loopStart ?? ''"
+                label="Loop Start (s)"
+                type="number"
+                variant="outlined"
+                density="compact"
+                hide-details
+                clearable
+                @change="(e: Event) => updateMarkersFromNumeric({ loopStart: parseTrimField((e.target as HTMLInputElement).value) })"
+                @click:clear="updateMarkersFromNumeric({ loopStart: null })"
+              />
+            </div>
+            <div style="min-width: 140px; max-width: 170px;">
+              <VTextField
+                :model-value="entry.loopEnd ?? ''"
+                label="Loop End (s)"
+                type="number"
+                variant="outlined"
+                density="compact"
+                hide-details
+                clearable
+                @change="(e: Event) => updateMarkersFromNumeric({ loopEnd: parseTrimField((e.target as HTMLInputElement).value) })"
+                @click:clear="updateMarkersFromNumeric({ loopEnd: null })"
+              />
+            </div>
+          </template>
         </div>
       </VCardText>
     </VCard>

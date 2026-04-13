@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed } from 'vue';
 import { storeToRefs } from 'pinia';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useAppStore } from '../stores/appStore';
 import { useLibraryImport } from '../composables/useLibraryImport';
 import TagFilter from '../components/TagFilter.vue';
 import LibraryEntryRow from '../components/LibraryEntryRow.vue';
-import WaveformEditorDialog from '../components/WaveformEditorDialog.vue';
 
 const store = useAppStore();
 const { libraryEntries } = storeToRefs(store);
@@ -27,23 +26,9 @@ const filteredEntries = computed(() => {
   });
 });
 
-// Waveform editor dialog state
-const showEditorDialog = ref(false);
-const editorEntryId = ref('');
-
 function openEditor(entryId: string): void {
-  editorEntryId.value = entryId;
-  showEditorDialog.value = true;
+  store.editEntryId = entryId;
 }
-
-// Consume editEntryId set by ClipRow navigation
-watch(() => store.editEntryId, (id) => {
-  if (id) {
-    editorEntryId.value = id;
-    showEditorDialog.value = true;
-    store.editEntryId = null;
-  }
-}, { immediate: true });
 
 // Delete entry
 async function deleteEntry(entryId: string): Promise<void> {
@@ -138,12 +123,6 @@ async function relocateEntry(entryId: string): Promise<void> {
       <VIcon size="64" class="mb-4">mdi-music-box-multiple-outline</VIcon>
       <span>Import some audio files</span>
     </div>
-
-    <!-- Waveform editor dialog -->
-    <WaveformEditorDialog
-      v-model="showEditorDialog"
-      :entry-id="editorEntryId"
-    />
 
   </VContainer>
 </template>
