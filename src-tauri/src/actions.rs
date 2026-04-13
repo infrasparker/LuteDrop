@@ -1,211 +1,356 @@
-use crate::models::{AppState, Group, Comp, Track, TrackMode, TrackTransition, Clip};
-use crate::persistence;
+use crate::database;
+use crate::database::{hierarchy, library};
+use crate::models::{AppState, Track};
 use crate::state::AppStateContainer;
-use uuid::Uuid;
+use rusqlite::params;
 
 // --- Helpers ---
 
-fn save_and_return(container: &AppStateContainer, data: &AppState) -> Result<AppState, String> {
-    persistence::save_to_disk(&container.save_path, data)?;
-    Ok(data.clone())
+fn with_db<F, T>(container: &AppStateContainer, f: F) -> Result<T, String>
+where
+    F: FnOnce(&rusqlite::Connection) -> Result<T, String>,
+{
+    let conn = container.db.lock().map_err(|e| e.to_string())?;
+    f(&conn)
 }
 
-fn find_group_mut<'a>(state: &'a mut AppState, group_id: &str) -> Result<&'a mut Group, String> {
-    state.groups.iter_mut().find(|g| g.id == group_id)
-        .ok_or_else(|| format!("Group not found: {}", group_id))
-}
-
-fn find_comp_mut<'a>(state: &'a mut AppState, comp_id: &str) -> Result<&'a mut Comp, String> {
-    for group in &mut state.groups {
-        if let Some(comp) = group.comps.iter_mut().find(|c| c.id == comp_id) {
-            return Ok(comp);
-        }
-    }
-    Err(format!("Comp not found: {}", comp_id))
-}
-
-fn find_track_mut<'a>(state: &'a mut AppState, track_id: &str) -> Result<&'a mut Track, String> {
-    for group in &mut state.groups {
-        for comp in &mut group.comps {
-            if let Some(track) = comp.tracks.iter_mut().find(|t| t.id == track_id) {
-                return Ok(track);
-            }
-        }
-    }
-    Err(format!("Track not found: {}", track_id))
-}
-
-pub fn find_track_ref<'a>(state: &'a AppState, track_id: &str) -> Result<&'a Track, String> {
+pub fn find_track_ref(container: &AppStateContainer, track_id: &str) -> Result<Track, String> {
+    let state = with_db(container, |conn| database::load_full_state(conn))?;
     for group in &state.groups {
         for comp in &group.comps {
             if let Some(track) = comp.tracks.iter().find(|t| t.id == track_id) {
-                return Ok(track);
+                return Ok(track.clone());
             }
         }
     }
     Err(format!("Track not found: {}", track_id))
 }
 
-pub fn find_comp_ref<'a>(state: &'a AppState, comp_id: &str) -> Result<&'a Comp, String> {
+pub fn find_comp_tracks(container: &AppStateContainer, comp_id: &str) -> Result<Vec<Track>, String> {
+    let state = with_db(container, |conn| database::load_full_state(conn))?;
     for group in &state.groups {
         if let Some(comp) = group.comps.iter().find(|c| c.id == comp_id) {
-            return Ok(comp);
+            return Ok(comp.tracks.clone());
         }
     }
     Err(format!("Comp not found: {}", comp_id))
-}
-
-fn chrono_now() -> String {
-    use std::time::SystemTime;
-    let duration = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("{}", duration.as_millis())
 }
 
 // --- Data mutation actions (return updated AppState) ---
 
 pub fn load_data(container: &AppStateContainer) -> Result<AppState, String> {
-    let data = container.data.read().map_err(|e| e.to_string())?;
-    Ok(data.clone())
+    with_db(container, |conn| database::load_full_state(conn))
 }
 
 pub fn add_group(container: &AppStateContainer, name: String) -> Result<AppState, String> {
-    let mut data = container.data.write().map_err(|e| e.to_string())?;
-    let group = Group { id: Uuid::new_v4().to_string(), name, comps: Vec::new() };
-    data.groups.push(group);
-    data.last_saved_at = Some(chrono_now());
-    save_and_return(container, &data)
+    with_db(container, |conn| {
+        hierarchy::insert_group(conn, &name)?;
+        database::load_full_state(conn)
+    })
 }
 
 pub fn delete_group(container: &AppStateContainer, group_id: &str) -> Result<AppState, String> {
-    let mut data = container.data.write().map_err(|e| e.to_string())?;
-    data.groups.retain(|g| g.id != group_id);
-    data.last_saved_at = Some(chrono_now());
-    save_and_return(container, &data)
+    with_db(container, |conn| {
+        hierarchy::delete_group(conn, group_id)?;
+        database::load_full_state(conn)
+    })
 }
 
 pub fn rename_group(container: &AppStateContainer, group_id: &str, name: String) -> Result<AppState, String> {
-    let mut data = container.data.write().map_err(|e| e.to_string())?;
-    let group = find_group_mut(&mut data, group_id)?;
-    group.name = name;
-    data.last_saved_at = Some(chrono_now());
-    save_and_return(container, &data)
-}
-
-pub fn rename_comp(container: &AppStateContainer, comp_id: &str, name: String) -> Result<AppState, String> {
-    let mut data = container.data.write().map_err(|e| e.to_string())?;
-    let comp = find_comp_mut(&mut data, comp_id)?;
-    comp.name = name;
-    data.last_saved_at = Some(chrono_now());
-    save_and_return(container, &data)
+    with_db(container, |conn| {
+        hierarchy::rename_group(conn, group_id, &name)?;
+        database::load_full_state(conn)
+    })
 }
 
 pub fn add_comp(container: &AppStateContainer, group_id: &str, name: String) -> Result<AppState, String> {
-    let mut data = container.data.write().map_err(|e| e.to_string())?;
-    let group = find_group_mut(&mut data, group_id)?;
-    let comp = Comp { id: Uuid::new_v4().to_string(), name, tracks: Vec::new() };
-    group.comps.push(comp);
-    data.last_saved_at = Some(chrono_now());
-    save_and_return(container, &data)
+    with_db(container, |conn| {
+        hierarchy::insert_comp(conn, group_id, &name)?;
+        database::load_full_state(conn)
+    })
 }
 
-pub fn delete_comp(container: &AppStateContainer, group_id: &str, comp_id: &str) -> Result<AppState, String> {
-    let mut data = container.data.write().map_err(|e| e.to_string())?;
-    let group = find_group_mut(&mut data, group_id)?;
-    group.comps.retain(|c| c.id != comp_id);
-    data.last_saved_at = Some(chrono_now());
-    save_and_return(container, &data)
+pub fn delete_comp(container: &AppStateContainer, _group_id: &str, comp_id: &str) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        hierarchy::delete_comp(conn, comp_id)?;
+        database::load_full_state(conn)
+    })
+}
+
+pub fn rename_comp(container: &AppStateContainer, comp_id: &str, name: String) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        hierarchy::rename_comp(conn, comp_id, &name)?;
+        database::load_full_state(conn)
+    })
 }
 
 pub fn add_track(container: &AppStateContainer, comp_id: &str, name: String) -> Result<AppState, String> {
-    let mut data = container.data.write().map_err(|e| e.to_string())?;
-    let comp = find_comp_mut(&mut data, comp_id)?;
-    let track = Track {
-        id: Uuid::new_v4().to_string(),
-        name,
-        clips: Vec::new(),
-        volume: 1.0,
-        mode: TrackMode::Sequence { repeat: true, transition: TrackTransition::Gapless },
-        fade_in: 0.0,
-        fade_out: 0.0,
+    with_db(container, |conn| {
+        hierarchy::insert_track(conn, comp_id, &name)?;
+        database::load_full_state(conn)
+    })
+}
+
+pub fn delete_track(container: &AppStateContainer, _comp_id: &str, track_id: &str) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        hierarchy::delete_track(conn, track_id)?;
+        database::load_full_state(conn)
+    })
+}
+
+pub fn update_track(container: &AppStateContainer, _comp_id: &str, track_id: &str, updates: serde_json::Value) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        let obj = updates.as_object()
+            .ok_or_else(|| "updates must be a JSON object".to_string())?;
+
+        if let Some(v) = obj.get("name") {
+            let name = v.as_str()
+                .ok_or_else(|| "name must be a string".to_string())?;
+            hierarchy::rename_track(conn, track_id, name)?;
+        }
+
+        if let Some(v) = obj.get("volume") {
+            let volume = v.as_f64()
+                .ok_or_else(|| "volume must be a number".to_string())?;
+            hierarchy::update_track_volume(conn, track_id, volume)?;
+        }
+
+        // Handle fadeIn/fadeOut — need to read current values since update_track_fades takes both
+        if obj.contains_key("fadeIn") || obj.contains_key("fadeOut") {
+            // Read current fade values from DB
+            let (current_fade_in, current_fade_out): (f64, f64) = conn
+                .query_row(
+                    "SELECT fade_in, fade_out FROM tracks WHERE id = ?1",
+                    params![track_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|e| format!("Failed to read current fades: {e}"))?;
+
+            let fade_in = if let Some(v) = obj.get("fadeIn") {
+                v.as_f64().ok_or_else(|| "fadeIn must be a number".to_string())?
+            } else {
+                current_fade_in
+            };
+
+            let fade_out = if let Some(v) = obj.get("fadeOut") {
+                v.as_f64().ok_or_else(|| "fadeOut must be a number".to_string())?
+            } else {
+                current_fade_out
+            };
+
+            hierarchy::update_track_fades(conn, track_id, fade_in, fade_out)?;
+        }
+
+        if let Some(v) = obj.get("mode") {
+            let mode_obj = v.as_object()
+                .ok_or_else(|| "mode must be a JSON object".to_string())?;
+
+            let mode_type = mode_obj.get("type")
+                .and_then(|t| t.as_str())
+                .ok_or_else(|| "mode.type must be a string".to_string())?;
+
+            let repeat = mode_obj.get("repeat").and_then(|r| r.as_bool());
+
+            let transition = mode_obj.get("transition");
+            let transition_type = transition
+                .and_then(|t| t.get("type"))
+                .and_then(|t| t.as_str());
+            let gap_min = transition
+                .and_then(|t| t.get("min"))
+                .and_then(|t| t.as_f64());
+            let gap_max = transition
+                .and_then(|t| t.get("max"))
+                .and_then(|t| t.as_f64());
+
+            hierarchy::update_track_mode(
+                conn,
+                track_id,
+                mode_type,
+                repeat,
+                transition_type,
+                gap_min,
+                gap_max,
+            )?;
+        }
+
+        if let Some(v) = obj.get("clips") {
+            let clips_arr = v.as_array()
+                .ok_or_else(|| "clips must be an array".to_string())?;
+
+            // Reorder clips based on the array order
+            for (index, clip_val) in clips_arr.iter().enumerate() {
+                let clip_id = clip_val.get("id")
+                    .and_then(|id| id.as_str())
+                    .ok_or_else(|| "each clip must have an 'id' string field".to_string())?;
+
+                hierarchy::reorder_clip(conn, track_id, clip_id, index)?;
+            }
+        }
+
+        database::load_full_state(conn)
+    })
+}
+
+pub fn add_clip(container: &AppStateContainer, track_id: &str, library_entry_id: &str) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        hierarchy::insert_clip(conn, track_id, library_entry_id)?;
+        database::load_full_state(conn)
+    })
+}
+
+pub fn delete_clip(container: &AppStateContainer, _track_id: &str, clip_id: &str) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        hierarchy::delete_clip(conn, clip_id)?;
+        database::load_full_state(conn)
+    })
+}
+
+// --- Library actions (return updated AppState) ---
+
+pub fn import_library_entry(
+    container: &AppStateContainer,
+    file_path: String,
+    content_hash: Option<String>,
+    name: String,
+    duration: Option<f64>,
+    sample_rate: Option<i64>,
+    file_size: Option<i64>,
+) -> Result<AppState, String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    // Compute SHA-256 hash if not provided
+    let hash = if let Some(h) = content_hash {
+        Some(h)
+    } else {
+        let mut file = std::fs::File::open(&file_path)
+            .map_err(|e| format!("Failed to open file for hashing: {e}"))?;
+        let mut hasher = Sha256::new();
+        let mut buf = [0u8; 65536];
+        loop {
+            match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => hasher.update(&buf[..n]),
+                Err(e) => return Err(format!("Failed to read file for hashing: {e}")),
+            }
+        }
+        Some(format!("{:x}", hasher.finalize()))
     };
-    comp.tracks.push(track);
-    data.last_saved_at = Some(chrono_now());
-    save_and_return(container, &data)
+
+    with_db(container, |conn| {
+        // Check for duplicate by hash
+        if let Some(ref h) = hash {
+            if let Some((_id, existing_name)) = library::get_library_entry_by_hash(conn, h)? {
+                return Err(format!("Already in library as '{}'", existing_name));
+            }
+        }
+
+        library::insert_library_entry(
+            conn,
+            &file_path,
+            hash.as_deref(),
+            &name,
+            duration,
+            sample_rate,
+            file_size,
+        )?;
+        database::load_full_state(conn)
+    })
 }
 
-pub fn delete_track(container: &AppStateContainer, comp_id: &str, track_id: &str) -> Result<AppState, String> {
-    let mut data = container.data.write().map_err(|e| e.to_string())?;
-    let comp = find_comp_mut(&mut data, comp_id)?;
-    comp.tracks.retain(|t| t.id != track_id);
-    data.last_saved_at = Some(chrono_now());
-    save_and_return(container, &data)
+pub fn update_library_entry_tags(
+    container: &AppStateContainer,
+    entry_id: &str,
+    tags: Vec<String>,
+) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        // Remove all existing tags for this entry
+        let existing_tags = library::get_tags_for_entry(conn, entry_id)?;
+        for tag_name in &existing_tags {
+            library::remove_tag_from_entry(conn, entry_id, tag_name)?;
+        }
+
+        // Add new tags
+        for tag_name in &tags {
+            library::add_tag_to_entry(conn, entry_id, tag_name)?;
+        }
+
+        database::load_full_state(conn)
+    })
 }
 
-pub fn update_track(container: &AppStateContainer, comp_id: &str, track_id: &str, updates: serde_json::Value) -> Result<AppState, String> {
-    let mut data = container.data.write().map_err(|e| e.to_string())?;
-    let comp = find_comp_mut(&mut data, comp_id)?;
-    let track = comp.tracks.iter_mut().find(|t| t.id == track_id)
-        .ok_or_else(|| format!("Track not found: {}", track_id))?;
-
-    let obj = updates.as_object()
-        .ok_or_else(|| "updates must be a JSON object".to_string())?;
-
-    if let Some(v) = obj.get("name") {
-        track.name = v.as_str()
-            .ok_or_else(|| "name must be a string".to_string())?
-            .to_string();
-    }
-    if let Some(v) = obj.get("volume") {
-        track.volume = v.as_f64()
-            .ok_or_else(|| "volume must be a number".to_string())?;
-    }
-    if let Some(v) = obj.get("fadeIn") {
-        track.fade_in = v.as_f64()
-            .ok_or_else(|| "fadeIn must be a number".to_string())?;
-    }
-    if let Some(v) = obj.get("fadeOut") {
-        track.fade_out = v.as_f64()
-            .ok_or_else(|| "fadeOut must be a number".to_string())?;
-    }
-    if let Some(v) = obj.get("mode") {
-        track.mode = serde_json::from_value(v.clone())
-            .map_err(|e| format!("Invalid mode: {}", e))?;
-    }
-    if let Some(v) = obj.get("clips") {
-        track.clips = serde_json::from_value(v.clone())
-            .map_err(|e| format!("Invalid clips: {}", e))?;
-    }
-
-    data.last_saved_at = Some(chrono_now());
-    save_and_return(container, &data)
+pub fn update_library_entry_loop_points(
+    container: &AppStateContainer,
+    entry_id: &str,
+    loop_start: Option<f64>,
+    loop_end: Option<f64>,
+) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        library::update_library_entry_loop(conn, entry_id, loop_start, loop_end)?;
+        database::load_full_state(conn)
+    })
 }
 
-pub fn add_clip(container: &AppStateContainer, track_id: &str, name: String, file_path: String) -> Result<AppState, String> {
-    let mut data = container.data.write().map_err(|e| e.to_string())?;
-    let track = find_track_mut(&mut data, track_id)?;
-    let clip = Clip { id: Uuid::new_v4().to_string(), name, file_path, volume: 1.0 };
-    track.clips.push(clip);
-    data.last_saved_at = Some(chrono_now());
-    save_and_return(container, &data)
+pub fn update_library_entry_volume_action(
+    container: &AppStateContainer,
+    entry_id: &str,
+    volume: f64,
+) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        library::update_library_entry_volume(conn, entry_id, volume)?;
+        database::load_full_state(conn)
+    })
 }
 
-pub fn delete_clip(container: &AppStateContainer, track_id: &str, clip_id: &str) -> Result<AppState, String> {
-    let mut data = container.data.write().map_err(|e| e.to_string())?;
-    let track = find_track_mut(&mut data, track_id)?;
-    track.clips.retain(|c| c.id != clip_id);
-    data.last_saved_at = Some(chrono_now());
-    save_and_return(container, &data)
+pub fn rename_library_entry_action(
+    container: &AppStateContainer,
+    entry_id: &str,
+    name: String,
+) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        library::update_library_entry_name(conn, entry_id, &name)?;
+        database::load_full_state(conn)
+    })
+}
+
+pub fn delete_library_entry_action(
+    container: &AppStateContainer,
+    entry_id: &str,
+) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        library::delete_library_entry(conn, entry_id)?;
+        database::load_full_state(conn)
+    })
+}
+
+pub fn relocate_library_entry(
+    container: &AppStateContainer,
+    entry_id: &str,
+    new_file_path: String,
+) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        library::update_library_entry_file_path(conn, entry_id, &new_file_path)?;
+        database::load_full_state(conn)
+    })
+}
+
+pub fn check_missing_files(container: &AppStateContainer) -> Result<Vec<String>, String> {
+    with_db(container, |conn| {
+        let state = database::load_full_state(conn)?;
+        let missing: Vec<String> = state
+            .library_entries
+            .iter()
+            .filter(|entry| !std::path::Path::new(&entry.file_path).exists())
+            .map(|entry| entry.id.clone())
+            .collect();
+        Ok(missing)
+    })
 }
 
 // --- Audio actions (no state return) ---
 
 pub fn play_track_audio(container: &AppStateContainer, track_id: &str) -> Result<(), String> {
-    let track_config = {
-        let data = container.data.read().map_err(|e| e.to_string())?;
-        find_track_ref(&data, track_id)?.clone()
-    };
+    let track_config = find_track_ref(container, track_id)?;
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
     if !audio.has_track(track_id) {
         audio.setup_track(&track_config)?;
@@ -216,10 +361,7 @@ pub fn play_track_audio(container: &AppStateContainer, track_id: &str) -> Result
 }
 
 pub fn play_track_clip(container: &AppStateContainer, track_id: &str, clip_id: &str) -> Result<(), String> {
-    let track_config = {
-        let data = container.data.read().map_err(|e| e.to_string())?;
-        find_track_ref(&data, track_id)?.clone()
-    };
+    let track_config = find_track_ref(container, track_id)?;
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
     if !audio.has_track(track_id) {
         audio.setup_track(&track_config)?;
@@ -230,10 +372,7 @@ pub fn play_track_clip(container: &AppStateContainer, track_id: &str, clip_id: &
 }
 
 pub fn play_track_from_position(container: &AppStateContainer, track_id: &str, position: f64) -> Result<(), String> {
-    let track_config = {
-        let data = container.data.read().map_err(|e| e.to_string())?;
-        find_track_ref(&data, track_id)?.clone()
-    };
+    let track_config = find_track_ref(container, track_id)?;
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
     if !audio.has_track(track_id) {
         audio.setup_track(&track_config)?;
@@ -270,11 +409,7 @@ pub fn set_clip_volume_action(container: &AppStateContainer, clip_id: &str, volu
 }
 
 pub fn activate_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result<(), String> {
-    let track_configs: Vec<Track> = {
-        let data = container.data.read().map_err(|e| e.to_string())?;
-        let comp = find_comp_ref(&data, comp_id)?;
-        comp.tracks.clone()
-    };
+    let track_configs = find_comp_tracks(container, comp_id)?;
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
     for track in &track_configs {
         if !audio.has_track(&track.id) {
@@ -288,15 +423,11 @@ pub fn activate_comp_audio(container: &AppStateContainer, comp_id: &str) -> Resu
 }
 
 pub fn stop_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result<(), String> {
-    let track_ids: Vec<String> = {
-        let data = container.data.read().map_err(|e| e.to_string())?;
-        let comp = find_comp_ref(&data, comp_id)?;
-        comp.tracks.iter().map(|t| t.id.clone()).collect()
-    };
+    let track_configs = find_comp_tracks(container, comp_id)?;
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
-    for track_id in &track_ids {
-        if audio.has_track(track_id) {
-            audio.stop_track(track_id)?;
+    for track in &track_configs {
+        if audio.has_track(&track.id) {
+            audio.stop_track(&track.id)?;
         }
     }
     Ok(())

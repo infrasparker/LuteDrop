@@ -64,8 +64,8 @@ pub fn update_track(state: State<'_, Arc<AppStateContainer>>, comp_id: String, t
 }
 
 #[tauri::command]
-pub fn add_clip(state: State<'_, Arc<AppStateContainer>>, track_id: String, name: String, file_path: String) -> Result<AppState, String> {
-    actions::add_clip(&state, &track_id, name, file_path)
+pub fn add_clip(state: State<'_, Arc<AppStateContainer>>, track_id: String, library_entry_id: String) -> Result<AppState, String> {
+    actions::add_clip(&state, &track_id, &library_entry_id)
 }
 
 #[tauri::command]
@@ -162,4 +162,80 @@ pub fn get_server_info() -> Result<serde_json::Value, String> {
         "ip": ip,
         "port": 3333
     }))
+}
+
+// --- Library commands ---
+
+#[tauri::command]
+pub fn import_library_entry(
+    state: State<'_, Arc<AppStateContainer>>,
+    file_path: String,
+    content_hash: Option<String>,
+    name: String,
+    duration: Option<f64>,
+    sample_rate: Option<i64>,
+    file_size: Option<i64>,
+) -> Result<AppState, String> {
+    actions::import_library_entry(&state, file_path, content_hash, name, duration, sample_rate, file_size)
+}
+
+#[tauri::command]
+pub fn update_library_entry_tags(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_id: String,
+    tags: Vec<String>,
+) -> Result<AppState, String> {
+    actions::update_library_entry_tags(&state, &entry_id, tags)
+}
+
+#[tauri::command]
+pub fn update_library_entry_loop_points(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_id: String,
+    loop_start: Option<f64>,
+    loop_end: Option<f64>,
+) -> Result<AppState, String> {
+    actions::update_library_entry_loop_points(&state, &entry_id, loop_start, loop_end)
+}
+
+#[tauri::command]
+pub fn update_library_entry_volume(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_id: String,
+    volume: f64,
+) -> Result<AppState, String> {
+    actions::update_library_entry_volume_action(&state, &entry_id, volume)
+}
+
+#[tauri::command]
+pub fn rename_library_entry(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_id: String,
+    name: String,
+) -> Result<AppState, String> {
+    actions::rename_library_entry_action(&state, &entry_id, name)
+}
+
+#[tauri::command]
+pub fn delete_library_entry(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_id: String,
+) -> Result<AppState, String> {
+    actions::delete_library_entry_action(&state, &entry_id)
+}
+
+#[tauri::command]
+pub fn relocate_library_entry(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_id: String,
+    new_file_path: String,
+) -> Result<AppState, String> {
+    actions::relocate_library_entry(&state, &entry_id, new_file_path)
+}
+
+#[tauri::command]
+pub fn check_missing_files(
+    state: State<'_, Arc<AppStateContainer>>,
+) -> Result<Vec<String>, String> {
+    actions::check_missing_files(&state)
 }

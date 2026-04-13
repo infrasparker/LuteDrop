@@ -72,7 +72,7 @@ async fn ws_handler(
 
 async fn handle_ws(mut socket: WebSocket, container: SharedState) {
     // Send initial state snapshot
-    if let Ok(snapshot) = build_snapshot(&container) {
+    if let Some(snapshot) = build_snapshot(&container) {
         let json = serde_json::to_string(&snapshot).unwrap_or_default();
         let _ = socket.send(Message::Text(json.into())).await;
     }
@@ -169,16 +169,16 @@ fn handle_remote_command(container: &AppStateContainer, text: &str) {
     }
 }
 
-fn build_snapshot(container: &AppStateContainer) -> Result<StateSnapshot, String> {
+fn build_snapshot(container: &AppStateContainer) -> Option<StateSnapshot> {
     let app_state = {
-        let data = container.data.read().map_err(|e| e.to_string())?;
-        data.clone()
+        let conn = container.db.lock().ok()?;
+        crate::database::load_full_state(&conn).ok()?
     };
     let (playback_states, master_volume) = {
-        let audio = container.audio.lock().map_err(|e| e.to_string())?;
+        let audio = container.audio.lock().ok()?;
         (audio.get_all_playback_states(), audio.get_master_volume())
     };
-    Ok(StateSnapshot {
+    Some(StateSnapshot {
         r#type: "state".to_string(),
         app_state,
         playback_states,
@@ -188,7 +188,7 @@ fn build_snapshot(container: &AppStateContainer) -> Result<StateSnapshot, String
 
 /// Build and broadcast the current state to all connected remotes.
 pub fn broadcast_state(container: &AppStateContainer) {
-    if let Ok(snapshot) = build_snapshot(container) {
+    if let Some(snapshot) = build_snapshot(container) {
         if let Ok(json) = serde_json::to_string(&snapshot) {
             let _ = container.broadcast_tx.send(json);
         }
