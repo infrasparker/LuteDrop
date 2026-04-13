@@ -9,12 +9,16 @@ const props = defineProps<{
   filePath: string;
   loopStart: number;
   loopEnd: number;
-  trackId: string;
+  trimStart: number | null;
+  trimEnd: number | null;
+  trackId?: string;
 }>();
 
 const emit = defineEmits<{
   'update:loopStart': [value: number];
   'update:loopEnd': [value: number];
+  'update:trimStart': [value: number | null];
+  'update:trimEnd': [value: number | null];
 }>();
 
 const audio = useAudio();
@@ -34,7 +38,7 @@ const zoom = useWaveformZoom(data.duration);
 
 let rafId: number | null = null;
 
-const playbackState = computed(() => store.playbackStates.get(props.trackId));
+const playbackState = computed(() => props.trackId ? store.playbackStates.get(props.trackId) : undefined);
 
 function startPlayheadLoop(): void {
   if (rafId !== null) return;
@@ -220,6 +224,58 @@ function drawWaveform(): void {
     drawPeaksPath(ctx, data.basePeaks.value, data.basePeaksRangeStart.value, data.basePeaksRangeEnd.value, cssW, cssH, '#F0A830');
   }
 
+  // Trim dimmed overlay and markers
+  if (props.trimStart !== null || props.trimEnd !== null) {
+    const TRIM_COLOR = '#FF6D00';
+
+    // Dimmed regions
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    if (props.trimStart !== null) {
+      const tsX = zoom.secondsToX(props.trimStart, cssW);
+      const leftX = zoom.secondsToX(0, cssW);
+      if (tsX > leftX) {
+        ctx.fillRect(leftX, 0, tsX - leftX, cssH);
+      }
+    }
+    if (props.trimEnd !== null) {
+      const teX = zoom.secondsToX(props.trimEnd, cssW);
+      const rightX = zoom.secondsToX(data.duration.value, cssW);
+      if (rightX > teX) {
+        ctx.fillRect(teX, 0, rightX - teX, cssH);
+      }
+    }
+
+    // Trim start marker
+    if (props.trimStart !== null) {
+      const tsX = zoom.secondsToX(props.trimStart, cssW);
+      if (tsX >= -2 && tsX <= cssW + 2) {
+        ctx.strokeStyle = TRIM_COLOR;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(tsX, 0);
+        ctx.lineTo(tsX, cssH);
+        ctx.stroke();
+        ctx.fillStyle = TRIM_COLOR;
+        ctx.fillRect(tsX - 5, cssH - 8, 5, 8);
+      }
+    }
+
+    // Trim end marker
+    if (props.trimEnd !== null) {
+      const teX = zoom.secondsToX(props.trimEnd, cssW);
+      if (teX >= -2 && teX <= cssW + 2) {
+        ctx.strokeStyle = TRIM_COLOR;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(teX, 0);
+        ctx.lineTo(teX, cssH);
+        ctx.stroke();
+        ctx.fillStyle = TRIM_COLOR;
+        ctx.fillRect(teX, cssH - 8, 5, 8);
+      }
+    }
+  }
+
   // Loop markers
   const loopStartX = zoom.secondsToX(props.loopStart, cssW);
   const loopEndX = zoom.secondsToX(effectiveLoopEnd.value, cssW);
@@ -280,7 +336,7 @@ function drawWaveform(): void {
 
 // --- Marker interaction ---
 
-type MarkerType = 'loopStart' | 'loopEnd' | null;
+type MarkerType = 'loopStart' | 'loopEnd' | 'trimStart' | 'trimEnd' | null;
 const dragging = ref<MarkerType>(null);
 const panning = ref(false);
 const panStartX = ref(0);
@@ -294,6 +350,20 @@ function findNearestMarker(x: number): MarkerType {
 
   type Candidate = { type: MarkerType; dist: number };
   const candidates: Candidate[] = [];
+
+  if (props.trimStart !== null) {
+    const trimStartDist = Math.abs(x - zoom.secondsToX(props.trimStart, cssW));
+    if (trimStartDist < MARKER_GRAB_THRESHOLD_PX) {
+      candidates.push({ type: 'trimStart', dist: trimStartDist });
+    }
+  }
+
+  if (props.trimEnd !== null) {
+    const trimEndDist = Math.abs(x - zoom.secondsToX(props.trimEnd, cssW));
+    if (trimEndDist < MARKER_GRAB_THRESHOLD_PX) {
+      candidates.push({ type: 'trimEnd', dist: trimEndDist });
+    }
+  }
 
   const loopStartDist = Math.abs(x - zoom.secondsToX(props.loopStart, cssW));
   if (loopStartDist < MARKER_GRAB_THRESHOLD_PX) {
@@ -312,16 +382,40 @@ function findNearestMarker(x: number): MarkerType {
 
 function clampAndEmit(marker: MarkerType, seconds: number): void {
   const dur = data.duration.value;
-  const le = effectiveLoopEnd.value;
+  const effectiveTrimStart = props.trimStart ?? 0;
+  const effectiveTrimEnd = props.trimEnd ?? dur;
 
   let clamped = Math.max(0, Math.min(dur, seconds));
   const round = (v: number) => Math.round(v * 100) / 100;
   const snapThreshold = dur * 0.01;
 
   switch (marker) {
-    case 'loopStart': {
+    case 'trimStart': {
       clamped = Math.max(0, clamped);
-      clamped = Math.min(clamped, le - 0.01);
+      clamped = Math.min(clamped, effectiveTrimEnd - 0.01);
+      const rounded = round(clamped);
+      emit('update:trimStart', rounded);
+      // Push loopStart if trim passes it
+      if (rounded > props.loopStart) {
+        emit('update:loopStart', rounded);
+      }
+      break;
+    }
+    case 'trimEnd': {
+      clamped = Math.max(effectiveTrimStart + 0.01, clamped);
+      clamped = Math.min(clamped, dur);
+      const rounded = round(clamped);
+      emit('update:trimEnd', rounded);
+      // Push loopEnd if trim passes it
+      const le = effectiveLoopEnd.value;
+      if (rounded < le) {
+        emit('update:loopEnd', round(rounded));
+      }
+      break;
+    }
+    case 'loopStart': {
+      clamped = Math.max(effectiveTrimStart, clamped);
+      clamped = Math.min(clamped, effectiveLoopEnd.value - 0.01);
       emit('update:loopStart', round(clamped));
       break;
     }
@@ -331,7 +425,7 @@ function clampAndEmit(marker: MarkerType, seconds: number): void {
         return;
       }
       clamped = Math.max(clamped, props.loopStart + 0.01);
-      clamped = Math.min(clamped, dur);
+      clamped = Math.min(clamped, effectiveTrimEnd);
       emit('update:loopEnd', round(clamped));
       break;
     }
@@ -394,15 +488,17 @@ function onMouseUp(event: MouseEvent): void {
     if (dragDistance <= PAN_DRAG_THRESHOLD) {
       zoom.viewStart.value = panStartViewStart.value;
       zoom.clampView();
-      const clickTime = zoom.xToSeconds(getCanvasXInCssPixels(event), getCanvasWidth());
-      audio.playTrackFrom(props.trackId, clickTime);
+      if (props.trackId) {
+        const clickTime = zoom.xToSeconds(getCanvasXInCssPixels(event), getCanvasWidth());
+        audio.playTrackFrom(props.trackId, clickTime);
+      }
     } else {
       fireZoomedPeaks();
     }
     return;
   }
 
-  if (!wasMarker && dragDistance <= PAN_DRAG_THRESHOLD && data.duration.value > 0) {
+  if (!wasMarker && dragDistance <= PAN_DRAG_THRESHOLD && data.duration.value > 0 && props.trackId) {
     const clickTime = zoom.xToSeconds(getCanvasXInCssPixels(event), getCanvasWidth());
     audio.playTrackFrom(props.trackId, clickTime);
   }
@@ -435,7 +531,7 @@ watch(data.basePeaks, () => {
   drawWaveform();
 });
 watch(data.zoomedPeaks, () => drawWaveform());
-watch(() => [props.loopStart, props.loopEnd], () => drawWaveform());
+watch(() => [props.loopStart, props.loopEnd, props.trimStart, props.trimEnd], () => drawWaveform());
 
 watch(() => props.filePath, () => {
   zoom.resetView();
@@ -480,6 +576,9 @@ onUnmounted(() => {
       />
     </div>
     <div class="waveform-labels d-flex ga-4 mt-1">
+      <span v-if="trimStart !== null || trimEnd !== null" class="text-caption" style="color: #FF6D00;">
+        Trim: {{ trimStart !== null ? trimStart.toFixed(2) + 's' : 'start' }} - {{ trimEnd !== null ? trimEnd.toFixed(2) + 's' : 'end' }}
+      </span>
       <span class="text-caption text-medium-emphasis">
         Loop: {{ loopStartDisplay }}s - {{ loopEndDisplay }}
       </span>
