@@ -137,6 +137,7 @@ pub fn update_library_entry_trim(
 
 /// Updates the loop window for the given entry.
 /// Clamps loop points to existing trim bounds before writing.
+/// When both values are None, clears loop points (no validation needed).
 /// Returns an error if the clamped values result in loop_start >= loop_end.
 pub fn update_library_entry_loop(
     conn: &Connection,
@@ -144,6 +145,15 @@ pub fn update_library_entry_loop(
     loop_start: Option<f64>,
     loop_end: Option<f64>,
 ) -> Result<(), String> {
+    // If both are None, just clear loop points — no validation needed
+    if loop_start.is_none() && loop_end.is_none() {
+        conn.execute(
+            "UPDATE library_entries SET loop_start = NULL, loop_end = NULL WHERE id = ?1",
+            params![id],
+        ).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
     let (trim_start, trim_end): (Option<f64>, Option<f64>) = conn.query_row(
         "SELECT trim_start, trim_end FROM library_entries WHERE id = ?1",
         params![id], |r| Ok((r.get(0)?, r.get(1)?))

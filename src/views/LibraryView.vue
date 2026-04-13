@@ -58,13 +58,13 @@ async function relocateEntry(entryId: string): Promise<void> {
 <template>
   <VContainer fluid class="d-flex flex-column" style="height: 100%;">
     <!-- Top bar -->
-    <div class="d-flex align-center mb-4 gap-2">
+    <div class="d-flex align-center mb-4 ga-2">
       <span class="text-h6 font-weight-bold">Library</span>
       <VSpacer />
       <VBtn prepend-icon="mdi-file-music" variant="tonal" @click="importFiles">
         Import Files
       </VBtn>
-      <VBtn prepend-icon="mdi-folder-music" variant="tonal" @click="importFolder">
+      <VBtn prepend-icon="mdi-folder-music" variant="tonal" class="ml-2" @click="importFolder">
         Import Folder
       </VBtn>
     </div>

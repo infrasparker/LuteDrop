@@ -155,7 +155,7 @@ function close(): void {
 </script>
 
 <template>
-  <VDialog :model-value="modelValue" @update:model-value="emit('update:modelValue', $event)" max-width="1100" persistent>
+  <VDialog :model-value="modelValue" @update:model-value="emit('update:modelValue', $event)" max-width="1400" width="95%" persistent>
     <VCard v-if="entry">
       <VCardTitle class="d-flex align-center">
         <span>Edit: {{ entry.name }}</span>
@@ -219,7 +219,7 @@ function close(): void {
 
         <!-- Numeric inputs for trim/loop -->
         <div class="d-flex flex-wrap ga-3 mt-3">
-          <div style="min-width: 110px; max-width: 130px;">
+          <div style="min-width: 140px; max-width: 170px;">
             <VTextField
               :model-value="entry.trimStart ?? ''"
               label="Trim Start (s)"
@@ -230,7 +230,7 @@ function close(): void {
               @change="(e: Event) => updateTrimStartNumeric((e.target as HTMLInputElement).value)"
             />
           </div>
-          <div style="min-width: 110px; max-width: 130px;">
+          <div style="min-width: 140px; max-width: 170px;">
             <VTextField
               :model-value="entry.trimEnd ?? ''"
               label="Trim End (s)"
@@ -241,7 +241,7 @@ function close(): void {
               @change="(e: Event) => updateTrimEndNumeric((e.target as HTMLInputElement).value)"
             />
           </div>
-          <div style="min-width: 110px; max-width: 130px;">
+          <div style="min-width: 140px; max-width: 170px;">
             <VTextField
               :model-value="entry.loopStart ?? ''"
               label="Loop Start (s)"
@@ -252,7 +252,7 @@ function close(): void {
               @change="(e: Event) => updateLoopStartNumeric((e.target as HTMLInputElement).value)"
             />
           </div>
-          <div style="min-width: 110px; max-width: 130px;">
+          <div style="min-width: 140px; max-width: 170px;">
             <VTextField
               :model-value="entry.loopEnd ?? ''"
               label="Loop End (s)"
