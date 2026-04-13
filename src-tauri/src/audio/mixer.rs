@@ -23,6 +23,7 @@ impl MuteState {
             || self.clips.get(clip_id).copied().unwrap_or(false)
     }
 
+    #[allow(dead_code)]
     pub fn toggle_master(&mut self) -> bool {
         self.master = !self.master;
         self.master
