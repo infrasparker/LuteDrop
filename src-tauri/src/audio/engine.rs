@@ -887,13 +887,6 @@ impl AudioEngine {
         }
     }
 
-    /// Whether the engine has any tracks currently playing or paused.
-    #[allow(dead_code)]
-    pub fn has_active_playback(&self) -> bool {
-        self.tracks.values().any(|t| {
-            t.sound_handle.is_some() || t.is_paused || t.pending_start.is_some()
-        })
-    }
 }
 
 /// Determine the next clip index for sequence/shuffle modes.

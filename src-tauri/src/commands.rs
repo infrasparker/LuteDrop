@@ -114,11 +114,6 @@ pub fn set_clip_volume(state: State<'_, Arc<AppStateContainer>>, clip_id: String
 }
 
 #[tauri::command]
-pub fn update_clip_volume(state: State<'_, Arc<AppStateContainer>>, clip_id: String, volume: f64) -> Result<AppState, String> {
-    actions::update_clip_volume_action(&state, &clip_id, volume)
-}
-
-#[tauri::command]
 pub fn activate_comp(state: State<'_, Arc<AppStateContainer>>, comp_id: String) -> Result<(), String> {
     actions::activate_comp_audio(&state, &comp_id)
 }
@@ -191,26 +186,6 @@ pub fn update_library_entry_tags(
     tags: Vec<String>,
 ) -> Result<AppState, String> {
     actions::update_library_entry_tags(&state, &entry_id, tags)
-}
-
-#[tauri::command]
-pub fn update_library_entry_trim(
-    state: State<'_, Arc<AppStateContainer>>,
-    entry_id: String,
-    trim_start: Option<f64>,
-    trim_end: Option<f64>,
-) -> Result<AppState, String> {
-    actions::update_library_entry_trim_action(&state, &entry_id, trim_start, trim_end)
-}
-
-#[tauri::command]
-pub fn update_library_entry_loop_points(
-    state: State<'_, Arc<AppStateContainer>>,
-    entry_id: String,
-    loop_start: Option<f64>,
-    loop_end: Option<f64>,
-) -> Result<AppState, String> {
-    actions::update_library_entry_loop_points(&state, &entry_id, loop_start, loop_end)
 }
 
 #[tauri::command]

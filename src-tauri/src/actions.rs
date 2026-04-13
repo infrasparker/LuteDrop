@@ -287,30 +287,6 @@ pub fn update_library_entry_tags(
     })
 }
 
-pub fn update_library_entry_trim_action(
-    container: &AppStateContainer,
-    entry_id: &str,
-    trim_start: Option<f64>,
-    trim_end: Option<f64>,
-) -> Result<AppState, String> {
-    with_db(container, |conn| {
-        library::update_library_entry_trim(conn, entry_id, trim_start, trim_end)?;
-        database::load_full_state(conn)
-    })
-}
-
-pub fn update_library_entry_loop_points(
-    container: &AppStateContainer,
-    entry_id: &str,
-    loop_start: Option<f64>,
-    loop_end: Option<f64>,
-) -> Result<AppState, String> {
-    with_db(container, |conn| {
-        library::update_library_entry_loop(conn, entry_id, loop_start, loop_end)?;
-        database::load_full_state(conn)
-    })
-}
-
 pub fn update_library_entry_markers_action(
     container: &AppStateContainer,
     entry_id: &str,
@@ -455,13 +431,6 @@ pub fn set_clip_volume_action(container: &AppStateContainer, clip_id: &str, volu
     // Update audio engine — set_clip_volume is a no-op if clip isn't in any active track
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
     audio.set_clip_volume(clip_id, volume)
-}
-
-pub fn update_clip_volume_action(container: &AppStateContainer, clip_id: &str, volume: f64) -> Result<AppState, String> {
-    with_db(container, |conn| {
-        hierarchy::update_clip_volume(conn, clip_id, volume)?;
-        database::load_full_state(conn)
-    })
 }
 
 pub fn activate_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result<(), String> {
