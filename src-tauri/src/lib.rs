@@ -114,6 +114,7 @@ pub fn run() {
             commands::set_master_volume,
             commands::set_track_volume,
             commands::set_clip_volume,
+            commands::update_clip_volume,
             commands::activate_comp,
             commands::stop_comp,
             commands::stop_all,

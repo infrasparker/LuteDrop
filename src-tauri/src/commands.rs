@@ -114,6 +114,11 @@ pub fn set_clip_volume(state: State<'_, Arc<AppStateContainer>>, clip_id: String
 }
 
 #[tauri::command]
+pub fn update_clip_volume(state: State<'_, Arc<AppStateContainer>>, clip_id: String, volume: f64) -> Result<AppState, String> {
+    actions::update_clip_volume_action(&state, &clip_id, volume)
+}
+
+#[tauri::command]
 pub fn activate_comp(state: State<'_, Arc<AppStateContainer>>, comp_id: String) -> Result<(), String> {
     actions::activate_comp_audio(&state, &comp_id)
 }
