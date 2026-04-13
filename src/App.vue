@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from './stores/appStore';
 import { useAudio } from './composables/useAudio';
 import { useToast } from './composables/useToast';
+import { useRouter } from 'vue-router';
 import type { AppState } from '@generated/index';
 import TransportBar from './components/TransportBar.vue';
 
@@ -12,7 +13,16 @@ const toast = useToast();
 const serverUrl = ref('');
 
 // Initialize audio early to register event listeners
-useAudio();
+const audio = useAudio();
+
+const router = useRouter();
+
+watch(() => router.currentRoute.value.path, (newPath, oldPath) => {
+  if (oldPath === '/library' && newPath !== '/library') {
+    audio.stopPreview();
+    store.previewEntryId = null;
+  }
+});
 
 onMounted(async () => {
   const state = await invoke<AppState>('load_data');

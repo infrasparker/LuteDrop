@@ -38,18 +38,20 @@ function togglePause(): void {
 </script>
 
 <template>
-  <VFooter app color="surface" elevation="4" class="pa-1">
-    <div class="d-flex align-center justify-center ga-3 mx-auto" style="max-width: 500px; width: 100%;">
+  <VFooter app color="surface" elevation="4" class="pa-2">
+    <div class="d-flex align-center justify-center ga-3 mx-auto" style="max-width: 600px; width: 100%;">
       <VBtn
         :icon="paused ? 'mdi-play' : 'mdi-pause'"
         variant="tonal"
-        size="x-small"
+        size="small"
+        rounded="circle"
         @click="togglePause"
       />
       <VBtn
         icon="mdi-stop"
         variant="tonal"
-        size="x-small"
+        size="small"
+        rounded="circle"
         @click="stopAll"
       />
 

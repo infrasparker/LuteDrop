@@ -21,6 +21,8 @@ const audio = useAudio();
 const status = computed(() => store.getCompStatus(props.comp.id));
 
 const cardClass = computed(() => ({
+  'comp-card': true,
+  'comp-selected': props.selected,
   'comp-active': status.value === 'active',
   'comp-partial': status.value === 'partial',
 }));
@@ -74,7 +76,6 @@ function stopComp(): void {
 
 <template>
   <VCard
-    :color="selected ? 'primary' : 'surface-light'"
     variant="flat"
     class="comp-card pa-2 text-center"
     :class="cardClass"
@@ -86,14 +87,14 @@ function stopComp(): void {
       <VBtn
         :icon="status === 'active' ? 'mdi-pause' : 'mdi-play'"
         variant="tonal"
-        size="x-small"
+        size="small"
         rounded="circle"
         @click.stop="toggleComp"
       />
       <VBtn
         icon="mdi-stop"
         variant="tonal"
-        size="x-small"
+        size="small"
         rounded="circle"
         @click.stop="stopComp"
       />
@@ -156,13 +157,18 @@ function stopComp(): void {
 <style scoped>
 .comp-card {
   border-left: 3px solid transparent;
+  background: rgb(var(--v-theme-surface-light));
+}
+.comp-selected {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: -2px;
 }
 .comp-active {
-  background: rgba(240, 168, 48, 0.08);
+  background: rgba(240, 168, 48, 0.12) !important;
   border-left: 3px solid #F0A830;
 }
 .comp-partial {
-  background: rgba(240, 168, 48, 0.04);
+  background: rgba(240, 168, 48, 0.06) !important;
   border-left: 3px solid rgba(240, 168, 48, 0.5);
 }
 </style>

@@ -98,12 +98,12 @@ function setVolume(v: number): void {
         color="surface-light"
         rounded="0"
         elevation="0"
-        :class="{ 'track-panel': true, 'track-active': isActive }"
         @contextmenu.prevent="openContextMenu"
       >
         <template #title>
           <div
             class="d-flex align-center ga-2"
+            :class="{ 'track-title': true, 'track-active': isActive }"
             style="width: 100%;"
           >
             <VBtn
@@ -212,12 +212,16 @@ function setVolume(v: number): void {
 </template>
 
 <style scoped>
-.track-panel {
+.track-title {
   border-left: 3px solid transparent;
+  margin-left: -16px;
+  padding-left: 13px;
 }
 .track-active {
-  background: rgba(240, 168, 48, 0.08);
   border-left: 3px solid #F0A830;
+  background: rgba(240, 168, 48, 0.08);
+  margin-left: -16px;
+  padding-left: 13px;
 }
 </style>
 
