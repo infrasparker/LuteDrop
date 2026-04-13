@@ -266,7 +266,15 @@ function drawWaveform(): void {
       ctx.fillRect(teX, 0, rightX - teX, cssH);
     }
 
-    // Trim start marker
+    const TRI = 7; // triangle handle size
+
+    // Trim connecting bar along the top edge
+    if (tsX < cssW && teX > 0) {
+      ctx.fillStyle = 'rgba(255, 109, 0, 0.25)';
+      ctx.fillRect(Math.max(tsX, 0), 0, Math.min(teX, cssW) - Math.max(tsX, 0), 3);
+    }
+
+    // Trim start: vertical line + downward-pointing triangle at top (pointing right/inward)
     if (tsX >= -2 && tsX <= cssW + 2) {
       ctx.strokeStyle = TRIM_COLOR;
       ctx.lineWidth = 2;
@@ -274,11 +282,17 @@ function drawWaveform(): void {
       ctx.moveTo(tsX, 0);
       ctx.lineTo(tsX, cssH);
       ctx.stroke();
+      // Triangle: points right (toward the trim region)
       ctx.fillStyle = TRIM_COLOR;
-      ctx.fillRect(tsX - 5, cssH - 8, 5, 8);
+      ctx.beginPath();
+      ctx.moveTo(tsX, 0);
+      ctx.lineTo(tsX + TRI, 0);
+      ctx.lineTo(tsX, TRI);
+      ctx.closePath();
+      ctx.fill();
     }
 
-    // Trim end marker
+    // Trim end: vertical line + downward-pointing triangle at top (pointing left/inward)
     if (teX >= -2 && teX <= cssW + 2) {
       ctx.strokeStyle = TRIM_COLOR;
       ctx.lineWidth = 2;
@@ -286,38 +300,65 @@ function drawWaveform(): void {
       ctx.moveTo(teX, 0);
       ctx.lineTo(teX, cssH);
       ctx.stroke();
+      // Triangle: points left (toward the trim region)
       ctx.fillStyle = TRIM_COLOR;
-      ctx.fillRect(teX, cssH - 8, 5, 8);
+      ctx.beginPath();
+      ctx.moveTo(teX, 0);
+      ctx.lineTo(teX - TRI, 0);
+      ctx.lineTo(teX, TRI);
+      ctx.closePath();
+      ctx.fill();
     }
   }
 
   // Loop markers — only draw if loop is enabled
   if (props.loopEnabled !== false) {
+    const LOOP_COLOR = '#4CAF50';
+    const TRI = 7;
     const loopStartX = zoom.secondsToX(localLoopStart.value, cssW);
     const drawLoopEnd = localLoopEnd.value === 0 ? data.duration.value : localLoopEnd.value;
     const loopEndX = zoom.secondsToX(drawLoopEnd, cssW);
 
-    ctx.strokeStyle = '#4CAF50';
-    ctx.lineWidth = 2;
+    // Loop connecting bar along the bottom edge
+    if (loopStartX < cssW && loopEndX > 0) {
+      ctx.fillStyle = 'rgba(76, 175, 80, 0.25)';
+      ctx.fillRect(Math.max(loopStartX, 0), cssH - 3, Math.min(loopEndX, cssW) - Math.max(loopStartX, 0), 3);
+    }
 
+    // Loop start: vertical line + upward-pointing triangle at bottom (pointing right/inward)
     if (loopStartX >= -2 && loopStartX <= cssW + 2) {
+      ctx.strokeStyle = LOOP_COLOR;
+      ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(loopStartX, 0);
       ctx.lineTo(loopStartX, cssH);
       ctx.stroke();
-      ctx.fillStyle = '#4CAF50';
-      ctx.fillRect(loopStartX - 5, 0, 5, 8);
+      // Triangle: points right from bottom
+      ctx.fillStyle = LOOP_COLOR;
+      ctx.beginPath();
+      ctx.moveTo(loopStartX, cssH);
+      ctx.lineTo(loopStartX + TRI, cssH);
+      ctx.lineTo(loopStartX, cssH - TRI);
+      ctx.closePath();
+      ctx.fill();
     }
 
+    // Loop end: vertical line + upward-pointing triangle at bottom (pointing left/inward)
     if (loopEndX >= -2 && loopEndX <= cssW + 2) {
-      ctx.strokeStyle = '#4CAF50';
+      ctx.strokeStyle = LOOP_COLOR;
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(loopEndX, 0);
       ctx.lineTo(loopEndX, cssH);
       ctx.stroke();
-      ctx.fillStyle = '#4CAF50';
-      ctx.fillRect(loopEndX, 0, 5, 8);
+      // Triangle: points left from bottom
+      ctx.fillStyle = LOOP_COLOR;
+      ctx.beginPath();
+      ctx.moveTo(loopEndX, cssH);
+      ctx.lineTo(loopEndX - TRI, cssH);
+      ctx.lineTo(loopEndX, cssH - TRI);
+      ctx.closePath();
+      ctx.fill();
     }
   }
 
