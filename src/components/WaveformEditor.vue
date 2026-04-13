@@ -563,19 +563,15 @@ function onMouseUp(event: MouseEvent): void {
     if (dragDistance <= PAN_DRAG_THRESHOLD) {
       zoom.viewStart.value = panStartViewStart.value;
       zoom.clampView();
-      let clickTime = zoom.xToSeconds(getCanvasXInCssPixels(event), getCanvasWidth());
-      // Clamp to trim bounds
-      const ts = effectiveTrimStart.value;
-      const te = effectiveTrimEnd.value;
-      clickTime = Math.max(ts, Math.min(te, clickTime));
+      const clickTime = zoom.xToSeconds(getCanvasXInCssPixels(event), getCanvasWidth());
       if (props.trackId) {
         audio.playTrackFrom(props.trackId, clickTime);
       } else if (props.filePath) {
         audio.playPreview(
           props.filePath, clickTime, 1.0,
           localTrimStart.value, localTrimEnd.value,
-          localLoopStart.value === 0 ? null : localLoopStart.value,
-          localLoopEnd.value === 0 ? null : localLoopEnd.value,
+          props.loopEnabled !== false ? (localLoopStart.value === 0 ? null : localLoopStart.value) : null,
+          props.loopEnabled !== false ? (localLoopEnd.value === 0 ? null : localLoopEnd.value) : null,
         );
       }
     } else {
@@ -585,15 +581,16 @@ function onMouseUp(event: MouseEvent): void {
   }
 
   if (!wasMarker && dragDistance <= PAN_DRAG_THRESHOLD && data.duration.value > 0) {
-    let clickTime = zoom.xToSeconds(getCanvasXInCssPixels(event), getCanvasWidth());
-    // Clamp to trim bounds
-    const ts = effectiveTrimStart.value;
-    const te = effectiveTrimEnd.value;
-    clickTime = Math.max(ts, Math.min(te, clickTime));
+    const clickTime = zoom.xToSeconds(getCanvasXInCssPixels(event), getCanvasWidth());
     if (props.trackId) {
       audio.playTrackFrom(props.trackId, clickTime);
     } else if (props.filePath) {
-      audio.playPreview(props.filePath, clickTime, 1.0);
+      audio.playPreview(
+        props.filePath, clickTime, 1.0,
+        localTrimStart.value, localTrimEnd.value,
+        props.loopEnabled !== false ? (localLoopStart.value === 0 ? null : localLoopStart.value) : null,
+        props.loopEnabled !== false ? (localLoopEnd.value === 0 ? null : localLoopEnd.value) : null,
+      );
     }
   }
 }

@@ -23,18 +23,28 @@ const loopEnabled = computed(() => {
 });
 
 async function toggleLoop(): Promise<void> {
+  if (!entry.value) return;
   if (loopEnabled.value) {
     // Turn off: clear loop points
     await store.command('update_library_entry_markers', {
       entryId: props.entryId,
-      trimStart: entry.value?.trimStart ?? null,
-      trimEnd: entry.value?.trimEnd ?? null,
+      trimStart: entry.value.trimStart ?? null,
+      trimEnd: entry.value.trimEnd ?? null,
       loopStart: null,
       loopEnd: null,
     });
+  } else {
+    // Turn on: set loop points to trim bounds (or file bounds)
+    const ls = entry.value.trimStart ?? 0;
+    const le = entry.value.trimEnd ?? (entry.value.duration ?? 0);
+    await store.command('update_library_entry_markers', {
+      entryId: props.entryId,
+      trimStart: entry.value.trimStart ?? null,
+      trimEnd: entry.value.trimEnd ?? null,
+      loopStart: ls > 0 ? ls : null,
+      loopEnd: le > 0 ? le : null,
+    });
   }
-  // If turning on, do nothing — user will drag loop markers to set them
-  // The loop markers will appear at default positions (trim bounds or file bounds)
 }
 
 // Local editable fields
