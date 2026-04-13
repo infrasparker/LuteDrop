@@ -620,6 +620,7 @@ impl AudioEngine {
         // Apply track fade-in only on fresh starts, not clip-to-clip transitions
         if apply_track_fade {
             let fade_in = active.config.fade_in;
+            log::info!("start_clip_inner: apply_track_fade={}, fade_in={}, fade_out={}", apply_track_fade, fade_in, active.config.fade_out);
             if fade_in > 0.0 {
                 sound_data = sound_data.fade_in_tween(Tween {
                     duration: Duration::from_secs_f64(fade_in),
