@@ -351,9 +351,13 @@ impl AudioEngine {
     /// Set the volume for a specific track. Updates active sound if playing.
     /// Returns Ok(()) if the track isn't in the engine (nothing to update).
     pub fn set_track_volume(&mut self, track_id: &str, volume: f64) -> Result<(), String> {
-        if let Some(active) = self.tracks.get_mut(track_id) {
+        let found = if let Some(active) = self.tracks.get_mut(track_id) {
             active.config.volume = volume.clamp(0.0, 1.0);
-            drop(active);
+            true
+        } else {
+            false
+        };
+        if found {
             self.update_sound_volume(track_id);
         }
         Ok(())
