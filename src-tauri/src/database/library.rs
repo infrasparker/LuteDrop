@@ -84,6 +84,7 @@ pub fn update_library_entry_name(
 }
 
 /// Updates the trim window for the given entry.
+#[allow(dead_code)]
 pub fn update_library_entry_trim(
     conn: &Connection,
     id: &str,
@@ -111,6 +112,44 @@ pub fn update_library_entry_loop(
     )
     .map_err(|e| format!("Failed to update loop: {e}"))?;
     Ok(())
+}
+
+/// Updates the `duration` and `sample_rate` columns for the given entry.
+pub fn update_library_entry_duration(
+    conn: &Connection,
+    id: &str,
+    duration: f64,
+    sample_rate: Option<u32>,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE library_entries SET duration = ?1, sample_rate = ?2 WHERE id = ?3",
+        params![duration, sample_rate.map(|v| v as i64), id],
+    )
+    .map_err(|e| format!("Failed to update duration: {e}"))?;
+    Ok(())
+}
+
+/// Probes all library entries with a NULL duration and fills them in.
+/// Returns the number of entries updated.
+pub fn backfill_durations(conn: &Connection) -> Result<usize, String> {
+    let mut stmt = conn
+        .prepare("SELECT id, file_path FROM library_entries WHERE duration IS NULL")
+        .map_err(|e| format!("Failed to prepare backfill query: {e}"))?;
+
+    let entries: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| format!("Failed to query entries for backfill: {e}"))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut updated = 0;
+    for (id, file_path) in &entries {
+        if let Some(duration) = crate::audio::engine::probe_duration(file_path) {
+            update_library_entry_duration(conn, id, duration, None)?;
+            updated += 1;
+        }
+    }
+    Ok(updated)
 }
 
 /// Updates the `file_path` column for the given entry.

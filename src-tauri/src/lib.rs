@@ -55,6 +55,13 @@ pub fn run() {
                 }
             }
 
+            // Backfill durations for any entries missing them
+            match database::library::backfill_durations(&conn) {
+                Ok(n) if n > 0 => log::info!("Backfilled duration for {} library entries", n),
+                Err(e) => log::warn!("Failed to backfill durations: {}", e),
+                _ => {}
+            }
+
             // Create the audio engine
             let audio_engine = audio::AudioEngine::new()
                 .expect("Failed to initialize audio engine");

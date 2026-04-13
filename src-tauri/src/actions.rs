@@ -245,7 +245,7 @@ pub fn import_library_entry(
             }
         }
 
-        library::insert_library_entry(
+        let entry_id = library::insert_library_entry(
             conn,
             &file_path,
             hash.as_deref(),
@@ -254,6 +254,14 @@ pub fn import_library_entry(
             sample_rate,
             file_size,
         )?;
+
+        // Probe duration from the audio file if not already provided
+        if duration.is_none() {
+            if let Some(probed_duration) = crate::audio::engine::probe_duration(&file_path) {
+                let _ = library::update_library_entry_duration(conn, &entry_id, probed_duration, None);
+            }
+        }
+
         database::load_full_state(conn)
     })
 }

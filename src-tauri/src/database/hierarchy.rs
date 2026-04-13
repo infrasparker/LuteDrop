@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 use uuid::Uuid;
 
 const SORT_GAP: i64 = 1000;
@@ -184,6 +184,7 @@ pub fn rename_group(conn: &Connection, id: &str, name: &str) -> Result<(), Strin
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn reorder_group(conn: &Connection, group_id: &str, new_index: usize) -> Result<(), String> {
     reorder_item(conn, "groups", None, None, group_id, new_index)
 }
@@ -216,6 +217,7 @@ pub fn rename_comp(conn: &Connection, id: &str, name: &str) -> Result<(), String
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn reorder_comp(
     conn: &Connection,
     group_id: &str,
@@ -309,6 +311,7 @@ pub fn update_track_fades(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn reorder_track(
     conn: &Connection,
     comp_id: &str,
@@ -342,6 +345,7 @@ pub fn delete_clip(conn: &Connection, id: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn update_clip_volume(conn: &Connection, id: &str, volume: f64) -> Result<(), String> {
     conn.execute(
         "UPDATE clips SET volume = ?1 WHERE id = ?2",

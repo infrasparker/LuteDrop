@@ -12,7 +12,7 @@ use crate::models::{Track, TrackMode, TrackPlaybackState, TrackTransition};
 /// Quickly probe an audio file for its duration in seconds.
 /// Tries metadata first (time_base * n_frames), falls back to
 /// byte-length estimate for VBR files without frame counts.
-fn probe_duration(path: &str) -> Option<f64> {
+pub fn probe_duration(path: &str) -> Option<f64> {
     use symphonia::core::formats::FormatOptions;
     use symphonia::core::io::MediaSourceStream;
     use symphonia::core::meta::MetadataOptions;
