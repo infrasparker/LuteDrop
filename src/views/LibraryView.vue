@@ -36,29 +36,6 @@ function openEditor(entryId: string): void {
   showEditorDialog.value = true;
 }
 
-// Tag edit dialog state
-const showTagDialog = ref(false);
-const tagDialogEntryId = ref('');
-const tagDialogValue = ref('');
-
-function openTagDialog(entryId: string, currentTags: string[]): void {
-  tagDialogEntryId.value = entryId;
-  tagDialogValue.value = currentTags.join(', ');
-  showTagDialog.value = true;
-}
-
-async function saveTagDialog(): Promise<void> {
-  const tags = tagDialogValue.value
-    .split(',')
-    .map((t) => t.trim())
-    .filter((t) => t.length > 0);
-  await store.command('update_library_entry_tags', {
-    entryId: tagDialogEntryId.value,
-    tags,
-  });
-  showTagDialog.value = false;
-}
-
 // Delete entry
 async function deleteEntry(entryId: string): Promise<void> {
   await store.command('delete_library_entry', { entryId });
@@ -132,18 +109,11 @@ async function relocateEntry(entryId: string): Promise<void> {
             @click.stop="relocateEntry(entry.id)"
           />
           <VBtn
-            icon="mdi-waveform"
+            icon="mdi-pencil"
             size="small"
             variant="text"
             title="Edit waveform"
             @click.stop="openEditor(entry.id)"
-          />
-          <VBtn
-            icon="mdi-tag-edit"
-            size="small"
-            variant="text"
-            title="Edit tags"
-            @click.stop="openTagDialog(entry.id, entry.tags)"
           />
           <VBtn
             icon="mdi-delete"
@@ -172,26 +142,5 @@ async function relocateEntry(entryId: string): Promise<void> {
       :entry-id="editorEntryId"
     />
 
-    <!-- Tag edit dialog -->
-    <VDialog v-model="showTagDialog" max-width="400">
-      <VCard title="Edit Tags">
-        <VCardText>
-          <VTextField
-            v-model="tagDialogValue"
-            label="Tags (comma-separated)"
-            variant="outlined"
-            autofocus
-            hint="e.g. ambient, combat, tavern"
-            @keydown.enter="saveTagDialog"
-          />
-        </VCardText>
-        <VDivider />
-        <VCardActions>
-          <VSpacer />
-          <VBtn text="Cancel" variant="plain" @click="showTagDialog = false" />
-          <VBtn text="Save" color="primary" variant="tonal" @click="saveTagDialog" />
-        </VCardActions>
-      </VCard>
-    </VDialog>
   </VContainer>
 </template>

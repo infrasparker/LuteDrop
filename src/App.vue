@@ -46,7 +46,7 @@ onMounted(async () => {
     <VNavigationDrawer rail expand-on-hover permanent>
       <VList nav>
         <VListItem
-          prepend-icon="mdi-speaker-group"
+          prepend-icon="mdi-mixing-console"
           title="Soundstage"
           to="/"
           color="primary"

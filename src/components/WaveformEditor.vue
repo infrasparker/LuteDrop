@@ -34,6 +34,18 @@ const MARKER_GRAB_THRESHOLD_PX = 7;
 const data = useWaveformData(toRef(props, 'filePath'));
 const zoom = useWaveformZoom(data.duration);
 
+// --- Local marker refs (updated during drag; props updated only on mouseup) ---
+
+const localLoopStart = ref(props.loopStart);
+const localLoopEnd = ref(props.loopEnd);
+const localTrimStart = ref<number | null>(props.trimStart);
+const localTrimEnd = ref<number | null>(props.trimEnd);
+
+watch(() => props.loopStart, (v) => { if (!dragging.value) localLoopStart.value = v; });
+watch(() => props.loopEnd, (v) => { if (!dragging.value) localLoopEnd.value = v; });
+watch(() => props.trimStart, (v) => { if (!dragging.value) localTrimStart.value = v; });
+watch(() => props.trimEnd, (v) => { if (!dragging.value) localTrimEnd.value = v; });
+
 // --- Playhead ---
 
 let rafId: number | null = null;
@@ -72,12 +84,15 @@ watch(() => playbackState.value?.isPlaying, (playing) => {
 // --- Derived state ---
 
 const effectiveLoopEnd = computed(() => {
-  return props.loopEnd === 0 ? data.duration.value : props.loopEnd;
+  return localLoopEnd.value === 0 ? data.duration.value : localLoopEnd.value;
 });
 
-const loopStartDisplay = computed(() => props.loopStart.toFixed(2));
+const effectiveTrimStart = computed(() => localTrimStart.value ?? 0);
+const effectiveTrimEnd = computed(() => localTrimEnd.value ?? data.duration.value);
+
+const loopStartDisplay = computed(() => localLoopStart.value.toFixed(2));
 const loopEndDisplay = computed(() => {
-  return props.loopEnd === 0 ? 'end' : props.loopEnd.toFixed(2);
+  return localLoopEnd.value === 0 ? 'end' : localLoopEnd.value.toFixed(2);
 });
 
 const viewRangeDisplay = computed(() => {
@@ -224,60 +239,55 @@ function drawWaveform(): void {
     drawPeaksPath(ctx, data.basePeaks.value, data.basePeaksRangeStart.value, data.basePeaksRangeEnd.value, cssW, cssH, '#F0A830');
   }
 
-  // Trim dimmed overlay and markers
-  if (props.trimStart !== null || props.trimEnd !== null) {
+  // Trim dimmed overlay and markers — always draw using effective (defaulted) values
+  {
     const TRIM_COLOR = '#FF6D00';
+    const ts = effectiveTrimStart.value;
+    const te = effectiveTrimEnd.value;
 
-    // Dimmed regions
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
-    if (props.trimStart !== null) {
-      const tsX = zoom.secondsToX(props.trimStart, cssW);
-      const leftX = zoom.secondsToX(0, cssW);
-      if (tsX > leftX) {
-        ctx.fillRect(leftX, 0, tsX - leftX, cssH);
-      }
+    // Dimmed region before trim start
+    const tsX = zoom.secondsToX(ts, cssW);
+    const leftX = zoom.secondsToX(0, cssW);
+    if (tsX > leftX) {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+      ctx.fillRect(leftX, 0, tsX - leftX, cssH);
     }
-    if (props.trimEnd !== null) {
-      const teX = zoom.secondsToX(props.trimEnd, cssW);
-      const rightX = zoom.secondsToX(data.duration.value, cssW);
-      if (rightX > teX) {
-        ctx.fillRect(teX, 0, rightX - teX, cssH);
-      }
+
+    // Dimmed region after trim end
+    const teX = zoom.secondsToX(te, cssW);
+    const rightX = zoom.secondsToX(data.duration.value, cssW);
+    if (rightX > teX) {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+      ctx.fillRect(teX, 0, rightX - teX, cssH);
     }
 
     // Trim start marker
-    if (props.trimStart !== null) {
-      const tsX = zoom.secondsToX(props.trimStart, cssW);
-      if (tsX >= -2 && tsX <= cssW + 2) {
-        ctx.strokeStyle = TRIM_COLOR;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(tsX, 0);
-        ctx.lineTo(tsX, cssH);
-        ctx.stroke();
-        ctx.fillStyle = TRIM_COLOR;
-        ctx.fillRect(tsX - 5, cssH - 8, 5, 8);
-      }
+    if (tsX >= -2 && tsX <= cssW + 2) {
+      ctx.strokeStyle = TRIM_COLOR;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(tsX, 0);
+      ctx.lineTo(tsX, cssH);
+      ctx.stroke();
+      ctx.fillStyle = TRIM_COLOR;
+      ctx.fillRect(tsX - 5, cssH - 8, 5, 8);
     }
 
     // Trim end marker
-    if (props.trimEnd !== null) {
-      const teX = zoom.secondsToX(props.trimEnd, cssW);
-      if (teX >= -2 && teX <= cssW + 2) {
-        ctx.strokeStyle = TRIM_COLOR;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(teX, 0);
-        ctx.lineTo(teX, cssH);
-        ctx.stroke();
-        ctx.fillStyle = TRIM_COLOR;
-        ctx.fillRect(teX, cssH - 8, 5, 8);
-      }
+    if (teX >= -2 && teX <= cssW + 2) {
+      ctx.strokeStyle = TRIM_COLOR;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(teX, 0);
+      ctx.lineTo(teX, cssH);
+      ctx.stroke();
+      ctx.fillStyle = TRIM_COLOR;
+      ctx.fillRect(teX, cssH - 8, 5, 8);
     }
   }
 
   // Loop markers
-  const loopStartX = zoom.secondsToX(props.loopStart, cssW);
+  const loopStartX = zoom.secondsToX(localLoopStart.value, cssW);
   const loopEndX = zoom.secondsToX(effectiveLoopEnd.value, cssW);
 
   ctx.strokeStyle = '#4CAF50';
@@ -351,21 +361,17 @@ function findNearestMarker(x: number): MarkerType {
   type Candidate = { type: MarkerType; dist: number };
   const candidates: Candidate[] = [];
 
-  if (props.trimStart !== null) {
-    const trimStartDist = Math.abs(x - zoom.secondsToX(props.trimStart, cssW));
-    if (trimStartDist < MARKER_GRAB_THRESHOLD_PX) {
-      candidates.push({ type: 'trimStart', dist: trimStartDist });
-    }
+  const trimStartDist = Math.abs(x - zoom.secondsToX(effectiveTrimStart.value, cssW));
+  if (trimStartDist < MARKER_GRAB_THRESHOLD_PX) {
+    candidates.push({ type: 'trimStart', dist: trimStartDist });
   }
 
-  if (props.trimEnd !== null) {
-    const trimEndDist = Math.abs(x - zoom.secondsToX(props.trimEnd, cssW));
-    if (trimEndDist < MARKER_GRAB_THRESHOLD_PX) {
-      candidates.push({ type: 'trimEnd', dist: trimEndDist });
-    }
+  const trimEndDist = Math.abs(x - zoom.secondsToX(effectiveTrimEnd.value, cssW));
+  if (trimEndDist < MARKER_GRAB_THRESHOLD_PX) {
+    candidates.push({ type: 'trimEnd', dist: trimEndDist });
   }
 
-  const loopStartDist = Math.abs(x - zoom.secondsToX(props.loopStart, cssW));
+  const loopStartDist = Math.abs(x - zoom.secondsToX(localLoopStart.value, cssW));
   if (loopStartDist < MARKER_GRAB_THRESHOLD_PX) {
     candidates.push({ type: 'loopStart', dist: loopStartDist });
   }
@@ -380,10 +386,11 @@ function findNearestMarker(x: number): MarkerType {
   return candidates[0].type;
 }
 
-function clampAndEmit(marker: MarkerType, seconds: number): void {
+/** Update local refs during drag — no emit, no DB write. */
+function clampLocal(marker: MarkerType, seconds: number): void {
   const dur = data.duration.value;
-  const effectiveTrimStart = props.trimStart ?? 0;
-  const effectiveTrimEnd = props.trimEnd ?? dur;
+  const ts = effectiveTrimStart.value;
+  const te = effectiveTrimEnd.value;
 
   let clamped = Math.max(0, Math.min(dur, seconds));
   const round = (v: number) => Math.round(v * 100) / 100;
@@ -392,44 +399,58 @@ function clampAndEmit(marker: MarkerType, seconds: number): void {
   switch (marker) {
     case 'trimStart': {
       clamped = Math.max(0, clamped);
-      clamped = Math.min(clamped, effectiveTrimEnd - 0.01);
+      clamped = Math.min(clamped, te - 0.01);
       const rounded = round(clamped);
-      emit('update:trimStart', rounded);
+      localTrimStart.value = rounded;
       // Push loopStart if trim passes it
-      if (rounded > props.loopStart) {
-        emit('update:loopStart', rounded);
+      if (rounded > localLoopStart.value) {
+        localLoopStart.value = rounded;
       }
       break;
     }
     case 'trimEnd': {
-      clamped = Math.max(effectiveTrimStart + 0.01, clamped);
+      clamped = Math.max(ts + 0.01, clamped);
       clamped = Math.min(clamped, dur);
       const rounded = round(clamped);
-      emit('update:trimEnd', rounded);
+      localTrimEnd.value = rounded;
       // Push loopEnd if trim passes it
       const le = effectiveLoopEnd.value;
       if (rounded < le) {
-        emit('update:loopEnd', round(rounded));
+        localLoopEnd.value = round(rounded);
       }
       break;
     }
     case 'loopStart': {
-      clamped = Math.max(effectiveTrimStart, clamped);
+      clamped = Math.max(ts, clamped);
       clamped = Math.min(clamped, effectiveLoopEnd.value - 0.01);
-      emit('update:loopStart', round(clamped));
+      localLoopStart.value = round(clamped);
       break;
     }
     case 'loopEnd': {
       if (clamped > dur - snapThreshold) {
-        emit('update:loopEnd', 0);
+        localLoopEnd.value = 0;
         return;
       }
-      clamped = Math.max(clamped, props.loopStart + 0.01);
-      clamped = Math.min(clamped, effectiveTrimEnd);
-      emit('update:loopEnd', round(clamped));
+      clamped = Math.max(clamped, localLoopStart.value + 0.01);
+      clamped = Math.min(clamped, te);
+      localLoopEnd.value = round(clamped);
       break;
     }
   }
+}
+
+/** Emit final values on mouseup (persistence). */
+function emitFinalValues(): void {
+  const dur = data.duration.value;
+
+  // Trim: emit null if value equals the default bound
+  const tsVal = localTrimStart.value;
+  const teVal = localTrimEnd.value;
+  emit('update:trimStart', tsVal === 0 ? null : tsVal);
+  emit('update:trimEnd', (teVal !== null && dur > 0 && teVal >= dur) ? null : teVal);
+
+  emit('update:loopStart', localLoopStart.value);
+  emit('update:loopEnd', localLoopEnd.value);
 }
 
 // --- Mouse events ---
@@ -444,7 +465,8 @@ function onMouseDown(event: MouseEvent): void {
   if (marker) {
     mouseDownWasMarker.value = true;
     dragging.value = marker;
-    clampAndEmit(marker, zoom.xToSeconds(x, getCanvasWidth()));
+    clampLocal(marker, zoom.xToSeconds(x, getCanvasWidth()));
+    drawWaveform();
   } else {
     mouseDownWasMarker.value = false;
     if (zoom.isZoomed.value) {
@@ -460,7 +482,8 @@ function onMouseMove(event: MouseEvent): void {
 
   if (dragging.value) {
     const x = getCanvasXInCssPixels(event);
-    clampAndEmit(dragging.value, zoom.xToSeconds(x, getCanvasWidth()));
+    clampLocal(dragging.value, zoom.xToSeconds(x, getCanvasWidth()));
+    drawWaveform();
     return;
   }
 
@@ -483,6 +506,11 @@ function onMouseUp(event: MouseEvent): void {
   dragging.value = null;
   panning.value = false;
   mouseDownWasMarker.value = false;
+
+  if (wasMarker) {
+    emitFinalValues();
+    return;
+  }
 
   if (wasPanning && zoom.isZoomed.value) {
     if (dragDistance <= PAN_DRAG_THRESHOLD) {
@@ -576,8 +604,8 @@ onUnmounted(() => {
       />
     </div>
     <div class="waveform-labels d-flex ga-4 mt-1">
-      <span v-if="trimStart !== null || trimEnd !== null" class="text-caption" style="color: #FF6D00;">
-        Trim: {{ trimStart !== null ? trimStart.toFixed(2) + 's' : 'start' }} - {{ trimEnd !== null ? trimEnd.toFixed(2) + 's' : 'end' }}
+      <span v-if="localTrimStart !== null || localTrimEnd !== null" class="text-caption" style="color: #FF6D00;">
+        Trim: {{ localTrimStart !== null ? localTrimStart.toFixed(2) + 's' : 'start' }} - {{ localTrimEnd !== null ? localTrimEnd.toFixed(2) + 's' : 'end' }}
       </span>
       <span class="text-caption text-medium-emphasis">
         Loop: {{ loopStartDisplay }}s - {{ loopEndDisplay }}

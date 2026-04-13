@@ -118,7 +118,7 @@ function close(): void {
 </script>
 
 <template>
-  <VDialog :model-value="modelValue" @update:model-value="emit('update:modelValue', $event)" max-width="700" persistent>
+  <VDialog :model-value="modelValue" @update:model-value="emit('update:modelValue', $event)" max-width="1100" persistent>
     <VCard v-if="entry">
       <VCardTitle class="d-flex align-center">
         <span>Edit: {{ entry.name }}</span>
