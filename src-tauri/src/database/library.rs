@@ -183,6 +183,54 @@ pub fn update_library_entry_loop(
     Ok(())
 }
 
+/// Atomically updates all four marker values for a library entry.
+/// Validates constraints and clamps: loop points must fit within trim bounds,
+/// starts must be less than ends.
+pub fn update_library_entry_markers(
+    conn: &Connection,
+    id: &str,
+    trim_start: Option<f64>,
+    trim_end: Option<f64>,
+    loop_start: Option<f64>,
+    loop_end: Option<f64>,
+) -> Result<(), String> {
+    // Validate trim
+    if let (Some(ts), Some(te)) = (trim_start, trim_end) {
+        if ts >= te {
+            return Err("trim_start must be less than trim_end".to_string());
+        }
+    }
+
+    // Clamp loop to trim bounds
+    let mut ls = loop_start;
+    let mut le = loop_end;
+
+    let effective_ts = trim_start.unwrap_or(0.0);
+    let effective_te = trim_end.unwrap_or(f64::MAX);
+
+    if let Some(ref mut loop_s) = ls {
+        if *loop_s < effective_ts { *loop_s = effective_ts; }
+    }
+    if let Some(ref mut loop_e) = le {
+        if effective_te < f64::MAX && *loop_e > effective_te { *loop_e = effective_te; }
+    }
+
+    // If loop is invalid after clamping, clear it
+    if let (Some(loop_s), Some(loop_e)) = (ls, le) {
+        if loop_s >= loop_e {
+            ls = None;
+            le = None;
+        }
+    }
+
+    conn.execute(
+        "UPDATE library_entries SET trim_start = ?1, trim_end = ?2, loop_start = ?3, loop_end = ?4 WHERE id = ?5",
+        params![trim_start, trim_end, ls, le, id],
+    ).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 /// Updates the `duration` and `sample_rate` columns for the given entry.
 pub fn update_library_entry_duration(
     conn: &Connection,

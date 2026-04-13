@@ -311,6 +311,20 @@ pub fn update_library_entry_loop_points(
     })
 }
 
+pub fn update_library_entry_markers_action(
+    container: &AppStateContainer,
+    entry_id: &str,
+    trim_start: Option<f64>,
+    trim_end: Option<f64>,
+    loop_start: Option<f64>,
+    loop_end: Option<f64>,
+) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        library::update_library_entry_markers(conn, entry_id, trim_start, trim_end, loop_start, loop_end)?;
+        database::load_full_state(conn)
+    })
+}
+
 pub fn update_library_entry_volume_action(
     container: &AppStateContainer,
     entry_id: &str,
@@ -509,8 +523,10 @@ pub fn preload_peaks(container: &AppStateContainer) -> Result<usize, String> {
         let conn = container.db.lock().map_err(|e| e.to_string())?;
         library::get_all_file_paths(&conn)?
     };
+    let total = paths.len();
     let mut loaded = 0;
-    for path in &paths {
+    for (i, path) in paths.iter().enumerate() {
+        log::info!("Preloading peaks [{}/{}]: {}", i + 1, total, path);
         match crate::waveform::extract_peaks(path, 1200, None, None, &container.peak_cache) {
             Ok(_) => loaded += 1,
             Err(e) => log::warn!("Failed to preload peaks for {}: {}", path, e),

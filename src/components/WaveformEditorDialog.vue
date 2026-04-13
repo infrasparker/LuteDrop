@@ -89,22 +89,17 @@ async function persistGain(): Promise<void> {
   });
 }
 
-// --- Waveform commit (single batch from the editor) ---
+// --- Waveform commit (single atomic command from the editor) ---
 async function onWaveformCommit(values: {
   trimStart: number | null;
   trimEnd: number | null;
   loopStart: number;
   loopEnd: number;
 }): Promise<void> {
-  // Update trim first (it may clamp loop points in the DB)
-  await store.command('update_library_entry_trim', {
+  await store.command('update_library_entry_markers', {
     entryId: props.entryId,
     trimStart: values.trimStart,
     trimEnd: values.trimEnd,
-  });
-  // Then update loop points with the values from the editor (not from store)
-  await store.command('update_library_entry_loop_points', {
-    entryId: props.entryId,
     loopStart: values.loopStart || null,
     loopEnd: values.loopEnd || null,
   });
@@ -117,56 +112,24 @@ function parseTrimField(v: string | number): number | null {
   return Math.round(n * 100) / 100;
 }
 
-function parseLoopField(v: string | number): number {
-  const n = Number(v);
-  if (isNaN(n)) return 0;
-  return Math.round(n * 100) / 100;
-}
-
-// Numeric inputs commit as a batch too
-async function commitNumericValues(): Promise<void> {
-  const ts = entry.value?.trimStart ?? null;
-  const te = entry.value?.trimEnd ?? null;
-  const ls = entry.value?.loopStart ?? 0;
-  const le = entry.value?.loopEnd ?? 0;
-  await onWaveformCommit({ trimStart: ts, trimEnd: te, loopStart: ls, loopEnd: le });
-}
-
-async function updateTrimStartNumeric(v: string | number): Promise<void> {
-  await store.command('update_library_entry_trim', {
+// Atomic update from numeric inputs — merges override into current entry values
+async function updateMarkersFromNumeric(overrides: {
+  trimStart?: number | null;
+  trimEnd?: number | null;
+  loopStart?: number | null;
+  loopEnd?: number | null;
+}): Promise<void> {
+  if (!entry.value) return;
+  await store.command('update_library_entry_markers', {
     entryId: props.entryId,
-    trimStart: parseTrimField(v),
-    trimEnd: entry.value?.trimEnd ?? null,
-  });
-}
-
-async function updateTrimEndNumeric(v: string | number): Promise<void> {
-  await store.command('update_library_entry_trim', {
-    entryId: props.entryId,
-    trimStart: entry.value?.trimStart ?? null,
-    trimEnd: parseTrimField(v),
-  });
-}
-
-async function updateLoopStartNumeric(v: string | number): Promise<void> {
-  await store.command('update_library_entry_loop_points', {
-    entryId: props.entryId,
-    loopStart: parseLoopField(v) || null,
-    loopEnd: entry.value?.loopEnd ?? null,
-  });
-}
-
-async function updateLoopEndNumeric(v: string | number): Promise<void> {
-  await store.command('update_library_entry_loop_points', {
-    entryId: props.entryId,
-    loopStart: entry.value?.loopStart ?? null,
-    loopEnd: parseLoopField(v) || null,
+    trimStart: overrides.trimStart !== undefined ? overrides.trimStart : (entry.value.trimStart ?? null),
+    trimEnd: overrides.trimEnd !== undefined ? overrides.trimEnd : (entry.value.trimEnd ?? null),
+    loopStart: overrides.loopStart !== undefined ? overrides.loopStart : (entry.value.loopStart ?? null),
+    loopEnd: overrides.loopEnd !== undefined ? overrides.loopEnd : (entry.value.loopEnd ?? null),
   });
 }
 
 function close(): void {
-  audio.stopPreview();
-  store.previewEntryId = null;
   // Persist gain on close if changed
   if (entry.value && localGain.value !== entry.value.volume) {
     persistGain();
@@ -255,7 +218,7 @@ function close(): void {
               variant="outlined"
               density="compact"
               hide-details
-              @change="(e: Event) => updateTrimStartNumeric((e.target as HTMLInputElement).value)"
+              @change="(e: Event) => updateMarkersFromNumeric({ trimStart: parseTrimField((e.target as HTMLInputElement).value) })"
             />
           </div>
           <div style="min-width: 140px; max-width: 170px;">
@@ -266,7 +229,7 @@ function close(): void {
               variant="outlined"
               density="compact"
               hide-details
-              @change="(e: Event) => updateTrimEndNumeric((e.target as HTMLInputElement).value)"
+              @change="(e: Event) => updateMarkersFromNumeric({ trimEnd: parseTrimField((e.target as HTMLInputElement).value) })"
             />
           </div>
           <div style="min-width: 140px; max-width: 170px;">
@@ -277,7 +240,7 @@ function close(): void {
               variant="outlined"
               density="compact"
               hide-details
-              @change="(e: Event) => updateLoopStartNumeric((e.target as HTMLInputElement).value)"
+              @change="(e: Event) => updateMarkersFromNumeric({ loopStart: parseTrimField((e.target as HTMLInputElement).value) })"
             />
           </div>
           <div style="min-width: 140px; max-width: 170px;">
@@ -288,7 +251,7 @@ function close(): void {
               variant="outlined"
               density="compact"
               hide-details
-              @change="(e: Event) => updateLoopEndNumeric((e.target as HTMLInputElement).value)"
+              @change="(e: Event) => updateMarkersFromNumeric({ loopEnd: parseTrimField((e.target as HTMLInputElement).value) })"
             />
           </div>
         </div>

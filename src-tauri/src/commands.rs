@@ -214,6 +214,18 @@ pub fn update_library_entry_loop_points(
 }
 
 #[tauri::command]
+pub fn update_library_entry_markers(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_id: String,
+    trim_start: Option<f64>,
+    trim_end: Option<f64>,
+    loop_start: Option<f64>,
+    loop_end: Option<f64>,
+) -> Result<AppState, String> {
+    actions::update_library_entry_markers_action(&state, &entry_id, trim_start, trim_end, loop_start, loop_end)
+}
+
+#[tauri::command]
 pub fn update_library_entry_volume(
     state: State<'_, Arc<AppStateContainer>>,
     entry_id: String,
