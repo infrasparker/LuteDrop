@@ -1,6 +1,7 @@
 mod actions;
 mod audio;
 mod commands;
+mod database;
 mod models;
 mod persistence;
 mod server;
