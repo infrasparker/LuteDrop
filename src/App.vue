@@ -8,6 +8,7 @@ import { useToast } from './composables/useToast';
 import { useContextMenuState } from './composables/useContextMenu';
 import type { AppState, Group } from '@generated/index';
 import PlaybackView from './views/PlaybackView.vue';
+import LibraryView from './views/LibraryView.vue';
 
 const store = useAppStore();
 const { groups } = storeToRefs(store);
@@ -17,6 +18,7 @@ const serverUrl = ref('');
 const paused = ref(false);
 
 const activeTab = ref(0);
+const showLibrary = ref(false);
 
 // New group dialog state
 const showNewGroupDialog = ref(false);
@@ -38,6 +40,10 @@ onMounted(async () => {
   const state = await invoke<AppState>('load_data');
   store.hydrate(state);
   await store.checkMissingFiles();
+
+  if (store.missingEntryIds.size > 0) {
+    toast.showError(`${store.missingEntryIds.size} audio file(s) not found. Check the Library view.`);
+  }
 
   try {
     const info = await invoke<{ ip: string; port: number }>('get_server_info');
@@ -131,6 +137,14 @@ async function createGroup(): Promise<void> {
       </VAppBarTitle>
 
       <template #append>
+        <VBtn
+          variant="text"
+          :color="showLibrary ? 'primary' : undefined"
+          @click="showLibrary = !showLibrary"
+        >
+          <VIcon start>mdi-bookshelf</VIcon>
+          Library
+        </VBtn>
         <VIcon class="mr-1">mdi-volume-high</VIcon>
         <VSlider
           :model-value="audio.masterVolume.value"
@@ -177,7 +191,8 @@ async function createGroup(): Promise<void> {
     </VAppBar>
 
     <VMain class="d-flex flex-column" style="height: 100vh;">
-      <PlaybackView :active-tab="activeTab" class="flex-grow-1" style="overflow: hidden;" />
+      <LibraryView v-if="showLibrary" class="flex-grow-1" style="overflow: hidden;" />
+      <PlaybackView v-else :active-tab="activeTab" class="flex-grow-1" style="overflow: hidden;" />
     </VMain>
 
     <!-- New group dialog -->

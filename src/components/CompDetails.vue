@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import type { Comp } from '@generated/index';
 import { useTrackImport } from '../composables/useTrackImport';
 import TrackControl from './TrackControl.vue';
+import LibraryBrowser from './LibraryBrowser.vue';
 
 const props = defineProps<{
   comp: Comp;
@@ -47,5 +48,9 @@ function openLibraryBrowser(trackId: string): void {
       No tracks yet. Click "Add Track" to import audio files.
     </div>
 
+    <LibraryBrowser
+      v-model="showLibraryBrowser"
+      :track-id="libraryBrowserTrackId"
+    />
   </div>
 </template>
