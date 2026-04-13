@@ -576,7 +576,8 @@ impl AudioEngine {
         let mut sound_data = StreamingSoundData::from_file(&clip.file_path)
             .map_err(|e| format!("Failed to load audio file '{}': {}", clip.file_path, e))?;
 
-        if let Some(pos) = start_position {
+        let effective_start = start_position.or(clip.trim_start);
+        if let Some(pos) = effective_start {
             sound_data = sound_data.start_position(pos);
         }
 
@@ -589,10 +590,11 @@ impl AudioEngine {
                 loop_start,
                 loop_end,
             } => {
-                let ls = *loop_start;
-                let le = *loop_end;
+                let ls = clip.trim_start.map(|ts| (*loop_start).max(ts)).unwrap_or(*loop_start);
+                let raw_le = if *loop_end > 0.0 { *loop_end } else { clip.trim_end.unwrap_or(f64::MAX) };
+                let le = clip.trim_end.map(|te| raw_le.min(te)).unwrap_or(raw_le);
                 let region_start = PlaybackPosition::Seconds(ls);
-                let region_end = if le > 0.0 {
+                let region_end = if le < f64::MAX {
                     EndPosition::Custom(PlaybackPosition::Seconds(le))
                 } else {
                     EndPosition::EndOfAudio
@@ -628,7 +630,12 @@ impl AudioEngine {
 
         active.sound_handle = Some(sound_handle);
         active.current_clip_index = Some(clip_index);
-        active.current_clip_duration = probe_duration(&clip.file_path);
+        let raw_duration = probe_duration(&clip.file_path);
+        active.current_clip_duration = match (clip.trim_end, raw_duration) {
+            (Some(te), _) => Some(te),
+            (None, Some(d)) => Some(d),
+            _ => None,
+        };
         active.crossfade_started = false;
         active.is_paused = false;
         active.pending_start = None;

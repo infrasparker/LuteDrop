@@ -332,9 +332,9 @@ fn load_clips(
     let clips = rows
         .into_iter()
         .map(|(id, library_entry_id, volume)| {
-            let (name, file_path, library_volume) = match entry_map.get(&library_entry_id) {
-                Some(entry) => (entry.name.clone(), entry.file_path.clone(), entry.volume),
-                None => ("[missing]".to_string(), String::new(), 1.0),
+            let (name, file_path, library_volume, trim_start, trim_end) = match entry_map.get(&library_entry_id) {
+                Some(entry) => (entry.name.clone(), entry.file_path.clone(), entry.volume, entry.trim_start, entry.trim_end),
+                None => ("[missing]".to_string(), String::new(), 1.0, None, None),
             };
             Clip {
                 id,
@@ -343,6 +343,8 @@ fn load_clips(
                 volume,
                 library_entry_id,
                 library_volume,
+                trim_start,
+                trim_end,
             }
         })
         .collect();

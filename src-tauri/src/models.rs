@@ -31,6 +31,8 @@ pub struct Clip {
     pub volume: f64,
     pub library_entry_id: String,
     pub library_volume: f64,
+    pub trim_start: Option<f64>,
+    pub trim_end: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
