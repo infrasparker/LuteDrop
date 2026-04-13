@@ -21,43 +21,42 @@ const selectedComp = computed(() =>
 
 <template>
   <div class="d-flex" style="height: 100%;">
-    <!-- Left pane: group header + comp grid -->
-    <div style="width: 300px; min-width: 300px; display: flex; flex-direction: column;" class="pr-3">
-      <!-- Scrollable comp area -->
-      <div style="flex: 1; overflow-y: auto;">
-        <div class="d-flex flex-wrap ga-2">
-          <CompCard
-            v-for="comp in group.comps"
-            :key="comp.id"
-            :comp="comp"
-            :group-id="group.id"
-            :selected="comp.id === selectedCompId"
-            @select="selectedCompId = $event"
-          />
-        </div>
+    <!-- Left pane: compact comp list -->
+    <div style="width: 200px; min-width: 160px; max-width: 240px; display: flex; flex-direction: column;">
+      <!-- Scrollable comp list -->
+      <div style="flex: 1; overflow-y: auto;" class="d-flex flex-column ga-1">
+        <CompCard
+          v-for="comp in group.comps"
+          :key="comp.id"
+          :comp="comp"
+          :group-id="group.id"
+          :selected="comp.id === selectedCompId"
+          @select="selectedCompId = $event"
+        />
 
-        <div v-if="group.comps.length === 0" class="text-medium-emphasis text-center pa-4">
+        <div v-if="group.comps.length === 0" class="text-medium-emphasis text-center pa-4 text-caption">
           No compositions yet.
         </div>
       </div>
 
-      <!-- Pinned Add Composition button at bottom -->
-      <div class="pt-3">
+      <!-- Pinned Add button at bottom -->
+      <div class="pt-2">
         <VBtn
           prepend-icon="mdi-plus"
           variant="tonal"
           rounded="xl"
           block
+          size="small"
           @click="emit('add-comp', group.id)"
         >
-          Add Composition
+          Add Comp
         </VBtn>
       </div>
     </div>
 
     <!-- Right pane: comp details -->
     <VDivider vertical class="mx-2" />
-    <div style="flex: 1; overflow-y: auto;" class="pl-3">
+    <div style="flex: 1; overflow-y: auto;" class="pl-2">
       <CompDetails
         v-if="selectedComp"
         :comp="selectedComp"

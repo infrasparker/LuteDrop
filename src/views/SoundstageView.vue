@@ -100,26 +100,31 @@ async function createComp(): Promise<void> {
 
 <template>
   <div class="d-flex flex-column" style="height: 100%;">
-    <!-- Group tabs bar -->
-    <VTabs v-model="activeTab" color="primary" bg-color="surface">
-      <VTab
-        v-for="(group, i) in groups"
-        :key="group.id"
-        :value="i"
-        @contextmenu.prevent="openContextMenu($event, group)"
-        :class="{ 'tab-truncate': true, 'tab-active': isGroupActive(group) }"
-      >
-        {{ group.name }}
-      </VTab>
-      <VTab :value="activeTab" @click.stop.prevent="showNewGroupDialog = true" style="min-width: 0;" class="px-2">
-        <VIcon>mdi-plus</VIcon>
-      </VTab>
-    </VTabs>
-
-    <VDivider />
+    <!-- Teleport group tabs into the app bar -->
+    <Teleport to="#app-bar-extension">
+      <VTabs v-model="activeTab" color="primary" density="compact" class="app-bar-tabs">
+        <VTab
+          v-for="(group, i) in groups"
+          :key="group.id"
+          :value="i"
+          @contextmenu.prevent="openContextMenu($event, group)"
+          :class="{ 'tab-truncate': true, 'tab-active': isGroupActive(group) }"
+          size="small"
+        >
+          {{ group.name }}
+        </VTab>
+        <VBtn
+          icon="mdi-plus"
+          variant="text"
+          size="x-small"
+          class="align-self-center ml-1"
+          @click="showNewGroupDialog = true"
+        />
+      </VTabs>
+    </Teleport>
 
     <!-- Main content area -->
-    <VContainer fluid class="d-flex flex-column flex-grow-1" style="overflow: hidden;">
+    <div class="d-flex flex-column flex-grow-1 pa-3" style="overflow: hidden;">
       <GroupTab
         v-if="groups.length > 0 && groups[activeTab]"
         :group="groups[activeTab]"
@@ -130,7 +135,7 @@ async function createComp(): Promise<void> {
       <div v-else class="text-center text-medium-emphasis pa-8">
         No groups yet. Click + to create one.
       </div>
-    </VContainer>
+    </div>
 
     <!-- New group dialog -->
     <VDialog v-model="showNewGroupDialog" max-width="400">
@@ -230,7 +235,7 @@ async function createComp(): Promise<void> {
 .tab-truncate {
   max-width: 150px !important;
 }
-.tab-truncate .v-btn__content {
+.tab-truncate :deep(.v-btn__content) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -239,5 +244,8 @@ async function createComp(): Promise<void> {
 .tab-active {
   border-left: 3px solid #F0A830;
   background: rgba(240, 168, 48, 0.08);
+}
+.app-bar-tabs {
+  height: 100%;
 }
 </style>
