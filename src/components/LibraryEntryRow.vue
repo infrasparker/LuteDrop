@@ -33,7 +33,9 @@ function togglePreview(): void {
     store.previewEntryId = null;
   } else {
     audio.playPreview(
-      props.entry.filePath, 0, props.entry.volume,
+      props.entry.filePath,
+      props.entry.trimStart ?? 0,
+      props.entry.volume,
       props.entry.trimStart, props.entry.trimEnd,
       props.entry.loopStart, props.entry.loopEnd,
     );

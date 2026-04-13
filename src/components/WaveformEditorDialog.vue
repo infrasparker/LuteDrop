@@ -68,7 +68,9 @@ function togglePreview(): void {
     store.previewEntryId = null;
   } else if (entry.value) {
     audio.playPreview(
-      entry.value.filePath, 0, localGain.value,
+      entry.value.filePath,
+      entry.value.trimStart ?? 0,
+      localGain.value,
       entry.value.trimStart, entry.value.trimEnd,
       entry.value.loopStart, entry.value.loopEnd,
     );
@@ -82,7 +84,7 @@ watch(() => props.modelValue, (open) => {
     editTags.value = entry.value.tags.join(', ');
     localGain.value = entry.value.volume;
   }
-});
+}, { immediate: true });
 
 // Sync gain from store when not dragging
 watch(() => entry.value?.volume, (v) => {
