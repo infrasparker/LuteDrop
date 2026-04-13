@@ -220,7 +220,7 @@ impl AudioEngine {
         }
     }
 
-    fn resume_track(&mut self, track_id: &str) -> Result<(), String> {
+    pub fn resume_track(&mut self, track_id: &str) -> Result<(), String> {
         let active = self
             .tracks
             .get_mut(track_id)

@@ -458,6 +458,28 @@ pub fn stop_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result<(
     Ok(())
 }
 
+pub fn pause_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result<(), String> {
+    let track_configs = find_comp_tracks(container, comp_id)?;
+    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    for track in &track_configs {
+        if audio.has_track(&track.id) {
+            audio.pause_track(&track.id)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn resume_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result<(), String> {
+    let track_configs = find_comp_tracks(container, comp_id)?;
+    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    for track in &track_configs {
+        if audio.has_track(&track.id) {
+            audio.resume_track(&track.id)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn stop_all_audio(container: &AppStateContainer) -> Result<(), String> {
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
     audio.stop_all();

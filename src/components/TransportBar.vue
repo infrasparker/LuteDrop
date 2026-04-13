@@ -1,12 +1,10 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { computed } from 'vue';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
 
 const store = useAppStore();
 const audio = useAudio();
-
-const paused = ref(false);
 
 const playingCount = computed(() => {
   let count = 0;
@@ -16,23 +14,36 @@ const playingCount = computed(() => {
   return count;
 });
 
+const anyPlaying = computed(() => {
+  for (const state of store.playbackStates.values()) {
+    if (state.isPlaying) return true;
+  }
+  return false;
+});
+
+const anyPaused = computed(() => {
+  for (const state of store.playbackStates.values()) {
+    if (state.isPaused) return true;
+  }
+  return false;
+});
+
+const showPlayIcon = computed(() => !anyPlaying.value && anyPaused.value);
+
 function setMasterVolume(v: number): void {
   audio.masterVolume.value = v;
   audio.setMasterVolume(v);
 }
 
 function stopAll(): void {
-  paused.value = false;
   audio.stopAll();
 }
 
 function togglePause(): void {
-  if (paused.value) {
-    audio.resumeAll();
-    paused.value = false;
-  } else {
+  if (anyPlaying.value) {
     audio.pauseAll();
-    paused.value = true;
+  } else if (anyPaused.value) {
+    audio.resumeAll();
   }
 }
 </script>
@@ -41,7 +52,8 @@ function togglePause(): void {
   <VFooter app color="surface" elevation="4" class="pa-2">
     <div class="d-flex align-center justify-center ga-3 mx-auto" style="max-width: 600px; width: 100%;">
       <VBtn
-        :icon="paused ? 'mdi-play' : 'mdi-pause'"
+        :icon="showPlayIcon ? 'mdi-play' : 'mdi-pause'"
+        :disabled="!anyPlaying && !anyPaused"
         variant="tonal"
         size="small"
         rounded="circle"

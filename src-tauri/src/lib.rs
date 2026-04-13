@@ -125,6 +125,8 @@ pub fn run() {
             commands::set_clip_volume,
             commands::activate_comp,
             commands::stop_comp,
+            commands::pause_comp,
+            commands::resume_comp,
             commands::stop_all,
             commands::pause_all,
             commands::resume_all,

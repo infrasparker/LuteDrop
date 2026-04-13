@@ -8,4 +8,4 @@ export type { TrackMode } from "./TrackMode";
 export type { TrackPlaybackState } from "./TrackPlaybackState";
 export type { TrackTransition } from "./TrackTransition";
 
-export type CompStatus = "active" | "partial" | "inactive";
+export type CompStatus = "active" | "partial" | "paused" | "inactive";

@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { ref, computed, watch } from 'vue';
 import type { Group } from '@generated/index';
 import { useRemote } from './composables/useRemote';
 import RemotePlaybackView from './views/RemotePlaybackView.vue';
 
 const remote = useRemote();
-const remoteOrigin = location.origin;
 
 function isGroupActive(group: Group): boolean {
   return group.comps.some((comp) =>
@@ -15,7 +14,6 @@ function isGroupActive(group: Group): boolean {
     })
   );
 }
-const paused = ref(false);
 const activeTab = ref(0);
 
 const toastVisible = ref(false);
@@ -36,18 +34,31 @@ watch(remote.connected, (connected, wasConnected) => {
   }
 });
 
+const anyPlaying = computed(() => {
+  for (const state of remote.playbackStates.values()) {
+    if (state.isPlaying) return true;
+  }
+  return false;
+});
+
+const anyPaused = computed(() => {
+  for (const state of remote.playbackStates.values()) {
+    if (state.isPaused) return true;
+  }
+  return false;
+});
+
+const showPlayIcon = computed(() => !anyPlaying.value && anyPaused.value);
+
 function togglePause(): void {
-  if (paused.value) {
-    remote.resumeAll();
-    paused.value = false;
-  } else {
+  if (anyPlaying.value) {
     remote.pauseAll();
-    paused.value = true;
+  } else if (anyPaused.value) {
+    remote.resumeAll();
   }
 }
 
 function stopAll(): void {
-  paused.value = false;
   remote.stopAll();
 }
 </script>
@@ -57,7 +68,6 @@ function stopAll(): void {
     <VAppBar color="surface">
       <VAppBarTitle>
         <span class="text-primary font-weight-bold">LuteDrop</span>
-        <span class="text-caption text-medium-emphasis ml-3">Remote: {{ remoteOrigin }}</span>
         <VIcon
           :color="remote.connected.value ? 'success' : 'error'"
           size="x-small"
@@ -80,7 +90,8 @@ function stopAll(): void {
           style="width: 120px"
         />
         <VBtn
-          :icon="paused ? 'mdi-play' : 'mdi-pause'"
+          :icon="showPlayIcon ? 'mdi-play' : 'mdi-pause'"
+          :disabled="!anyPlaying && !anyPaused"
           variant="tonal"
           size="small"
           class="ml-2"

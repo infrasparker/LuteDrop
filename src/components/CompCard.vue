@@ -25,6 +25,7 @@ const cardClass = computed(() => ({
   'comp-selected': props.selected,
   'comp-active': status.value === 'active',
   'comp-partial': status.value === 'partial',
+  'comp-paused': status.value === 'paused',
 }));
 
 // Context menu state
@@ -62,8 +63,10 @@ async function deleteComp(): Promise<void> {
 }
 
 function toggleComp(): void {
-  if (status.value === 'active') {
-    audio.stopComp(props.comp.id);
+  if (status.value === 'active' || status.value === 'partial') {
+    audio.pauseComp(props.comp.id);
+  } else if (status.value === 'paused') {
+    audio.resumeComp(props.comp.id);
   } else {
     audio.activateComp(props.comp.id);
   }
@@ -85,7 +88,7 @@ function stopComp(): void {
   >
     <div class="d-flex justify-center ga-1 mb-2">
       <VBtn
-        :icon="status === 'active' ? 'mdi-pause' : 'mdi-play'"
+        :icon="status === 'active' || status === 'partial' ? 'mdi-pause' : 'mdi-play'"
         variant="tonal"
         size="small"
         rounded="circle"
@@ -169,6 +172,9 @@ function stopComp(): void {
 }
 .comp-partial {
   background: rgba(240, 168, 48, 0.06) !important;
+  border-left: 3px solid rgba(240, 168, 48, 0.5);
+}
+.comp-paused {
   border-left: 3px solid rgba(240, 168, 48, 0.5);
 }
 </style>

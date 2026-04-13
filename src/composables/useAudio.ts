@@ -108,6 +108,22 @@ export function useAudio() {
     }
   }
 
+  async function pauseComp(compId: string): Promise<void> {
+    try {
+      await invoke('pause_comp', { compId });
+    } catch (e) {
+      toast.showError(String(e));
+    }
+  }
+
+  async function resumeComp(compId: string): Promise<void> {
+    try {
+      await invoke('resume_comp', { compId });
+    } catch (e) {
+      toast.showError(String(e));
+    }
+  }
+
   async function stopAll(): Promise<void> {
     try {
       await invoke('stop_all');
@@ -174,6 +190,8 @@ export function useAudio() {
     setClipVolume,
     activateComp,
     stopComp,
+    pauseComp,
+    resumeComp,
     stopAll,
     pauseAll,
     resumeAll,

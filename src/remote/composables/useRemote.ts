@@ -80,10 +80,15 @@ function getCompStatus(compId: string): CompStatus {
     const state = playbackStates.get(t.id);
     return state?.isPlaying;
   });
+  const paused = comp.tracks.filter((t) => {
+    const state = playbackStates.get(t.id);
+    return state?.isPaused;
+  });
 
-  if (playing.length === 0) return 'inactive';
   if (playing.length === comp.tracks.length) return 'active';
-  return 'partial';
+  if (playing.length > 0) return 'partial';
+  if (paused.length > 0) return 'paused';
+  return 'inactive';
 }
 
 export function useRemote() {
@@ -101,6 +106,8 @@ export function useRemote() {
 
     activateComp: (compId: string) => send({ command: 'activate_comp', compId }),
     stopComp: (compId: string) => send({ command: 'stop_comp', compId }),
+    pauseComp: (compId: string) => send({ command: 'pause_comp', compId }),
+    resumeComp: (compId: string) => send({ command: 'resume_comp', compId }),
     playTrack: (trackId: string) => send({ command: 'play_track', trackId }),
     pauseTrack: (trackId: string) => send({ command: 'pause_track', trackId }),
     stopTrack: (trackId: string) => send({ command: 'stop_track', trackId }),

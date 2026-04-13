@@ -155,6 +155,14 @@ fn handle_remote_command(container: &AppStateContainer, text: &str) {
             let id = cmd.comp_id.as_deref().unwrap_or("");
             actions::stop_comp_audio(container, id)
         }
+        "pause_comp" => {
+            let id = cmd.comp_id.as_deref().unwrap_or("");
+            actions::pause_comp_audio(container, id)
+        }
+        "resume_comp" => {
+            let id = cmd.comp_id.as_deref().unwrap_or("");
+            actions::resume_comp_audio(container, id)
+        }
         "stop_all" => actions::stop_all_audio(container),
         "pause_all" => actions::pause_all_audio(container),
         "resume_all" => actions::resume_all_audio(container),

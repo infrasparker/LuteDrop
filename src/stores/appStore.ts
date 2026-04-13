@@ -50,10 +50,15 @@ export const useAppStore = defineStore('app', () => {
       const state = playbackStates.value.get(t.id);
       return state?.isPlaying;
     });
+    const paused = comp.tracks.filter((t) => {
+      const state = playbackStates.value.get(t.id);
+      return state?.isPaused;
+    });
 
-    if (playing.length === 0) return 'inactive';
     if (playing.length === comp.tracks.length) return 'active';
-    return 'partial';
+    if (playing.length > 0) return 'partial';
+    if (paused.length > 0) return 'paused';
+    return 'inactive';
   }
 
   // --- Lookups ---

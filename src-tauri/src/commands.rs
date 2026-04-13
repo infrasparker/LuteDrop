@@ -124,6 +124,16 @@ pub fn stop_comp(state: State<'_, Arc<AppStateContainer>>, comp_id: String) -> R
 }
 
 #[tauri::command]
+pub fn pause_comp(state: State<'_, Arc<AppStateContainer>>, comp_id: String) -> Result<(), String> {
+    actions::pause_comp_audio(&state, &comp_id)
+}
+
+#[tauri::command]
+pub fn resume_comp(state: State<'_, Arc<AppStateContainer>>, comp_id: String) -> Result<(), String> {
+    actions::resume_comp_audio(&state, &comp_id)
+}
+
+#[tauri::command]
 pub fn stop_all(state: State<'_, Arc<AppStateContainer>>) -> Result<(), String> {
     actions::stop_all_audio(&state)
 }
