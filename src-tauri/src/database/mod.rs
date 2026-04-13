@@ -2,7 +2,7 @@ pub mod configurations;
 pub mod hierarchy;
 pub mod library;
 
-use rusqlite::{params, Connection, Result as SqlResult};
+use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 use std::collections::HashMap;
 use std::path::Path;
 use uuid::Uuid;
@@ -332,7 +332,19 @@ pub fn recover_from_backup_json(conn: &Connection, json_path: &std::path::Path) 
                         Some(format!("{:x}", hasher.finalize()))
                     })();
 
-                    let entry_id = if let Some(ref hash) = hash_opt {
+                    // Check if a library entry already exists for this file path
+                    let existing_id: Option<String> = conn
+                        .query_row(
+                            "SELECT id FROM library_entries WHERE file_path = ?1",
+                            params![clip.file_path],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .map_err(|e| format!("Failed to check existing entry: {e}"))?;
+
+                    let entry_id = if let Some(id) = existing_id {
+                        id
+                    } else if let Some(ref hash) = hash_opt {
                         if let Some(existing) = hash_to_entry.get(hash) {
                             existing.clone()
                         } else {
