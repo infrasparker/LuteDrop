@@ -84,6 +84,9 @@ pub fn update_library_entry_name(
 }
 
 /// Updates the trim window for the given entry.
+/// Validates that trim_start < trim_end (when both are provided).
+/// Clamps any existing loop points to fit within the new trim bounds,
+/// and clears them entirely if they would become invalid after clamping.
 #[allow(dead_code)]
 pub fn update_library_entry_trim(
     conn: &Connection,
@@ -91,26 +94,82 @@ pub fn update_library_entry_trim(
     trim_start: Option<f64>,
     trim_end: Option<f64>,
 ) -> Result<(), String> {
+    if let (Some(ts), Some(te)) = (trim_start, trim_end) {
+        if ts >= te {
+            return Err("trim_start must be less than trim_end".to_string());
+        }
+    }
+
     conn.execute(
         "UPDATE library_entries SET trim_start = ?1, trim_end = ?2 WHERE id = ?3",
         params![trim_start, trim_end, id],
-    )
-    .map_err(|e| format!("Failed to update trim: {e}"))?;
+    ).map_err(|e| e.to_string())?;
+
+    // Clamp loop points to fit within new trim bounds
+    let (loop_start, loop_end): (Option<f64>, Option<f64>) = conn.query_row(
+        "SELECT loop_start, loop_end FROM library_entries WHERE id = ?1",
+        params![id], |r| Ok((r.get(0)?, r.get(1)?))
+    ).map_err(|e| e.to_string())?;
+
+    let mut ls = loop_start;
+    let mut le = loop_end;
+    let mut changed = false;
+
+    if let (Some(ref mut loop_s), Some(trim_s)) = (&mut ls, trim_start) {
+        if *loop_s < trim_s { *loop_s = trim_s; changed = true; }
+    }
+    if let (Some(ref mut loop_e), Some(trim_e)) = (&mut le, trim_end) {
+        if *loop_e > trim_e { *loop_e = trim_e; changed = true; }
+    }
+    if let (Some(loop_s), Some(loop_e)) = (ls, le) {
+        if loop_s >= loop_e { ls = None; le = None; changed = true; }
+    }
+
+    if changed {
+        conn.execute(
+            "UPDATE library_entries SET loop_start = ?1, loop_end = ?2 WHERE id = ?3",
+            params![ls, le, id],
+        ).map_err(|e| e.to_string())?;
+    }
+
     Ok(())
 }
 
 /// Updates the loop window for the given entry.
+/// Clamps loop points to existing trim bounds before writing.
+/// Returns an error if the clamped values result in loop_start >= loop_end.
 pub fn update_library_entry_loop(
     conn: &Connection,
     id: &str,
     loop_start: Option<f64>,
     loop_end: Option<f64>,
 ) -> Result<(), String> {
+    let (trim_start, trim_end): (Option<f64>, Option<f64>) = conn.query_row(
+        "SELECT trim_start, trim_end FROM library_entries WHERE id = ?1",
+        params![id], |r| Ok((r.get(0)?, r.get(1)?))
+    ).map_err(|e| e.to_string())?;
+
+    let mut ls = loop_start;
+    let mut le = loop_end;
+
+    if let (Some(ref mut loop_s), Some(trim_s)) = (&mut ls, trim_start) {
+        if *loop_s < trim_s { *loop_s = trim_s; }
+    }
+    if let (Some(ref mut loop_e), Some(trim_e)) = (&mut le, trim_end) {
+        if *loop_e > trim_e { *loop_e = trim_e; }
+    }
+
+    if let (Some(loop_s), Some(loop_e)) = (ls, le) {
+        if loop_s >= loop_e {
+            return Err("loop_start must be less than loop_end".to_string());
+        }
+    }
+
     conn.execute(
         "UPDATE library_entries SET loop_start = ?1, loop_end = ?2 WHERE id = ?3",
-        params![loop_start, loop_end, id],
-    )
-    .map_err(|e| format!("Failed to update loop: {e}"))?;
+        params![ls, le, id],
+    ).map_err(|e| e.to_string())?;
+
     Ok(())
 }
 
@@ -550,5 +609,73 @@ mod tests {
 
         let tags = get_tags_for_entry(&conn, &entry_id).expect("get tags");
         assert_eq!(tags, vec!["combat"], "tag should be lowercased and trimmed");
+    }
+
+    // ── 9. trim_clamps_loop_points ────────────────────────────────────────────
+
+    #[test]
+    fn trim_clamps_loop_points() {
+        let conn = open_memory_db();
+        let id = insert_library_entry(&conn, "/a.mp3", Some("a"), "A", None, None, None).unwrap();
+        update_library_entry_loop(&conn, &id, Some(10.0), Some(100.0)).unwrap();
+        update_library_entry_trim(&conn, &id, Some(20.0), Some(80.0)).unwrap();
+        let (ls, le): (Option<f64>, Option<f64>) = conn.query_row(
+            "SELECT loop_start, loop_end FROM library_entries WHERE id = ?1",
+            params![id], |r| Ok((r.get(0)?, r.get(1)?))
+        ).unwrap();
+        assert!((ls.unwrap() - 20.0).abs() < 0.001);
+        assert!((le.unwrap() - 80.0).abs() < 0.001);
+    }
+
+    // ── 10. trim_clears_loop_when_invalid ─────────────────────────────────────
+
+    #[test]
+    fn trim_clears_loop_when_invalid() {
+        let conn = open_memory_db();
+        let id = insert_library_entry(&conn, "/b.mp3", Some("b"), "B", None, None, None).unwrap();
+        update_library_entry_loop(&conn, &id, Some(40.0), Some(60.0)).unwrap();
+        update_library_entry_trim(&conn, &id, Some(70.0), Some(100.0)).unwrap();
+        let (ls, le): (Option<f64>, Option<f64>) = conn.query_row(
+            "SELECT loop_start, loop_end FROM library_entries WHERE id = ?1",
+            params![id], |r| Ok((r.get(0)?, r.get(1)?))
+        ).unwrap();
+        assert!(ls.is_none());
+        assert!(le.is_none());
+    }
+
+    // ── 11. loop_clamped_to_trim_bounds ───────────────────────────────────────
+
+    #[test]
+    fn loop_clamped_to_trim_bounds() {
+        let conn = open_memory_db();
+        let id = insert_library_entry(&conn, "/c.mp3", Some("c"), "C", None, None, None).unwrap();
+        update_library_entry_trim(&conn, &id, Some(10.0), Some(50.0)).unwrap();
+        update_library_entry_loop(&conn, &id, Some(5.0), Some(60.0)).unwrap();
+        let (ls, le): (Option<f64>, Option<f64>) = conn.query_row(
+            "SELECT loop_start, loop_end FROM library_entries WHERE id = ?1",
+            params![id], |r| Ok((r.get(0)?, r.get(1)?))
+        ).unwrap();
+        assert!((ls.unwrap() - 10.0).abs() < 0.001);
+        assert!((le.unwrap() - 50.0).abs() < 0.001);
+    }
+
+    // ── 12. trim_start_must_be_less_than_end ─────────────────────────────────
+
+    #[test]
+    fn trim_start_must_be_less_than_end() {
+        let conn = open_memory_db();
+        let id = insert_library_entry(&conn, "/d.mp3", Some("d"), "D", None, None, None).unwrap();
+        let result = update_library_entry_trim(&conn, &id, Some(50.0), Some(10.0));
+        assert!(result.is_err());
+    }
+
+    // ── 13. loop_start_must_be_less_than_end ─────────────────────────────────
+
+    #[test]
+    fn loop_start_must_be_less_than_end() {
+        let conn = open_memory_db();
+        let id = insert_library_entry(&conn, "/e.mp3", Some("e"), "E", None, None, None).unwrap();
+        let result = update_library_entry_loop(&conn, &id, Some(50.0), Some(10.0));
+        assert!(result.is_err());
     }
 }
