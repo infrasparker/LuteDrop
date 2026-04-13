@@ -129,6 +129,11 @@ pub fn run() {
             commands::toggle_clip_mute,
             commands::toggle_comp_mute,
             commands::get_mute_state,
+            commands::create_configuration,
+            commands::duplicate_configuration,
+            commands::load_configuration,
+            commands::delete_configuration,
+            commands::rename_configuration,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LuteDrop");
