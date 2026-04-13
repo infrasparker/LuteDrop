@@ -221,6 +221,17 @@ pub fn backfill_durations(conn: &Connection) -> Result<usize, String> {
     Ok(updated)
 }
 
+/// Returns all file paths from the library.
+pub fn get_all_file_paths(conn: &Connection) -> Result<Vec<String>, String> {
+    let mut stmt = conn.prepare("SELECT file_path FROM library_entries")
+        .map_err(|e| e.to_string())?;
+    let paths: Vec<String> = stmt.query_map([], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(paths)
+}
+
 /// Updates the `file_path` column for the given entry.
 pub fn update_library_entry_file_path(
     conn: &Connection,

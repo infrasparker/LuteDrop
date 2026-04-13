@@ -503,3 +503,18 @@ pub fn stop_preview_audio(container: &AppStateContainer) -> Result<(), String> {
     audio.stop_preview();
     Ok(())
 }
+
+pub fn preload_peaks(container: &AppStateContainer) -> Result<usize, String> {
+    let paths = {
+        let conn = container.db.lock().map_err(|e| e.to_string())?;
+        library::get_all_file_paths(&conn)?
+    };
+    let mut loaded = 0;
+    for path in &paths {
+        match crate::waveform::extract_peaks(path, 1200, None, None, &container.peak_cache) {
+            Ok(_) => loaded += 1,
+            Err(e) => log::warn!("Failed to preload peaks for {}: {}", path, e),
+        }
+    }
+    Ok(loaded)
+}

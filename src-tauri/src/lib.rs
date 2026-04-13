@@ -71,6 +71,15 @@ pub fn run() {
             // Share the Arc with Tauri's managed state
             app.manage(container.clone());
 
+            // Preload peak caches in background
+            let preload_container = container.clone();
+            std::thread::spawn(move || {
+                match actions::preload_peaks(&preload_container) {
+                    Ok(n) => log::info!("Preloaded peaks for {} library entries", n),
+                    Err(e) => log::warn!("Peak preload failed: {}", e),
+                }
+            });
+
             // Start the axum WebSocket server on its own thread with a tokio runtime
             let server_container = container.clone();
             let remote_dist = std::env::current_dir()
