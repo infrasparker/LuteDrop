@@ -559,21 +559,39 @@ function onMouseUp(event: MouseEvent): void {
     return;
   }
 
+  // Helper: play from click position, only enforce boundaries the user hasn't clicked past
+  function playFromClick(clickTime: number): void {
+    if (props.trackId) {
+      audio.playTrackFrom(props.trackId, clickTime);
+      return;
+    }
+    if (!props.filePath) return;
+
+    // Only enforce trim_end if user clicked before it
+    const trimEnd = (localTrimEnd.value !== null && clickTime < localTrimEnd.value)
+      ? localTrimEnd.value : null;
+
+    // Only enforce loop region if user clicked before loop_end
+    const loopEnd = localLoopEnd.value === 0 ? null : localLoopEnd.value;
+    let effectiveLoopStart: number | null = null;
+    let effectiveLoopEnd: number | null = null;
+    if (props.loopEnabled !== false && loopEnd !== null && clickTime < loopEnd) {
+      effectiveLoopStart = localLoopStart.value === 0 ? null : localLoopStart.value;
+      effectiveLoopEnd = loopEnd;
+    }
+
+    audio.playLibrarySound(
+      props.filePath, clickTime, 1.0,
+      localTrimStart.value, trimEnd,
+      effectiveLoopStart, effectiveLoopEnd,
+    );
+  }
+
   if (wasPanning && zoom.isZoomed.value) {
     if (dragDistance <= PAN_DRAG_THRESHOLD) {
       zoom.viewStart.value = panStartViewStart.value;
       zoom.clampView();
-      const clickTime = zoom.xToSeconds(getCanvasXInCssPixels(event), getCanvasWidth());
-      if (props.trackId) {
-        audio.playTrackFrom(props.trackId, clickTime);
-      } else if (props.filePath) {
-        audio.playLibrarySound(
-          props.filePath, clickTime, 1.0,
-          localTrimStart.value, localTrimEnd.value,
-          props.loopEnabled !== false ? (localLoopStart.value === 0 ? null : localLoopStart.value) : null,
-          props.loopEnabled !== false ? (localLoopEnd.value === 0 ? null : localLoopEnd.value) : null,
-        );
-      }
+      playFromClick(zoom.xToSeconds(getCanvasXInCssPixels(event), getCanvasWidth()));
     } else {
       fireZoomedPeaks();
     }
@@ -581,17 +599,7 @@ function onMouseUp(event: MouseEvent): void {
   }
 
   if (!wasMarker && dragDistance <= PAN_DRAG_THRESHOLD && data.duration.value > 0) {
-    const clickTime = zoom.xToSeconds(getCanvasXInCssPixels(event), getCanvasWidth());
-    if (props.trackId) {
-      audio.playTrackFrom(props.trackId, clickTime);
-    } else if (props.filePath) {
-      audio.playLibrarySound(
-        props.filePath, clickTime, 1.0,
-        localTrimStart.value, localTrimEnd.value,
-        props.loopEnabled !== false ? (localLoopStart.value === 0 ? null : localLoopStart.value) : null,
-        props.loopEnabled !== false ? (localLoopEnd.value === 0 ? null : localLoopEnd.value) : null,
-      );
-    }
+    playFromClick(zoom.xToSeconds(getCanvasXInCssPixels(event), getCanvasWidth()));
   }
 }
 
