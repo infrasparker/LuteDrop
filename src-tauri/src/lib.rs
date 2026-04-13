@@ -37,25 +37,9 @@ pub fn run() {
             let conn = database::open_db(&db_path)
                 .expect("Failed to open SQLite database");
 
-            // Run schema migrations
-            if let Err(e) = database::migrate_v1_to_v2(&conn) {
-                log::error!("Schema migration v1->v2 failed: {}", e);
-            }
-
-            // Ensure a default configuration exists (for fresh v2 databases)
+            // Ensure a default configuration exists (for fresh databases)
             if let Err(e) = database::ensure_default_configuration(&conn) {
                 log::error!("Failed to ensure default configuration: {}", e);
-            }
-
-            // Recover data from backup JSON if DB is empty
-            let backup_json_path = db_path.parent().unwrap_or(db_path.as_ref())
-                .join("lutedrop-data.backup.json");
-            match database::recover_from_backup_json(&conn, &backup_json_path) {
-                Ok((groups, entries)) if groups > 0 => {
-                    log::info!("Recovered {} groups and {} library entries from backup JSON", groups, entries);
-                }
-                Err(e) => log::error!("Backup recovery failed: {}", e),
-                _ => {}
             }
 
             // Backfill durations for any entries missing them
