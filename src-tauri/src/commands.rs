@@ -253,7 +253,7 @@ pub fn check_missing_files(
 }
 
 #[tauri::command]
-pub fn play_preview(
+pub fn play_library_sound(
     state: State<'_, Arc<AppStateContainer>>,
     file_path: String,
     position: f64,
@@ -263,10 +263,10 @@ pub fn play_preview(
     loop_start: Option<f64>,
     loop_end: Option<f64>,
 ) -> Result<(), String> {
-    actions::play_preview_audio(&state, &file_path, position, volume, trim_start, trim_end, loop_start, loop_end)
+    actions::play_library_sound(&state, &file_path, position, volume, trim_start, trim_end, loop_start, loop_end)
 }
 
 #[tauri::command]
-pub fn stop_preview(state: State<'_, Arc<AppStateContainer>>) -> Result<(), String> {
-    actions::stop_preview_audio(&state)
+pub fn stop_library_sound(state: State<'_, Arc<AppStateContainer>>) -> Result<(), String> {
+    actions::stop_library_sound(&state)
 }

@@ -140,53 +140,34 @@ pub fn run() {
             commands::delete_library_entry,
             commands::relocate_library_entry,
             commands::check_missing_files,
-            commands::play_preview,
-            commands::stop_preview,
+            commands::play_library_sound,
+            commands::stop_library_sound,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LuteDrop");
 }
 
-/// Polling loop that checks for finished sounds and emits playback state updates.
+/// Polling loop that drives the audio engine and emits playback state updates.
 /// Runs on its own thread every 50ms.
 fn playback_polling_loop(app_handle: tauri::AppHandle, container: Arc<AppStateContainer>) {
     loop {
         std::thread::sleep(Duration::from_millis(50));
 
-        // Lock the audio engine
-        let mut audio = match container.audio.lock() {
-            Ok(a) => a,
-            Err(_) => continue,
+        let (states, master_vol) = {
+            let mut audio = match container.audio.lock() {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let states = audio.poll();
+            let vol = audio.get_master_volume();
+            (states, vol)
         };
 
-        // Check for crossfade triggers (approaching end of clip)
-        let crossfades = audio.check_crossfade_triggers();
-        for (track_id, next_idx, duration) in crossfades {
-            if let Err(e) = audio.begin_crossfade(&track_id, next_idx, duration) {
-                log::warn!("Failed to start crossfade for track {}: {}", track_id, e);
-            }
-        }
-
-        // Check for sounds that finished naturally and advance/stop tracks
-        let finished = audio.check_finished_sounds();
-        for (track_id, next_clip_index) in finished {
-            if let Err(e) = audio.advance_track(&track_id, next_clip_index) {
-                log::warn!("Failed to advance track {}: {}", track_id, e);
-            }
-        }
-
-        // Get all playback states and master volume, then emit to the frontend
-        let states = audio.get_all_playback_states();
-        let master_vol = audio.get_master_volume();
-        drop(audio); // Release the lock before emitting
-
-        // Emit to desktop frontend
         for state in &states {
             let _ = app_handle.emit("playback-state-update", state);
         }
         let _ = app_handle.emit("master-volume-update", master_vol);
 
-        // Broadcast to remote clients
         server::broadcast_state(&container);
     }
 }

@@ -498,7 +498,7 @@ pub fn resume_all_audio(container: &AppStateContainer) -> Result<(), String> {
     Ok(())
 }
 
-pub fn play_preview_audio(
+pub fn play_library_sound(
     container: &AppStateContainer,
     file_path: &str,
     position: f64,
@@ -509,12 +509,26 @@ pub fn play_preview_audio(
     loop_end: Option<f64>,
 ) -> Result<(), String> {
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
-    audio.play_preview(file_path, position, volume, trim_start, trim_end, loop_start, loop_end)
+    let vol = crate::audio::util::amplitude_to_decibels(audio.get_master_volume() * volume);
+    let loop_region = match (loop_start, loop_end) {
+        (Some(ls), Some(le)) if le > ls => Some((ls, le)),
+        _ => None,
+    };
+    audio.play_library_sound(crate::audio::sound::PlayParams {
+        file_path: file_path.to_string(),
+        start_position: position,
+        volume: vol,
+        trim_start,
+        trim_end,
+        loop_region,
+        fade_in: None,
+        fade_out: None,
+    })
 }
 
-pub fn stop_preview_audio(container: &AppStateContainer) -> Result<(), String> {
+pub fn stop_library_sound(container: &AppStateContainer) -> Result<(), String> {
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
-    audio.stop_preview();
+    audio.stop_library_sound();
     Ok(())
 }
 
