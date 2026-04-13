@@ -406,14 +406,14 @@ function clampLocal(marker: MarkerType, seconds: number): void {
       clamped = Math.min(clamped, te - 0.01);
       const rounded = round(clamped);
       localTrimStart.value = rounded;
-      // Push loopStart if trim passes it
+      // Push loop start if trim passes it
       if (rounded > localLoopStart.value) {
         localLoopStart.value = rounded;
       }
-      // If pushing loopStart past loopEnd, clear both loop values
-      if (localLoopStart.value >= effectiveLoopEnd.value) {
-        localLoopStart.value = 0;
-        localLoopEnd.value = 0;
+      // Push loop end if loop start catches up to it
+      const curLoopEnd = effectiveLoopEnd.value;
+      if (localLoopStart.value >= curLoopEnd - 0.01) {
+        localLoopEnd.value = round(Math.min(localLoopStart.value + 0.01, te));
       }
       break;
     }
@@ -422,15 +422,14 @@ function clampLocal(marker: MarkerType, seconds: number): void {
       clamped = Math.min(clamped, dur);
       const rounded = round(clamped);
       localTrimEnd.value = rounded;
-      // Push loopEnd if trim passes it
-      const le = effectiveLoopEnd.value;
-      if (rounded < le) {
+      // Push loop end if trim passes it
+      const curLoopEnd = effectiveLoopEnd.value;
+      if (rounded < curLoopEnd) {
         localLoopEnd.value = round(rounded);
       }
-      // If pushing loopEnd past loopStart, clear both loop values
-      if (localLoopEnd.value !== 0 && localLoopEnd.value <= localLoopStart.value) {
-        localLoopStart.value = 0;
-        localLoopEnd.value = 0;
+      // Push loop start if loop end catches up to it
+      if (localLoopEnd.value !== 0 && localLoopEnd.value <= localLoopStart.value + 0.01) {
+        localLoopStart.value = round(Math.max(localLoopEnd.value - 0.01, ts));
       }
       break;
     }
@@ -590,6 +589,10 @@ watch(data.zoomedPeaks, () => drawWaveform());
 watch(() => [props.loopStart, props.loopEnd, props.trimStart, props.trimEnd], () => drawWaveform());
 
 watch(() => props.filePath, () => {
+  localLoopStart.value = props.loopStart;
+  localLoopEnd.value = props.loopEnd;
+  localTrimStart.value = props.trimStart;
+  localTrimEnd.value = props.trimEnd;
   zoom.resetView();
   data.loadBasePeaks();
 });

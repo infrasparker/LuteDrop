@@ -23,6 +23,23 @@ const editName = ref('');
 const editTags = ref('');
 const localGain = ref(1.0);
 
+const isPreviewPlaying = ref(false);
+const previewState = computed(() => store.playbackStates.get('__preview'));
+
+watch(previewState, (state) => {
+  if (!state?.isPlaying) isPreviewPlaying.value = false;
+});
+
+function togglePreview(): void {
+  if (isPreviewPlaying.value) {
+    audio.stopPreview();
+    isPreviewPlaying.value = false;
+  } else if (entry.value) {
+    audio.playPreview(entry.value.filePath, 0, localGain.value);
+    isPreviewPlaying.value = true;
+  }
+}
+
 watch(() => props.modelValue, (open) => {
   if (open && entry.value) {
     editName.value = entry.value.name;
@@ -146,6 +163,7 @@ async function updateLoopEndNumeric(v: string | number): Promise<void> {
 }
 
 function close(): void {
+  audio.stopPreview();
   // Persist gain on close if changed
   if (entry.value && localGain.value !== entry.value.volume) {
     persistGain();
@@ -160,6 +178,13 @@ function close(): void {
       <VCardTitle class="d-flex align-center">
         <span>Edit: {{ entry.name }}</span>
         <VSpacer />
+        <VBtn
+          :icon="isPreviewPlaying ? 'mdi-stop' : 'mdi-play'"
+          variant="tonal"
+          size="small"
+          class="mr-2"
+          @click="togglePreview"
+        />
         <VBtn icon="mdi-close" variant="text" size="small" @click="close" />
       </VCardTitle>
 

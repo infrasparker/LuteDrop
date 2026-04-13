@@ -1,6 +1,8 @@
 <script setup lang="ts">
+import { ref, computed, watch } from 'vue';
 import type { LibraryEntry } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
+import { useAudio } from '../composables/useAudio';
 
 const props = defineProps<{
   entry: LibraryEntry;
@@ -13,6 +15,26 @@ const emit = defineEmits<{
 }>();
 
 const store = useAppStore();
+const audio = useAudio();
+
+const isPreviewPlaying = ref(false);
+
+const previewState = computed(() => store.playbackStates.get('__preview'));
+watch(previewState, (state) => {
+  if (!state?.isPlaying) {
+    isPreviewPlaying.value = false;
+  }
+});
+
+function togglePreview(): void {
+  if (isPreviewPlaying.value) {
+    audio.stopPreview();
+    isPreviewPlaying.value = false;
+  } else {
+    audio.playPreview(props.entry.filePath, 0, props.entry.volume);
+    isPreviewPlaying.value = true;
+  }
+}
 
 function formatDuration(seconds: number | null): string {
   if (seconds === null) return '--:--';
@@ -59,6 +81,12 @@ function handleClick(): void {
     </VListItemSubtitle>
 
     <template #append>
+      <VBtn
+        :icon="isPreviewPlaying ? 'mdi-stop' : 'mdi-play'"
+        variant="text"
+        size="small"
+        @click.stop="togglePreview"
+      />
       <slot name="actions" />
     </template>
   </VListItem>
