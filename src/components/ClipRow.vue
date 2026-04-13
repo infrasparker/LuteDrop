@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import type { Clip } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
@@ -17,13 +17,17 @@ const playbackState = computed(() => store.playbackStates.get(props.trackId));
 const isCurrentClip = computed(() => playbackState.value?.currentClipId === props.clip.id);
 const isPlaying = computed(() => isCurrentClip.value && playbackState.value?.isPlaying);
 
+// Local ref for smooth slider — audio engine persists to DB directly
+const localVolume = ref(props.clip.volume);
+watch(() => props.clip.volume, (v) => { localVolume.value = v; });
+
 function playClip(): void {
   audio.playTrackClip(props.trackId, props.clip.id);
 }
 
-async function setVolume(v: number): Promise<void> {
+function setVolume(v: number): void {
+  localVolume.value = v;
   audio.setClipVolume(props.clip.id, v);
-  await store.command('update_clip_volume', { clipId: props.clip.id, volume: v });
 }
 
 async function remove(): Promise<void> {
@@ -53,7 +57,7 @@ async function remove(): Promise<void> {
     >{{ clip.name }}</span>
     <VIcon size="small" class="text-medium-emphasis">mdi-volume-high</VIcon>
     <VSlider
-      :model-value="clip.volume"
+      :model-value="localVolume"
       @update:model-value="setVolume"
       :min="0"
       :max="1"

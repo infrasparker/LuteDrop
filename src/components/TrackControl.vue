@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import type { Track } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
@@ -81,9 +81,13 @@ function stopTrack(): void {
   audio.stopTrack(props.track.id);
 }
 
-async function setVolume(v: number): Promise<void> {
+// Local ref for smooth slider dragging — audio engine persists to DB directly
+const localVolume = ref(props.track.volume);
+watch(() => props.track.volume, (v) => { localVolume.value = v; });
+
+function setVolume(v: number): void {
+  localVolume.value = v;
   audio.setTrackVolume(props.track.id, v);
-  await updateField({ volume: v });
 }
 </script>
 
@@ -131,7 +135,7 @@ async function setVolume(v: number): Promise<void> {
             </span>
 
             <VSlider
-              :model-value="track.volume"
+              :model-value="localVolume"
               @update:model-value="setVolume"
               @click.stop
               @mousedown.stop
