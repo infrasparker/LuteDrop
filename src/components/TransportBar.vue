@@ -50,38 +50,45 @@ function togglePause(): void {
 
 <template>
   <VFooter app color="surface" elevation="4" class="pa-2">
-    <div class="d-flex align-center justify-center ga-3 mx-auto" style="max-width: 600px; width: 100%;">
-      <VBtn
-        :icon="showPlayIcon ? 'mdi-play' : 'mdi-pause'"
-        :disabled="!anyPlaying && !anyPaused"
-        variant="tonal"
-        size="small"
-        rounded="circle"
-        @click="togglePause"
-      />
-      <VBtn
-        icon="mdi-stop"
-        variant="tonal"
-        size="small"
-        rounded="circle"
-        @click="stopAll"
-      />
-
-      <span v-if="playingCount > 0" class="text-caption text-primary" style="white-space: nowrap;">
+    <div class="d-flex align-center w-100" style="position: relative;">
+      <!-- Playing count on the left — absolutely positioned so it doesn't shift the buttons -->
+      <span v-if="playingCount > 0" class="text-caption text-primary" style="position: absolute; left: 0;">
         {{ playingCount }} playing
       </span>
 
-      <VIcon size="small" class="text-medium-emphasis">mdi-volume-high</VIcon>
-      <VSlider
-        :model-value="audio.masterVolume.value"
-        @update:model-value="setMasterVolume"
-        :min="0"
-        :max="1"
-        :step="0.01"
-        hide-details
-        density="compact"
-        style="max-width: 150px;"
-      />
+      <!-- Centered transport controls -->
+      <div class="d-flex align-center ga-2 mx-auto">
+        <VBtn
+          :icon="showPlayIcon ? 'mdi-play' : 'mdi-pause'"
+          :disabled="!anyPlaying && !anyPaused"
+          variant="tonal"
+          size="small"
+          rounded="circle"
+          @click="togglePause"
+        />
+        <VBtn
+          icon="mdi-stop"
+          variant="tonal"
+          size="small"
+          rounded="circle"
+          @click="stopAll"
+        />
+      </div>
+
+      <!-- Master volume on the right — absolutely positioned -->
+      <div class="d-flex align-center ga-2" style="position: absolute; right: 0;">
+        <VIcon size="small" class="text-medium-emphasis">mdi-volume-high</VIcon>
+        <VSlider
+          :model-value="audio.masterVolume.value"
+          @update:model-value="setMasterVolume"
+          :min="0"
+          :max="1"
+          :step="0.01"
+          hide-details
+          density="compact"
+          style="width: 150px;"
+        />
+      </div>
     </div>
   </VFooter>
 </template>

@@ -12,6 +12,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   select: [entryId: string];
+  click: [];
 }>();
 
 const store = useAppStore();
@@ -47,9 +48,19 @@ function formatDuration(seconds: number | null): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
+async function removeTag(tag: string): Promise<void> {
+  const newTags = props.entry.tags.filter((t) => t !== tag);
+  await store.command('update_library_entry_tags', {
+    entryId: props.entry.id,
+    tags: newTags,
+  });
+}
+
 function handleClick(): void {
   if (props.selectable) {
     emit('select', props.entry.id);
+  } else {
+    emit('click');
   }
 }
 </script>
@@ -59,7 +70,7 @@ function handleClick(): void {
     :class="[
       selected ? 'bg-primary-lighten-4' : '',
       store.isEntryMissing(entry.id) ? 'opacity-50' : '',
-      selectable ? 'cursor-pointer' : '',
+      'cursor-pointer',
       isPreviewPlaying ? 'preview-active' : '',
     ]"
     rounded
@@ -77,9 +88,11 @@ function handleClick(): void {
       <VChip
         v-for="tag in entry.tags"
         :key="tag"
-        size="x-small"
+        size="small"
         class="mr-1"
-        variant="outlined"
+        closable
+        @click:close.stop="removeTag(tag)"
+        @click.stop
       >
         {{ tag }}
       </VChip>

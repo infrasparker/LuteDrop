@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import type { Clip } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
@@ -12,6 +13,7 @@ const props = defineProps<{
 
 const store = useAppStore();
 const audio = useAudio();
+const router = useRouter();
 
 const playbackState = computed(() => store.playbackStates.get(props.trackId));
 const isCurrentClip = computed(() => playbackState.value?.currentClipId === props.clip.id);
@@ -32,6 +34,11 @@ function setVolume(v: number): void {
 
 async function remove(): Promise<void> {
   await store.command('delete_clip', { trackId: props.trackId, clipId: props.clip.id });
+}
+
+function editLibraryEntry(): void {
+  store.editEntryId = props.clip.libraryEntryId;
+  router.push('/library');
 }
 </script>
 
@@ -62,6 +69,13 @@ async function remove(): Promise<void> {
       hide-details
       density="compact"
       style="width: 120px; flex: 0 0 120px;"
+    />
+    <VBtn
+      icon="mdi-book-edit-outline"
+      variant="text"
+      size="x-small"
+      title="Edit in Library"
+      @click.stop="editLibraryEntry"
     />
     <VBtn icon="mdi-delete" variant="text" size="x-small" color="error" @click="remove" />
   </div>

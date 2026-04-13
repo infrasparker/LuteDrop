@@ -11,6 +11,7 @@ export const useAppStore = defineStore('app', () => {
   const tags = ref<string[]>([]);
   const missingEntryIds = ref<Set<string>>(new Set());
   const previewEntryId = ref<string | null>(null);
+  const editEntryId = ref<string | null>(null);
 
   // --- Hydrate from Rust state ---
 
@@ -106,6 +107,7 @@ export const useAppStore = defineStore('app', () => {
     tags,
     missingEntryIds,
     previewEntryId,
+    editEntryId,
     hydrate,
     command,
     setTrackPlaybackState,

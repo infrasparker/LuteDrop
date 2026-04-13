@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted, nextTick, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useAppStore } from '../stores/appStore';
@@ -14,6 +14,10 @@ const { importFiles, importFolder } = useLibraryImport();
 
 const searchQuery = ref('');
 const selectedTags = ref<string[]>([]);
+
+// Loading guard — prevents empty-state flash before store hydrates
+const showContent = ref(false);
+onMounted(() => { nextTick(() => { showContent.value = true; }); });
 
 const filteredEntries = computed(() => {
   return libraryEntries.value.filter((entry) => {
@@ -35,6 +39,15 @@ function openEditor(entryId: string): void {
   editorEntryId.value = entryId;
   showEditorDialog.value = true;
 }
+
+// Consume editEntryId set by ClipRow navigation
+watch(() => store.editEntryId, (id) => {
+  if (id) {
+    editorEntryId.value = id;
+    showEditorDialog.value = true;
+    store.editEntryId = null;
+  }
+}, { immediate: true });
 
 // Delete entry
 async function deleteEntry(entryId: string): Promise<void> {
@@ -61,10 +74,10 @@ async function relocateEntry(entryId: string): Promise<void> {
     <div class="d-flex align-center mb-4 ga-2">
       <span class="text-h6 font-weight-bold">Library</span>
       <VSpacer />
-      <VBtn prepend-icon="mdi-file-music" variant="tonal" @click="importFiles">
+      <VBtn prepend-icon="mdi-file-music" variant="tonal" rounded="xl" @click="importFiles">
         Import Files
       </VBtn>
-      <VBtn prepend-icon="mdi-folder-music" variant="tonal" class="ml-2" @click="importFolder">
+      <VBtn prepend-icon="mdi-folder-music" variant="tonal" rounded="xl" class="ml-2" @click="importFolder">
         Import Folder
       </VBtn>
     </div>
@@ -92,11 +105,12 @@ async function relocateEntry(entryId: string): Promise<void> {
     </div>
 
     <!-- Entry list -->
-    <VList v-if="filteredEntries.length > 0" class="overflow-y-auto" lines="two">
+    <VList v-if="showContent && filteredEntries.length > 0" class="overflow-y-auto" lines="two">
       <LibraryEntryRow
         v-for="entry in filteredEntries"
         :key="entry.id"
         :entry="entry"
+        @click="openEditor(entry.id)"
       >
         <template #actions>
           <VBtn
@@ -107,13 +121,6 @@ async function relocateEntry(entryId: string): Promise<void> {
             color="warning"
             title="Relocate file"
             @click.stop="relocateEntry(entry.id)"
-          />
-          <VBtn
-            icon="mdi-pencil"
-            size="small"
-            variant="text"
-            title="Edit waveform"
-            @click.stop="openEditor(entry.id)"
           />
           <VBtn
             icon="mdi-delete"
@@ -129,7 +136,7 @@ async function relocateEntry(entryId: string): Promise<void> {
 
     <!-- Empty state -->
     <div
-      v-else
+      v-else-if="showContent"
       class="d-flex flex-column align-center justify-center text-medium-emphasis pa-8"
     >
       <VIcon size="64" class="mb-4">mdi-music-box-multiple-outline</VIcon>
