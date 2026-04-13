@@ -174,7 +174,8 @@ export function useAudio() {
     try {
       await invoke('stop_library_sound');
       // Clear the stale playback state so other components don't see a phantom playing state
-      store.playbackStates.delete('__library');
+      const appStore = useAppStore();
+      appStore.playbackStates.delete('__library');
     } catch (e) {
       toast.showError(String(e));
     }
