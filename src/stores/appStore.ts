@@ -44,10 +44,6 @@ export const useAppStore = defineStore('app', () => {
     playbackStates.value.set(trackId, state);
   }
 
-  function clearTrackPlaybackState(trackId: string): void {
-    playbackStates.value.delete(trackId);
-  }
-
   function getCompStatus(compId: string): CompStatus {
     const comp = findComp(compId);
     if (!comp || comp.tracks.length === 0) return 'inactive';
@@ -155,7 +151,6 @@ export const useAppStore = defineStore('app', () => {
     hydrate,
     command,
     setTrackPlaybackState,
-    clearTrackPlaybackState,
     getCompStatus,
     findComp,
     findTrack,
