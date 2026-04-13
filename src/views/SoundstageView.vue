@@ -1,15 +1,20 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useAppStore } from '../stores/appStore';
 import { useContextMenuState } from '../composables/useContextMenu';
 import type { Group } from '@generated/index';
 import GroupTab from '../components/GroupTab.vue';
+import ConfigurationPicker from '../components/ConfigurationPicker.vue';
 
 const store = useAppStore();
-const { groups } = storeToRefs(store);
+const { groups, activeConfigurationId } = storeToRefs(store);
 
 const activeTab = ref(0);
+
+watch(activeConfigurationId, () => {
+  activeTab.value = 0;
+});
 
 // New group dialog state
 const showNewGroupDialog = ref(false);
@@ -100,6 +105,11 @@ async function createComp(): Promise<void> {
 
 <template>
   <div class="d-flex flex-column" style="height: 100%;">
+    <!-- Configuration header -->
+    <div class="d-flex align-center px-4 pt-2 pb-1">
+      <ConfigurationPicker />
+    </div>
+
     <!-- Group tabs bar -->
     <VTabs v-model="activeTab" color="primary" bg-color="surface">
       <VTab
