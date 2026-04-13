@@ -132,6 +132,22 @@ export function useAudio() {
     }
   }
 
+  async function playPreview(filePath: string, position: number, volume: number): Promise<void> {
+    try {
+      await invoke('play_preview', { filePath, position, volume });
+    } catch (e) {
+      toast.showError(String(e));
+    }
+  }
+
+  async function stopPreview(): Promise<void> {
+    try {
+      await invoke('stop_preview');
+    } catch (e) {
+      toast.showError(String(e));
+    }
+  }
+
   return {
     masterVolume,
     playTrack,
@@ -147,5 +163,7 @@ export function useAudio() {
     stopAll,
     pauseAll,
     resumeAll,
+    playPreview,
+    stopPreview,
   };
 }

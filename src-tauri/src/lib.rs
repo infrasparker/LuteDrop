@@ -131,6 +131,8 @@ pub fn run() {
             commands::delete_library_entry,
             commands::relocate_library_entry,
             commands::check_missing_files,
+            commands::play_preview,
+            commands::stop_preview,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LuteDrop");

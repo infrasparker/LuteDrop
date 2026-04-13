@@ -492,3 +492,14 @@ pub fn resume_all_audio(container: &AppStateContainer) -> Result<(), String> {
     audio.resume_all();
     Ok(())
 }
+
+pub fn play_preview_audio(container: &AppStateContainer, file_path: &str, position: f64, volume: f64) -> Result<(), String> {
+    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    audio.play_preview(file_path, position, volume)
+}
+
+pub fn stop_preview_audio(container: &AppStateContainer) -> Result<(), String> {
+    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    audio.stop_preview();
+    Ok(())
+}

@@ -818,6 +818,71 @@ impl AudioEngine {
         }
     }
 
+    /// Play a preview of an audio file at a specific position.
+    /// Stops any previous preview. Uses a reserved "__preview" track.
+    pub fn play_preview(&mut self, file_path: &str, position: f64, volume: f64) -> Result<(), String> {
+        // Stop previous preview
+        self.stop_preview();
+
+        // Create a preview track if it doesn't exist
+        if !self.tracks.contains_key("__preview") {
+            let track_handle = self.manager.add_sub_track(TrackBuilder::default())
+                .map_err(|e| format!("Failed to create preview track: {}", e))?;
+            self.tracks.insert("__preview".to_string(), ActiveTrack {
+                track_handle,
+                sound_handle: None,
+                outgoing_handle: None,
+                outgoing_fade_started: None,
+                outgoing_fade_duration: None,
+                current_clip_duration: None,
+                crossfade_started: false,
+                config: Track {
+                    id: "__preview".to_string(),
+                    name: "Preview".to_string(),
+                    clips: vec![],
+                    volume: 1.0,
+                    mode: TrackMode::Sequence { repeat: false, transition: TrackTransition::Gapless },
+                    fade_in: 0.0,
+                    fade_out: 0.0,
+                },
+                current_clip_index: None,
+                is_paused: false,
+                pending_start: None,
+            });
+        }
+
+        let active = self.tracks.get_mut("__preview").unwrap();
+
+        // Stop any current preview sound
+        if let Some(ref mut handle) = active.sound_handle {
+            let _ = handle.stop(Tween { duration: Duration::from_millis(10), ..Default::default() });
+        }
+
+        let mut sound_data = StreamingSoundData::from_file(file_path)
+            .map_err(|e| format!("Failed to load preview: {}", e))?;
+        sound_data = sound_data.start_position(position);
+        sound_data = sound_data.volume(amplitude_to_decibels(self.master_volume * volume));
+
+        let handle = active.track_handle.play(sound_data)
+            .map_err(|e| format!("Failed to play preview: {}", e))?;
+        active.sound_handle = Some(handle);
+        active.current_clip_duration = probe_duration(file_path);
+        active.is_paused = false;
+
+        Ok(())
+    }
+
+    /// Stop any currently playing preview sound.
+    pub fn stop_preview(&mut self) {
+        if let Some(active) = self.tracks.get_mut("__preview") {
+            if let Some(ref mut handle) = active.sound_handle {
+                let _ = handle.stop(Tween { duration: Duration::from_millis(50), ..Default::default() });
+            }
+            active.sound_handle = None;
+            active.is_paused = false;
+        }
+    }
+
     /// Whether the engine has any tracks currently playing or paused.
     #[allow(dead_code)]
     pub fn has_active_playback(&self) -> bool {

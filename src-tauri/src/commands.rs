@@ -254,3 +254,13 @@ pub fn check_missing_files(
 ) -> Result<Vec<String>, String> {
     actions::check_missing_files(&state)
 }
+
+#[tauri::command]
+pub fn play_preview(state: State<'_, Arc<AppStateContainer>>, file_path: String, position: f64, volume: f64) -> Result<(), String> {
+    actions::play_preview_audio(&state, &file_path, position, volume)
+}
+
+#[tauri::command]
+pub fn stop_preview(state: State<'_, Arc<AppStateContainer>>) -> Result<(), String> {
+    actions::stop_preview_audio(&state)
+}

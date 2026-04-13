@@ -51,7 +51,10 @@ watch(() => props.trimEnd, (v) => { if (!dragging.value) localTrimEnd.value = v;
 
 let rafId: number | null = null;
 
-const playbackState = computed(() => props.trackId ? store.playbackStates.get(props.trackId) : undefined);
+const playbackState = computed(() => {
+  if (props.trackId) return store.playbackStates.get(props.trackId);
+  return store.playbackStates.get('__preview');
+});
 
 function startPlayheadLoop(): void {
   if (rafId !== null) return;
@@ -407,6 +410,11 @@ function clampLocal(marker: MarkerType, seconds: number): void {
       if (rounded > localLoopStart.value) {
         localLoopStart.value = rounded;
       }
+      // If pushing loopStart past loopEnd, clear both loop values
+      if (localLoopStart.value >= effectiveLoopEnd.value) {
+        localLoopStart.value = 0;
+        localLoopEnd.value = 0;
+      }
       break;
     }
     case 'trimEnd': {
@@ -418,6 +426,11 @@ function clampLocal(marker: MarkerType, seconds: number): void {
       const le = effectiveLoopEnd.value;
       if (rounded < le) {
         localLoopEnd.value = round(rounded);
+      }
+      // If pushing loopEnd past loopStart, clear both loop values
+      if (localLoopEnd.value !== 0 && localLoopEnd.value <= localLoopStart.value) {
+        localLoopStart.value = 0;
+        localLoopEnd.value = 0;
       }
       break;
     }
@@ -450,11 +463,15 @@ function emitFinalValues(): void {
   const trimStart = (tsVal === null || tsVal === 0) ? null : tsVal;
   const trimEnd = (teVal !== null && dur > 0 && teVal >= dur) ? null : teVal;
 
+  // If both loop values are 0, emit them as 0 (backend treats as "no loop")
+  const loopStart = localLoopStart.value;
+  const loopEnd = localLoopEnd.value;
+
   emit('commit', {
     trimStart,
     trimEnd,
-    loopStart: localLoopStart.value,
-    loopEnd: localLoopEnd.value,
+    loopStart,
+    loopEnd,
   });
 }
 
@@ -521,9 +538,11 @@ function onMouseUp(event: MouseEvent): void {
     if (dragDistance <= PAN_DRAG_THRESHOLD) {
       zoom.viewStart.value = panStartViewStart.value;
       zoom.clampView();
+      const clickTime = zoom.xToSeconds(getCanvasXInCssPixels(event), getCanvasWidth());
       if (props.trackId) {
-        const clickTime = zoom.xToSeconds(getCanvasXInCssPixels(event), getCanvasWidth());
         audio.playTrackFrom(props.trackId, clickTime);
+      } else if (props.filePath) {
+        audio.playPreview(props.filePath, clickTime, 1.0);
       }
     } else {
       fireZoomedPeaks();
@@ -531,9 +550,13 @@ function onMouseUp(event: MouseEvent): void {
     return;
   }
 
-  if (!wasMarker && dragDistance <= PAN_DRAG_THRESHOLD && data.duration.value > 0 && props.trackId) {
+  if (!wasMarker && dragDistance <= PAN_DRAG_THRESHOLD && data.duration.value > 0) {
     const clickTime = zoom.xToSeconds(getCanvasXInCssPixels(event), getCanvasWidth());
-    audio.playTrackFrom(props.trackId, clickTime);
+    if (props.trackId) {
+      audio.playTrackFrom(props.trackId, clickTime);
+    } else if (props.filePath) {
+      audio.playPreview(props.filePath, clickTime, 1.0);
+    }
   }
 }
 
