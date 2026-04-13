@@ -15,7 +15,6 @@ const audio = useAudio();
 const toast = useToast();
 const serverUrl = ref('');
 const paused = ref(false);
-const debugSkip = ref(false);
 
 const activeTab = ref(0);
 
@@ -46,10 +45,6 @@ onMounted(async () => {
     console.warn('Could not get server info:', e);
   }
 });
-
-async function toggleDebugSkip(): Promise<void> {
-  debugSkip.value = await invoke<boolean>('toggle_debug_skip');
-}
 
 function setMasterVolume(v: number): void {
   audio.masterVolume.value = v;
@@ -145,15 +140,6 @@ async function createGroup(): Promise<void> {
           hide-details
           density="compact"
           style="width: 120px"
-        />
-        <VBtn
-          icon="mdi-bug"
-          :color="debugSkip ? 'error' : undefined"
-          variant="tonal"
-          size="small"
-          class="ml-2"
-          @click="toggleDebugSkip"
-          title="Debug: start clips 15s before end"
         />
         <VBtn
           :icon="paused ? 'mdi-play' : 'mdi-pause'"

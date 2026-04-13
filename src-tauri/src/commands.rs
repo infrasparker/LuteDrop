@@ -156,13 +156,6 @@ pub async fn get_waveform_data(
 }
 
 #[tauri::command]
-pub fn toggle_debug_skip(state: State<'_, Arc<AppStateContainer>>) -> Result<bool, String> {
-    let mut audio = state.audio.lock().map_err(|e| e.to_string())?;
-    audio.debug_skip_to_end = !audio.debug_skip_to_end;
-    Ok(audio.debug_skip_to_end)
-}
-
-#[tauri::command]
 pub fn get_server_info() -> Result<serde_json::Value, String> {
     let ip = crate::server::get_local_ip();
     Ok(serde_json::json!({

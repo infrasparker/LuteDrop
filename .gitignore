@@ -7,3 +7,6 @@ dist-remote
 
 # Rust
 target/
+
+# Superpowers brainstorm artifacts
+.superpowers/

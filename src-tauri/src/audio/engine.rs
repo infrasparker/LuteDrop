@@ -36,7 +36,6 @@ fn probe_duration(path: &str) -> Option<f64> {
         let time = tb.calc_time(nf);
         let dur = time.seconds as f64 + time.frac;
         if dur > 0.0 {
-            log::info!("Probed duration for {}: {:.1}s (metadata)", path, dur);
             return Some(dur);
         }
     }
@@ -45,12 +44,10 @@ fn probe_duration(path: &str) -> Option<f64> {
     if let (Some(sr), Some(nf)) = (track.codec_params.sample_rate, track.codec_params.n_frames) {
         let dur = nf as f64 / sr as f64;
         if dur > 0.0 {
-            log::info!("Probed duration for {}: {:.1}s (sample rate estimate)", path, dur);
             return Some(dur);
         }
     }
 
-    log::warn!("Could not probe duration for {}", path);
     None
 }
 
@@ -104,8 +101,6 @@ pub struct AudioEngine {
     manager: AudioManager,
     tracks: HashMap<String, ActiveTrack>,
     master_volume: f64,
-    /// Debug: when true, new clips start 15s before the end.
-    pub debug_skip_to_end: bool,
 }
 
 impl AudioEngine {
@@ -116,7 +111,6 @@ impl AudioEngine {
             manager,
             tracks: HashMap::new(),
             master_volume: 1.0,
-            debug_skip_to_end: false,
         })
     }
 
@@ -582,16 +576,7 @@ impl AudioEngine {
         let mut sound_data = StreamingSoundData::from_file(&clip.file_path)
             .map_err(|e| format!("Failed to load audio file '{}': {}", clip.file_path, e))?;
 
-        // Apply start position if provided (click-to-preview)
-        // Debug mode: skip to 15s before end for testing crossfades
-        let effective_start = if start_position.is_some() {
-            start_position
-        } else if self.debug_skip_to_end {
-            probe_duration(&clip.file_path).map(|d| (d - 15.0).max(0.0))
-        } else {
-            None
-        };
-        if let Some(pos) = effective_start {
+        if let Some(pos) = start_position {
             sound_data = sound_data.start_position(pos);
         }
 
@@ -623,7 +608,6 @@ impl AudioEngine {
         // Apply track fade-in only on fresh starts, not clip-to-clip transitions
         if apply_track_fade {
             let fade_in = active.config.fade_in;
-            log::info!("start_clip_inner: apply_track_fade={}, fade_in={}, fade_out={}", apply_track_fade, fade_in, active.config.fade_out);
             if fade_in > 0.0 {
                 sound_data = sound_data.fade_in_tween(Tween {
                     duration: Duration::from_secs_f64(fade_in),
@@ -730,13 +714,6 @@ impl AudioEngine {
             .tracks
             .get_mut(track_id)
             .ok_or_else(|| format!("Track not found: {}", track_id))?;
-
-        let old_position = active.sound_handle.as_ref().map(|h| h.position()).unwrap_or(0.0);
-        let old_state = active.sound_handle.as_ref().map(|h| format!("{:?}", h.state())).unwrap_or_default();
-        log::info!(
-            "Beginning crossfade on track {} to clip {}, duration {}s (old pos: {:.1}s, old state: {})",
-            track_id, next_clip_index, crossfade_duration, old_position, old_state
-        );
 
         // Pure overlap: old song keeps playing at full volume (its natural
         // ending provides the fade), new song starts at full volume.
