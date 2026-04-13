@@ -5,6 +5,7 @@ import { useRemote } from './composables/useRemote';
 import RemotePlaybackView from './views/RemotePlaybackView.vue';
 
 const remote = useRemote();
+const remoteOrigin = location.origin;
 
 function isGroupActive(group: Group): boolean {
   return group.comps.some((comp) =>
@@ -55,7 +56,8 @@ function stopAll(): void {
   <VApp @contextmenu.prevent>
     <VAppBar color="surface">
       <VAppBarTitle>
-        <span class="text-primary font-weight-bold">LuteDrop Remote</span>
+        <span class="text-primary font-weight-bold">LuteDrop</span>
+        <span class="text-caption text-medium-emphasis ml-3">Remote: {{ remoteOrigin }}</span>
         <VIcon
           :color="remote.connected.value ? 'success' : 'error'"
           size="x-small"

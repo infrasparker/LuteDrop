@@ -15,17 +15,16 @@ const emit = defineEmits<{
 const remote = useRemote();
 const status = computed(() => remote.getCompStatus(props.comp.id));
 
-const borderStyle = computed(() => {
-  return status.value !== 'inactive' ? '3px solid #FF6D00' : '3px solid transparent';
-});
+const isActive = computed(() => status.value !== 'inactive');
 </script>
 
 <template>
   <VCard
     :color="selected ? 'primary' : 'surface-light'"
     variant="flat"
-    class="pa-2 text-center"
-    :style="{ width: '130px', cursor: 'pointer', border: borderStyle }"
+    class="comp-card pa-2 text-center"
+    :class="{ 'comp-active': isActive }"
+    style="width: 130px; cursor: pointer;"
     @click="emit('select', comp.id)"
   >
     <div class="d-flex justify-center ga-1 mb-2">
@@ -48,3 +47,12 @@ const borderStyle = computed(() => {
     <div class="text-caption" style="opacity: 0.6;">{{ comp.tracks.length }} tracks</div>
   </VCard>
 </template>
+
+<style scoped>
+.comp-card {
+  border: 3px solid transparent;
+}
+.comp-active {
+  border: 3px solid #F0A830;
+}
+</style>

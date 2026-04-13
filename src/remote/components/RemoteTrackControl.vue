@@ -21,13 +21,12 @@ const currentClipName = computed(() => {
 </script>
 
 <template>
-  <div>
+  <div :class="{ 'track-wrapper': true, 'track-active': isActive }">
     <VExpansionPanels>
       <VExpansionPanel
         color="surface-light"
         rounded="0"
         elevation="0"
-        :style="isActive ? { borderLeft: '3px solid #FF6D00' } : { borderLeft: '3px solid transparent' }"
       >
         <template #title>
           <div class="d-flex align-center ga-2" style="width: 100%;">
@@ -92,3 +91,15 @@ const currentClipName = computed(() => {
     </VExpansionPanels>
   </div>
 </template>
+
+<style scoped>
+.track-wrapper {
+  border-left: 3px solid transparent;
+}
+.track-active {
+  border-left: 3px solid #F0A830;
+}
+.track-active :deep(.v-expansion-panel-title) {
+  background: rgba(240, 168, 48, 0.08);
+}
+</style>
