@@ -77,8 +77,10 @@ struct ActiveTrack {
     outgoing_fade_started: Option<Instant>,
     /// Duration of the current outgoing crossfade.
     outgoing_fade_duration: Option<f64>,
-    /// Duration of the currently playing clip in seconds (for crossfade timing).
+    /// Absolute time position where the clip effectively ends (for crossfade/advancement timing).
     current_clip_duration: Option<f64>,
+    /// Absolute time position where the clip started playing from.
+    current_clip_start: Option<f64>,
     /// Whether we've already started the crossfade for the current clip.
     crossfade_started: bool,
     /// The track configuration snapshot (clips, mode, volume, fades).
@@ -136,6 +138,7 @@ impl AudioEngine {
                 outgoing_fade_started: None,
                 outgoing_fade_duration: None,
                 current_clip_duration: None,
+                current_clip_start: None,
                 crossfade_started: false,
                 config: track.clone(),
                 current_clip_index: None,
@@ -634,6 +637,7 @@ impl AudioEngine {
             (None, Some(d)) => Some(d),
             _ => None,
         };
+        active.current_clip_start = effective_start;
         active.crossfade_started = false;
         active.is_paused = false;
         active.pending_start = None;
@@ -787,11 +791,22 @@ impl AudioEngine {
                 None => continue,
             };
 
-            // Trigger crossfade when we're within crossfade_duration of the end
-            if position >= clip_duration - crossfade_duration {
+            // Trigger crossfade when we're within crossfade_duration of the end.
+            // But only if the clip's playable window is longer than the crossfade duration —
+            // otherwise a short trimmed clip would trigger crossfade immediately on start.
+            let clip_start = active.current_clip_start.unwrap_or(0.0);
+            let playable_duration = clip_duration - clip_start;
+            let effective_crossfade = if playable_duration > crossfade_duration {
+                crossfade_duration
+            } else {
+                // Clip is too short for full crossfade — use a fraction or skip
+                (playable_duration * 0.5).max(0.1)
+            };
+
+            if position >= clip_duration - effective_crossfade {
                 let next = pick_next_clip_index(&active.config, active.current_clip_index);
                 if let Some(next_idx) = next {
-                    triggers.push((track_id.clone(), next_idx, crossfade_duration));
+                    triggers.push((track_id.clone(), next_idx, effective_crossfade));
                 }
             }
         }
@@ -849,6 +864,7 @@ impl AudioEngine {
                 outgoing_fade_started: None,
                 outgoing_fade_duration: None,
                 current_clip_duration: None,
+                current_clip_start: None,
                 crossfade_started: false,
                 config: Track {
                     id: "__preview".to_string(),
