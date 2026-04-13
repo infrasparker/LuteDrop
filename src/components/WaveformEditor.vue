@@ -375,8 +375,11 @@ function drawWaveform(): void {
   ctx.lineTo(cssW, midY);
   ctx.stroke();
 
-  // Playhead
-  const ps = playbackState.value;
+  // Playhead — only draw if this entry is the one actually playing
+  const isThisEntryPlaying = props.trackId
+    ? true  // soundstage track — always show for matching trackId
+    : (props.entryId != null && store.libraryPlayingEntryId === props.entryId);
+  const ps = isThisEntryPlaying ? playbackState.value : undefined;
   if (ps && (ps.isPlaying || ps.isPaused)) {
     const phX = zoom.secondsToX(ps.currentTime, cssW);
     if (phX >= 0 && phX <= cssW) {
