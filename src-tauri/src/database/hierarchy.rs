@@ -345,7 +345,6 @@ pub fn delete_clip(conn: &Connection, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[allow(dead_code)]
 pub fn update_clip_volume(conn: &Connection, id: &str, volume: f64) -> Result<(), String> {
     conn.execute(
         "UPDATE clips SET volume = ?1 WHERE id = ?2",

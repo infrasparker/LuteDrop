@@ -412,6 +412,12 @@ pub fn set_track_volume_action(container: &AppStateContainer, track_id: &str, vo
 }
 
 pub fn set_clip_volume_action(container: &AppStateContainer, clip_id: &str, volume: f64) -> Result<(), String> {
+    // Persist to database
+    {
+        let conn = container.db.lock().map_err(|e| e.to_string())?;
+        hierarchy::update_clip_volume(&conn, clip_id, volume)?;
+    }
+    // Update audio engine
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
     audio.set_clip_volume(clip_id, volume)
 }

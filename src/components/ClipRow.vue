@@ -21,17 +21,7 @@ function playClip(): void {
   audio.playTrackClip(props.trackId, props.clip.id);
 }
 
-async function updateVolume(volume: number): Promise<void> {
-  const track = store.findTrack(props.trackId);
-  if (!track) return;
-  const updatedClips = track.clips.map((c) =>
-    c.id === props.clip.id ? { ...c, volume } : c
-  );
-  await store.command('update_track', {
-    compId: props.compId,
-    trackId: props.trackId,
-    updates: { clips: updatedClips },
-  });
+function updateVolume(volume: number): void {
   audio.setClipVolume(props.clip.id, volume);
 }
 
