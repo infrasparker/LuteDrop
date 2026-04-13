@@ -580,8 +580,8 @@ impl AudioEngine {
             sound_data = sound_data.start_position(pos);
         }
 
-        // Calculate combined volume: master * track * clip
-        let combined_volume = self.master_volume * active.config.volume * clip.volume;
+        // Calculate combined volume: master * track * clip * library_entry
+        let combined_volume = self.master_volume * active.config.volume * clip.volume * clip.library_volume;
 
         // Apply loop region for seamless mode
         match &active.config.mode {
@@ -734,7 +734,7 @@ impl AudioEngine {
         let mut sound_data = StreamingSoundData::from_file(&clip.file_path)
             .map_err(|e| format!("Failed to load audio file '{}': {}", clip.file_path, e))?;
 
-        let combined_volume = self.master_volume * active.config.volume * clip.volume;
+        let combined_volume = self.master_volume * active.config.volume * clip.volume * clip.library_volume;
         sound_data = sound_data.volume(amplitude_to_decibels(combined_volume));
 
         let sound_handle = active
@@ -797,13 +797,13 @@ impl AudioEngine {
     /// Recalculate and apply the combined volume to a track's active sound.
     fn update_sound_volume(&mut self, track_id: &str) {
         if let Some(active) = self.tracks.get_mut(track_id) {
-            let clip_volume = active
+            let (clip_volume, clip_library_volume) = active
                 .current_clip_index
                 .and_then(|idx| active.config.clips.get(idx))
-                .map(|clip| clip.volume)
-                .unwrap_or(1.0);
+                .map(|clip| (clip.volume, clip.library_volume))
+                .unwrap_or((1.0, 1.0));
 
-            let combined = self.master_volume * active.config.volume * clip_volume;
+            let combined = self.master_volume * active.config.volume * clip_volume * clip_library_volume;
 
             if let Some(ref mut handle) = active.sound_handle {
                 handle.set_volume(
