@@ -419,11 +419,26 @@ pub fn set_master_volume_action(container: &AppStateContainer, volume: f64) -> R
 }
 
 pub fn set_track_volume_action(container: &AppStateContainer, track_id: &str, volume: f64) -> Result<(), String> {
+    // Persist to DB (cheap, no full state reload)
+    {
+        let conn = container.db.lock().map_err(|e| e.to_string())?;
+        hierarchy::update_track_volume(&conn, track_id, volume)?;
+    }
+    // Update audio engine only if track is currently active
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
-    audio.set_track_volume(track_id, volume)
+    if audio.has_track(track_id) {
+        audio.set_track_volume(track_id, volume)?;
+    }
+    Ok(())
 }
 
 pub fn set_clip_volume_action(container: &AppStateContainer, clip_id: &str, volume: f64) -> Result<(), String> {
+    // Persist to DB (cheap, no full state reload)
+    {
+        let conn = container.db.lock().map_err(|e| e.to_string())?;
+        hierarchy::update_clip_volume(&conn, clip_id, volume)?;
+    }
+    // Update audio engine — set_clip_volume is a no-op if clip isn't in any active track
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
     audio.set_clip_volume(clip_id, volume)
 }

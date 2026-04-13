@@ -349,24 +349,21 @@ impl AudioEngine {
     }
 
     /// Set the volume for a specific track. Updates active sound if playing.
+    /// Returns Ok(()) if the track isn't in the engine (nothing to update).
     pub fn set_track_volume(&mut self, track_id: &str, volume: f64) -> Result<(), String> {
-        {
-            let active = self
-                .tracks
-                .get_mut(track_id)
-                .ok_or_else(|| format!("Track not found: {}", track_id))?;
+        if let Some(active) = self.tracks.get_mut(track_id) {
             active.config.volume = volume.clamp(0.0, 1.0);
+            drop(active);
+            self.update_sound_volume(track_id);
         }
-
-        self.update_sound_volume(track_id);
         Ok(())
     }
 
     /// Set the volume for a specific clip. Finds which track has this clip and updates.
+    /// Returns Ok(()) if the clip isn't in any active track (nothing to update).
     pub fn set_clip_volume(&mut self, clip_id: &str, volume: f64) -> Result<(), String> {
         let volume = volume.clamp(0.0, 1.0);
 
-        // Find which track has this clip
         let mut found_track_id: Option<String> = None;
         for (track_id, active) in &mut self.tracks {
             for clip in &mut active.config.clips {
@@ -381,13 +378,10 @@ impl AudioEngine {
             }
         }
 
-        match found_track_id {
-            Some(track_id) => {
-                self.update_sound_volume(&track_id);
-                Ok(())
-            }
-            None => Err(format!("Clip not found: {}", clip_id)),
+        if let Some(track_id) = found_track_id {
+            self.update_sound_volume(&track_id);
         }
+        Ok(())
     }
 
     /// Returns the current playback state of all set-up tracks.
