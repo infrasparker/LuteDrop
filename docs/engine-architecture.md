@@ -112,19 +112,6 @@ Library playback bypasses the orchestrator entirely.
 - `AudioEngine::stop_library_sound` calls `sound::stop` with the stored handle's fade-out duration.
 - The 50 ms poll loop **always** emits a `TrackPlaybackState` for `track_id = "__library"` — either the current sound's state or a stopped state (`is_playing: false, is_paused: false`). This ensures the frontend properly detects when library playback ends.
 - The poll loop also checks if the library sound's position has passed its `trim_end` (stored in `SoundHandle.duration`). If so, it stops the sound. This enforces trim_end for non-looping library playback, since Kira has no native "stop at position X" feature.
-- When the user navigates away from the Library view, `App.vue` calls `stopLibrarySound`.
-- `useAudio.playLibrarySound` takes `entryId` as its first parameter and centrally sets `store.libraryPlayingEntryId` on success. `stopLibrarySound` centrally clears it and removes the `__library` playback state entry. Callers never manage this state manually.
-
-### Waveform click-to-play behavior
-
-When the user clicks the waveform in the library editor, `WaveformEditor.vue` calls `playLibrarySound` with boundary-aware parameters:
-- `trim_end` is only passed if the click position is **before** it. Clicking past trim_end plays to the end of the file.
-- `loop_region` is only passed if the click position is **before** loop_end. Clicking past the loop plays without looping.
-- This allows users to audition any part of the file freely while still enforcing boundaries they'll "hit" during playback.
-
-### Playhead rendering
-
-`WaveformEditor.vue` uses a plain function `getPlaybackState()` (not a Vue computed) to check playback state on every RAF frame. This avoids Vue's computed caching, which can serve stale values during component mount lifecycle. The function checks `store.libraryPlayingEntryId === props.entryId` to ensure the playhead only renders on the entry that is actually playing.
 
 ---
 
