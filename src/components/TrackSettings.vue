@@ -19,9 +19,8 @@ const {
   updateRepeat,
   updateGapMin,
   updateGapMax,
-  updateCrossfade,
-  updateFadeIn,
-  updateFadeOut,
+  toggleFadeIn,
+  toggleFadeOut,
 } = useTrackUpdates(() => props.track.id, () => props.compId);
 
 const modeOptions = [
@@ -74,18 +73,6 @@ const showWaveform = computed(() => isSeamless.value && seamlessClip.value !== n
       />
     </div>
 
-    <div v-if="hasTransition && transitionType === 'crossfade'" style="min-width: 100px; max-width: 120px;">
-      <VTextField
-        :model-value="(track.mode as any).transition.duration"
-        @update:model-value="updateCrossfade"
-        label="Crossfade (s)"
-        type="number"
-        variant="outlined"
-        density="compact"
-        hide-details
-      />
-    </div>
-
     <template v-if="hasTransition && transitionType === 'gap'">
       <div style="min-width: 90px; max-width: 110px;">
         <VTextField
@@ -111,29 +98,21 @@ const showWaveform = computed(() => isSeamless.value && seamlessClip.value !== n
       </div>
     </template>
 
-    <div style="min-width: 90px; max-width: 110px;">
-      <VTextField
-        :model-value="track.fadeIn"
-        @update:model-value="updateFadeIn"
-        label="Fade In (s)"
-        type="number"
-        variant="outlined"
-        density="compact"
-        hide-details
-      />
-    </div>
+    <VCheckbox
+      :model-value="track.fadeIn > 0"
+      @update:model-value="toggleFadeIn"
+      label="Fade In"
+      density="compact"
+      hide-details
+    />
 
-    <div style="min-width: 90px; max-width: 110px;">
-      <VTextField
-        :model-value="track.fadeOut"
-        @update:model-value="updateFadeOut"
-        label="Fade Out (s)"
-        type="number"
-        variant="outlined"
-        density="compact"
-        hide-details
-      />
-    </div>
+    <VCheckbox
+      :model-value="track.fadeOut > 0"
+      @update:model-value="toggleFadeOut"
+      label="Fade Out"
+      density="compact"
+      hide-details
+    />
 
     <div v-if="isSeamless" style="min-width: 100px; max-width: 120px;">
       <VTextField

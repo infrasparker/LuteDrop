@@ -55,6 +55,9 @@ fn probe_duration(path: &str) -> Option<f64> {
 }
 
 /// Converts a linear amplitude (0.0 - 1.0) to kira Decibels.
+/// Standard crossfade overlap duration in seconds.
+const CROSSFADE_OVERLAP: f64 = 4.0;
+
 /// Uses the standard formula: dB = 20 * log10(amplitude).
 /// Clamps very small values to silence.
 fn amplitude_to_decibels(amp: f64) -> Decibels {
@@ -708,9 +711,9 @@ impl AudioEngine {
                 }
                 Ok(())
             }
-            TrackTransition::Crossfade { duration } => {
-                // Old clip already stopped — just start new one with fade in
-                self.begin_crossfade(track_id, next_clip_index, duration)
+            TrackTransition::Crossfade => {
+                // Old clip already stopped — just start new clip
+                self.begin_crossfade(track_id, next_clip_index, CROSSFADE_OVERLAP)
             }
         }
     }
@@ -735,31 +738,15 @@ impl AudioEngine {
             track_id, next_clip_index, crossfade_duration, old_position, old_state
         );
 
-        // Move current sound to outgoing — it keeps playing while fading out
-        let mut old_handle = active.sound_handle.take();
-        // Drop any previous outgoing handle
+        // Pure overlap: old song keeps playing at full volume (its natural
+        // ending provides the fade), new song starts at full volume.
+        let old_handle = active.sound_handle.take();
         active.outgoing_handle = None;
-
-        // Fade out the old sound over the crossfade duration.
-        // Use set_volume instead of stop() — stop() transitions to Stopped state
-        // which can interfere with cleanup. set_volume just fades the volume down
-        // while the sound keeps playing naturally.
-        if let Some(ref mut handle) = old_handle {
-            handle.set_volume(
-                Decibels::SILENCE,
-                Tween {
-                    duration: Duration::from_secs_f64(crossfade_duration),
-                    easing: Easing::InPowi(3),
-                    ..Default::default()
-                },
-            );
-        }
         active.outgoing_handle = old_handle;
         active.outgoing_fade_started = Some(Instant::now());
         active.outgoing_fade_duration = Some(crossfade_duration);
         active.crossfade_started = true;
 
-        // Load and start the next clip with fade in
         let clip = active
             .config
             .clips
@@ -772,11 +759,6 @@ impl AudioEngine {
 
         let combined_volume = self.master_volume * active.config.volume * clip.volume;
         sound_data = sound_data.volume(amplitude_to_decibels(combined_volume));
-        sound_data = sound_data.fade_in_tween(Tween {
-            duration: Duration::from_secs_f64(crossfade_duration),
-            easing: Easing::OutPowi(3),
-            ..Default::default()
-        });
 
         let sound_handle = active
             .track_handle
@@ -803,8 +785,8 @@ impl AudioEngine {
 
             // Only applies to tracks with crossfade transition
             let crossfade_duration = match &active.config.mode {
-                TrackMode::Sequence { transition: TrackTransition::Crossfade { duration }, .. } => *duration,
-                TrackMode::Shuffle { transition: TrackTransition::Crossfade { duration }, .. } => *duration,
+                TrackMode::Sequence { transition: TrackTransition::Crossfade, .. } => CROSSFADE_OVERLAP,
+                TrackMode::Shuffle { transition: TrackTransition::Crossfade, .. } => CROSSFADE_OVERLAP,
                 _ => continue,
             };
 

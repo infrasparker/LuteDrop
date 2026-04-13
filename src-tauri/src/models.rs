@@ -17,7 +17,7 @@ pub struct Clip {
 pub enum TrackTransition {
     Gapless,
     Gap { min: f64, max: f64 },
-    Crossfade { duration: f64 },
+    Crossfade,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

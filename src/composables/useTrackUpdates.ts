@@ -39,7 +39,7 @@ export function useTrackUpdates(trackId: () => string, compId: () => string) {
     let transition: TrackTransition;
     switch (type) {
       case 'gap': transition = { type: 'gap', min: 0, max: 5 }; break;
-      case 'crossfade': transition = { type: 'crossfade', duration: 2 }; break;
+      case 'crossfade': transition = { type: 'crossfade' }; break;
       default: transition = { type: 'gapless' }; break;
     }
     const mode = track.mode as { type: 'sequence' | 'shuffle'; repeat: boolean; transition: TrackTransition };
@@ -95,19 +95,12 @@ export function useTrackUpdates(trackId: () => string, compId: () => string) {
     await updateField({ mode: { ...mode, transition: { type: 'gap', min: mode.transition.min, max: Number(v) } } });
   }
 
-  async function updateCrossfade(v: string): Promise<void> {
-    const track = store.findTrack(trackId());
-    if (!track) return;
-    const mode = track.mode as any;
-    await updateField({ mode: { ...mode, transition: { type: 'crossfade', duration: Number(v) } } });
+  async function toggleFadeIn(v: boolean | null): Promise<void> {
+    await updateField({ fadeIn: v ? 1 : 0 });
   }
 
-  async function updateFadeIn(v: string): Promise<void> {
-    await updateField({ fadeIn: Number(v) });
-  }
-
-  async function updateFadeOut(v: string): Promise<void> {
-    await updateField({ fadeOut: Number(v) });
+  async function toggleFadeOut(v: boolean | null): Promise<void> {
+    await updateField({ fadeOut: v ? 1 : 0 });
   }
 
   return {
@@ -121,8 +114,7 @@ export function useTrackUpdates(trackId: () => string, compId: () => string) {
     updateRepeat,
     updateGapMin,
     updateGapMax,
-    updateCrossfade,
-    updateFadeIn,
-    updateFadeOut,
+    toggleFadeIn,
+    toggleFadeOut,
   };
 }
