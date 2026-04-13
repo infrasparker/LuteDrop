@@ -56,7 +56,7 @@ async function relocateEntry(entryId: string): Promise<void> {
 </script>
 
 <template>
-  <VContainer fluid class="d-flex flex-column" style="height: 100%;">
+  <VContainer fluid class="d-flex flex-column">
     <!-- Top bar -->
     <div class="d-flex align-center mb-4 ga-2">
       <span class="text-h6 font-weight-bold">Library</span>
@@ -92,7 +92,7 @@ async function relocateEntry(entryId: string): Promise<void> {
     </div>
 
     <!-- Entry list -->
-    <VList v-if="filteredEntries.length > 0" class="flex-grow-1 overflow-y-auto" lines="two">
+    <VList v-if="filteredEntries.length > 0" class="overflow-y-auto" lines="two">
       <LibraryEntryRow
         v-for="entry in filteredEntries"
         :key="entry.id"
@@ -130,7 +130,7 @@ async function relocateEntry(entryId: string): Promise<void> {
     <!-- Empty state -->
     <div
       v-else
-      class="flex-grow-1 d-flex flex-column align-center justify-center text-medium-emphasis"
+      class="d-flex flex-column align-center justify-center text-medium-emphasis pa-8"
     >
       <VIcon size="64" class="mb-4">mdi-music-box-multiple-outline</VIcon>
       <span>Import some audio files</span>

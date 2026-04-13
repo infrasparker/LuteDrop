@@ -37,12 +37,8 @@ async function remove(): Promise<void> {
 
 <template>
   <div
-    class="d-flex align-center ga-2 py-2 px-1"
-    :style="{
-      borderBottom: '1px solid rgba(232, 228, 220, 0.05)',
-      borderLeft: isCurrentClip ? '3px solid #F0A830' : '3px solid transparent',
-      backgroundColor: isCurrentClip ? 'rgba(240, 168, 48, 0.08)' : 'transparent',
-    }"
+    class="clip-row d-flex align-center ga-2 py-2 px-1"
+    :class="{ 'clip-active': isCurrentClip }"
   >
     <VIcon size="small" class="text-medium-emphasis drag-handle" style="cursor: grab;">mdi-drag</VIcon>
     <VBtn
@@ -70,3 +66,14 @@ async function remove(): Promise<void> {
     <VBtn icon="mdi-delete" variant="text" size="x-small" color="error" @click="remove" />
   </div>
 </template>
+
+<style scoped>
+.clip-row {
+  border-bottom: 1px solid rgba(232, 228, 220, 0.05);
+  border-left: 3px solid transparent;
+}
+.clip-active {
+  border-left: 3px solid #F0A830;
+  background: rgba(240, 168, 48, 0.08);
+}
+</style>

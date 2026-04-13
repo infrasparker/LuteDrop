@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue';
+import { onMounted, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from './stores/appStore';
 import { useAudio } from './composables/useAudio';
@@ -10,7 +10,6 @@ import TransportBar from './components/TransportBar.vue';
 
 const store = useAppStore();
 const toast = useToast();
-const serverUrl = ref('');
 
 // Initialize audio early to register event listeners
 const audio = useAudio();
@@ -32,27 +31,11 @@ onMounted(async () => {
   if (store.missingEntryIds.size > 0) {
     toast.showError(`${store.missingEntryIds.size} audio file(s) not found. Check the Library view.`);
   }
-
-  try {
-    const info = await invoke<{ ip: string; port: number }>('get_server_info');
-    serverUrl.value = `http://${info.ip}:${info.port}`;
-  } catch (e) {
-    console.warn('Could not get server info:', e);
-  }
 });
 </script>
 
 <template>
   <VApp @contextmenu.prevent>
-    <VAppBar color="surface" density="compact" elevation="1">
-      <VAppBarTitle>
-        <span class="text-primary font-weight-bold">LuteDrop</span>
-        <span v-if="serverUrl" class="text-caption text-medium-emphasis ml-3">
-          Remote: {{ serverUrl }}
-        </span>
-      </VAppBarTitle>
-    </VAppBar>
-
     <VNavigationDrawer rail expand-on-hover permanent>
       <VList nav>
         <VListItem

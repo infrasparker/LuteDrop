@@ -217,6 +217,9 @@ function setVolume(v: number): void {
 .track-active {
   border-left: 3px solid #F0A830;
 }
+.track-active :deep(.v-expansion-panel-title) {
+  background: rgba(240, 168, 48, 0.08);
+}
 </style>
 
 <style>
