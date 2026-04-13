@@ -4,11 +4,33 @@ use ts_rs::TS;
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
+pub struct LibraryEntry {
+    pub id: String,
+    pub file_path: String,
+    pub content_hash: Option<String>,
+    pub name: String,
+    pub duration: Option<f64>,
+    pub sample_rate: Option<u32>,
+    pub file_size: Option<u64>,
+    pub volume: f64,
+    pub trim_start: Option<f64>,
+    pub trim_end: Option<f64>,
+    pub loop_start: Option<f64>,
+    pub loop_end: Option<f64>,
+    pub created_at: String,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
 pub struct Clip {
     pub id: String,
     pub name: String,
     pub file_path: String,
     pub volume: f64,
+    pub library_entry_id: String,
+    pub library_volume: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -74,14 +96,16 @@ pub struct Group {
 #[serde(rename_all = "camelCase")]
 pub struct AppState {
     pub groups: Vec<Group>,
-    pub last_saved_at: Option<String>,
+    pub library_entries: Vec<LibraryEntry>,
+    pub tags: Vec<String>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self {
             groups: Vec::new(),
-            last_saved_at: None,
+            library_entries: Vec::new(),
+            tags: Vec::new(),
         }
     }
 }
