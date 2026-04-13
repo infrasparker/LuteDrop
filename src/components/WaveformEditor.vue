@@ -83,7 +83,7 @@ watch(() => playbackState.value?.isPlaying, (playing) => {
     stopPlayheadLoop();
     drawWaveform();
   }
-});
+}, { immediate: true });
 
 // --- Derived state ---
 
@@ -290,9 +290,10 @@ function drawWaveform(): void {
     }
   }
 
-  // Loop markers
+  // Loop markers — compute effective end inline to avoid stale computed during drag
   const loopStartX = zoom.secondsToX(localLoopStart.value, cssW);
-  const loopEndX = zoom.secondsToX(effectiveLoopEnd.value, cssW);
+  const drawLoopEnd = localLoopEnd.value === 0 ? data.duration.value : localLoopEnd.value;
+  const loopEndX = zoom.secondsToX(drawLoopEnd, cssW);
 
   ctx.strokeStyle = '#4CAF50';
   ctx.lineWidth = 2;
@@ -447,8 +448,9 @@ function clampLocal(marker: MarkerType, seconds: number): void {
       break;
     }
     case 'loopStart': {
+      const curLoopEnd2 = localLoopEnd.value === 0 ? dur : localLoopEnd.value;
       clamped = Math.max(ts, clamped);
-      clamped = Math.min(clamped, effectiveLoopEnd.value - 0.01);
+      clamped = Math.min(clamped, curLoopEnd2 - 0.01);
       localLoopStart.value = round(clamped);
       break;
     }
