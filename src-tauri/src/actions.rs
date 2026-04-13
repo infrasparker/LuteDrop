@@ -257,7 +257,7 @@ pub fn import_library_entry(
 
         // Probe duration from the audio file if not already provided
         if duration.is_none() {
-            if let Some(probed_duration) = crate::audio::engine::probe_duration(&file_path) {
+            if let Some(probed_duration) = crate::audio::util::probe_duration(&file_path) {
                 let _ = library::update_library_entry_duration(conn, &entry_id, probed_duration, None);
             }
         }

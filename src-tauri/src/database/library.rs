@@ -261,7 +261,7 @@ pub fn backfill_durations(conn: &Connection) -> Result<usize, String> {
 
     let mut updated = 0;
     for (id, file_path) in &entries {
-        if let Some(duration) = crate::audio::engine::probe_duration(file_path) {
+        if let Some(duration) = crate::audio::util::probe_duration(file_path) {
             update_library_entry_duration(conn, id, duration, None)?;
             updated += 1;
         }
