@@ -622,7 +622,12 @@ watch(data.basePeaks, () => {
   drawWaveform();
 });
 watch(data.zoomedPeaks, () => drawWaveform());
-watch(() => [props.loopStart, props.loopEnd, props.trimStart, props.trimEnd], () => drawWaveform());
+// Redraw when local marker values change (after prop sync)
+watch(
+  [localLoopStart, localLoopEnd, localTrimStart, localTrimEnd],
+  () => drawWaveform(),
+  { flush: 'post' },
+);
 
 watch(() => props.filePath, () => {
   localLoopStart.value = props.loopStart;
