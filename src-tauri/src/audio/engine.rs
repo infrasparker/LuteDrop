@@ -830,7 +830,7 @@ impl AudioEngine {
         file_path: &str,
         position: f64,
         volume: f64,
-        trim_start: Option<f64>,
+        _trim_start: Option<f64>,
         trim_end: Option<f64>,
         loop_start: Option<f64>,
         loop_end: Option<f64>,
