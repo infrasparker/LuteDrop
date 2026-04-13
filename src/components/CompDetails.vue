@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import type { Comp } from '@generated/index';
-import { useTrackImport } from '../composables/useTrackImport';
+import { useAppStore } from '../stores/appStore';
 import TrackControl from './TrackControl.vue';
 import LibraryBrowser from './LibraryBrowser.vue';
 
@@ -10,9 +10,24 @@ const props = defineProps<{
   groupId: string;
 }>();
 
-const { importTracks } = useTrackImport();
+const store = useAppStore();
 
-// Library browser dialog state (will be implemented in Task 12)
+// Add track dialog state
+const showAddTrackDialog = ref(false);
+const newTrackName = ref('');
+
+function openAddTrackDialog(): void {
+  newTrackName.value = '';
+  showAddTrackDialog.value = true;
+}
+
+async function addTrack(): Promise<void> {
+  const name = newTrackName.value.trim() || 'New Track';
+  await store.command('add_track', { compId: props.comp.id, name });
+  showAddTrackDialog.value = false;
+}
+
+// Library browser dialog state
 const showLibraryBrowser = ref(false);
 const libraryBrowserTrackId = ref('');
 
@@ -30,7 +45,7 @@ function openLibraryBrowser(trackId: string): void {
         prepend-icon="mdi-plus"
         variant="tonal"
         rounded="xl"
-        @click="importTracks(comp.id)"
+        @click="openAddTrackDialog"
       >
         Add Track
       </VBtn>
@@ -45,8 +60,30 @@ function openLibraryBrowser(trackId: string): void {
     />
 
     <div v-if="comp.tracks.length === 0" class="text-medium-emphasis text-center pa-8">
-      No tracks yet. Click "Add Track" to import audio files.
+      No tracks yet. Click "Add Track" to get started.
     </div>
+
+    <!-- Add Track dialog -->
+    <VDialog v-model="showAddTrackDialog" max-width="400">
+      <VCard title="Add Track">
+        <VCardText>
+          <VTextField
+            v-model="newTrackName"
+            label="Track Name"
+            placeholder="New Track"
+            variant="outlined"
+            autofocus
+            @keydown.enter="addTrack"
+          />
+        </VCardText>
+        <VDivider />
+        <VCardActions>
+          <VSpacer />
+          <VBtn text="Cancel" variant="plain" @click="showAddTrackDialog = false" />
+          <VBtn text="Add" color="primary" variant="tonal" @click="addTrack" />
+        </VCardActions>
+      </VCard>
+    </VDialog>
 
     <LibraryBrowser
       v-model="showLibraryBrowser"
