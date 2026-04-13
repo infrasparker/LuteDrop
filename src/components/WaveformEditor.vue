@@ -53,6 +53,9 @@ watch(() => props.trimEnd, (v) => { if (!dragging.value) localTrimEnd.value = v;
 
 let rafId: number | null = null;
 
+/// Returns the playback state for this editor's audio, or undefined if nothing is playing here.
+/// Intentionally a plain function (not a computed) — called every RAF frame, needs fresh reads
+/// without Vue's computed caching which can serve stale values during mount lifecycle.
 function getPlaybackState() {
   if (props.trackId) return store.playbackStates.get(props.trackId);
   if (props.entryId && store.libraryPlayingEntryId === props.entryId) {
