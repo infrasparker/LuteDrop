@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import type { Clip } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
@@ -13,6 +13,10 @@ const props = defineProps<{
 const store = useAppStore();
 const audio = useAudio();
 
+// Local ref so the slider responds instantly without waiting for store hydration
+const localVolume = ref(props.clip.volume);
+watch(() => props.clip.volume, (v) => { localVolume.value = v; });
+
 const playbackState = computed(() => store.playbackStates.get(props.trackId));
 const isCurrentClip = computed(() => playbackState.value?.currentClipId === props.clip.id);
 const isPlaying = computed(() => isCurrentClip.value && playbackState.value?.isPlaying);
@@ -22,6 +26,7 @@ function playClip(): void {
 }
 
 function updateVolume(volume: number): void {
+  localVolume.value = volume;
   audio.setClipVolume(props.clip.id, volume);
 }
 
@@ -52,7 +57,7 @@ async function remove(): Promise<void> {
     >{{ clip.name }}</span>
     <VIcon size="small" class="text-medium-emphasis">mdi-volume-high</VIcon>
     <VSlider
-      :model-value="clip.volume"
+      :model-value="localVolume"
       @update:model-value="updateVolume"
       :min="0"
       :max="1"
