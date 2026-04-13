@@ -6,6 +6,7 @@ import { useAppStore } from '../stores/appStore';
 import { useLibraryImport } from '../composables/useLibraryImport';
 import TagFilter from '../components/TagFilter.vue';
 import LibraryEntryRow from '../components/LibraryEntryRow.vue';
+import WaveformEditorDialog from '../components/WaveformEditorDialog.vue';
 
 const store = useAppStore();
 const { libraryEntries } = storeToRefs(store);
@@ -25,6 +26,15 @@ const filteredEntries = computed(() => {
     return matchesSearch && matchesTags;
   });
 });
+
+// Waveform editor dialog state
+const showEditorDialog = ref(false);
+const editorEntryId = ref('');
+
+function openEditor(entryId: string): void {
+  editorEntryId.value = entryId;
+  showEditorDialog.value = true;
+}
 
 // Tag edit dialog state
 const showTagDialog = ref(false);
@@ -122,6 +132,13 @@ async function relocateEntry(entryId: string): Promise<void> {
             @click.stop="relocateEntry(entry.id)"
           />
           <VBtn
+            icon="mdi-waveform"
+            size="small"
+            variant="text"
+            title="Edit waveform"
+            @click.stop="openEditor(entry.id)"
+          />
+          <VBtn
             icon="mdi-tag-edit"
             size="small"
             variant="text"
@@ -148,6 +165,12 @@ async function relocateEntry(entryId: string): Promise<void> {
       <VIcon size="64" class="mb-4">mdi-music-box-multiple-outline</VIcon>
       <span>Import some audio files</span>
     </div>
+
+    <!-- Waveform editor dialog -->
+    <WaveformEditorDialog
+      v-model="showEditorDialog"
+      :entry-id="editorEntryId"
+    />
 
     <!-- Tag edit dialog -->
     <VDialog v-model="showTagDialog" max-width="400">

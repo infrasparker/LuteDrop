@@ -287,6 +287,18 @@ pub fn update_library_entry_tags(
     })
 }
 
+pub fn update_library_entry_trim_action(
+    container: &AppStateContainer,
+    entry_id: &str,
+    trim_start: Option<f64>,
+    trim_end: Option<f64>,
+) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        library::update_library_entry_trim(conn, entry_id, trim_start, trim_end)?;
+        database::load_full_state(conn)
+    })
+}
+
 pub fn update_library_entry_loop_points(
     container: &AppStateContainer,
     entry_id: &str,

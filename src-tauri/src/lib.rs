@@ -124,6 +124,7 @@ pub fn run() {
             commands::get_server_info,
             commands::import_library_entry,
             commands::update_library_entry_tags,
+            commands::update_library_entry_trim,
             commands::update_library_entry_loop_points,
             commands::update_library_entry_volume,
             commands::rename_library_entry,

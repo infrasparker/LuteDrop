@@ -2,7 +2,6 @@
 import { computed } from 'vue';
 import type { Track } from '@generated/index';
 import { useTrackUpdates } from '../composables/useTrackUpdates';
-import WaveformEditor from './WaveformEditor.vue';
 
 const props = defineProps<{
   track: Track;
@@ -12,10 +11,6 @@ const props = defineProps<{
 const {
   updateMode,
   updateTransition,
-  updateLoopStart,
-  updateLoopEnd,
-  updateLoopStartFromWaveform,
-  updateLoopEndFromWaveform,
   updateRepeat,
   updateGapMin,
   updateGapMax,
@@ -41,9 +36,6 @@ const hasTransition = computed(() => modeType.value !== 'seamless');
 const transitionType = computed(() =>
   hasTransition.value ? (props.track.mode as any).transition.type : 'gapless'
 );
-
-const seamlessClip = computed(() => props.track.clips[0] ?? null);
-const showWaveform = computed(() => isSeamless.value && seamlessClip.value !== null);
 </script>
 
 <template>
@@ -114,30 +106,6 @@ const showWaveform = computed(() => isSeamless.value && seamlessClip.value !== n
       hide-details
     />
 
-    <div v-if="isSeamless" style="min-width: 100px; max-width: 120px;">
-      <VTextField
-        :model-value="(track.mode as any).loopStart"
-        @update:model-value="updateLoopStart"
-        label="Loop Start (s)"
-        type="number"
-        variant="outlined"
-        density="compact"
-        hide-details
-      />
-    </div>
-
-    <div v-if="isSeamless" style="min-width: 100px; max-width: 120px;">
-      <VTextField
-        :model-value="(track.mode as any).loopEnd"
-        @update:model-value="updateLoopEnd"
-        label="Loop End (s)"
-        type="number"
-        variant="outlined"
-        density="compact"
-        hide-details
-      />
-    </div>
-
     <VCheckbox
       v-if="hasTransition"
       :model-value="(track.mode as any).repeat"
@@ -148,16 +116,4 @@ const showWaveform = computed(() => isSeamless.value && seamlessClip.value !== n
     />
   </div>
 
-  <!-- Waveform: only shown in seamless mode with exactly one clip -->
-  <div v-if="showWaveform" class="mb-3">
-    <div class="text-caption text-medium-emphasis mb-1">{{ seamlessClip!.name }}</div>
-    <WaveformEditor
-      :file-path="seamlessClip!.filePath"
-      :loop-start="(track.mode as any).loopStart"
-      :loop-end="(track.mode as any).loopEnd"
-      :track-id="track.id"
-      @update:loop-start="(v: number) => updateLoopStartFromWaveform(v)"
-      @update:loop-end="(v: number) => updateLoopEndFromWaveform(v)"
-    />
-  </div>
 </template>
