@@ -149,6 +149,7 @@ export function useAudio() {
   }
 
   async function playLibrarySound(
+    entryId: string,
     filePath: string,
     position: number,
     volume: number,
@@ -165,6 +166,8 @@ export function useAudio() {
         loopStart: loopStart ?? null,
         loopEnd: loopEnd ?? null,
       });
+      const appStore = useAppStore();
+      appStore.libraryPlayingEntryId = entryId;
     } catch (e) {
       toast.showError(String(e));
     }
@@ -173,9 +176,9 @@ export function useAudio() {
   async function stopLibrarySound(): Promise<void> {
     try {
       await invoke('stop_library_sound');
-      // Clear the stale playback state so other components don't see a phantom playing state
       const appStore = useAppStore();
       appStore.playbackStates.delete('__library');
+      appStore.libraryPlayingEntryId = null;
     } catch (e) {
       toast.showError(String(e));
     }

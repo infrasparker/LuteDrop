@@ -30,16 +30,15 @@ watch(previewState, (state) => {
 function togglePreview(): void {
   if (isPreviewPlaying.value) {
     audio.stopLibrarySound();
-    store.libraryPlayingEntryId = null;
   } else {
     audio.playLibrarySound(
+      props.entry.id,
       props.entry.filePath,
       props.entry.trimStart ?? 0,
       props.entry.volume,
       props.entry.trimStart, props.entry.trimEnd,
       props.entry.loopStart, props.entry.loopEnd,
     );
-    store.libraryPlayingEntryId = props.entry.id;
   }
 }
 

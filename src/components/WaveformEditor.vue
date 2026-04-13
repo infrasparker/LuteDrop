@@ -12,6 +12,7 @@ const props = defineProps<{
   trimStart: number | null;
   trimEnd: number | null;
   trackId?: string;
+  entryId?: string;
   loopEnabled?: boolean;
 }>();
 
@@ -606,7 +607,7 @@ function onMouseUp(event: MouseEvent): void {
       audio.playTrackFrom(props.trackId, clickTime);
       return;
     }
-    if (!props.filePath) return;
+    if (!props.filePath || !props.entryId) return;
 
     // Only enforce trim_end if user clicked before it
     const trimEnd = (localTrimEnd.value !== null && clickTime < localTrimEnd.value)
@@ -622,7 +623,7 @@ function onMouseUp(event: MouseEvent): void {
     }
 
     audio.playLibrarySound(
-      props.filePath, clickTime, 1.0,
+      props.entryId, props.filePath, clickTime, 1.0,
       localTrimStart.value, trimEnd,
       effectiveLoopStart, effectiveLoopEnd,
     );

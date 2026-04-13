@@ -65,16 +65,15 @@ watch(previewState, (state) => {
 function togglePreview(): void {
   if (isPreviewPlaying.value) {
     audio.stopLibrarySound();
-    store.libraryPlayingEntryId = null;
   } else if (entry.value) {
     audio.playLibrarySound(
+      props.entryId,
       entry.value.filePath,
       entry.value.trimStart ?? 0,
       localGain.value,
       entry.value.trimStart, entry.value.trimEnd,
       entry.value.loopStart, entry.value.loopEnd,
     );
-    store.libraryPlayingEntryId = props.entryId;
   }
 }
 
@@ -250,6 +249,7 @@ function close(): void {
         <!-- Waveform -->
         <WaveformEditor
           :file-path="entry.filePath"
+          :entry-id="entryId"
           :loop-start="entry.loopStart ?? 0"
           :loop-end="entry.loopEnd ?? 0"
           :trim-start="entry.trimStart ?? null"

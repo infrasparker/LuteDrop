@@ -24,7 +24,6 @@ const showEditorDialog = computed({
       // Stop library sound when closing dialog from Soundstage
       if (router.currentRoute.value.path !== '/library') {
         audio.stopLibrarySound();
-        store.libraryPlayingEntryId = null;
       }
       store.editEntryId = null;
     }
@@ -34,7 +33,6 @@ const showEditorDialog = computed({
 watch(() => router.currentRoute.value.path, (newPath, oldPath) => {
   if (oldPath === '/library' && newPath !== '/library') {
     audio.stopLibrarySound();
-    store.libraryPlayingEntryId = null;
   }
 });
 
