@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { useAppStore } from '../stores/appStore';
+import { useAudio } from '../composables/useAudio';
 import WaveformEditor from './WaveformEditor.vue';
 
 const props = defineProps<{
@@ -13,18 +14,26 @@ const emit = defineEmits<{
 }>();
 
 const store = useAppStore();
+const audio = useAudio();
 
 const entry = computed(() => store.findLibraryEntry(props.entryId));
 
 // Local editable fields
 const editName = ref('');
 const editTags = ref('');
+const localGain = ref(1.0);
 
 watch(() => props.modelValue, (open) => {
   if (open && entry.value) {
     editName.value = entry.value.name;
     editTags.value = entry.value.tags.join(', ');
+    localGain.value = entry.value.volume;
   }
+});
+
+// Sync gain from store when not dragging
+watch(() => entry.value?.volume, (v) => {
+  if (v !== undefined) localGain.value = v;
 });
 
 // --- Name ---
@@ -49,60 +58,43 @@ async function saveTags(): Promise<void> {
   });
 }
 
-// --- Volume ---
-const entryVolume = computed(() => entry.value?.volume ?? 1);
+// --- Volume (local ref for smooth slider, persist on change) ---
+function setGain(v: number): void {
+  localGain.value = v;
+}
 
-async function updateVolume(v: number): Promise<void> {
+async function persistGain(): Promise<void> {
   await store.command('update_library_entry_volume', {
     entryId: props.entryId,
-    volume: v,
+    volume: localGain.value,
   });
 }
 
-// --- Trim ---
-const trimStart = computed(() => entry.value?.trimStart ?? null);
-const trimEnd = computed(() => entry.value?.trimEnd ?? null);
-
-async function updateTrimStart(v: number | null): Promise<void> {
+// --- Waveform commit (single batch from the editor) ---
+async function onWaveformCommit(values: {
+  trimStart: number | null;
+  trimEnd: number | null;
+  loopStart: number;
+  loopEnd: number;
+}): Promise<void> {
+  // Update trim first (it may clamp loop points in the DB)
   await store.command('update_library_entry_trim', {
     entryId: props.entryId,
-    trimStart: v,
-    trimEnd: trimEnd.value,
+    trimStart: values.trimStart,
+    trimEnd: values.trimEnd,
   });
-}
-
-async function updateTrimEnd(v: number | null): Promise<void> {
-  await store.command('update_library_entry_trim', {
-    entryId: props.entryId,
-    trimStart: trimStart.value,
-    trimEnd: v,
-  });
-}
-
-// --- Loop ---
-const loopStart = computed(() => entry.value?.loopStart ?? 0);
-const loopEnd = computed(() => entry.value?.loopEnd ?? 0);
-
-async function updateLoopStart(v: number): Promise<void> {
+  // Then update loop points with the values from the editor (not from store)
   await store.command('update_library_entry_loop_points', {
     entryId: props.entryId,
-    loopStart: v,
-    loopEnd: loopEnd.value,
-  });
-}
-
-async function updateLoopEnd(v: number): Promise<void> {
-  await store.command('update_library_entry_loop_points', {
-    entryId: props.entryId,
-    loopStart: loopStart.value,
-    loopEnd: v,
+    loopStart: values.loopStart || null,
+    loopEnd: values.loopEnd || null,
   });
 }
 
 // --- Numeric field helpers ---
-function parseTrimField(v: string | number, fallback: number | null): number | null {
+function parseTrimField(v: string | number): number | null {
   const n = Number(v);
-  if (v === '' || v === null || isNaN(n)) return fallback;
+  if (v === '' || v === null || isNaN(n)) return null;
   return Math.round(n * 100) / 100;
 }
 
@@ -112,7 +104,52 @@ function parseLoopField(v: string | number): number {
   return Math.round(n * 100) / 100;
 }
 
+// Numeric inputs commit as a batch too
+async function commitNumericValues(): Promise<void> {
+  const ts = entry.value?.trimStart ?? null;
+  const te = entry.value?.trimEnd ?? null;
+  const ls = entry.value?.loopStart ?? 0;
+  const le = entry.value?.loopEnd ?? 0;
+  await onWaveformCommit({ trimStart: ts, trimEnd: te, loopStart: ls, loopEnd: le });
+}
+
+async function updateTrimStartNumeric(v: string | number): Promise<void> {
+  await store.command('update_library_entry_trim', {
+    entryId: props.entryId,
+    trimStart: parseTrimField(v),
+    trimEnd: entry.value?.trimEnd ?? null,
+  });
+}
+
+async function updateTrimEndNumeric(v: string | number): Promise<void> {
+  await store.command('update_library_entry_trim', {
+    entryId: props.entryId,
+    trimStart: entry.value?.trimStart ?? null,
+    trimEnd: parseTrimField(v),
+  });
+}
+
+async function updateLoopStartNumeric(v: string | number): Promise<void> {
+  await store.command('update_library_entry_loop_points', {
+    entryId: props.entryId,
+    loopStart: parseLoopField(v) || null,
+    loopEnd: entry.value?.loopEnd ?? null,
+  });
+}
+
+async function updateLoopEndNumeric(v: string | number): Promise<void> {
+  await store.command('update_library_entry_loop_points', {
+    entryId: props.entryId,
+    loopStart: entry.value?.loopStart ?? null,
+    loopEnd: parseLoopField(v) || null,
+  });
+}
+
 function close(): void {
+  // Persist gain on close if changed
+  if (entry.value && localGain.value !== entry.value.volume) {
+    persistGain();
+  }
   emit('update:modelValue', false);
 }
 </script>
@@ -156,8 +193,9 @@ function close(): void {
         <div class="d-flex align-center ga-3 mb-4">
           <span class="text-caption text-medium-emphasis" style="min-width: 50px;">Gain</span>
           <VSlider
-            :model-value="entryVolume"
-            @update:model-value="updateVolume"
+            :model-value="localGain"
+            @update:model-value="setGain"
+            @end="persistGain"
             :min="0"
             :max="2"
             :step="0.01"
@@ -165,67 +203,64 @@ function close(): void {
             thumb-label
           />
           <span class="text-caption" style="min-width: 40px; text-align: right;">
-            {{ entryVolume.toFixed(2) }}
+            {{ localGain.toFixed(2) }}
           </span>
         </div>
 
         <!-- Waveform -->
         <WaveformEditor
           :file-path="entry.filePath"
-          :loop-start="loopStart"
-          :loop-end="loopEnd"
-          :trim-start="trimStart"
-          :trim-end="trimEnd"
-          @update:loop-start="updateLoopStart"
-          @update:loop-end="updateLoopEnd"
-          @update:trim-start="updateTrimStart"
-          @update:trim-end="updateTrimEnd"
+          :loop-start="entry.loopStart ?? 0"
+          :loop-end="entry.loopEnd ?? 0"
+          :trim-start="entry.trimStart ?? null"
+          :trim-end="entry.trimEnd ?? null"
+          @commit="onWaveformCommit"
         />
 
         <!-- Numeric inputs for trim/loop -->
         <div class="d-flex flex-wrap ga-3 mt-3">
           <div style="min-width: 110px; max-width: 130px;">
             <VTextField
-              :model-value="trimStart ?? ''"
-              @update:model-value="(v: string | number) => updateTrimStart(parseTrimField(v, null))"
+              :model-value="entry.trimStart ?? ''"
               label="Trim Start (s)"
               type="number"
               variant="outlined"
               density="compact"
               hide-details
+              @change="(e: Event) => updateTrimStartNumeric((e.target as HTMLInputElement).value)"
             />
           </div>
           <div style="min-width: 110px; max-width: 130px;">
             <VTextField
-              :model-value="trimEnd ?? ''"
-              @update:model-value="(v: string | number) => updateTrimEnd(parseTrimField(v, null))"
+              :model-value="entry.trimEnd ?? ''"
               label="Trim End (s)"
               type="number"
               variant="outlined"
               density="compact"
               hide-details
+              @change="(e: Event) => updateTrimEndNumeric((e.target as HTMLInputElement).value)"
             />
           </div>
           <div style="min-width: 110px; max-width: 130px;">
             <VTextField
-              :model-value="loopStart"
-              @update:model-value="(v: string | number) => updateLoopStart(parseLoopField(v))"
+              :model-value="entry.loopStart ?? ''"
               label="Loop Start (s)"
               type="number"
               variant="outlined"
               density="compact"
               hide-details
+              @change="(e: Event) => updateLoopStartNumeric((e.target as HTMLInputElement).value)"
             />
           </div>
           <div style="min-width: 110px; max-width: 130px;">
             <VTextField
-              :model-value="loopEnd"
-              @update:model-value="(v: string | number) => updateLoopEnd(parseLoopField(v))"
+              :model-value="entry.loopEnd ?? ''"
               label="Loop End (s)"
               type="number"
               variant="outlined"
               density="compact"
               hide-details
+              @change="(e: Event) => updateLoopEndNumeric((e.target as HTMLInputElement).value)"
             />
           </div>
         </div>

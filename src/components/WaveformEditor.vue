@@ -19,6 +19,7 @@ const emit = defineEmits<{
   'update:loopEnd': [value: number];
   'update:trimStart': [value: number | null];
   'update:trimEnd': [value: number | null];
+  'commit': [values: { trimStart: number | null; trimEnd: number | null; loopStart: number; loopEnd: number }];
 }>();
 
 const audio = useAudio();
@@ -439,18 +440,22 @@ function clampLocal(marker: MarkerType, seconds: number): void {
   }
 }
 
-/** Emit final values on mouseup (persistence). */
+/** Emit final values on mouseup (persistence) as a single batch. */
 function emitFinalValues(): void {
   const dur = data.duration.value;
 
-  // Trim: emit null if value equals the default bound
+  // Trim: emit null if value equals the default bound (0 for start, duration for end)
   const tsVal = localTrimStart.value;
   const teVal = localTrimEnd.value;
-  emit('update:trimStart', tsVal === 0 ? null : tsVal);
-  emit('update:trimEnd', (teVal !== null && dur > 0 && teVal >= dur) ? null : teVal);
+  const trimStart = (tsVal === null || tsVal === 0) ? null : tsVal;
+  const trimEnd = (teVal !== null && dur > 0 && teVal >= dur) ? null : teVal;
 
-  emit('update:loopStart', localLoopStart.value);
-  emit('update:loopEnd', localLoopEnd.value);
+  emit('commit', {
+    trimStart,
+    trimEnd,
+    loopStart: localLoopStart.value,
+    loopEnd: localLoopEnd.value,
+  });
 }
 
 // --- Mouse events ---
