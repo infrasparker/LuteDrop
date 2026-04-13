@@ -37,6 +37,12 @@ async function remove(): Promise<void> {
 function editLibraryEntry(): void {
   store.editEntryId = props.clip.libraryEntryId;
 }
+
+const isMuted = computed(() => store.isClipMuted(props.clip.id));
+
+function toggleMute(): void {
+  audio.toggleClipMute(props.clip.id);
+}
 </script>
 
 <template>
@@ -55,8 +61,16 @@ function editLibraryEntry(): void {
     <span
       class="text-body-2 flex-grow-1 text-truncate"
       :class="{ 'text-primary': isCurrentClip }"
+      :style="{ opacity: isMuted ? 0.5 : 1 }"
     >{{ clip.name }}</span>
-    <VIcon size="small" class="text-medium-emphasis">mdi-volume-high</VIcon>
+    <VBtn
+      :icon="isMuted ? 'mdi-volume-off' : 'mdi-volume-high'"
+      :color="isMuted ? 'error' : undefined"
+      variant="text"
+      size="x-small"
+      :title="isMuted ? 'Unmute clip' : 'Mute clip'"
+      @click.stop="toggleMute"
+    />
     <VSlider
       :model-value="localVolume"
       @update:model-value="setVolume"
@@ -66,6 +80,7 @@ function editLibraryEntry(): void {
       hide-details
       density="compact"
       style="width: 120px; flex: 0 0 120px;"
+      :style="{ opacity: isMuted ? 0.4 : 1 }"
     />
     <VBtn
       icon="mdi-pencil"

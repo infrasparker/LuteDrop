@@ -75,6 +75,12 @@ function toggleComp(): void {
 function stopComp(): void {
   audio.stopComp(props.comp.id);
 }
+
+const isCompMuted = computed(() => store.isCompMuted(props.comp.id));
+
+function toggleMute(): void {
+  audio.toggleCompMute(props.comp.id);
+}
 </script>
 
 <template>
@@ -101,8 +107,17 @@ function stopComp(): void {
         rounded="circle"
         @click.stop="stopComp"
       />
+      <VBtn
+        :icon="isCompMuted ? 'mdi-volume-off' : 'mdi-volume-high'"
+        :color="isCompMuted ? 'error' : undefined"
+        variant="tonal"
+        size="small"
+        rounded="circle"
+        :title="isCompMuted ? 'Unmute comp' : 'Mute comp'"
+        @click.stop="toggleMute"
+      />
     </div>
-    <div class="text-subtitle-2 font-weight-bold text-truncate">{{ comp.name }}</div>
+    <div class="text-subtitle-2 font-weight-bold text-truncate" :style="{ opacity: isCompMuted ? 0.5 : 1 }">{{ comp.name }}</div>
     <div class="text-caption" style="opacity: 0.6;">{{ comp.tracks.length }} tracks</div>
 
     <!-- Context menu -->

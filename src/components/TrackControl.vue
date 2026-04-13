@@ -89,6 +89,12 @@ function setVolume(v: number): void {
   localVolume.value = v;
   audio.setTrackVolume(props.track.id, v);
 }
+
+const isMuted = computed(() => store.isTrackMuted(props.track.id));
+
+function toggleMute(): void {
+  audio.toggleTrackMute(props.track.id);
+}
 </script>
 
 <template>
@@ -120,7 +126,7 @@ function setVolume(v: number): void {
               @click.stop="stopTrack"
             />
 
-            <span class="text-subtitle-2 font-weight-bold">{{ track.name }}</span>
+            <span class="text-subtitle-2 font-weight-bold" :style="{ opacity: isMuted ? 0.5 : 1 }">{{ track.name }}</span>
 
             <VSpacer />
 
@@ -132,6 +138,14 @@ function setVolume(v: number): void {
               &middot; {{ track.mode.type }}
             </span>
 
+            <VBtn
+              :icon="isMuted ? 'mdi-volume-off' : 'mdi-volume-high'"
+              :color="isMuted ? 'error' : undefined"
+              variant="text"
+              size="x-small"
+              :title="isMuted ? 'Unmute track' : 'Mute track'"
+              @click.stop="toggleMute"
+            />
             <VSlider
               :model-value="localVolume"
               @update:model-value="setVolume"
@@ -144,6 +158,7 @@ function setVolume(v: number): void {
               density="compact"
               class="mr-4"
               style="flex: 0 0 120px;"
+              :style="{ opacity: isMuted ? 0.4 : 1 }"
             />
           </div>
         </template>

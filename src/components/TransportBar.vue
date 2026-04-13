@@ -76,7 +76,14 @@ function togglePause(): void {
       </div>
 
       <div class="transport-right">
-        <VIcon size="small" class="text-medium-emphasis">mdi-volume-high</VIcon>
+        <VBtn
+          :icon="store.masterMuted ? 'mdi-volume-off' : 'mdi-volume-high'"
+          :color="store.masterMuted ? 'error' : undefined"
+          variant="text"
+          size="small"
+          :title="store.masterMuted ? 'Unmute master' : 'Mute master'"
+          @click="audio.toggleMasterMute()"
+        />
         <VSlider
           :model-value="audio.masterVolume.value"
           @update:model-value="setMasterVolume"
