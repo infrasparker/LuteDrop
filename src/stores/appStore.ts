@@ -28,6 +28,7 @@ export const useAppStore = defineStore('app', () => {
     tags.value = state.tags;
     configurations.value = state.configurations;
     activeConfigurationId.value = state.activeConfigurationId;
+    missingEntryIds.value = new Set(state.missingEntryIds);
   }
 
   // --- Command helper: invoke a Rust command and hydrate ---
@@ -131,16 +132,6 @@ export const useAppStore = defineStore('app', () => {
     return comp.tracks.every((t) => mutedTracks.value.has(t.id));
   }
 
-  async function checkMissingFiles(): Promise<void> {
-    try {
-      const missing = await invoke<string[]>('check_missing_files');
-      missingEntryIds.value = new Set(missing);
-    } catch (e) {
-      const toast = useToast();
-      toast.showError(String(e));
-    }
-  }
-
   return {
     groups,
     playbackStates,
@@ -162,7 +153,6 @@ export const useAppStore = defineStore('app', () => {
     findTrack,
     findLibraryEntry,
     isEntryMissing,
-    checkMissingFiles,
     setMasterMuted,
     setTrackMuted,
     setClipMuted,

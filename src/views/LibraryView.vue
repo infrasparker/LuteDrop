@@ -53,7 +53,6 @@ async function relocateEntry(entryId: string): Promise<void> {
   });
   if (!path || Array.isArray(path)) return;
   await store.command('relocate_library_entry', { entryId, newFilePath: path });
-  await store.checkMissingFiles();
 }
 </script>
 

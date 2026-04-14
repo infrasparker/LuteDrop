@@ -39,7 +39,6 @@ watch(() => router.currentRoute.value.path, (newPath, oldPath) => {
 onMounted(async () => {
   const state = await invoke<AppState>('load_data');
   store.hydrate(state);
-  await store.checkMissingFiles();
 
   if (store.missingEntryIds.size > 0) {
     toast.showError(`${store.missingEntryIds.size} audio file(s) not found. Check the Library view.`);
