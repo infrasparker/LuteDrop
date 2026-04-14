@@ -614,6 +614,8 @@ pub fn play_library_sound(
         container.mark_entry_missing(entry_id);
         return Err(format!("Audio file not found: {}", file_path));
     }
+    // File exists — clear stale missing state if any
+    container.mark_entry_found(entry_id);
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
     let vol = crate::audio::util::amplitude_to_decibels(audio.get_master_volume() * volume);
     let loop_region = match (loop_start, loop_end) {

@@ -191,6 +191,10 @@ pub async fn get_waveform_data(
         }
         return Err(format!("Audio file not found: {}", file_path));
     }
+    // File exists — clear stale missing state if any
+    if let Some(ref eid) = entry_id {
+        state.mark_entry_found(eid);
+    }
     let state_clone = state.inner().clone();
     tokio::task::spawn_blocking(move || -> Result<WaveformData, String> {
         let (peaks, duration) = waveform::extract_peaks(&file_path, width, start, end, &state_clone.peak_cache)?;

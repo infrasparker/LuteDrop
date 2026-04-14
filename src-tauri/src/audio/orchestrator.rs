@@ -231,6 +231,7 @@ pub fn poll_track(
     master_volume: f64,
     mute_state: &MuteState,
     missing_entries: &mut Vec<String>,
+    found_entries: &mut Vec<String>,
 ) {
     // Gather state for transition check
     let (position, clip_duration, clip_start, mode, current_clip_index, clip_count, is_paused, sound_playing, sound_stopped) = {
@@ -284,7 +285,10 @@ pub fn poll_track(
                                 fade_out: None,
                             };
                             match sound::play(manager, &mut track.track_handle, params) {
-                                Ok(new_snd) => { track.current_sound = Some(new_snd); }
+                                Ok(new_snd) => {
+                                    track.current_sound = Some(new_snd);
+                                    found_entries.push(clip.library_entry_id.clone());
+                                }
                                 Err(_) => {
                                     if !std::path::Path::new(&clip.file_path).exists() {
                                         missing_entries.push(clip.library_entry_id.clone());
@@ -318,22 +322,40 @@ pub fn poll_track(
                     track.transitions.begin_crossfade(old, duration);
                 }
             }
-            if let Err(_) = start_clip(tracks, manager, track_id, next_clip_index, None, false, master_volume, mute_state) {
-                if let Some(track) = tracks.get(track_id) {
-                    if let Some(clip) = track.config.clips.get(next_clip_index) {
-                        if !std::path::Path::new(&clip.file_path).exists() {
-                            missing_entries.push(clip.library_entry_id.clone());
+            match start_clip(tracks, manager, track_id, next_clip_index, None, false, master_volume, mute_state) {
+                Ok(_) => {
+                    if let Some(track) = tracks.get(track_id) {
+                        if let Some(clip) = track.config.clips.get(next_clip_index) {
+                            found_entries.push(clip.library_entry_id.clone());
+                        }
+                    }
+                }
+                Err(_) => {
+                    if let Some(track) = tracks.get(track_id) {
+                        if let Some(clip) = track.config.clips.get(next_clip_index) {
+                            if !std::path::Path::new(&clip.file_path).exists() {
+                                missing_entries.push(clip.library_entry_id.clone());
+                            }
                         }
                     }
                 }
             }
         }
         TransitionAction::AdvanceClip { next_clip_index } => {
-            if let Err(_) = start_clip(tracks, manager, track_id, next_clip_index, None, false, master_volume, mute_state) {
-                if let Some(track) = tracks.get(track_id) {
-                    if let Some(clip) = track.config.clips.get(next_clip_index) {
-                        if !std::path::Path::new(&clip.file_path).exists() {
-                            missing_entries.push(clip.library_entry_id.clone());
+            match start_clip(tracks, manager, track_id, next_clip_index, None, false, master_volume, mute_state) {
+                Ok(_) => {
+                    if let Some(track) = tracks.get(track_id) {
+                        if let Some(clip) = track.config.clips.get(next_clip_index) {
+                            found_entries.push(clip.library_entry_id.clone());
+                        }
+                    }
+                }
+                Err(_) => {
+                    if let Some(track) = tracks.get(track_id) {
+                        if let Some(clip) = track.config.clips.get(next_clip_index) {
+                            if !std::path::Path::new(&clip.file_path).exists() {
+                                missing_entries.push(clip.library_entry_id.clone());
+                            }
                         }
                     }
                 }
@@ -346,11 +368,20 @@ pub fn poll_track(
             }
         }
         TransitionAction::StartPendingClip { clip_index } => {
-            if let Err(_) = start_clip(tracks, manager, track_id, clip_index, None, false, master_volume, mute_state) {
-                if let Some(track) = tracks.get(track_id) {
-                    if let Some(clip) = track.config.clips.get(clip_index) {
-                        if !std::path::Path::new(&clip.file_path).exists() {
-                            missing_entries.push(clip.library_entry_id.clone());
+            match start_clip(tracks, manager, track_id, clip_index, None, false, master_volume, mute_state) {
+                Ok(_) => {
+                    if let Some(track) = tracks.get(track_id) {
+                        if let Some(clip) = track.config.clips.get(clip_index) {
+                            found_entries.push(clip.library_entry_id.clone());
+                        }
+                    }
+                }
+                Err(_) => {
+                    if let Some(track) = tracks.get(track_id) {
+                        if let Some(clip) = track.config.clips.get(clip_index) {
+                            if !std::path::Path::new(&clip.file_path).exists() {
+                                missing_entries.push(clip.library_entry_id.clone());
+                            }
                         }
                     }
                 }

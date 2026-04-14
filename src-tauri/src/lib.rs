@@ -151,14 +151,14 @@ fn playback_polling_loop(app_handle: tauri::AppHandle, container: Arc<AppStateCo
     loop {
         std::thread::sleep(Duration::from_millis(50));
 
-        let (states, master_vol, newly_missing) = {
+        let (states, master_vol, newly_missing, newly_found) = {
             let mut audio = match container.audio.lock() {
                 Ok(a) => a,
                 Err(_) => continue,
             };
-            let (states, missing) = audio.poll();
+            let (states, missing, found) = audio.poll();
             let vol = audio.get_master_volume();
-            (states, vol, missing)
+            (states, vol, missing, found)
         };
 
         for state in &states {
@@ -171,6 +171,11 @@ fn playback_polling_loop(app_handle: tauri::AppHandle, container: Arc<AppStateCo
             if container.mark_entry_missing(entry_id) {
                 let _ = app_handle.emit("missing-entries-changed", entry_id.clone());
             }
+        }
+
+        // Clear stale missing state for files that played successfully
+        for entry_id in &newly_found {
+            container.mark_entry_found(entry_id);
         }
 
         server::broadcast_state(&container);
