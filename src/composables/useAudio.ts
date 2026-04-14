@@ -22,6 +22,15 @@ function registerListener(): void {
   listen<number>('master-volume-update', (event) => {
     masterVolume.value = event.payload;
   });
+
+  listen<string>('missing-entries-changed', (event) => {
+    const entryId = event.payload;
+    store.missingEntryIds.add(entryId);
+    const entry = store.findLibraryEntry(entryId);
+    const name = entry?.name ?? 'Unknown';
+    const toast = useToast();
+    toast.showError(`Audio file not found: ${name}`);
+  });
 }
 
 export function useAudio() {
