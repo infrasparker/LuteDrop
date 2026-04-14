@@ -73,6 +73,33 @@ pub fn delete_clip(state: State<'_, Arc<AppStateContainer>>, track_id: String, c
     actions::delete_clip(&state, &track_id, &clip_id)
 }
 
+// --- Configuration commands ---
+
+#[tauri::command]
+pub fn create_configuration(state: State<'_, Arc<AppStateContainer>>, name: String) -> Result<AppState, String> {
+    actions::create_configuration(&state, name)
+}
+
+#[tauri::command]
+pub fn duplicate_configuration(state: State<'_, Arc<AppStateContainer>>, name: String) -> Result<AppState, String> {
+    actions::duplicate_configuration(&state, name)
+}
+
+#[tauri::command]
+pub fn load_configuration(state: State<'_, Arc<AppStateContainer>>, config_id: String) -> Result<AppState, String> {
+    actions::load_configuration(&state, config_id)
+}
+
+#[tauri::command]
+pub fn delete_configuration(state: State<'_, Arc<AppStateContainer>>, config_id: String) -> Result<AppState, String> {
+    actions::delete_configuration(&state, config_id)
+}
+
+#[tauri::command]
+pub fn rename_configuration(state: State<'_, Arc<AppStateContainer>>, config_id: String, name: String) -> Result<AppState, String> {
+    actions::rename_configuration(&state, config_id, name)
+}
+
 #[tauri::command]
 pub fn play_track(state: State<'_, Arc<AppStateContainer>>, track_id: String) -> Result<(), String> {
     actions::play_track_audio(&state, &track_id)

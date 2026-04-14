@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git worktree:*)",
+      "Bash(cmd //c \"rmdir /s /q \\\\\"C:\\\\Users\\\\Infrasparker\\\\Documents\\\\Coding\\\\LuteDrop\\\\.claude\\\\worktrees\\\\bridge-cse_01NnPpWsZTbd56XWi6joKLhi\\\\\"\")",
+      "Bash(cmd //c \"rmdir /s /q \\\\\"C:\\\\Users\\\\Infrasparker\\\\Documents\\\\Coding\\\\LuteDrop\\\\.claude\\\\worktrees\\\\bridge-cse_01Q8moqVzVTK7JG5Ufdopxw2\\\\\"\")",
+      "Bash(cmd.exe /c \"rmdir /s /q C:\\\\Users\\\\Infrasparker\\\\Documents\\\\Coding\\\\LuteDrop\\\\.claude\\\\worktrees\\\\bridge-cse_01NnPpWsZTbd56XWi6joKLhi\")",
+      "Bash(cmd.exe /c \"rmdir /s /q C:\\\\Users\\\\Infrasparker\\\\Documents\\\\Coding\\\\LuteDrop\\\\.claude\\\\worktrees\\\\bridge-cse_01Q8moqVzVTK7JG5Ufdopxw2\")",
+      "Bash(powershell -Command \"Remove-Item -Recurse -Force 'C:\\\\Users\\\\Infrasparker\\\\Documents\\\\Coding\\\\LuteDrop\\\\.claude\\\\worktrees\\\\bridge-cse_01NnPpWsZTbd56XWi6joKLhi'\")",
+      "Bash(powershell -Command \"Remove-Item -Recurse -Force 'C:\\\\Users\\\\Infrasparker\\\\Documents\\\\Coding\\\\LuteDrop\\\\.claude\\\\worktrees\\\\bridge-cse_01Q8moqVzVTK7JG5Ufdopxw2'\")",
+      "Bash(git pull:*)",
+      "Bash(git checkout:*)",
+      "Bash(git stash:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx vue-tsc:*)",
+      "Bash(git fetch:*)",
+      "Bash(cargo check:*)",
+      "Bash(xargs grep:*)",
+      "Bash(cargo test:*)",
+      "Bash(git merge:*)"
+    ]
+  }
+}

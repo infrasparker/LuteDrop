@@ -1,12 +1,14 @@
+pub mod configurations;
 pub mod hierarchy;
 pub mod library;
 
 use rusqlite::{params, Connection, Result as SqlResult};
 use std::collections::HashMap;
 use std::path::Path;
+use uuid::Uuid;
 
 use crate::models::{
-    AppState, Clip, Comp, Group, LibraryEntry, Track, TrackMode, TrackTransition,
+    AppState, Clip, Comp, Configuration, Group, LibraryEntry, Track, TrackMode, TrackTransition,
 };
 
 /// Opens (or creates) the SQLite database at `path`, enables WAL mode and
@@ -18,53 +20,106 @@ pub fn open_db(path: &Path) -> Result<Connection, String> {
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
         .map_err(|e| format!("Failed to set PRAGMAs: {e}"))?;
 
-    migrate_remove_configurations(&conn)?;
+    migrate_add_configurations(&conn)?;
     init_schema(&conn).map_err(|e| format!("Failed to initialise schema: {e}"))?;
 
     Ok(conn)
 }
 
-/// Migrates databases that still have the old `configuration_id` FK on groups.
-/// The configurations feature was removed but `CREATE TABLE IF NOT EXISTS`
-/// doesn't alter existing tables, so old DBs still carry the stale FK column.
-fn migrate_remove_configurations(conn: &Connection) -> Result<(), String> {
-    // Check if groups table has configuration_id column
+/// Migrates v1 databases (groups without configuration_id) to v2.
+/// Creates the configurations table, a "Default" config, and rebuilds the
+/// groups table with configuration_id FK pointing all existing groups at it.
+fn migrate_add_configurations(conn: &Connection) -> Result<(), String> {
+    // If groups table already has configuration_id, no migration needed
     let has_config_col: bool = conn
         .prepare("SELECT configuration_id FROM groups LIMIT 0")
         .is_ok();
 
-    if !has_config_col {
+    if has_config_col {
         return Ok(());
     }
 
-    // Rebuild groups without the configuration_id column.
-    // Must disable FKs temporarily so comps→groups references don't block the rename.
-    conn.execute_batch("
-        PRAGMA foreign_keys=OFF;
+    // Check if groups table exists at all (fresh DB — nothing to migrate)
+    let groups_exist: bool = conn
+        .prepare("SELECT 1 FROM groups LIMIT 0")
+        .is_ok();
 
-        CREATE TABLE groups_new (
+    if !groups_exist {
+        return Ok(());
+    }
+
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let config_id = Uuid::new_v4().to_string();
+    let created_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before epoch")
+        .as_millis()
+        .to_string();
+
+    // Must disable FKs temporarily so comps→groups references don't block the rebuild.
+    conn.execute_batch("PRAGMA foreign_keys=OFF;")
+        .map_err(|e| format!("Failed to disable FKs: {e}"))?;
+
+    // Create configurations table
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS configurations (
             id         TEXT PRIMARY KEY,
             name       TEXT NOT NULL,
+            created_at TEXT NOT NULL,
             sort_order INTEGER NOT NULL
         );
-        INSERT INTO groups_new (id, name, sort_order)
-            SELECT id, name, sort_order FROM groups;
-
-        DROP TABLE groups;
-        ALTER TABLE groups_new RENAME TO groups;
-
-        DROP TABLE IF EXISTS configurations;
-
-        PRAGMA foreign_keys=ON;
     ")
+    .map_err(|e| format!("Failed to create configurations table: {e}"))?;
+
+    // Insert default configuration
+    conn.execute(
+        "INSERT INTO configurations (id, name, created_at, sort_order) VALUES (?1, 'Default', ?2, 1000)",
+        params![config_id, created_at],
+    )
+    .map_err(|e| format!("Failed to insert default configuration: {e}"))?;
+
+    // Rebuild groups table with configuration_id column
+    conn.execute(
+        &format!("
+            CREATE TABLE groups_new (
+                id               TEXT PRIMARY KEY,
+                name             TEXT NOT NULL,
+                sort_order       INTEGER NOT NULL,
+                configuration_id TEXT NOT NULL DEFAULT '' REFERENCES configurations(id) ON DELETE CASCADE
+            );
+            INSERT INTO groups_new (id, name, sort_order, configuration_id)
+                SELECT id, name, sort_order, '{}' FROM groups;
+
+            DROP TABLE groups;
+            ALTER TABLE groups_new RENAME TO groups;
+        ", config_id),
+        [],
+    )
     .map_err(|e| format!("Failed to migrate groups table: {e}"))?;
 
-    // Update schema version
+    // Set active configuration
+    conn.execute_batch("
+        CREATE TABLE IF NOT EXISTS meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+    ")
+    .map_err(|e| format!("Failed to ensure meta table: {e}"))?;
+
     conn.execute(
-        "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '1')",
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('active_configuration_id', ?1)",
+        params![config_id],
+    )
+    .map_err(|e| format!("Failed to set active configuration: {e}"))?;
+
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '2')",
         [],
     )
     .map_err(|e| format!("Failed to update schema version: {e}"))?;
+
+    conn.execute_batch("PRAGMA foreign_keys=ON;")
+        .map_err(|e| format!("Failed to re-enable FKs: {e}"))?;
 
     Ok(())
 }
@@ -104,10 +159,18 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
             PRIMARY KEY (library_entry_id, tag_id)
         );
 
-        CREATE TABLE IF NOT EXISTS groups (
+        CREATE TABLE IF NOT EXISTS configurations (
             id         TEXT PRIMARY KEY,
             name       TEXT NOT NULL,
+            created_at TEXT NOT NULL,
             sort_order INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS groups (
+            id               TEXT PRIMARY KEY,
+            name             TEXT NOT NULL,
+            sort_order       INTEGER NOT NULL,
+            configuration_id TEXT NOT NULL DEFAULT '' REFERENCES configurations(id) ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS comps (
@@ -140,15 +203,97 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
             sort_order       INTEGER NOT NULL
         );
 
-        INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '1');
+        INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '2');
     ")
+}
+
+/// Ensures at least one configuration exists and active_configuration_id is set.
+/// Called after init_schema for fresh databases that skip the v1→v2 migration.
+pub fn ensure_default_configuration(conn: &Connection) -> Result<(), String> {
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM configurations", [], |row| row.get(0))
+        .map_err(|e| format!("Failed to count configurations: {e}"))?;
+
+    if count > 0 {
+        // Also ensure active_configuration_id is set
+        let has_active: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM meta WHERE key = 'active_configuration_id'",
+                [],
+                |row| row.get::<_, i64>(0).map(|c| c > 0),
+            )
+            .unwrap_or(false);
+        if !has_active {
+            let first_id: String = conn
+                .query_row("SELECT id FROM configurations ORDER BY sort_order LIMIT 1", [], |row| row.get(0))
+                .map_err(|e| format!("Failed to get first configuration: {e}"))?;
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('active_configuration_id', ?1)",
+                params![first_id],
+            ).map_err(|e| format!("Failed to set active configuration: {e}"))?;
+        }
+        return Ok(());
+    }
+
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let config_id = Uuid::new_v4().to_string();
+    let created_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before epoch")
+        .as_millis()
+        .to_string();
+
+    conn.execute(
+        "INSERT INTO configurations (id, name, created_at, sort_order) VALUES (?1, 'Default', ?2, 1000)",
+        params![config_id, created_at],
+    ).map_err(|e| format!("Failed to insert default configuration: {e}"))?;
+
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('active_configuration_id', ?1)",
+        params![config_id],
+    ).map_err(|e| format!("Failed to set active configuration: {e}"))?;
+
+    Ok(())
 }
 
 // ─── State Loading ────────────────────────────────────────────────────────────
 
+/// Reads the active configuration ID from the meta table.
+pub fn get_active_configuration_id(conn: &Connection) -> Result<String, String> {
+    conn.query_row(
+        "SELECT value FROM meta WHERE key = 'active_configuration_id'",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("Failed to read active_configuration_id: {e}"))
+}
+
+/// Loads all configurations ordered by sort_order.
+fn load_configurations(conn: &Connection) -> Result<Vec<Configuration>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id, name, created_at FROM configurations ORDER BY sort_order ASC")
+        .map_err(|e| format!("Failed to prepare load_configurations: {e}"))?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(Configuration {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                created_at: row.get(2)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query configurations: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to collect configurations: {e}"))?;
+
+    Ok(rows)
+}
+
 /// Builds the complete nested AppState from SQLite.
 /// Called after every mutation to return the updated state to the frontend.
 pub fn load_full_state(conn: &Connection) -> Result<AppState, String> {
+    let active_configuration_id = get_active_configuration_id(conn)?;
+    let configurations = load_configurations(conn)?;
     let library_entries = load_library_entries(conn)?;
     let tags = library::list_all_tags(conn)?;
 
@@ -158,12 +303,14 @@ pub fn load_full_state(conn: &Connection) -> Result<AppState, String> {
         .map(|e| (e.id.clone(), e))
         .collect();
 
-    let groups = load_groups(conn, &entry_map)?;
+    let groups = load_groups(conn, &active_configuration_id, &entry_map)?;
 
     Ok(AppState {
         groups,
         library_entries,
         tags,
+        configurations,
+        active_configuration_id,
     })
 }
 
@@ -226,17 +373,18 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
     Ok(entries)
 }
 
-/// Queries all groups ordered by sort_order and loads comps for each.
+/// Queries all groups for the given configuration_id ordered by sort_order and loads comps for each.
 fn load_groups(
     conn: &Connection,
+    configuration_id: &str,
     entry_map: &HashMap<String, &LibraryEntry>,
 ) -> Result<Vec<Group>, String> {
     let mut stmt = conn
-        .prepare("SELECT id, name FROM groups ORDER BY sort_order ASC")
+        .prepare("SELECT id, name FROM groups WHERE configuration_id = ?1 ORDER BY sort_order ASC")
         .map_err(|e| format!("Failed to prepare load_groups: {e}"))?;
 
     let rows = stmt
-        .query_map([], |row| {
+        .query_map(params![configuration_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(|e| format!("Failed to query groups: {e}"))?
@@ -456,6 +604,20 @@ pub fn open_memory_db() -> Connection {
 }
 
 #[cfg(test)]
+pub fn ensure_test_config(conn: &Connection) -> String {
+    let config_id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT OR IGNORE INTO configurations (id, name, created_at, sort_order) VALUES (?1, 'Test', '0', 1000)",
+        params![config_id],
+    ).expect("insert test config");
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('active_configuration_id', ?1)",
+        params![config_id],
+    ).expect("set active config");
+    config_id
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -468,6 +630,7 @@ mod tests {
             "library_entries",
             "tags",
             "library_entry_tags",
+            "configurations",
             "groups",
             "comps",
             "tracks",
@@ -503,16 +666,18 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("schema_version row should exist");
-        assert_eq!(version, "1");
+        assert_eq!(version, "2");
     }
 
     #[test]
     fn load_full_state_empty_db() {
         let conn = open_memory_db();
+        ensure_test_config(&conn);
         let state = load_full_state(&conn).expect("load_full_state should succeed on empty DB");
         assert!(state.groups.is_empty(), "groups should be empty");
         assert!(state.library_entries.is_empty(), "library_entries should be empty");
         assert!(state.tags.is_empty(), "tags should be empty");
+        assert_eq!(state.configurations.len(), 1);
     }
 
     #[test]
@@ -540,7 +705,8 @@ mod tests {
         library::add_tag_to_entry(&conn, &entry_id, "boss").expect("add boss");
 
         // Build hierarchy: group → comp → track → clip.
-        let group_id = hierarchy::insert_group(&conn, "Combat").expect("insert group");
+        let config_id = ensure_test_config(&conn);
+        let group_id = hierarchy::insert_group(&conn, "Combat", &config_id).expect("insert group");
         let comp_id = hierarchy::insert_comp(&conn, &group_id, "Act 1").expect("insert comp");
         let track_id = hierarchy::insert_track(&conn, &comp_id, "Battle Theme").expect("insert track");
         let _clip_id = hierarchy::insert_clip(&conn, &track_id, &entry_id).expect("insert clip");
@@ -598,4 +764,33 @@ mod tests {
             other => panic!("expected Seamless mode, got {other:?}"),
         }
     }
+
+    #[test]
+    fn load_full_state_scoped_by_config() {
+        let conn = open_memory_db();
+        let config_id = ensure_test_config(&conn);
+
+        let config2_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO configurations (id, name, created_at, sort_order) VALUES (?1, 'Other', '0', 2000)",
+            params![config2_id],
+        ).expect("insert config2");
+
+        conn.execute(
+            "INSERT INTO groups (id, name, sort_order, configuration_id) VALUES ('g1', 'Default Group', 1000, ?1)",
+            params![config_id],
+        ).expect("insert group in default config");
+
+        conn.execute(
+            "INSERT INTO groups (id, name, sort_order, configuration_id) VALUES ('g2', 'Other Group', 1000, ?1)",
+            params![config2_id],
+        ).expect("insert group in other config");
+
+        let state = load_full_state(&conn).expect("load state");
+        assert_eq!(state.groups.len(), 1, "should only see active config's groups");
+        assert_eq!(state.groups[0].name, "Default Group");
+        assert_eq!(state.active_configuration_id, config_id);
+        assert_eq!(state.configurations.len(), 2, "should see all configurations");
+    }
+
 }

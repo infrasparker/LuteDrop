@@ -1,5 +1,5 @@
 use crate::database;
-use crate::database::{hierarchy, library};
+use crate::database::{configurations, hierarchy, library};
 use crate::models::{AppState, Track};
 use crate::state::AppStateContainer;
 use rusqlite::params;
@@ -44,7 +44,8 @@ pub fn load_data(container: &AppStateContainer) -> Result<AppState, String> {
 
 pub fn add_group(container: &AppStateContainer, name: String) -> Result<AppState, String> {
     with_db(container, |conn| {
-        hierarchy::insert_group(conn, &name)?;
+        let config_id = database::get_active_configuration_id(conn)?;
+        hierarchy::insert_group(conn, &name, &config_id)?;
         database::load_full_state(conn)
     })
 }
@@ -201,6 +202,70 @@ pub fn add_clip(container: &AppStateContainer, track_id: &str, library_entry_id:
 pub fn delete_clip(container: &AppStateContainer, _track_id: &str, clip_id: &str) -> Result<AppState, String> {
     with_db(container, |conn| {
         hierarchy::delete_clip(conn, clip_id)?;
+        database::load_full_state(conn)
+    })
+}
+
+// --- Configuration actions (return updated AppState) ---
+
+pub fn create_configuration(container: &AppStateContainer, name: String) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        let id = configurations::insert_configuration(conn, &name)?;
+        configurations::set_active_configuration(conn, &id)?;
+        database::load_full_state(conn)
+    })
+}
+
+pub fn duplicate_configuration(container: &AppStateContainer, name: String) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        let active_id = database::get_active_configuration_id(conn)?;
+        let new_id = configurations::duplicate_configuration(conn, &active_id, &name)?;
+        configurations::set_active_configuration(conn, &new_id)?;
+        database::load_full_state(conn)
+    })
+}
+
+pub fn load_configuration(container: &AppStateContainer, config_id: String) -> Result<AppState, String> {
+    // Stop all audio before switching
+    {
+        let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+        audio.stop_all();
+    }
+    with_db(container, |conn| {
+        configurations::set_active_configuration(conn, &config_id)?;
+        database::load_full_state(conn)
+    })
+}
+
+pub fn delete_configuration(container: &AppStateContainer, config_id: String) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM configurations", [], |row| row.get(0))
+            .map_err(|e| format!("Failed to count configurations: {e}"))?;
+        if count <= 1 {
+            return Err("Cannot delete the only configuration".to_string());
+        }
+
+        let active_id = database::get_active_configuration_id(conn)?;
+        if active_id == config_id {
+            let next_id: String = conn
+                .query_row(
+                    "SELECT id FROM configurations WHERE id != ?1 ORDER BY sort_order ASC LIMIT 1",
+                    params![config_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("Failed to find next configuration: {e}"))?;
+            configurations::set_active_configuration(conn, &next_id)?;
+        }
+
+        configurations::delete_configuration(conn, &config_id)?;
+        database::load_full_state(conn)
+    })
+}
+
+pub fn rename_configuration(container: &AppStateContainer, config_id: String, name: String) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        configurations::rename_configuration(conn, &config_id, &name)?;
         database::load_full_state(conn)
     })
 }

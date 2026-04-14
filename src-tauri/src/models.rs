@@ -96,10 +96,21 @@ pub struct Group {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
+pub struct Configuration {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
 pub struct AppState {
     pub groups: Vec<Group>,
     pub library_entries: Vec<LibraryEntry>,
     pub tags: Vec<String>,
+    pub configurations: Vec<Configuration>,
+    pub active_configuration_id: String,
 }
 
 impl Default for AppState {
@@ -108,6 +119,8 @@ impl Default for AppState {
             groups: Vec::new(),
             library_entries: Vec::new(),
             tags: Vec::new(),
+            configurations: Vec::new(),
+            active_configuration_id: String::new(),
         }
     }
 }
