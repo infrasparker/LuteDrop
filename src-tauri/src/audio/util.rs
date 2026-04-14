@@ -64,10 +64,11 @@ pub fn find_nearest_zero_crossing(path: &str, target_secs: f64, window_secs: f64
 fn find_zero_crossing_inner(path: &str, target_secs: f64, window_secs: f64) -> Option<f64> {
     use symphonia::core::audio::SampleBuffer;
     use symphonia::core::codecs::DecoderOptions;
-    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::formats::{FormatOptions, SeekMode, SeekTo};
     use symphonia::core::io::MediaSourceStream;
     use symphonia::core::meta::MetadataOptions;
     use symphonia::core::probe::Hint;
+    use symphonia::core::units::Time;
 
     let file = std::fs::File::open(path).ok()?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
@@ -93,9 +94,18 @@ fn find_zero_crossing_inner(path: &str, target_secs: f64, window_secs: f64) -> O
     let range_end = target_secs + window_secs;
     let target_sample = (target_secs * sample_rate) as i64;
 
-    let mut best_crossing: Option<(i64, f64)> = None; // (distance_from_target, time)
+    // Seek to just before the search window to avoid decoding from the start
+    if range_start > 0.5 {
+        let seek_to = (range_start - 0.1).max(0.0);
+        let _ = format_reader.seek(
+            SeekMode::Coarse,
+            SeekTo::Time { time: Time::from(seek_to), track_id: Some(track_id) },
+        );
+        decoder.reset();
+    }
+
+    let mut best_crossing: Option<(i64, f64)> = None;
     let mut prev_sample: f32 = 0.0;
-    let mut sample_index: u64 = 0;
     let mut started = false;
 
     loop {
@@ -104,6 +114,10 @@ fn find_zero_crossing_inner(path: &str, target_secs: f64, window_secs: f64) -> O
             Err(_) => break,
         };
         if packet.track_id() != track_id { continue; }
+
+        // Compute packet start time from its timestamp
+        let packet_ts = packet.ts();
+        let time_base = codec_params.time_base;
 
         let decoded = match decoder.decode(&packet) {
             Ok(buf) => buf,
@@ -120,12 +134,20 @@ fn find_zero_crossing_inner(path: &str, target_secs: f64, window_secs: f64) -> O
         let samples = sample_buf.samples();
 
         for frame_idx in 0..num_frames {
-            let time = sample_index as f64 / sample_rate;
+            let sample_ts = packet_ts + frame_idx as u64;
+            let time = match time_base {
+                Some(tb) => {
+                    let t = tb.calc_time(sample_ts);
+                    t.seconds as f64 + t.frac
+                }
+                None => sample_ts as f64 / sample_rate,
+            };
 
-            if time > range_end { return best_crossing.map(|(_, t)| t); }
+            if time > range_end {
+                return best_crossing.map(|(_, t)| round6(t));
+            }
 
             if time >= range_start {
-                // Mix to mono
                 let mut mono: f32 = 0.0;
                 for ch in 0..num_channels {
                     mono += samples[frame_idx * num_channels + ch];
@@ -133,7 +155,7 @@ fn find_zero_crossing_inner(path: &str, target_secs: f64, window_secs: f64) -> O
                 mono /= num_channels as f32;
 
                 if started && ((prev_sample >= 0.0 && mono < 0.0) || (prev_sample < 0.0 && mono >= 0.0)) {
-                    let dist = (sample_index as i64 - target_sample).abs();
+                    let dist = ((time * sample_rate) as i64 - target_sample).abs();
                     if best_crossing.is_none() || dist < best_crossing.unwrap().0 {
                         best_crossing = Some((dist, time));
                     }
@@ -141,12 +163,14 @@ fn find_zero_crossing_inner(path: &str, target_secs: f64, window_secs: f64) -> O
                 prev_sample = mono;
                 started = true;
             }
-
-            sample_index += 1;
         }
     }
 
-    best_crossing.map(|(_, t)| t)
+    best_crossing.map(|(_, t)| round6(t))
+}
+
+fn round6(v: f64) -> f64 {
+    (v * 1_000_000.0).round() / 1_000_000.0
 }
 
 /// Converts a linear amplitude (0.0 - 1.0) to kira Decibels.
