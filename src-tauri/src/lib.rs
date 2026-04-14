@@ -62,6 +62,12 @@ pub fn run() {
                 }
             });
 
+            // Start automatic database backups (on startup + every 30 min)
+            let backup_container = container.clone();
+            std::thread::spawn(move || {
+                database::backup::start_backup_loop(backup_container);
+            });
+
             // Start the axum WebSocket server on its own thread with a tokio runtime
             let server_container = container.clone();
             let remote_dist = std::env::current_dir()

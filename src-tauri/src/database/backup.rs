@@ -75,6 +75,43 @@ pub fn perform_backup(src: &Connection, backup_dir: &Path) -> Result<PathBuf, St
     Ok(dest_path)
 }
 
+use std::sync::Arc;
+use crate::state::AppStateContainer;
+
+const BACKUP_INTERVAL: Duration = Duration::from_secs(30 * 60);
+
+/// Runs the backup loop: one backup immediately, then every 30 minutes.
+/// Intended to be spawned on a dedicated background thread.
+/// Never panics — errors are logged and the loop continues.
+pub fn start_backup_loop(container: Arc<AppStateContainer>) {
+    let backup_dir = container
+        .db_path
+        .parent()
+        .unwrap_or(&container.db_path)
+        .join("backups");
+
+    loop {
+        let result = {
+            let conn = match container.db.lock() {
+                Ok(c) => c,
+                Err(e) => {
+                    log::warn!("Backup: failed to acquire DB lock: {e}");
+                    std::thread::sleep(BACKUP_INTERVAL);
+                    continue;
+                }
+            };
+            perform_backup(&conn, &backup_dir)
+        };
+
+        match result {
+            Ok(path) => log::info!("Backup complete: {:?}", path),
+            Err(e) => log::warn!("Backup failed: {e}"),
+        }
+
+        std::thread::sleep(BACKUP_INTERVAL);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
