@@ -213,6 +213,7 @@ pub fn load_full_state(conn: &Connection) -> Result<AppState, String> {
         tags,
         configurations,
         active_configuration_id,
+        missing_entry_ids: Vec::new(),
     })
 }
 

@@ -3,4 +3,4 @@ import type { Configuration } from "./Configuration";
 import type { Group } from "./Group";
 import type { LibraryEntry } from "./LibraryEntry";
 
-export type AppState = { groups: Array<Group>, libraryEntries: Array<LibraryEntry>, tags: Array<string>, configurations: Array<Configuration>, activeConfigurationId: string, };
+export type AppState = { groups: Array<Group>, libraryEntries: Array<LibraryEntry>, tags: Array<string>, configurations: Array<Configuration>, activeConfigurationId: string, missingEntryIds: Array<string>, };

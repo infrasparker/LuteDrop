@@ -111,6 +111,7 @@ pub struct AppState {
     pub tags: Vec<String>,
     pub configurations: Vec<Configuration>,
     pub active_configuration_id: String,
+    pub missing_entry_ids: Vec<String>,
 }
 
 impl Default for AppState {
@@ -121,6 +122,7 @@ impl Default for AppState {
             tags: Vec::new(),
             configurations: Vec::new(),
             active_configuration_id: String::new(),
+            missing_entry_ids: Vec::new(),
         }
     }
 }
