@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
 import WaveformEditor from './WaveformEditor.vue';
+import { open } from '@tauri-apps/plugin-dialog';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -171,6 +172,18 @@ function close(): void {
   }
   emit('update:modelValue', false);
 }
+
+const AUDIO_EXTENSIONS = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'wma'];
+const isMissing = computed(() => store.isEntryMissing(props.entryId));
+
+async function relocateFile(): Promise<void> {
+  const path = await open({
+    multiple: false,
+    filters: [{ name: 'Audio', extensions: AUDIO_EXTENSIONS }],
+  });
+  if (!path || Array.isArray(path)) return;
+  await store.command('relocate_library_entry', { entryId: props.entryId, newFilePath: path });
+}
 </script>
 
 <template>
@@ -188,6 +201,25 @@ function close(): void {
         />
         <VBtn icon="mdi-close" variant="text" size="small" @click="close" />
       </VCardTitle>
+
+      <!-- File path -->
+      <div class="d-flex align-center ga-2 px-6 py-2" :style="isMissing ? 'background: rgba(var(--v-theme-warning), 0.08)' : ''">
+        <VIcon v-if="isMissing" color="warning" size="small">mdi-alert</VIcon>
+        <span
+          class="text-caption text-medium-emphasis flex-grow-1 text-truncate"
+          :class="isMissing ? 'text-warning' : ''"
+          style="direction: rtl; text-align: left;"
+          :title="entry.filePath"
+        >{{ entry.filePath }}</span>
+        <VBtn
+          icon="mdi-folder-search"
+          size="x-small"
+          :variant="isMissing ? 'outlined' : 'text'"
+          :color="isMissing ? 'warning' : undefined"
+          title="Change file path"
+          @click="relocateFile"
+        />
+      </div>
 
       <VCardText>
         <!-- Name -->
