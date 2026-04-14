@@ -235,14 +235,15 @@ impl AudioEngine {
 
     // --- Polling ---
 
-    pub fn poll(&mut self) -> Vec<TrackPlaybackState> {
+    pub fn poll(&mut self) -> (Vec<TrackPlaybackState>, Vec<String>) {
+        let mut missing_entries: Vec<String> = Vec::new();
         let track_ids: Vec<String> = self.tracks.keys()
             .filter(|id| id.as_str() != LIBRARY_TRACK_ID)
             .cloned()
             .collect();
 
         for id in &track_ids {
-            orchestrator::poll_track(&mut self.tracks, &mut self.manager, id, self.master_volume, &self.mute_state);
+            orchestrator::poll_track(&mut self.tracks, &mut self.manager, id, self.master_volume, &self.mute_state, &mut missing_entries);
         }
 
         let mut states: Vec<TrackPlaybackState> = self.tracks.values()
@@ -320,7 +321,7 @@ impl AudioEngine {
         };
         states.push(lib_state);
 
-        states
+        (states, missing_entries)
     }
 
     // --- Internal ---
