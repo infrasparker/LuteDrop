@@ -577,6 +577,7 @@ pub fn play_library_sound(
     let vol = crate::audio::util::amplitude_to_decibels(audio.get_master_volume() * volume);
     let loop_region = match (loop_start, loop_end) {
         (Some(ls), Some(le)) if le > ls => Some((ls, le)),
+        (None, Some(le)) if le > 0.0 => Some((0.0, le)),
         _ => None,
     };
     audio.play_library_sound(crate::audio::sound::PlayParams {

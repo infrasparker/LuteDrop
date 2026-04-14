@@ -49,6 +49,11 @@ async function renameConfig(): Promise<void> {
   showRenameDialog.value = false;
 }
 
+function openSaveAsDialog(): void {
+  saveAsName.value = (activeConfig.value?.name ?? '') + ' Copy';
+  showSaveAsDialog.value = true;
+}
+
 function openRenameDialog(): void {
   renameName.value = activeConfig.value?.name ?? '';
   showRenameDialog.value = true;
@@ -88,24 +93,12 @@ async function deleteConfig(): Promise<void> {
           <template #prepend><VIcon size="small">mdi-plus</VIcon></template>
           <VListItemTitle>New Configuration</VListItemTitle>
         </VListItem>
-        <VListItem @click="showSaveAsDialog = true">
-          <template #prepend><VIcon size="small">mdi-content-copy</VIcon></template>
-          <VListItemTitle>Save As...</VListItemTitle>
-        </VListItem>
-        <VListItem @click="openRenameDialog">
-          <template #prepend><VIcon size="small">mdi-pencil</VIcon></template>
-          <VListItemTitle>Rename</VListItemTitle>
-        </VListItem>
-        <VListItem
-          @click="showDeleteConfirm = true"
-          :disabled="configurations.length <= 1"
-          class="text-error"
-        >
-          <template #prepend><VIcon size="small" color="error">mdi-delete</VIcon></template>
-          <VListItemTitle>Delete</VListItemTitle>
-        </VListItem>
       </VList>
     </VMenu>
+
+    <VBtn icon="mdi-content-copy" variant="text" size="x-small" title="Duplicate" @click="openSaveAsDialog" />
+    <VBtn icon="mdi-pencil" variant="text" size="x-small" title="Rename" @click="openRenameDialog" />
+    <VBtn icon="mdi-delete" variant="text" size="x-small" title="Delete" :disabled="configurations.length <= 1" color="error" @click="showDeleteConfirm = true" />
 
     <VDialog v-model="showNewDialog" max-width="400">
       <VCard title="New Configuration">

@@ -67,8 +67,8 @@ onMounted(async () => {
       </VList>
     </VNavigationDrawer>
 
-    <VAppBar density="compact" flat color="surface" class="app-top-bar">
-      <div id="app-bar-extension" class="d-flex align-center flex-grow-1 overflow-hidden" />
+    <VAppBar flat color="surface" density="compact">
+      <div id="app-bar-main" class="d-flex align-center flex-grow-1 px-4" />
     </VAppBar>
 
     <VMain>

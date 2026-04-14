@@ -46,7 +46,7 @@ const selectedComp = computed(() =>
           variant="tonal"
           rounded="xl"
           block
-          size="small"
+          size="default"
           @click="emit('add-comp', group.id)"
         >
           Add Comp

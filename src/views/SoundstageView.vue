@@ -105,10 +105,10 @@ async function createComp(): Promise<void> {
 
 <template>
   <div class="d-flex flex-column" style="height: 100%;">
-    <!-- Teleport group tabs and config picker into the app bar -->
-    <Teleport to="#app-bar-extension">
+    <!-- Teleport config + tabs into app bar -->
+    <Teleport to="#app-bar-main">
       <ConfigurationPicker />
-      <VDivider vertical class="mx-1 my-2" />
+      <VDivider vertical class="mx-2 my-2" />
       <VTabs v-model="activeTab" color="primary" density="compact" class="app-bar-tabs">
         <VTab
           v-for="(group, i) in groups"
