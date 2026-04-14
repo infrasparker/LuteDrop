@@ -273,13 +273,6 @@ pub fn relocate_library_entry(
 }
 
 #[tauri::command]
-pub fn check_missing_files(
-    state: State<'_, Arc<AppStateContainer>>,
-) -> Result<Vec<String>, String> {
-    actions::check_missing_files(&state)
-}
-
-#[tauri::command]
 pub fn play_library_sound(
     state: State<'_, Arc<AppStateContainer>>,
     file_path: String,

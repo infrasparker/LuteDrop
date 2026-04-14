@@ -48,6 +48,9 @@ pub fn run() {
 
             let container = Arc::new(AppStateContainer::new(conn, audio_engine, peak_cache_dir, db_path.clone()));
 
+            // Scan for missing files before sharing state with frontend
+            actions::scan_missing_files(&container);
+
             // Share the Arc with Tauri's managed state
             app.manage(container.clone());
 
@@ -125,7 +128,6 @@ pub fn run() {
             commands::rename_library_entry,
             commands::delete_library_entry,
             commands::relocate_library_entry,
-            commands::check_missing_files,
             commands::play_library_sound,
             commands::stop_library_sound,
             commands::toggle_master_mute,
