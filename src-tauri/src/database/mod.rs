@@ -1,3 +1,4 @@
+pub mod backup;
 pub mod hierarchy;
 pub mod library;
 
