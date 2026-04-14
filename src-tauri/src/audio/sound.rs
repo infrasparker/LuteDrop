@@ -1,6 +1,6 @@
 use std::time::Duration;
 use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle};
-use kira::sound::{EndPosition, FromFileError, PlaybackPosition, PlaybackState, Region};
+use kira::sound::{FromFileError, PlaybackState};
 use kira::track::TrackHandle;
 use kira::{AudioManager, Decibels, Easing, Tween};
 use super::util::probe_duration;
@@ -10,6 +10,8 @@ pub struct SoundHandle {
     pub fade_out: Option<f64>,
     pub duration: Option<f64>,
     pub start_position: Option<f64>,
+    /// Stored for manual crossfade looping in the poll loop.
+    pub loop_region: Option<(f64, f64)>,
 }
 
 pub struct PlayParams {
@@ -36,15 +38,16 @@ pub fn play(
         sound_data = sound_data.start_position(params.start_position);
     }
 
-    // Apply loop region
-    if let Some((loop_start, loop_end)) = params.loop_region {
-        if loop_end > loop_start {
-            sound_data = sound_data.loop_region(Region {
-                start: PlaybackPosition::Seconds(loop_start),
-                end: EndPosition::Custom(PlaybackPosition::Seconds(loop_end)),
-            });
-        }
-    }
+    // Loop region is NOT applied via Kira's native loop_region because it
+    // performs a hard sample jump at the boundary, causing an audible pop.
+    // Instead, loop_region is stored on the SoundHandle and managed manually
+    // in the poll loop with a crossfade overlap.
+    //
+    // TODO: Switching to FMOD (https://fmod.com) would give us sample-accurate
+    // loop crossfading natively, plus callback-driven transitions instead of
+    // polling. FMOD handles ~70% of our audio needs out of the box; the
+    // orchestrator/transition logic would remain custom. Free for indie
+    // (<$200k revenue). Rust bindings: libfmod crate.
 
     // Apply fade in
     if let Some(fade_secs) = params.fade_in {
@@ -82,6 +85,7 @@ pub fn play(
         } else {
             params.trim_start
         },
+        loop_region: params.loop_region,
     })
 }
 

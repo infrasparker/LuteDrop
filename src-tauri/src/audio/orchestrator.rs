@@ -8,6 +8,9 @@ use super::sound::{self, SoundHandle, PlayParams};
 use super::mixer::{self, MuteState};
 use super::transitions::{TransitionManager, TransitionAction};
 
+/// Must match LOOP_CROSSFADE_SECS in mod.rs.
+const LOOP_CROSSFADE_SECS: f64 = 0.06;
+
 pub struct ManagedTrack {
     pub track_handle: kira::track::TrackHandle,
     pub config: Track,
@@ -247,6 +250,48 @@ pub fn poll_track(
         let start = track.current_sound.as_ref().and_then(|s| s.start_position);
         (pos, dur, start, track.config.mode.clone(), track.current_clip_index, track.config.clips.len(), track.is_paused, playing, stopped)
     };
+
+    // Handle manual loop crossfade for seamless mode before checking transitions
+    if sound_playing && !is_paused {
+        let needs_loop = {
+            let track = match tracks.get(track_id) { Some(t) => t, None => return };
+            match &track.current_sound {
+                Some(snd) => matches!(snd.loop_region, Some((_, le)) if position >= le - LOOP_CROSSFADE_SECS),
+                None => false,
+            }
+        };
+        if needs_loop {
+            if let Some(track) = tracks.get_mut(track_id) {
+                if let Some(ref mut snd) = track.current_sound {
+                    let loop_region = snd.loop_region;
+                    sound::stop(snd, Some(std::time::Duration::from_secs_f64(LOOP_CROSSFADE_SECS)));
+
+                    if let (Some((ls, _)), Some(clip_idx)) = (loop_region, track.current_clip_index) {
+                        if let Some(clip) = track.config.clips.get(clip_idx) {
+                            let volume = mixer::compute_volume(
+                                master_volume, track.config.volume, clip.volume, clip.library_volume,
+                                mute_state, &track.config.id, &clip.id,
+                            );
+                            let params = PlayParams {
+                                file_path: clip.file_path.clone(),
+                                start_position: ls,
+                                volume,
+                                trim_start: clip.trim_start,
+                                trim_end: clip.trim_end,
+                                loop_region,
+                                fade_in: Some(LOOP_CROSSFADE_SECS),
+                                fade_out: None,
+                            };
+                            if let Ok(new_snd) = sound::play(manager, &mut track.track_handle, params) {
+                                track.current_sound = Some(new_snd);
+                            }
+                        }
+                    }
+                }
+            }
+            return;
+        }
+    }
 
     let action = {
         let track = match tracks.get(track_id) {

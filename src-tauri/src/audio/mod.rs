@@ -16,12 +16,27 @@ use util::amplitude_to_decibels;
 
 const LIBRARY_TRACK_ID: &str = "__library";
 
+/// How far before loop_end (in seconds) to trigger the crossfade restart.
+/// Must be larger than the poll interval (50ms) to reliably catch it.
+const LOOP_CROSSFADE_SECS: f64 = 0.06;
+
+/// Info needed to restart a library sound at loop_start for crossfade looping.
+struct LibraryLoopInfo {
+    file_path: String,
+    volume: kira::Decibels,
+    trim_start: Option<f64>,
+    trim_end: Option<f64>,
+    loop_region: Option<(f64, f64)>,
+    loop_start_position: f64,
+}
+
 pub struct AudioEngine {
     manager: AudioManager,
     tracks: HashMap<String, ManagedTrack>,
     master_volume: f64,
     mute_state: MuteState,
     library_sound: Option<SoundHandle>,
+    library_loop_info: Option<LibraryLoopInfo>,
     library_track_handle: kira::track::TrackHandle,
 }
 
@@ -37,6 +52,7 @@ impl AudioEngine {
             master_volume: 1.0,
             mute_state: MuteState::new(),
             library_sound: None,
+            library_loop_info: None,
             library_track_handle,
         })
     }
@@ -171,8 +187,17 @@ impl AudioEngine {
 
     pub fn play_library_sound(&mut self, params: PlayParams) -> Result<(), String> {
         self.stop_library_sound();
+        let restart_info = params.loop_region.map(|(ls, _)| LibraryLoopInfo {
+            file_path: params.file_path.clone(),
+            volume: params.volume,
+            trim_start: params.trim_start,
+            trim_end: params.trim_end,
+            loop_region: params.loop_region,
+            loop_start_position: ls,
+        });
         let snd = sound::play(&mut self.manager, &mut self.library_track_handle, params)?;
         self.library_sound = Some(snd);
+        self.library_loop_info = restart_info;
         Ok(())
     }
 
@@ -181,6 +206,7 @@ impl AudioEngine {
             sound::stop(snd, None);
         }
         self.library_sound = None;
+        self.library_loop_info = None;
     }
 
     // --- State queries ---
@@ -224,17 +250,23 @@ impl AudioEngine {
             .map(orchestrator::get_playback_state)
             .collect();
 
-        // Check library sound: stop at trim_end if reached
+        // Check library sound: handle loop crossfade or stop at trim_end
         let mut library_stopped = false;
+        let mut library_needs_loop = false;
         if let Some(ref mut snd) = self.library_sound {
             let st = sound::state(snd);
             let pos = sound::position(snd);
             let is_playing = matches!(st, kira::sound::PlaybackState::Playing | kira::sound::PlaybackState::Resuming);
 
-            // Stop if we've reached trim_end (duration stores trim_end when set)
-            // But only for non-looping sounds (loop_region handles its own end)
             if is_playing {
-                if let Some(end) = snd.duration {
+                if let Some((_ls, le)) = snd.loop_region {
+                    // Crossfade-loop: fade out current and restart at loop_start
+                    if pos >= le - LOOP_CROSSFADE_SECS {
+                        sound::stop(snd, Some(std::time::Duration::from_secs_f64(LOOP_CROSSFADE_SECS)));
+                        library_needs_loop = true;
+                    }
+                } else if let Some(end) = snd.duration {
+                    // Non-looping: stop at trim_end
                     if pos >= end {
                         sound::stop_quick(snd);
                         library_stopped = true;
@@ -242,7 +274,27 @@ impl AudioEngine {
                 }
             }
         }
-        if library_stopped {
+
+        if library_needs_loop {
+            if let Some(ref info) = self.library_loop_info {
+                let params = PlayParams {
+                    file_path: info.file_path.clone(),
+                    start_position: info.loop_start_position,
+                    volume: info.volume,
+                    trim_start: info.trim_start,
+                    trim_end: info.trim_end,
+                    loop_region: info.loop_region,
+                    fade_in: Some(LOOP_CROSSFADE_SECS),
+                    fade_out: None,
+                };
+                match sound::play(&mut self.manager, &mut self.library_track_handle, params) {
+                    Ok(new_snd) => { self.library_sound = Some(new_snd); }
+                    Err(_) => { self.library_sound = None; self.library_loop_info = None; }
+                }
+            } else {
+                self.library_sound = None;
+            }
+        } else if library_stopped {
             self.library_sound = None;
         }
 
