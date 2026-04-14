@@ -1,8 +1,13 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use chrono::Local;
+use rusqlite::Connection;
 
 const BACKUP_PREFIX: &str = "lutedrop-backup-";
 const BACKUP_EXT: &str = ".db";
+const MAX_BACKUPS: usize = 5;
 
 /// Deletes all but the `keep` most recent backup files in `backup_dir`.
 /// Files are sorted by filename (which sorts chronologically due to the
@@ -39,6 +44,35 @@ pub fn prune_old_backups(backup_dir: &Path, keep: usize) {
             log::info!("Pruned old backup: {:?}", entry.file_name());
         }
     }
+}
+
+/// Creates a backup of the given database connection into `backup_dir`.
+/// Uses SQLite's Online Backup API for a consistent snapshot.
+/// After a successful backup, prunes old backups to keep only `MAX_BACKUPS`.
+/// Returns the path to the new backup file.
+pub fn perform_backup(src: &Connection, backup_dir: &Path) -> Result<PathBuf, String> {
+    fs::create_dir_all(backup_dir)
+        .map_err(|e| format!("Failed to create backup directory: {e}"))?;
+
+    let timestamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let filename = format!("{BACKUP_PREFIX}{timestamp}{BACKUP_EXT}");
+    let dest_path = backup_dir.join(&filename);
+
+    let mut dst = Connection::open(&dest_path)
+        .map_err(|e| format!("Failed to open backup destination: {e}"))?;
+
+    let backup = rusqlite::backup::Backup::new(src, &mut dst)
+        .map_err(|e| format!("Failed to initialise backup: {e}"))?;
+
+    backup
+        .run_to_completion(256, Duration::from_millis(0), None)
+        .map_err(|e| format!("Backup failed: {e}"))?;
+
+    log::info!("Database backed up to {:?}", dest_path);
+
+    prune_old_backups(backup_dir, MAX_BACKUPS);
+
+    Ok(dest_path)
 }
 
 #[cfg(test)]
@@ -118,5 +152,64 @@ mod tests {
         // 5 backups + 1 unrelated file
         assert_eq!(remaining.len(), 6);
         assert!(remaining.contains(&"other-file.txt".to_string()));
+    }
+
+    #[test]
+    fn perform_backup_creates_valid_copy() {
+        use rusqlite::Connection;
+
+        // Create an in-memory source DB with the app schema and some data.
+        let src = crate::database::open_memory_db();
+        crate::database::library::insert_library_entry(
+            &src,
+            "/tmp/test.mp3",
+            Some("hash123"),
+            "Test Sound",
+            Some(60.0),
+            Some(44100),
+            Some(1024),
+        )
+        .expect("insert entry");
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+
+        let backup_path = perform_backup(&src, dir.path()).expect("backup should succeed");
+
+        // Open the backup and verify the data is there.
+        let dst = Connection::open(&backup_path).expect("open backup");
+        let name: String = dst
+            .query_row(
+                "SELECT name FROM library_entries WHERE file_path = '/tmp/test.mp3'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("query backup");
+        assert_eq!(name, "Test Sound");
+    }
+
+    #[test]
+    fn perform_backup_prunes_to_five() {
+        let src = crate::database::open_memory_db();
+        let dir = tempfile::tempdir().expect("create temp dir");
+
+        // Create 6 pre-existing backup files.
+        for i in 1..=6 {
+            File::create(dir.path().join(format!("lutedrop-backup-2026040{i}-100000.db")))
+                .expect("create file");
+        }
+
+        // This 7th backup should trigger pruning down to 5.
+        perform_backup(&src, dir.path()).expect("backup should succeed");
+
+        let count = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with(BACKUP_PREFIX) && name.ends_with(BACKUP_EXT)
+            })
+            .count();
+        assert_eq!(count, 5);
     }
 }
