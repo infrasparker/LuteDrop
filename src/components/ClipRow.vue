@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue';
 import type { Clip } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
+import { open } from '@tauri-apps/plugin-dialog';
 
 const props = defineProps<{
   clip: Clip;
@@ -38,6 +39,22 @@ function editLibraryEntry(): void {
   store.editEntryId = props.clip.libraryEntryId;
 }
 
+const isMissing = computed(() => store.isEntryMissing(props.clip.libraryEntryId));
+
+const AUDIO_EXTENSIONS = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'wma'];
+
+async function relocateMissing(): Promise<void> {
+  const path = await open({
+    multiple: false,
+    filters: [{ name: 'Audio', extensions: AUDIO_EXTENSIONS }],
+  });
+  if (!path || Array.isArray(path)) return;
+  await store.command('relocate_library_entry', {
+    entryId: props.clip.libraryEntryId,
+    newFilePath: path,
+  });
+}
+
 const isMuted = computed(() => store.isClipMuted(props.clip.id));
 
 function toggleMute(): void {
@@ -48,7 +65,7 @@ function toggleMute(): void {
 <template>
   <div
     class="clip-row d-flex align-center ga-2 py-2 px-1"
-    :class="{ 'clip-active': isCurrentClip }"
+    :class="{ 'clip-active': isCurrentClip, 'clip-missing': isMissing }"
   >
     <VIcon size="small" class="text-medium-emphasis drag-handle" style="cursor: grab;">mdi-drag</VIcon>
     <VBtn
@@ -58,10 +75,19 @@ function toggleMute(): void {
       :color="isCurrentClip ? 'primary' : undefined"
       @click="isPlaying ? audio.pauseTrack(trackId) : playClip()"
     />
+    <VBtn
+      v-if="isMissing"
+      icon="mdi-alert"
+      variant="text"
+      size="x-small"
+      color="warning"
+      title="File not found — click to relocate"
+      @click.stop="relocateMissing"
+    />
     <span
       class="text-body-2 flex-grow-1 text-truncate"
       :class="{ 'text-primary': isCurrentClip }"
-      :style="{ opacity: isMuted ? 0.5 : 1 }"
+      :style="{ opacity: isMuted || isMissing ? 0.5 : 1 }"
     >{{ clip.name }}</span>
     <VBtn
       :icon="isMuted ? 'mdi-volume-off' : 'mdi-volume-high'"
@@ -101,5 +127,9 @@ function toggleMute(): void {
 .clip-active {
   border-left: 3px solid #F0A830;
   background: rgba(240, 168, 48, 0.08);
+}
+.clip-missing {
+  border-left: 3px solid rgb(var(--v-theme-warning));
+  background: rgba(var(--v-theme-warning), 0.08);
 }
 </style>
