@@ -104,7 +104,10 @@ pub fn play_track_from(
 }
 
 pub fn pause_track(tracks: &mut HashMap<String, ManagedTrack>, track_id: &str) -> Result<(), String> {
-    let track = tracks.get_mut(track_id).ok_or_else(|| format!("Track not found: {}", track_id))?;
+    let track = match tracks.get_mut(track_id) {
+        Some(t) => t,
+        None => return Ok(()),
+    };
     track.is_paused = true;
     track.transitions.reset();
     if let Some(ref mut snd) = track.current_sound {
@@ -123,7 +126,10 @@ pub fn resume_track(tracks: &mut HashMap<String, ManagedTrack>, track_id: &str) 
 }
 
 pub fn stop_track(tracks: &mut HashMap<String, ManagedTrack>, track_id: &str) -> Result<(), String> {
-    let track = tracks.get_mut(track_id).ok_or_else(|| format!("Track not found: {}", track_id))?;
+    let track = match tracks.get_mut(track_id) {
+        Some(t) => t,
+        None => return Ok(()),
+    };
     track.is_paused = false;
     track.current_clip_index = None;
     track.transitions.reset();

@@ -35,49 +35,56 @@ function toggleComp(): void {
 </script>
 
 <template>
-  <VCard
-    variant="flat"
-    class="comp-card pa-2 text-center"
+  <VListItem
     :class="cardClass"
-    style="width: 130px; cursor: pointer;"
     @click="emit('select', comp.id)"
+    rounded="lg"
+    class="comp-item mb-1"
   >
-    <div class="d-flex justify-center ga-1 mb-2">
-      <VBtn
-        :icon="status === 'active' || status === 'partial' ? 'mdi-pause' : 'mdi-play'"
-        variant="tonal"
-        size="small"
-        rounded="circle"
-        @click.stop="toggleComp"
-      />
-      <VBtn
-        icon="mdi-stop"
-        variant="tonal"
-        size="small"
-        rounded="circle"
-        @click.stop="remote.stopComp(comp.id)"
-      />
-    </div>
-    <div class="text-subtitle-2 font-weight-bold text-truncate">{{ comp.name }}</div>
-    <div class="text-caption" style="opacity: 0.6;">{{ comp.tracks.length }} tracks</div>
-  </VCard>
+    <template #prepend>
+      <div class="d-flex align-center ga-1 mr-2">
+        <VBtn
+          :icon="status === 'active' || status === 'partial' ? 'mdi-pause' : 'mdi-play'"
+          variant="tonal"
+          size="small"
+          rounded="circle"
+          @click.stop="toggleComp"
+        />
+        <VBtn
+          icon="mdi-stop"
+          variant="tonal"
+          size="small"
+          rounded="circle"
+          :disabled="status === 'inactive'"
+          @click.stop="remote.stopComp(comp.id)"
+        />
+      </div>
+    </template>
+
+    <VListItemTitle class="text-body-1">
+      {{ comp.name }}
+    </VListItemTitle>
+    <VListItemSubtitle>
+      {{ comp.tracks.length }} {{ comp.tracks.length === 1 ? 'track' : 'tracks' }}
+    </VListItemSubtitle>
+  </VListItem>
 </template>
 
 <style scoped>
-.comp-card {
+.comp-item {
   border-left: 3px solid transparent;
-  background: rgb(var(--v-theme-surface-light));
+  cursor: pointer;
 }
 .comp-selected {
   outline: 2px solid rgb(var(--v-theme-primary));
   outline-offset: -2px;
 }
 .comp-active {
-  background: rgba(240, 168, 48, 0.12) !important;
+  background: rgba(240, 168, 48, 0.08) !important;
   border-left: 3px solid #F0A830;
 }
 .comp-partial {
-  background: rgba(240, 168, 48, 0.06) !important;
+  background: rgba(240, 168, 48, 0.05) !important;
   border-left: 3px solid rgba(240, 168, 48, 0.5);
 }
 .comp-paused {

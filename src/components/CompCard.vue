@@ -83,33 +83,51 @@ function toggleMute(): void {
 </script>
 
 <template>
-  <div
-    class="comp-item"
+  <VListItem
     :class="cardClass"
     @click="emit('select', comp.id)"
     @contextmenu.prevent="openContextMenu($event)"
+    rounded="lg"
+    class="comp-item mb-1"
   >
-    <VBtn
-      :icon="status === 'active' || status === 'partial' ? 'mdi-pause' : 'mdi-play'"
-      variant="text"
-      size="x-small"
-      density="compact"
-      @click.stop="toggleComp"
-    />
-    <div class="comp-info" :style="{ opacity: isCompMuted ? 0.5 : 1 }">
-      <span class="text-body-2 text-truncate">{{ comp.name }}</span>
-      <span class="text-caption text-medium-emphasis">{{ comp.tracks.length }}t</span>
-    </div>
-    <VBtn
-      v-if="isCompMuted"
-      icon="mdi-volume-off"
-      color="error"
-      variant="text"
-      size="x-small"
-      density="compact"
-      title="Unmute comp"
-      @click.stop="toggleMute"
-    />
+    <template #prepend>
+      <div class="d-flex align-center ga-1 mr-2">
+        <VBtn
+          :icon="status === 'active' || status === 'partial' ? 'mdi-pause' : 'mdi-play'"
+          variant="tonal"
+          size="small"
+          rounded="circle"
+          @click.stop="toggleComp"
+        />
+        <VBtn
+          icon="mdi-stop"
+          variant="tonal"
+          size="small"
+          rounded="circle"
+          :disabled="status === 'inactive'"
+          @click.stop="stopComp"
+        />
+      </div>
+    </template>
+
+    <VListItemTitle :style="{ opacity: isCompMuted ? 0.5 : 1 }" class="text-body-1">
+      {{ comp.name }}
+    </VListItemTitle>
+    <VListItemSubtitle>
+      {{ comp.tracks.length }} {{ comp.tracks.length === 1 ? 'track' : 'tracks' }}
+    </VListItemSubtitle>
+
+    <template #append>
+      <VBtn
+        v-if="isCompMuted"
+        :icon="isCompMuted ? 'mdi-volume-off' : 'mdi-volume-high'"
+        :color="isCompMuted ? 'error' : undefined"
+        variant="text"
+        size="x-small"
+        :title="isCompMuted ? 'Unmute comp' : 'Mute comp'"
+        @click.stop="toggleMute"
+      />
+    </template>
 
     <!-- Context menu -->
     <VMenu v-model="contextMenu" :target="[contextMenuX, contextMenuY]" close-on-content-click>
@@ -160,40 +178,27 @@ function toggleMute(): void {
         </VCardActions>
       </VCard>
     </VDialog>
-  </div>
+  </VListItem>
 </template>
 
 <style scoped>
 .comp-item {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
   border-left: 3px solid transparent;
-  border-radius: 4px;
   cursor: pointer;
-  background: rgb(var(--v-theme-surface-light));
-}
-.comp-item:hover {
-  background: rgb(var(--v-theme-surface-variant));
-}
-.comp-info {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
 }
 .comp-selected {
   outline: 2px solid rgb(var(--v-theme-primary));
   outline-offset: -2px;
 }
 .comp-active {
-  background: rgba(240, 168, 48, 0.12) !important;
+  background: rgba(240, 168, 48, 0.08) !important;
   border-left: 3px solid #F0A830;
 }
+.comp-active.comp-selected {
+  background: rgba(240, 168, 48, 0.14) !important;
+}
 .comp-partial {
-  background: rgba(240, 168, 48, 0.06) !important;
+  background: rgba(240, 168, 48, 0.05) !important;
   border-left: 3px solid rgba(240, 168, 48, 0.5);
 }
 .comp-paused {

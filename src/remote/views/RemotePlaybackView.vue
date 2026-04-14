@@ -18,31 +18,28 @@ const selectedComp = computed(() =>
 </script>
 
 <template>
-  <VContainer fluid class="d-flex flex-column" style="height: 100%;">
+  <div class="d-flex flex-column pa-3" style="height: 100%;">
     <div v-if="currentGroup" class="d-flex flex-grow-1" style="overflow: hidden;">
-      <!-- Comp grid -->
-      <div style="width: 300px; min-width: 300px; display: flex; flex-direction: column;" class="pr-3">
-        <div style="flex: 1; overflow-y: auto;">
-          <div class="d-flex flex-wrap ga-2">
-            <RemoteCompCard
-              v-for="comp in currentGroup.comps"
-              :key="comp.id"
-              :comp="comp"
-              :selected="comp.id === selectedCompId"
-              @select="selectedCompId = $event"
-            />
-          </div>
-          <div v-if="currentGroup.comps.length === 0" class="text-medium-emphasis text-center pa-4">
+      <!-- Left pane: comp list -->
+      <div style="width: 300px; min-width: 240px; max-width: 360px; display: flex; flex-direction: column;">
+        <VList density="comfortable" class="overflow-y-auto pa-1" style="flex: 1;">
+          <RemoteCompCard
+            v-for="comp in currentGroup.comps"
+            :key="comp.id"
+            :comp="comp"
+            :selected="comp.id === selectedCompId"
+            @select="selectedCompId = $event"
+          />
+          <div v-if="currentGroup.comps.length === 0" class="text-medium-emphasis text-center pa-4 text-body-2">
             No compositions.
           </div>
-        </div>
+        </VList>
       </div>
 
-      <!-- Track details -->
+      <!-- Right pane: track details -->
       <VDivider vertical class="mx-2" />
-      <div style="flex: 1; overflow-y: auto;" class="pl-3">
+      <div style="flex: 1; overflow-y: auto;" class="pl-2">
         <div v-if="selectedComp">
-          <span class="text-h6 font-weight-bold mb-3 d-block">{{ selectedComp.name }}</span>
           <RemoteTrackControl
             v-for="track in selectedComp.tracks"
             :key="track.id"
@@ -61,6 +58,6 @@ const selectedComp = computed(() =>
     <div v-else class="text-medium-emphasis text-center pa-8">
       No groups yet.
     </div>
-  </VContainer>
+  </div>
 </template>
 

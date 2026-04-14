@@ -21,10 +21,10 @@ const selectedComp = computed(() =>
 
 <template>
   <div class="d-flex" style="height: 100%;">
-    <!-- Left pane: compact comp list -->
-    <div style="width: 200px; min-width: 160px; max-width: 240px; display: flex; flex-direction: column;">
+    <!-- Left pane: comp list -->
+    <div style="width: 300px; min-width: 240px; max-width: 360px; display: flex; flex-direction: column;">
       <!-- Scrollable comp list -->
-      <div style="flex: 1; overflow-y: auto;" class="d-flex flex-column ga-1">
+      <VList density="comfortable" class="overflow-y-auto pa-1" style="flex: 1;">
         <CompCard
           v-for="comp in group.comps"
           :key="comp.id"
@@ -34,10 +34,10 @@ const selectedComp = computed(() =>
           @select="selectedCompId = $event"
         />
 
-        <div v-if="group.comps.length === 0" class="text-medium-emphasis text-center pa-4 text-caption">
+        <div v-if="group.comps.length === 0" class="text-medium-emphasis text-center pa-4 text-body-2">
           No compositions yet.
         </div>
-      </div>
+      </VList>
 
       <!-- Pinned Add button at bottom -->
       <div class="pt-2">

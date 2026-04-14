@@ -49,23 +49,25 @@ onMounted(async () => {
 
 <template>
   <VApp @contextmenu.prevent>
+    <VNavigationDrawer rail permanent color="surface" class="nav-rail">
+      <VList nav density="compact" class="mt-1">
+        <VListItem
+          prepend-icon="mdi-tune-vertical"
+          to="/"
+          :active="$route.path === '/'"
+          color="primary"
+          exact
+        />
+        <VListItem
+          prepend-icon="mdi-bookshelf"
+          to="/library"
+          :active="$route.path === '/library'"
+          color="primary"
+        />
+      </VList>
+    </VNavigationDrawer>
+
     <VAppBar density="compact" flat color="surface" class="app-top-bar">
-      <VBtn
-        icon="mdi-tune-vertical"
-        to="/"
-        :color="$route.path === '/' ? 'primary' : undefined"
-        variant="text"
-        exact
-        size="small"
-      />
-      <VBtn
-        icon="mdi-bookshelf"
-        to="/library"
-        :color="$route.path === '/library' ? 'primary' : undefined"
-        variant="text"
-        size="small"
-      />
-      <VDivider vertical class="mx-1 my-2" />
       <div id="app-bar-extension" class="d-flex align-center flex-grow-1 overflow-hidden" />
     </VAppBar>
 

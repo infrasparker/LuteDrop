@@ -195,7 +195,6 @@ pub fn update_library_entry_duration(
     Ok(())
 }
 
-
 /// Returns all file paths from the library.
 pub fn get_all_file_paths(conn: &Connection) -> Result<Vec<String>, String> {
     let mut stmt = conn.prepare("SELECT file_path FROM library_entries")

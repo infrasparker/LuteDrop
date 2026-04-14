@@ -32,7 +32,6 @@ const currentClipName = computed(() => {
           <div class="d-flex align-center ga-2" style="width: 100%;">
             <VBtn
               :icon="isPlaying ? 'mdi-pause' : 'mdi-play'"
-              :color="isPlaying ? 'secondary' : 'primary'"
               variant="tonal"
               size="small"
               rounded="circle"
