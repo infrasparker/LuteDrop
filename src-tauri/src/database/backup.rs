@@ -1,9 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Local;
 use rusqlite::Connection;
+
+use crate::state::AppStateContainer;
 
 const BACKUP_PREFIX: &str = "lutedrop-backup-";
 const BACKUP_EXT: &str = ".db";
@@ -68,15 +71,10 @@ pub fn perform_backup(src: &Connection, backup_dir: &Path) -> Result<PathBuf, St
         .run_to_completion(256, Duration::from_millis(0), None)
         .map_err(|e| format!("Backup failed: {e}"))?;
 
-    log::info!("Database backed up to {:?}", dest_path);
-
     prune_old_backups(backup_dir, MAX_BACKUPS);
 
     Ok(dest_path)
 }
-
-use std::sync::Arc;
-use crate::state::AppStateContainer;
 
 const BACKUP_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
