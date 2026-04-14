@@ -14,6 +14,13 @@ where
     f(&conn)
 }
 
+/// Loads full state from DB and enriches it with the missing-entry-ids snapshot.
+fn load_state(container: &AppStateContainer) -> Result<AppState, String> {
+    let mut state = with_db(container, |conn| database::load_full_state(conn))?;
+    state.missing_entry_ids = container.missing_snapshot();
+    Ok(state)
+}
+
 pub fn find_track_ref(container: &AppStateContainer, track_id: &str) -> Result<Track, String> {
     let state = with_db(container, |conn| database::load_full_state(conn))?;
     for group in &state.groups {
@@ -39,64 +46,72 @@ pub fn find_comp_tracks(container: &AppStateContainer, comp_id: &str) -> Result<
 // --- Data mutation actions (return updated AppState) ---
 
 pub fn load_data(container: &AppStateContainer) -> Result<AppState, String> {
-    with_db(container, |conn| database::load_full_state(conn))
+    load_state(container)
 }
 
 pub fn add_group(container: &AppStateContainer, name: String) -> Result<AppState, String> {
     with_db(container, |conn| {
         let config_id = database::get_active_configuration_id(conn)?;
         hierarchy::insert_group(conn, &name, &config_id)?;
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 pub fn delete_group(container: &AppStateContainer, group_id: &str) -> Result<AppState, String> {
     with_db(container, |conn| {
         hierarchy::delete_group(conn, group_id)?;
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 pub fn rename_group(container: &AppStateContainer, group_id: &str, name: String) -> Result<AppState, String> {
     with_db(container, |conn| {
         hierarchy::rename_group(conn, group_id, &name)?;
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 pub fn add_comp(container: &AppStateContainer, group_id: &str, name: String) -> Result<AppState, String> {
     with_db(container, |conn| {
         hierarchy::insert_comp(conn, group_id, &name)?;
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 pub fn delete_comp(container: &AppStateContainer, _group_id: &str, comp_id: &str) -> Result<AppState, String> {
     with_db(container, |conn| {
         hierarchy::delete_comp(conn, comp_id)?;
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 pub fn rename_comp(container: &AppStateContainer, comp_id: &str, name: String) -> Result<AppState, String> {
     with_db(container, |conn| {
         hierarchy::rename_comp(conn, comp_id, &name)?;
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 pub fn add_track(container: &AppStateContainer, comp_id: &str, name: String) -> Result<AppState, String> {
     with_db(container, |conn| {
         hierarchy::insert_track(conn, comp_id, &name)?;
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 pub fn delete_track(container: &AppStateContainer, _comp_id: &str, track_id: &str) -> Result<AppState, String> {
     with_db(container, |conn| {
         hierarchy::delete_track(conn, track_id)?;
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 pub fn update_track(container: &AppStateContainer, _comp_id: &str, track_id: &str, updates: serde_json::Value) -> Result<AppState, String> {
@@ -188,22 +203,25 @@ pub fn update_track(container: &AppStateContainer, _comp_id: &str, track_id: &st
             }
         }
 
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 pub fn add_clip(container: &AppStateContainer, track_id: &str, library_entry_id: &str) -> Result<AppState, String> {
     with_db(container, |conn| {
         hierarchy::insert_clip(conn, track_id, library_entry_id)?;
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 pub fn delete_clip(container: &AppStateContainer, _track_id: &str, clip_id: &str) -> Result<AppState, String> {
     with_db(container, |conn| {
         hierarchy::delete_clip(conn, clip_id)?;
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 // --- Configuration actions (return updated AppState) ---
@@ -212,8 +230,9 @@ pub fn create_configuration(container: &AppStateContainer, name: String) -> Resu
     with_db(container, |conn| {
         let id = configurations::insert_configuration(conn, &name)?;
         configurations::set_active_configuration(conn, &id)?;
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 pub fn duplicate_configuration(container: &AppStateContainer, name: String) -> Result<AppState, String> {
@@ -221,8 +240,9 @@ pub fn duplicate_configuration(container: &AppStateContainer, name: String) -> R
         let active_id = database::get_active_configuration_id(conn)?;
         let new_id = configurations::duplicate_configuration(conn, &active_id, &name)?;
         configurations::set_active_configuration(conn, &new_id)?;
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 pub fn load_configuration(container: &AppStateContainer, config_id: String) -> Result<AppState, String> {
@@ -233,8 +253,9 @@ pub fn load_configuration(container: &AppStateContainer, config_id: String) -> R
     }
     with_db(container, |conn| {
         configurations::set_active_configuration(conn, &config_id)?;
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 pub fn delete_configuration(container: &AppStateContainer, config_id: String) -> Result<AppState, String> {
@@ -259,15 +280,17 @@ pub fn delete_configuration(container: &AppStateContainer, config_id: String) ->
         }
 
         configurations::delete_configuration(conn, &config_id)?;
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 pub fn rename_configuration(container: &AppStateContainer, config_id: String, name: String) -> Result<AppState, String> {
     with_db(container, |conn| {
         configurations::rename_configuration(conn, &config_id, &name)?;
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 // --- Library actions (return updated AppState) ---
@@ -327,8 +350,9 @@ pub fn import_library_entry(
             }
         }
 
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 pub fn update_library_entry_tags(
@@ -348,8 +372,9 @@ pub fn update_library_entry_tags(
             library::add_tag_to_entry(conn, entry_id, tag_name)?;
         }
 
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 pub fn update_library_entry_markers_action(
@@ -362,8 +387,9 @@ pub fn update_library_entry_markers_action(
 ) -> Result<AppState, String> {
     with_db(container, |conn| {
         library::update_library_entry_markers(conn, entry_id, trim_start, trim_end, loop_start, loop_end)?;
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 pub fn update_library_entry_volume_action(
@@ -373,8 +399,9 @@ pub fn update_library_entry_volume_action(
 ) -> Result<AppState, String> {
     with_db(container, |conn| {
         library::update_library_entry_volume(conn, entry_id, volume)?;
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 pub fn rename_library_entry_action(
@@ -384,8 +411,9 @@ pub fn rename_library_entry_action(
 ) -> Result<AppState, String> {
     with_db(container, |conn| {
         library::update_library_entry_name(conn, entry_id, &name)?;
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    load_state(container)
 }
 
 pub fn delete_library_entry_action(
@@ -394,8 +422,10 @@ pub fn delete_library_entry_action(
 ) -> Result<AppState, String> {
     with_db(container, |conn| {
         library::delete_library_entry(conn, entry_id)?;
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    container.mark_entry_found(entry_id);
+    load_state(container)
 }
 
 pub fn relocate_library_entry(
@@ -405,21 +435,26 @@ pub fn relocate_library_entry(
 ) -> Result<AppState, String> {
     with_db(container, |conn| {
         library::update_library_entry_file_path(conn, entry_id, &new_file_path)?;
-        database::load_full_state(conn)
-    })
+        Ok(())
+    })?;
+    if std::path::Path::new(&new_file_path).exists() {
+        container.mark_entry_found(entry_id);
+    }
+    load_state(container)
 }
 
-pub fn check_missing_files(container: &AppStateContainer) -> Result<Vec<String>, String> {
-    with_db(container, |conn| {
-        let state = database::load_full_state(conn)?;
-        let missing: Vec<String> = state
-            .library_entries
-            .iter()
-            .filter(|entry| !std::path::Path::new(&entry.file_path).exists())
-            .map(|entry| entry.id.clone())
-            .collect();
-        Ok(missing)
-    })
+/// Scans all library entries for missing files and populates the backend set.
+/// Called once at launch before any frontend state is sent.
+pub fn scan_missing_files(container: &AppStateContainer) {
+    let entries = match with_db(container, |conn| database::load_full_state(conn)) {
+        Ok(state) => state.library_entries,
+        Err(_) => return,
+    };
+    for entry in &entries {
+        if !std::path::Path::new(&entry.file_path).exists() {
+            container.mark_entry_missing(&entry.id);
+        }
+    }
 }
 
 // --- Audio actions (no state return) ---
