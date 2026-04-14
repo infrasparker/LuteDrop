@@ -360,8 +360,26 @@ pub fn update_library_entry_markers_action(
     loop_start: Option<f64>,
     loop_end: Option<f64>,
 ) -> Result<AppState, String> {
+    // Snap loop points to nearest zero crossings to avoid pops at loop boundaries.
+    // Search within ±5ms of the user's chosen point.
+    const SNAP_WINDOW: f64 = 0.005;
+    let (snapped_ls, snapped_le) = with_db(container, |conn| {
+        let file_path: Option<String> = conn
+            .query_row("SELECT file_path FROM library_entries WHERE id = ?1", [entry_id], |row| row.get(0))
+            .ok();
+        let ls = match (&file_path, loop_start) {
+            (Some(fp), Some(v)) => Some(crate::audio::util::find_nearest_zero_crossing(fp, v, SNAP_WINDOW)),
+            _ => loop_start,
+        };
+        let le = match (&file_path, loop_end) {
+            (Some(fp), Some(v)) => Some(crate::audio::util::find_nearest_zero_crossing(fp, v, SNAP_WINDOW)),
+            _ => loop_end,
+        };
+        Ok((ls, le))
+    })?;
+
     with_db(container, |conn| {
-        library::update_library_entry_markers(conn, entry_id, trim_start, trim_end, loop_start, loop_end)?;
+        library::update_library_entry_markers(conn, entry_id, trim_start, trim_end, snapped_ls, snapped_le)?;
         database::load_full_state(conn)
     })
 }

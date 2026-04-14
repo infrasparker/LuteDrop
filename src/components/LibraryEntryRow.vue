@@ -69,15 +69,18 @@ function handleClick(): void {
 <template>
   <VListItem
     :class="[
-      selected ? 'bg-primary-lighten-4' : '',
       store.isEntryMissing(entry.id) ? 'opacity-50' : '',
       'cursor-pointer',
       isPreviewPlaying ? 'preview-active' : '',
+      selected ? 'entry-selected' : '',
     ]"
+    :active="selected"
+    color="primary"
     rounded
     @click="handleClick"
   >
     <template #prepend>
+      <VCheckboxBtn v-if="selectable" :model-value="selected" density="compact" class="mr-1" />
       <VIcon v-if="store.isEntryMissing(entry.id)" color="warning" class="mr-2">mdi-alert</VIcon>
       <VIcon v-else class="mr-2">mdi-music-note</VIcon>
     </template>
@@ -115,5 +118,9 @@ function handleClick(): void {
 .preview-active {
   background: rgba(240, 168, 48, 0.08) !important;
   border-left: 3px solid #F0A830;
+}
+.entry-selected {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: -2px;
 }
 </style>
