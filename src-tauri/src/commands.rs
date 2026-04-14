@@ -182,7 +182,15 @@ pub async fn get_waveform_data(
     width: u32,
     start: Option<f64>,
     end: Option<f64>,
+    entry_id: Option<String>,
 ) -> Result<WaveformData, String> {
+    // Check file exists
+    if !std::path::Path::new(&file_path).exists() {
+        if let Some(ref eid) = entry_id {
+            state.mark_entry_missing(eid);
+        }
+        return Err(format!("Audio file not found: {}", file_path));
+    }
     let state_clone = state.inner().clone();
     tokio::task::spawn_blocking(move || -> Result<WaveformData, String> {
         let (peaks, duration) = waveform::extract_peaks(&file_path, width, start, end, &state_clone.peak_cache)?;
@@ -275,6 +283,7 @@ pub fn relocate_library_entry(
 #[tauri::command]
 pub fn play_library_sound(
     state: State<'_, Arc<AppStateContainer>>,
+    entry_id: String,
     file_path: String,
     position: f64,
     volume: f64,
@@ -283,7 +292,7 @@ pub fn play_library_sound(
     loop_start: Option<f64>,
     loop_end: Option<f64>,
 ) -> Result<(), String> {
-    actions::play_library_sound(&state, &file_path, position, volume, trim_start, trim_end, loop_start, loop_end)
+    actions::play_library_sound(&state, &entry_id, &file_path, position, volume, trim_start, trim_end, loop_start, loop_end)
 }
 
 #[tauri::command]

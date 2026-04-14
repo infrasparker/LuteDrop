@@ -160,6 +160,7 @@ export function useAudio() {
   ): Promise<void> {
     try {
       await invoke('play_library_sound', {
+        entryId,
         filePath, position, volume,
         trimStart: trimStart ?? null,
         trimEnd: trimEnd ?? null,

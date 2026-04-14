@@ -600,6 +600,7 @@ pub fn resume_all_audio(container: &AppStateContainer) -> Result<(), String> {
 
 pub fn play_library_sound(
     container: &AppStateContainer,
+    entry_id: &str,
     file_path: &str,
     position: f64,
     volume: f64,
@@ -608,6 +609,11 @@ pub fn play_library_sound(
     loop_start: Option<f64>,
     loop_end: Option<f64>,
 ) -> Result<(), String> {
+    // Check file exists before attempting playback
+    if !std::path::Path::new(file_path).exists() {
+        container.mark_entry_missing(entry_id);
+        return Err(format!("Audio file not found: {}", file_path));
+    }
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
     let vol = crate::audio::util::amplitude_to_decibels(audio.get_master_volume() * volume);
     let loop_region = match (loop_start, loop_end) {
