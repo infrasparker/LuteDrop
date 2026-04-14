@@ -48,7 +48,7 @@ pub fn run() {
             let audio_engine = audio::AudioEngine::new()
                 .expect("Failed to initialize audio engine");
 
-            let container = Arc::new(AppStateContainer::new(conn, audio_engine, peak_cache_dir));
+            let container = Arc::new(AppStateContainer::new(conn, audio_engine, peak_cache_dir, db_path.clone()));
 
             // Share the Arc with Tauri's managed state
             app.manage(container.clone());
