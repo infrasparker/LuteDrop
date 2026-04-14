@@ -18,9 +18,55 @@ pub fn open_db(path: &Path) -> Result<Connection, String> {
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
         .map_err(|e| format!("Failed to set PRAGMAs: {e}"))?;
 
+    migrate_remove_configurations(&conn)?;
     init_schema(&conn).map_err(|e| format!("Failed to initialise schema: {e}"))?;
 
     Ok(conn)
+}
+
+/// Migrates databases that still have the old `configuration_id` FK on groups.
+/// The configurations feature was removed but `CREATE TABLE IF NOT EXISTS`
+/// doesn't alter existing tables, so old DBs still carry the stale FK column.
+fn migrate_remove_configurations(conn: &Connection) -> Result<(), String> {
+    // Check if groups table has configuration_id column
+    let has_config_col: bool = conn
+        .prepare("SELECT configuration_id FROM groups LIMIT 0")
+        .is_ok();
+
+    if !has_config_col {
+        return Ok(());
+    }
+
+    // Rebuild groups without the configuration_id column.
+    // Must disable FKs temporarily so comps→groups references don't block the rename.
+    conn.execute_batch("
+        PRAGMA foreign_keys=OFF;
+
+        CREATE TABLE groups_new (
+            id         TEXT PRIMARY KEY,
+            name       TEXT NOT NULL,
+            sort_order INTEGER NOT NULL
+        );
+        INSERT INTO groups_new (id, name, sort_order)
+            SELECT id, name, sort_order FROM groups;
+
+        DROP TABLE groups;
+        ALTER TABLE groups_new RENAME TO groups;
+
+        DROP TABLE IF EXISTS configurations;
+
+        PRAGMA foreign_keys=ON;
+    ")
+    .map_err(|e| format!("Failed to migrate groups table: {e}"))?;
+
+    // Update schema version
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '1')",
+        [],
+    )
+    .map_err(|e| format!("Failed to update schema version: {e}"))?;
+
+    Ok(())
 }
 
 /// Creates all application tables (idempotent – uses `IF NOT EXISTS`).

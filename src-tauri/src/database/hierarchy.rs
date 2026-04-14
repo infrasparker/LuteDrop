@@ -1,7 +1,21 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 const SORT_GAP: i64 = 1000;
+
+// ─── Parent-existence helpers ────────────────────────────────────────────────
+
+fn require_parent(conn: &Connection, table: &str, id: &str) -> Result<(), String> {
+    let sql = format!("SELECT id FROM {table} WHERE id = ?1");
+    let exists: Option<String> = conn
+        .query_row(&sql, params![id], |row| row.get(0))
+        .optional()
+        .map_err(|e| format!("Failed to check {table} existence: {e}"))?;
+    if exists.is_none() {
+        return Err(format!("{table} not found: {id}"));
+    }
+    Ok(())
+}
 
 // ─── Sort Order Utilities ─────────────────────────────────────────────────────
 
@@ -187,6 +201,7 @@ pub fn rename_group(conn: &Connection, id: &str, name: &str) -> Result<(), Strin
 // ─── Comps ────────────────────────────────────────────────────────────────────
 
 pub fn insert_comp(conn: &Connection, group_id: &str, name: &str) -> Result<String, String> {
+    require_parent(conn, "groups", group_id)?;
     let id = Uuid::new_v4().to_string();
     let sort_order = next_sort_order(conn, "comps", "group_id", group_id)?;
     conn.execute(
@@ -215,6 +230,7 @@ pub fn rename_comp(conn: &Connection, id: &str, name: &str) -> Result<(), String
 // ─── Tracks ───────────────────────────────────────────────────────────────────
 
 pub fn insert_track(conn: &Connection, comp_id: &str, name: &str) -> Result<String, String> {
+    require_parent(conn, "comps", comp_id)?;
     let id = Uuid::new_v4().to_string();
     let sort_order = next_sort_order(conn, "tracks", "comp_id", comp_id)?;
     conn.execute(
@@ -303,6 +319,8 @@ pub fn insert_clip(
     track_id: &str,
     library_entry_id: &str,
 ) -> Result<String, String> {
+    require_parent(conn, "tracks", track_id)?;
+    require_parent(conn, "library_entries", library_entry_id)?;
     let id = Uuid::new_v4().to_string();
     let sort_order = next_sort_order(conn, "clips", "track_id", track_id)?;
     conn.execute(
