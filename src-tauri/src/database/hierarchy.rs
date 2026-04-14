@@ -1,7 +1,21 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 const SORT_GAP: i64 = 1000;
+
+// ─── Parent-existence helpers ────────────────────────────────────────────────
+
+fn require_parent(conn: &Connection, table: &str, id: &str) -> Result<(), String> {
+    let sql = format!("SELECT id FROM {table} WHERE id = ?1");
+    let exists: Option<String> = conn
+        .query_row(&sql, params![id], |row| row.get(0))
+        .optional()
+        .map_err(|e| format!("Failed to check {table} existence: {e}"))?;
+    if exists.is_none() {
+        return Err(format!("{table} not found: {id}"));
+    }
+    Ok(())
+}
 
 // ─── Sort Order Utilities ─────────────────────────────────────────────────────
 
@@ -18,16 +32,6 @@ fn next_sort_order(
     );
     let max: i64 = conn
         .query_row(&sql, params![parent_id], |row| row.get(0))
-        .map_err(|e| format!("Failed to query max sort_order in {table}: {e}"))?;
-    Ok(max + SORT_GAP)
-}
-
-/// Returns MAX(sort_order) + SORT_GAP for top-level tables (no parent column).
-/// Returns SORT_GAP if the table is empty.
-fn next_sort_order_top(conn: &Connection, table: &str) -> Result<i64, String> {
-    let sql = format!("SELECT COALESCE(MAX(sort_order), 0) FROM {table}");
-    let max: i64 = conn
-        .query_row(&sql, [], |row| row.get(0))
         .map_err(|e| format!("Failed to query max sort_order in {table}: {e}"))?;
     Ok(max + SORT_GAP)
 }
@@ -158,15 +162,20 @@ fn renumber_list(
 
 // ─── Groups ───────────────────────────────────────────────────────────────────
 
-pub fn insert_group(conn: &Connection, name: &str) -> Result<String, String> {
+pub fn insert_group(conn: &Connection, name: &str, configuration_id: &str) -> Result<String, String> {
     let id = Uuid::new_v4().to_string();
-    let sort_order = next_sort_order_top(conn, "groups")?;
+    let sort_order = next_sort_order(conn, "groups", "configuration_id", configuration_id)?;
     conn.execute(
-        "INSERT INTO groups (id, name, sort_order) VALUES (?1, ?2, ?3)",
-        params![id, name, sort_order],
+        "INSERT INTO groups (id, name, sort_order, configuration_id) VALUES (?1, ?2, ?3, ?4)",
+        params![id, name, sort_order, configuration_id],
     )
     .map_err(|e| format!("Failed to insert group: {e}"))?;
     Ok(id)
+}
+
+#[allow(dead_code)]
+pub fn reorder_group(conn: &Connection, configuration_id: &str, group_id: &str, new_index: usize) -> Result<(), String> {
+    reorder_item(conn, "groups", Some("configuration_id"), Some(configuration_id), group_id, new_index)
 }
 
 pub fn delete_group(conn: &Connection, id: &str) -> Result<(), String> {
@@ -187,6 +196,7 @@ pub fn rename_group(conn: &Connection, id: &str, name: &str) -> Result<(), Strin
 // ─── Comps ────────────────────────────────────────────────────────────────────
 
 pub fn insert_comp(conn: &Connection, group_id: &str, name: &str) -> Result<String, String> {
+    require_parent(conn, "groups", group_id)?;
     let id = Uuid::new_v4().to_string();
     let sort_order = next_sort_order(conn, "comps", "group_id", group_id)?;
     conn.execute(
@@ -215,6 +225,7 @@ pub fn rename_comp(conn: &Connection, id: &str, name: &str) -> Result<(), String
 // ─── Tracks ───────────────────────────────────────────────────────────────────
 
 pub fn insert_track(conn: &Connection, comp_id: &str, name: &str) -> Result<String, String> {
+    require_parent(conn, "comps", comp_id)?;
     let id = Uuid::new_v4().to_string();
     let sort_order = next_sort_order(conn, "tracks", "comp_id", comp_id)?;
     conn.execute(
@@ -303,6 +314,8 @@ pub fn insert_clip(
     track_id: &str,
     library_entry_id: &str,
 ) -> Result<String, String> {
+    require_parent(conn, "tracks", track_id)?;
+    require_parent(conn, "library_entries", library_entry_id)?;
     let id = Uuid::new_v4().to_string();
     let sort_order = next_sort_order(conn, "clips", "track_id", track_id)?;
     conn.execute(
@@ -346,13 +359,27 @@ mod tests {
     use crate::database::open_memory_db;
     use crate::database::library::insert_library_entry;
 
+    fn setup_test_config(conn: &Connection) -> String {
+        let config_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO configurations (id, name, created_at, sort_order) VALUES (?1, 'Test', '0', 1000)",
+            rusqlite::params![config_id],
+        ).expect("insert test config");
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('active_configuration_id', ?1)",
+            rusqlite::params![config_id],
+        ).expect("set active config");
+        config_id
+    }
+
     // ── 1. group_crud ─────────────────────────────────────────────────────────
 
     #[test]
     fn group_crud() {
         let conn = open_memory_db();
+        let config_id = setup_test_config(&conn);
 
-        let id = insert_group(&conn, "Adventure").expect("insert_group");
+        let id = insert_group(&conn, "Adventure", &config_id).expect("insert_group");
 
         rename_group(&conn, &id, "Epic Adventure").expect("rename_group");
 
@@ -378,10 +405,11 @@ mod tests {
     #[test]
     fn sort_order_increments() {
         let conn = open_memory_db();
+        let config_id = setup_test_config(&conn);
 
-        let id_a = insert_group(&conn, "Alpha").expect("insert A");
-        let id_b = insert_group(&conn, "Beta").expect("insert B");
-        let id_c = insert_group(&conn, "Gamma").expect("insert C");
+        let id_a = insert_group(&conn, "Alpha", &config_id).expect("insert A");
+        let id_b = insert_group(&conn, "Beta", &config_id).expect("insert B");
+        let id_c = insert_group(&conn, "Gamma", &config_id).expect("insert C");
 
         let orders: Vec<i64> = {
             let mut stmt = conn
@@ -405,10 +433,11 @@ mod tests {
     #[test]
     fn reorder_moves_to_middle() {
         let conn = open_memory_db();
+        let config_id = setup_test_config(&conn);
 
-        let id_a = insert_group(&conn, "A").expect("insert A");
-        let id_b = insert_group(&conn, "B").expect("insert B");
-        let id_c = insert_group(&conn, "C").expect("insert C");
+        let id_a = insert_group(&conn, "A", &config_id).expect("insert A");
+        let id_b = insert_group(&conn, "B", &config_id).expect("insert B");
+        let id_c = insert_group(&conn, "C", &config_id).expect("insert C");
 
         // Move C (index 2) to position 1 → expected order: A, C, B
         reorder_item(&conn, "groups", None, None, &id_c, 1).expect("reorder_item");
@@ -431,6 +460,7 @@ mod tests {
     #[test]
     fn cascade_deletes() {
         let conn = open_memory_db();
+        let config_id = setup_test_config(&conn);
 
         let entry_id = insert_library_entry(
             &conn,
@@ -443,7 +473,7 @@ mod tests {
         )
         .expect("insert library entry");
 
-        let group_id = insert_group(&conn, "CascadeGroup").expect("insert group");
+        let group_id = insert_group(&conn, "CascadeGroup", &config_id).expect("insert group");
         let comp_id = insert_comp(&conn, &group_id, "CascadeComp").expect("insert comp");
         let track_id = insert_track(&conn, &comp_id, "CascadeTrack").expect("insert track");
         let clip_id = insert_clip(&conn, &track_id, &entry_id).expect("insert clip");
@@ -494,6 +524,7 @@ mod tests {
     #[test]
     fn clip_insert_and_reorder() {
         let conn = open_memory_db();
+        let config_id = setup_test_config(&conn);
 
         // Create the minimum required hierarchy.
         let entry1 = insert_library_entry(&conn, "/tmp/c1.mp3", None, "C1", None, None, None)
@@ -503,7 +534,7 @@ mod tests {
         let entry3 = insert_library_entry(&conn, "/tmp/c3.mp3", None, "C3", None, None, None)
             .expect("entry3");
 
-        let group_id = insert_group(&conn, "G").expect("group");
+        let group_id = insert_group(&conn, "G", &config_id).expect("group");
         let comp_id = insert_comp(&conn, &group_id, "Co").expect("comp");
         let track_id = insert_track(&conn, &comp_id, "T").expect("track");
 

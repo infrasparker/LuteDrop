@@ -465,7 +465,8 @@ function clampLocal(marker: MarkerType, seconds: number): void {
 
   let clamped = Math.max(0, Math.min(dur, seconds));
   const round = (v: number) => Math.round(v * 100) / 100;
-  const snapThreshold = dur * 0.01;
+  const visibleRange = zoom.viewEnd.value - zoom.viewStart.value;
+  const snapThreshold = visibleRange * 0.02;
 
   switch (marker) {
     case 'trimStart': {
@@ -520,6 +521,10 @@ function clampLocal(marker: MarkerType, seconds: number): void {
       break;
     }
     case 'loopStart': {
+      if (clamped < ts + snapThreshold) {
+        localLoopStart.value = ts;
+        return;
+      }
       const curLoopEnd2 = localLoopEnd.value === 0 ? dur : localLoopEnd.value;
       clamped = Math.max(ts, clamped);
       clamped = Math.min(clamped, curLoopEnd2 - 0.01);

@@ -78,7 +78,29 @@ function stopAll(): void {
       </VAppBarTitle>
 
       <template #append>
-        <VIcon class="mr-1">mdi-volume-high</VIcon>
+        <VBtn
+          :icon="showPlayIcon ? 'mdi-play' : 'mdi-pause'"
+          :disabled="!anyPlaying && !anyPaused"
+          variant="tonal"
+          size="small"
+          rounded="circle"
+          class="ml-2"
+          @click="togglePause"
+        />
+        <VBtn
+          icon="mdi-stop"
+          variant="tonal"
+          size="small"
+          rounded="circle"
+          class="ml-2"
+          @click="stopAll"
+        />
+        <VBtn
+          icon="mdi-volume-high"
+          variant="text"
+          size="small"
+          class="ml-3"
+        />
         <VSlider
           :model-value="remote.masterVolume.value"
           @update:model-value="(v: number) => { remote.masterVolume.value = v; remote.setMasterVolume(v); }"
@@ -87,32 +109,17 @@ function stopAll(): void {
           :step="0.01"
           hide-details
           density="compact"
-          style="width: 120px"
-        />
-        <VBtn
-          :icon="showPlayIcon ? 'mdi-play' : 'mdi-pause'"
-          :disabled="!anyPlaying && !anyPaused"
-          variant="tonal"
-          size="small"
-          class="ml-2"
-          @click="togglePause"
-        />
-        <VBtn
-          icon="mdi-stop"
-          variant="tonal"
-          size="small"
-          class="ml-2"
-          @click="stopAll"
+          style="max-width: 120px"
         />
       </template>
       <template #extension>
-        <VTabs v-model="activeTab" color="primary" v-if="remote.groups.value.length > 0">
+        <VTabs v-model="activeTab" color="primary" density="compact" v-if="remote.groups.value.length > 0" class="app-bar-tabs">
           <VTab
             v-for="(group, i) in remote.groups.value"
             :key="group.id"
             :value="i"
-            class="tab-truncate"
-            :style="isGroupActive(group) ? { color: '#FF6D00' } : {}"
+            :class="{ 'tab-truncate': true, 'tab-active': isGroupActive(group) }"
+            size="small"
           >
             {{ group.name }}
           </VTab>
@@ -139,5 +146,12 @@ function stopAll(): void {
   text-overflow: ellipsis;
   white-space: nowrap;
   display: block !important;
+}
+.tab-active {
+  border-left: 3px solid #F0A830;
+  background: rgba(240, 168, 48, 0.08);
+}
+.app-bar-tabs {
+  height: 100%;
 }
 </style>

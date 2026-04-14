@@ -1,15 +1,20 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useAppStore } from '../stores/appStore';
 import { useContextMenuState } from '../composables/useContextMenu';
 import type { Group } from '@generated/index';
 import GroupTab from '../components/GroupTab.vue';
+import ConfigurationPicker from '../components/ConfigurationPicker.vue';
 
 const store = useAppStore();
-const { groups } = storeToRefs(store);
+const { groups, activeConfigurationId } = storeToRefs(store);
 
 const activeTab = ref(0);
+
+watch(activeConfigurationId, () => {
+  activeTab.value = 0;
+});
 
 // New group dialog state
 const showNewGroupDialog = ref(false);
@@ -100,26 +105,33 @@ async function createComp(): Promise<void> {
 
 <template>
   <div class="d-flex flex-column" style="height: 100%;">
-    <!-- Group tabs bar -->
-    <VTabs v-model="activeTab" color="primary" bg-color="surface">
-      <VTab
-        v-for="(group, i) in groups"
-        :key="group.id"
-        :value="i"
-        @contextmenu.prevent="openContextMenu($event, group)"
-        :class="{ 'tab-truncate': true, 'tab-active': isGroupActive(group) }"
-      >
-        {{ group.name }}
-      </VTab>
-      <VTab :value="activeTab" @click.stop.prevent="showNewGroupDialog = true" style="min-width: 0;" class="px-2">
-        <VIcon>mdi-plus</VIcon>
-      </VTab>
-    </VTabs>
-
-    <VDivider />
+    <!-- Teleport config + tabs into app bar -->
+    <Teleport to="#app-bar-main">
+      <ConfigurationPicker />
+      <VDivider vertical class="mx-2 my-2" />
+      <VTabs v-model="activeTab" color="primary" density="compact" class="app-bar-tabs">
+        <VTab
+          v-for="(group, i) in groups"
+          :key="group.id"
+          :value="i"
+          @contextmenu.prevent="openContextMenu($event, group)"
+          :class="{ 'tab-truncate': true, 'tab-active': isGroupActive(group) }"
+          size="small"
+        >
+          {{ group.name }}
+        </VTab>
+        <VBtn
+          icon="mdi-plus"
+          variant="text"
+          size="x-small"
+          class="align-self-center ml-1"
+          @click="showNewGroupDialog = true"
+        />
+      </VTabs>
+    </Teleport>
 
     <!-- Main content area -->
-    <VContainer fluid class="d-flex flex-column flex-grow-1" style="overflow: hidden;">
+    <div class="d-flex flex-column flex-grow-1 pa-3" style="overflow: hidden;">
       <GroupTab
         v-if="groups.length > 0 && groups[activeTab]"
         :group="groups[activeTab]"
@@ -130,7 +142,7 @@ async function createComp(): Promise<void> {
       <div v-else class="text-center text-medium-emphasis pa-8">
         No groups yet. Click + to create one.
       </div>
-    </VContainer>
+    </div>
 
     <!-- New group dialog -->
     <VDialog v-model="showNewGroupDialog" max-width="400">
@@ -230,7 +242,7 @@ async function createComp(): Promise<void> {
 .tab-truncate {
   max-width: 150px !important;
 }
-.tab-truncate .v-btn__content {
+.tab-truncate :deep(.v-btn__content) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -239,5 +251,8 @@ async function createComp(): Promise<void> {
 .tab-active {
   border-left: 3px solid #F0A830;
   background: rgba(240, 168, 48, 0.08);
+}
+.app-bar-tabs {
+  height: 100%;
 }
 </style>

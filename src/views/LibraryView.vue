@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useAppStore } from '../stores/appStore';
@@ -8,11 +8,19 @@ import TagFilter from '../components/TagFilter.vue';
 import LibraryEntryRow from '../components/LibraryEntryRow.vue';
 
 const store = useAppStore();
-const { libraryEntries } = storeToRefs(store);
+const { libraryEntries, tags } = storeToRefs(store);
 const { importFiles, importFolder } = useLibraryImport();
 
 const searchQuery = ref('');
 const selectedTags = ref<string[]>([]);
+
+// Remove stale tags from the filter when they no longer exist in the store
+watch(tags, (current) => {
+  const stale = selectedTags.value.filter((t) => !current.includes(t));
+  if (stale.length > 0) {
+    selectedTags.value = selectedTags.value.filter((t) => current.includes(t));
+  }
+});
 
 const filteredEntries = computed(() => {
   return libraryEntries.value.filter((entry) => {
@@ -50,39 +58,39 @@ async function relocateEntry(entryId: string): Promise<void> {
 </script>
 
 <template>
-  <VContainer fluid class="d-flex flex-column">
-    <!-- Top bar -->
-    <div class="d-flex align-center mb-4 ga-2">
-      <span class="text-h6 font-weight-bold">Library</span>
+  <div class="d-flex flex-column pa-3" style="height: 100%;">
+    <!-- Teleport search + import into app bar main row -->
+    <Teleport to="#app-bar-main">
+      <VTextField
+        v-model="searchQuery"
+        placeholder="Search"
+        prepend-inner-icon="mdi-magnify"
+        variant="solo-filled"
+        flat
+        density="compact"
+        clearable
+        hide-details
+        single-line
+        class="flex-grow-1"
+        style="max-width: 500px;"
+      />
       <VSpacer />
-      <VBtn prepend-icon="mdi-file-music" variant="tonal" rounded="xl" @click="importFiles">
+      <VBtn prepend-icon="mdi-file-music" variant="tonal" size="small" rounded="xl" @click="importFiles">
         Import Files
       </VBtn>
-      <VBtn prepend-icon="mdi-folder-music" variant="tonal" rounded="xl" class="ml-2" @click="importFolder">
+      <VBtn prepend-icon="mdi-folder-music" variant="tonal" size="small" rounded="xl" class="ml-2" @click="importFolder">
         Import Folder
       </VBtn>
-    </div>
+    </Teleport>
 
-    <!-- Search -->
-    <VTextField
-      v-model="searchQuery"
-      label="Search"
-      prepend-inner-icon="mdi-magnify"
-      variant="outlined"
-      density="compact"
-      clearable
-      class="mb-2"
-      hide-details
-    />
-
-    <!-- Tag filter -->
-    <div class="mb-3">
-      <TagFilter v-model:selectedTags="selectedTags" />
-    </div>
-
-    <!-- Entry count -->
-    <div class="text-caption text-medium-emphasis mb-2">
-      {{ filteredEntries.length }} {{ filteredEntries.length === 1 ? 'entry' : 'entries' }}
+    <!-- Tag filter + count -->
+    <div class="d-flex align-end mb-2 ga-2">
+      <div class="d-flex flex-wrap ga-1 flex-grow-1" style="min-width: 0;">
+        <TagFilter v-model:selectedTags="selectedTags" />
+      </div>
+      <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
+        {{ filteredEntries.length }} {{ filteredEntries.length === 1 ? 'entry' : 'entries' }}
+      </span>
     </div>
 
     <!-- Entry list -->
@@ -124,5 +132,5 @@ async function relocateEntry(entryId: string): Promise<void> {
       <span>Import some audio files</span>
     </div>
 
-  </VContainer>
+  </div>
 </template>

@@ -195,29 +195,6 @@ pub fn update_library_entry_duration(
     Ok(())
 }
 
-/// Probes all library entries with a NULL duration and fills them in.
-/// Returns the number of entries updated.
-pub fn backfill_durations(conn: &Connection) -> Result<usize, String> {
-    let mut stmt = conn
-        .prepare("SELECT id, file_path FROM library_entries WHERE duration IS NULL")
-        .map_err(|e| format!("Failed to prepare backfill query: {e}"))?;
-
-    let entries: Vec<(String, String)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-        .map_err(|e| format!("Failed to query entries for backfill: {e}"))?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    let mut updated = 0;
-    for (id, file_path) in &entries {
-        if let Some(duration) = crate::audio::util::probe_duration(file_path) {
-            update_library_entry_duration(conn, id, duration, None)?;
-            updated += 1;
-        }
-    }
-    Ok(updated)
-}
-
 /// Returns all file paths from the library.
 pub fn get_all_file_paths(conn: &Connection) -> Result<Vec<String>, String> {
     let mut stmt = conn.prepare("SELECT file_path FROM library_entries")
@@ -500,10 +477,17 @@ mod tests {
         )
         .expect("insert entry");
 
+        let config_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO configurations (id, name, created_at, sort_order) VALUES (?1, 'Test', '0', 1000)",
+            params![config_id],
+        )
+        .expect("insert config");
+
         let group_id = Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO groups (id, name, sort_order) VALUES (?1, 'G', 0)",
-            params![group_id],
+            "INSERT INTO groups (id, name, sort_order, configuration_id) VALUES (?1, 'G', 0, ?2)",
+            params![group_id, config_id],
         )
         .expect("insert group");
 

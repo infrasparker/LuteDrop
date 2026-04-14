@@ -37,11 +37,9 @@ pub fn run() {
             let conn = database::open_db(&db_path)
                 .expect("Failed to open SQLite database");
 
-            // Backfill durations for any entries missing them
-            match database::library::backfill_durations(&conn) {
-                Ok(n) if n > 0 => log::info!("Backfilled duration for {} library entries", n),
-                Err(e) => log::warn!("Failed to backfill durations: {}", e),
-                _ => {}
+            // Ensure a default configuration exists (for fresh databases)
+            if let Err(e) = database::ensure_default_configuration(&conn) {
+                log::error!("Failed to ensure default configuration: {}", e);
             }
 
             // Create the audio engine
@@ -135,6 +133,11 @@ pub fn run() {
             commands::toggle_clip_mute,
             commands::toggle_comp_mute,
             commands::get_mute_state,
+            commands::create_configuration,
+            commands::duplicate_configuration,
+            commands::load_configuration,
+            commands::delete_configuration,
+            commands::rename_configuration,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LuteDrop");
