@@ -433,10 +433,25 @@ pub fn relocate_library_entry(
     entry_id: &str,
     new_file_path: String,
 ) -> Result<AppState, String> {
+    // Get the old file path so we can evict its peak cache
+    let old_file_path = with_db(container, |conn| {
+        let state = database::load_full_state(conn)?;
+        state.library_entries.iter()
+            .find(|e| e.id == entry_id)
+            .map(|e| e.file_path.clone())
+            .ok_or_else(|| format!("Entry not found: {}", entry_id))
+    })?;
+
     with_db(container, |conn| {
         library::update_library_entry_file_path(conn, entry_id, &new_file_path)?;
         Ok(())
     })?;
+
+    // Evict old peak cache (in-memory + disk .peaks file)
+    if old_file_path != new_file_path {
+        container.peak_cache.evict(std::path::Path::new(&old_file_path));
+    }
+
     if std::path::Path::new(&new_file_path).exists() {
         container.mark_entry_found(entry_id);
     }

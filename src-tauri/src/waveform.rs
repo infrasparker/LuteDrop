@@ -67,6 +67,15 @@ impl PeakCache {
             map.insert(path, peaks);
         }
     }
+
+    /// Evict a path from the in-memory cache and delete its .peaks file from disk.
+    pub fn evict(&self, path: &Path) {
+        if let Ok(mut map) = self.entries.write() {
+            map.remove(path);
+        }
+        let disk_path = cache_path(path, &self.cache_dir);
+        let _ = fs::remove_file(disk_path);
+    }
 }
 
 /// Get source file size and mtime (seconds since epoch) for cache invalidation.
