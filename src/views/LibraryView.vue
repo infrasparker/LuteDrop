@@ -4,12 +4,14 @@ import { storeToRefs } from 'pinia';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useAppStore } from '../stores/appStore';
 import { useLibraryImport } from '../composables/useLibraryImport';
+import { useAudio } from '../composables/useAudio';
 import TagFilter from '../components/TagFilter.vue';
-import LibraryEntryRow from '../components/LibraryEntryRow.vue';
+import type { LibraryEntry } from '@generated/index';
 
 const store = useAppStore();
 const { libraryEntries, tags } = storeToRefs(store);
 const { importFiles, importFolder } = useLibraryImport();
+const audio = useAudio();
 
 const searchQuery = ref('');
 const selectedTags = ref<string[]>([]);
@@ -34,8 +36,60 @@ const filteredEntries = computed(() => {
   });
 });
 
+// Table columns
+const headers = [
+  { title: '', key: 'status', sortable: true, width: '48px',
+    sort: (a: boolean, b: boolean) => (a === b ? 0 : a ? -1 : 1) },
+  { title: 'Name', key: 'name', sortable: true },
+  { title: 'Tags', key: 'tags', sortable: false },
+  { title: 'Duration', key: 'duration', sortable: true, width: '80px', align: 'end' as const },
+  { title: '', key: 'actions', sortable: false, width: '80px', align: 'end' as const },
+];
+
+// Preview playback
+const previewState = computed(() => store.playbackStates.get('__library'));
+
+function isPreviewPlaying(entryId: string): boolean {
+  return store.libraryPlayingEntryId === entryId && !!previewState.value?.isPlaying;
+}
+
+watch(previewState, (state) => {
+  if (!state?.isPlaying) {
+    store.libraryPlayingEntryId = null;
+  }
+});
+
+function togglePreview(entry: LibraryEntry): void {
+  if (isPreviewPlaying(entry.id)) {
+    audio.stopLibrarySound();
+  } else {
+    audio.playLibrarySound(
+      entry.id,
+      entry.filePath,
+      entry.trimStart ?? 0,
+      entry.volume,
+      entry.trimStart, entry.trimEnd,
+      entry.loopStart, entry.loopEnd,
+    );
+  }
+}
+
+function formatDuration(seconds: number | null): string {
+  if (seconds === null) return '--:--';
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
 function openEditor(entryId: string): void {
   store.editEntryId = entryId;
+}
+
+async function removeTag(entryId: string, tag: string): Promise<void> {
+  const entry = libraryEntries.value.find((e) => e.id === entryId);
+  if (!entry) return;
+  const newTags = entry.tags.filter((t) => t !== tag);
+  await store.command('update_library_entry_tags', { entryId, tags: newTags });
 }
 
 // Delete entry
@@ -43,7 +97,7 @@ async function deleteEntry(entryId: string): Promise<void> {
   await store.command('delete_library_entry', { entryId });
 }
 
-// Relocate entry (Task 14)
+// Relocate entry
 const AUDIO_EXTENSIONS = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'wma'];
 
 async function relocateEntry(entryId: string): Promise<void> {
@@ -92,35 +146,82 @@ async function relocateEntry(entryId: string): Promise<void> {
       </span>
     </div>
 
-    <!-- Entry list -->
-    <VList v-if="filteredEntries.length > 0" class="overflow-y-auto" lines="two">
-      <LibraryEntryRow
-        v-for="entry in filteredEntries"
-        :key="entry.id"
-        :entry="entry"
-        @click="openEditor(entry.id)"
-      >
-        <template #actions>
-          <VBtn
-            v-if="store.isEntryMissing(entry.id)"
-            icon="mdi-folder-search"
-            size="small"
-            variant="text"
-            color="warning"
-            title="Relocate file"
-            @click.stop="relocateEntry(entry.id)"
-          />
-          <VBtn
-            icon="mdi-delete"
-            size="small"
-            variant="text"
-            color="error"
-            title="Delete"
-            @click.stop="deleteEntry(entry.id)"
-          />
-        </template>
-      </LibraryEntryRow>
-    </VList>
+    <!-- Entry data table -->
+    <VDataTableVirtual
+      v-if="filteredEntries.length > 0"
+      :headers="headers"
+      :items="filteredEntries"
+      item-value="id"
+      :item-height="48"
+      hover
+      density="comfortable"
+      class="library-table flex-grow-1"
+      :row-props="({ item }: { item: LibraryEntry }) => ({
+        class: [
+          'cursor-pointer',
+          store.isEntryMissing(item.id) ? 'opacity-50' : '',
+          isPreviewPlaying(item.id) ? 'preview-active' : '',
+        ],
+        onClick: () => openEditor(item.id),
+      })"
+    >
+      <template #item.status="{ item }">
+        <VBtn
+          v-if="store.isEntryMissing(item.id)"
+          icon="mdi-alert"
+          size="small"
+          variant="text"
+          color="warning"
+          title="File missing"
+          @click.stop
+        />
+        <VBtn
+          v-else
+          :icon="isPreviewPlaying(item.id) ? 'mdi-stop' : 'mdi-play'"
+          variant="text"
+          size="small"
+          @click.stop="togglePreview(item)"
+        />
+      </template>
+
+      <template #item.tags="{ item }">
+        <VChip
+          v-for="tag in item.tags"
+          :key="tag"
+          size="small"
+          class="mr-1"
+          closable
+          @click:close.stop="removeTag(item.id, tag)"
+          @click.stop
+        >
+          {{ tag }}
+        </VChip>
+      </template>
+
+      <template #item.duration="{ item }">
+        {{ formatDuration(item.duration) }}
+      </template>
+
+      <template #item.actions="{ item }">
+        <VBtn
+          v-if="store.isEntryMissing(item.id)"
+          icon="mdi-folder-search"
+          size="small"
+          variant="text"
+          color="warning"
+          title="Relocate file"
+          @click.stop="relocateEntry(item.id)"
+        />
+        <VBtn
+          icon="mdi-delete"
+          size="small"
+          variant="text"
+          color="error"
+          title="Delete"
+          @click.stop="deleteEntry(item.id)"
+        />
+      </template>
+    </VDataTableVirtual>
 
     <!-- Empty state -->
     <div
@@ -133,3 +234,15 @@ async function relocateEntry(entryId: string): Promise<void> {
 
   </div>
 </template>
+
+<style scoped>
+:deep(.preview-active) {
+  background: rgba(240, 168, 48, 0.08) !important;
+  border-left: 3px solid #F0A830;
+}
+
+.library-table {
+  height: 0;
+  min-height: 0;
+}
+</style>
