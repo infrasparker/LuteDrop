@@ -2,6 +2,7 @@
 import { ref, computed } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useAppStore } from '../stores/appStore';
+import { useAudio } from '../composables/useAudio';
 import TagFilter from './TagFilter.vue';
 import LibraryPickerRow from './LibraryPickerRow.vue';
 
@@ -15,6 +16,7 @@ const emit = defineEmits<{
 }>();
 
 const store = useAppStore();
+const audio = useAudio();
 const { libraryEntries } = storeToRefs(store);
 
 const searchQuery = ref('');
@@ -44,6 +46,7 @@ function toggleEntry(entryId: string): void {
 }
 
 function close(): void {
+  audio.stopLibrarySound();
   selectedIds.value = new Set();
   searchQuery.value = '';
   selectedTags.value = [];

@@ -96,7 +96,7 @@ async function deleteConfig(): Promise<void> {
       </VList>
     </VMenu>
 
-    <VBtn icon="mdi-content-copy" variant="text" size="x-small" title="Duplicate" @click="openSaveAsDialog" />
+    <VBtn icon="mdi-content-save-plus" variant="text" size="x-small" title="Save As" @click="openSaveAsDialog" />
     <VBtn icon="mdi-pencil" variant="text" size="x-small" title="Rename" @click="openRenameDialog" />
     <VBtn icon="mdi-delete" variant="text" size="x-small" title="Delete" :disabled="configurations.length <= 1" color="error" @click="showDeleteConfirm = true" />
 
