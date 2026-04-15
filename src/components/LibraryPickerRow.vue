@@ -6,13 +6,11 @@ import { useAudio } from '../composables/useAudio';
 
 const props = defineProps<{
   entry: LibraryEntry;
-  selectable?: boolean;
   selected?: boolean;
 }>();
 
 const emit = defineEmits<{
   select: [entryId: string];
-  click: [];
 }>();
 
 const store = useAppStore();
@@ -58,11 +56,7 @@ async function removeTag(tag: string): Promise<void> {
 }
 
 function handleClick(): void {
-  if (props.selectable) {
-    emit('select', props.entry.id);
-  } else {
-    emit('click');
-  }
+  emit('select', props.entry.id);
 }
 </script>
 
@@ -80,7 +74,7 @@ function handleClick(): void {
     @click="handleClick"
   >
     <template #prepend>
-      <VCheckboxBtn v-if="selectable" :model-value="selected" density="compact" class="mr-1" />
+      <VCheckboxBtn :model-value="selected" density="compact" class="mr-1" />
       <VIcon v-if="store.isEntryMissing(entry.id)" color="warning" class="mr-2">mdi-alert</VIcon>
       <VIcon v-else class="mr-2">mdi-music-note</VIcon>
     </template>
@@ -109,7 +103,6 @@ function handleClick(): void {
         size="small"
         @click.stop="togglePreview"
       />
-      <slot name="actions" />
     </template>
   </VListItem>
 </template>

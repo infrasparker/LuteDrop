@@ -3,7 +3,7 @@ import { ref, computed } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useAppStore } from '../stores/appStore';
 import TagFilter from './TagFilter.vue';
-import LibraryEntryRow from './LibraryEntryRow.vue';
+import LibraryPickerRow from './LibraryPickerRow.vue';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -99,11 +99,10 @@ async function addClips(): Promise<void> {
           style="max-height: 360px; overflow-y: auto;"
           lines="two"
         >
-          <LibraryEntryRow
+          <LibraryPickerRow
             v-for="entry in filteredEntries"
             :key="entry.id"
             :entry="entry"
-            :selectable="true"
             :selected="selectedIds.has(entry.id)"
             @select="toggleEntry"
           />

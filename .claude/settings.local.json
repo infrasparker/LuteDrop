@@ -17,7 +17,9 @@
       "Bash(cargo check:*)",
       "Bash(xargs grep:*)",
       "Bash(cargo test:*)",
-      "Bash(git merge:*)"
+      "Bash(git merge:*)",
+      "Bash(git rm:*)",
+      "Bash(cargo tauri:*)"
     ]
   }
 }
