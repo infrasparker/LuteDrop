@@ -459,8 +459,22 @@ pub fn scan_missing_files(container: &AppStateContainer) {
 
 // --- Audio actions (no state return) ---
 
+/// Check file existence for all clips in a track and update missing state.
+fn update_clip_file_state(container: &AppStateContainer, track: &Track) {
+    for clip in &track.clips {
+        if !clip.file_path.is_empty() {
+            if std::path::Path::new(&clip.file_path).exists() {
+                container.mark_entry_found(&clip.library_entry_id);
+            } else {
+                container.mark_entry_missing(&clip.library_entry_id);
+            }
+        }
+    }
+}
+
 pub fn play_track_audio(container: &AppStateContainer, track_id: &str) -> Result<(), String> {
     let track_config = find_track_ref(container, track_id)?;
+    update_clip_file_state(container, &track_config);
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
     if !audio.has_track(track_id) {
         audio.setup_track(&track_config)?;
@@ -472,6 +486,7 @@ pub fn play_track_audio(container: &AppStateContainer, track_id: &str) -> Result
 
 pub fn play_track_clip(container: &AppStateContainer, track_id: &str, clip_id: &str) -> Result<(), String> {
     let track_config = find_track_ref(container, track_id)?;
+    update_clip_file_state(container, &track_config);
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
     if !audio.has_track(track_id) {
         audio.setup_track(&track_config)?;
@@ -483,6 +498,7 @@ pub fn play_track_clip(container: &AppStateContainer, track_id: &str, clip_id: &
 
 pub fn play_track_from_position(container: &AppStateContainer, track_id: &str, position: f64) -> Result<(), String> {
     let track_config = find_track_ref(container, track_id)?;
+    update_clip_file_state(container, &track_config);
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
     if !audio.has_track(track_id) {
         audio.setup_track(&track_config)?;
@@ -535,6 +551,9 @@ pub fn set_clip_volume_action(container: &AppStateContainer, clip_id: &str, volu
 
 pub fn activate_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result<(), String> {
     let track_configs = find_comp_tracks(container, comp_id)?;
+    for track in &track_configs {
+        update_clip_file_state(container, track);
+    }
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
     for track in &track_configs {
         if !audio.has_track(&track.id) {
