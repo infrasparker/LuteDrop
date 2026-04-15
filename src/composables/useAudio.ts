@@ -31,6 +31,10 @@ function registerListener(): void {
     const toast = useToast();
     toast.showError(`Audio file not found: ${name}`);
   });
+
+  listen<string>('missing-entry-found', (event) => {
+    store.missingEntryIds.delete(event.payload);
+  });
 }
 
 export function useAudio() {

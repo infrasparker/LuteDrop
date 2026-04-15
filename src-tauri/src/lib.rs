@@ -51,6 +51,9 @@ pub fn run() {
             // Scan for missing files before sharing state with frontend
             actions::scan_missing_files(&container);
 
+            // Give the container the app handle so it can emit events
+            container.set_app_handle(app.handle().clone());
+
             // Share the Arc with Tauri's managed state
             app.manage(container.clone());
 
@@ -166,14 +169,10 @@ fn playback_polling_loop(app_handle: tauri::AppHandle, container: Arc<AppStateCo
         }
         let _ = app_handle.emit("master-volume-update", master_vol);
 
-        // Report newly discovered missing files
+        // Update missing state — events are emitted automatically by mark_entry_missing/found
         for entry_id in &newly_missing {
-            if container.mark_entry_missing(entry_id) {
-                let _ = app_handle.emit("missing-entries-changed", entry_id.clone());
-            }
+            container.mark_entry_missing(entry_id);
         }
-
-        // Clear stale missing state for files that played successfully
         for entry_id in &newly_found {
             container.mark_entry_found(entry_id);
         }
