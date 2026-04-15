@@ -10,3 +10,9 @@ target/
 
 # Superpowers brainstorm artifacts
 .superpowers/
+
+# Claude Code
+.claude/
+
+# Design docs
+docs/superpowers/
