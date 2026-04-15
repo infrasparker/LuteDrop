@@ -41,7 +41,7 @@ const headers = [
   { title: '', key: 'status', sortable: true, width: '48px',
     sort: (a: boolean, b: boolean) => (a === b ? 0 : a ? -1 : 1) },
   { title: 'Name', key: 'name', sortable: true },
-  { title: 'Tags', key: 'tags', sortable: false },
+  { title: 'Tags', key: 'tags', sortable: false, width: '250px' },
   { title: 'Duration', key: 'duration', sortable: true, width: '80px', align: 'end' as const },
   { title: '', key: 'actions', sortable: false, width: '80px', align: 'end' as const },
 ];
@@ -153,6 +153,7 @@ async function relocateEntry(entryId: string): Promise<void> {
       :items="filteredEntries"
       item-value="id"
       :item-height="48"
+      fixed-header
       hover
       density="comfortable"
       class="library-table flex-grow-1"
@@ -172,8 +173,8 @@ async function relocateEntry(entryId: string): Promise<void> {
           size="small"
           variant="text"
           color="warning"
-          title="File missing"
-          @click.stop
+          title="File missing — click to relocate"
+          @click.stop="relocateEntry(item.id)"
         />
         <VBtn
           v-else
@@ -203,15 +204,6 @@ async function relocateEntry(entryId: string): Promise<void> {
       </template>
 
       <template #item.actions="{ item }">
-        <VBtn
-          v-if="store.isEntryMissing(item.id)"
-          icon="mdi-folder-search"
-          size="small"
-          variant="text"
-          color="warning"
-          title="Relocate file"
-          @click.stop="relocateEntry(item.id)"
-        />
         <VBtn
           icon="mdi-delete"
           size="small"

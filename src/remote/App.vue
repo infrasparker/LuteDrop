@@ -65,7 +65,7 @@ function stopAll(): void {
 
 <template>
   <VApp @contextmenu.prevent>
-    <VAppBar color="surface">
+    <VAppBar flat color="surface">
       <VAppBarTitle>
         <span class="text-primary font-weight-bold">LuteDrop</span>
         <VIcon
@@ -118,7 +118,7 @@ function stopAll(): void {
             v-for="(group, i) in remote.groups.value"
             :key="group.id"
             :value="i"
-            :class="{ 'tab-truncate': true, 'tab-active': isGroupActive(group) }"
+            :class="{ 'tab-active': isGroupActive(group) }"
             size="small"
           >
             {{ group.name }}
@@ -138,15 +138,6 @@ function stopAll(): void {
 </template>
 
 <style>
-.tab-truncate {
-  max-width: 150px !important;
-}
-.tab-truncate .v-btn__content {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  display: block !important;
-}
 .tab-active {
   border-left: 3px solid #F0A830;
   background: rgba(240, 168, 48, 0.08);

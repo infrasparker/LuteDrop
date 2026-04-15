@@ -115,7 +115,7 @@ async function createComp(): Promise<void> {
           :key="group.id"
           :value="i"
           @contextmenu.prevent="openContextMenu($event, group)"
-          :class="{ 'tab-truncate': true, 'tab-active': isGroupActive(group) }"
+          :class="{ 'tab-active': isGroupActive(group) }"
           size="small"
         >
           {{ group.name }}
@@ -239,15 +239,6 @@ async function createComp(): Promise<void> {
 </template>
 
 <style scoped>
-.tab-truncate {
-  max-width: 150px !important;
-}
-.tab-truncate :deep(.v-btn__content) {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  display: block !important;
-}
 .tab-active {
   border-left: 3px solid #F0A830;
   background: rgba(240, 168, 48, 0.08);

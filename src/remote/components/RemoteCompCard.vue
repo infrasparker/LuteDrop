@@ -16,7 +16,6 @@ const remote = useRemote();
 const status = computed(() => remote.getCompStatus(props.comp.id));
 
 const cardClass = computed(() => ({
-  'comp-card': true,
   'comp-selected': props.selected,
   'comp-active': status.value === 'active',
   'comp-partial': status.value === 'partial',
@@ -82,6 +81,9 @@ function toggleComp(): void {
 .comp-active {
   background: rgba(240, 168, 48, 0.08) !important;
   border-left: 3px solid #F0A830;
+}
+.comp-active.comp-selected {
+  background: rgba(240, 168, 48, 0.14) !important;
 }
 .comp-partial {
   background: rgba(240, 168, 48, 0.05) !important;

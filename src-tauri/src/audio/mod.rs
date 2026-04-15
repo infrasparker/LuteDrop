@@ -104,10 +104,16 @@ impl AudioEngine {
 
     pub fn pause_all(&mut self) {
         orchestrator::pause_all(&mut self.tracks);
+        if let Some(ref mut snd) = self.library_sound {
+            sound::pause(snd);
+        }
     }
 
     pub fn resume_all(&mut self) {
         orchestrator::resume_all(&mut self.tracks);
+        if let Some(ref mut snd) = self.library_sound {
+            sound::resume(snd);
+        }
     }
 
     // --- Volume ---

@@ -69,13 +69,6 @@ function toggleMute(): void {
   >
     <VIcon size="small" class="text-medium-emphasis drag-handle" style="cursor: grab;">mdi-drag</VIcon>
     <VBtn
-      :icon="isPlaying ? 'mdi-pause' : 'mdi-play'"
-      variant="text"
-      size="x-small"
-      :color="isCurrentClip ? 'primary' : undefined"
-      @click="isPlaying ? audio.pauseTrack(trackId) : playClip()"
-    />
-    <VBtn
       v-if="isMissing"
       icon="mdi-alert"
       variant="text"
@@ -83,6 +76,14 @@ function toggleMute(): void {
       color="warning"
       title="File not found — click to relocate"
       @click.stop="relocateMissing"
+    />
+    <VBtn
+      v-else
+      :icon="isPlaying ? 'mdi-pause' : 'mdi-play'"
+      variant="text"
+      size="x-small"
+      :color="isCurrentClip ? 'primary' : undefined"
+      @click="isPlaying ? audio.pauseTrack(trackId) : playClip()"
     />
     <span
       class="text-body-2 flex-grow-1 text-truncate"

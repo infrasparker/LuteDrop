@@ -178,10 +178,11 @@ fn handle_remote_command(container: &AppStateContainer, text: &str) {
 }
 
 fn build_snapshot(container: &AppStateContainer) -> Option<StateSnapshot> {
-    let app_state = {
+    let mut app_state = {
         let conn = container.db.lock().ok()?;
         crate::database::load_full_state(&conn).ok()?
     };
+    app_state.missing_entry_ids = container.missing_snapshot();
     let (playback_states, master_volume) = {
         let audio = container.audio.lock().ok()?;
         (audio.get_all_playback_states(), audio.get_master_volume())

@@ -9,6 +9,7 @@ interface StateSnapshot {
 }
 
 const groups = ref<AppState['groups']>([]);
+const missingEntryIds = ref<Set<string>>(new Set());
 const playbackStates = reactive(new Map<string, TrackPlaybackState>());
 const connected = ref(false);
 const masterVolume = ref(1);
@@ -39,6 +40,7 @@ function connect(): void {
       const data: StateSnapshot = JSON.parse(event.data);
       if (data.type === 'state') {
         groups.value = data.appState.groups;
+        missingEntryIds.value = new Set(data.appState.missingEntryIds);
         playbackStates.clear();
         for (const ps of data.playbackStates) {
           playbackStates.set(ps.trackId, ps);
@@ -99,10 +101,12 @@ export function useRemote() {
 
   return {
     groups,
+    missingEntryIds,
     playbackStates,
     connected,
     masterVolume,
     getCompStatus,
+    isEntryMissing: (entryId: string) => missingEntryIds.value.has(entryId),
 
     activateComp: (compId: string) => send({ command: 'activate_comp', compId }),
     stopComp: (compId: string) => send({ command: 'stop_comp', compId }),
