@@ -279,8 +279,22 @@ async function relocateFile(): Promise<void> {
         </div>
 
         <!-- Waveform -->
+        <div v-if="isMissing" class="d-flex flex-column align-center justify-center text-medium-emphasis pa-8" style="min-height: 200px; border: 1px dashed rgba(var(--v-theme-warning), 0.4); border-radius: 8px;">
+          <VIcon size="48" color="warning" class="mb-3">mdi-file-alert-outline</VIcon>
+          <span class="text-body-2 mb-2">Audio file not found</span>
+          <VBtn
+            prepend-icon="mdi-folder-search"
+            variant="outlined"
+            color="warning"
+            size="small"
+            @click="relocateFile"
+          >
+            Locate File
+          </VBtn>
+        </div>
         <WaveformEditor
-          :key="entryId"
+          v-else
+          :key="entry.filePath"
           :file-path="entry.filePath"
           :entry-id="entryId"
           :loop-start="entry.loopStart ?? 0"
