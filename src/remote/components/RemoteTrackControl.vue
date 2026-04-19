@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import type { Track } from '@generated/index';
 import { useRemote } from '../composables/useRemote';
 import RemoteClipRow from './RemoteClipRow.vue';
@@ -12,6 +12,14 @@ const remote = useRemote();
 const playbackState = computed(() => remote.playbackStates.get(props.track.id));
 const isPlaying = computed(() => playbackState.value?.isPlaying ?? false);
 const isActive = computed(() => isPlaying.value || (playbackState.value?.isPaused ?? false));
+
+const localVolume = ref(props.track.volume);
+watch(() => props.track.volume, (v) => { localVolume.value = v; });
+
+function setVolume(v: number): void {
+  localVolume.value = v;
+  remote.setTrackVolume(props.track.id, v);
+}
 
 const currentClipName = computed(() => {
   const clipId = playbackState.value?.currentClipId;
@@ -45,23 +53,23 @@ const currentClipName = computed(() => {
               @click.stop="remote.stopTrack(track.id)"
             />
 
-            <span class="text-subtitle-2 font-weight-bold">{{ track.name }}</span>
+            <span class="text-subtitle-2 font-weight-bold text-truncate">{{ track.name }}</span>
 
             <VSpacer />
 
-            <span v-if="currentClipName" class="text-caption text-primary" style="white-space: nowrap;">
+            <span v-if="currentClipName" class="text-caption text-primary d-none d-md-inline" style="white-space: nowrap;">
               {{ currentClipName }}
             </span>
-            <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
+            <span class="text-caption text-medium-emphasis d-none d-md-inline" style="white-space: nowrap;">
               {{ track.clips.length }} clip{{ track.clips.length !== 1 ? 's' : '' }}
-              &middot; {{ track.mode.type }}
             </span>
 
             <VSlider
-              :model-value="track.volume"
-              @update:model-value="(v: number) => remote.setTrackVolume(track.id, v)"
+              :model-value="localVolume"
+              @update:model-value="setVolume"
               @click.stop
               @mousedown.stop
+              @touchstart.stop
               :min="0"
               :max="1"
               :step="0.01"

@@ -73,6 +73,7 @@ function toggleComp(): void {
 .comp-item {
   border-left: 3px solid transparent;
   cursor: pointer;
+  min-height: 56px;
 }
 .comp-selected {
   outline: 2px solid rgb(var(--v-theme-primary));

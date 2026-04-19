@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import type { Clip } from '@generated/index';
 import { useRemote } from '../composables/useRemote';
 
@@ -14,6 +14,14 @@ const playbackState = computed(() => remote.playbackStates.get(props.trackId));
 const isCurrentClip = computed(() => playbackState.value?.currentClipId === props.clip.id);
 const isPlaying = computed(() => isCurrentClip.value && playbackState.value?.isPlaying);
 const isMissing = computed(() => remote.isEntryMissing(props.clip.libraryEntryId));
+
+const localVolume = ref(props.clip.volume);
+watch(() => props.clip.volume, (v) => { localVolume.value = v; });
+
+function setVolume(v: number): void {
+  localVolume.value = v;
+  remote.setClipVolume(props.clip.id, v);
+}
 </script>
 
 <template>
@@ -46,10 +54,11 @@ const isMissing = computed(() => remote.isEntryMissing(props.clip.libraryEntryId
       icon="mdi-volume-high"
       variant="text"
       size="x-small"
+      class="d-none d-md-flex"
     />
     <VSlider
-      :model-value="clip.volume"
-      @update:model-value="(v: number) => remote.setClipVolume(clip.id, v)"
+      :model-value="localVolume"
+      @update:model-value="setVolume"
       :min="0"
       :max="1"
       :step="0.01"

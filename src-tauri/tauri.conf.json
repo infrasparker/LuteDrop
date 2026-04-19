@@ -35,6 +35,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "windows": {
+      "nsis": {
+        "installMode": "both"
+      }
+    },
     "resources": {
       "../dist-remote/*": "dist-remote/",
       "../dist-remote/assets/*": "dist-remote/assets/"

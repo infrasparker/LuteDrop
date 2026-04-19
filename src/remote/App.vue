@@ -6,6 +6,15 @@ import RemotePlaybackView from './views/RemotePlaybackView.vue';
 
 const remote = useRemote();
 
+const localMasterVolume = ref(remote.masterVolume.value);
+watch(remote.masterVolume, (v) => { localMasterVolume.value = v; });
+
+function setMasterVolume(v: number): void {
+  localMasterVolume.value = v;
+  remote.masterVolume.value = v;
+  remote.setMasterVolume(v);
+}
+
 function isGroupActive(group: Group): boolean {
   return group.comps.some((comp) =>
     comp.tracks.some((track) => {
@@ -77,43 +86,45 @@ function stopAll(): void {
         </VIcon>
       </VAppBarTitle>
 
-      <template #append>
-        <VBtn
-          :icon="showPlayIcon ? 'mdi-play' : 'mdi-pause'"
-          :disabled="!anyPlaying && !anyPaused"
-          variant="tonal"
-          size="small"
-          rounded="circle"
-          class="ml-2"
-          @click="togglePause"
-        />
-        <VBtn
-          icon="mdi-stop"
-          variant="tonal"
-          size="small"
-          rounded="circle"
-          class="ml-2"
-          @click="stopAll"
-        />
-        <VBtn
-          icon="mdi-volume-high"
-          variant="text"
-          size="small"
-          class="ml-3"
-        />
-        <VSlider
-          :model-value="remote.masterVolume.value"
-          @update:model-value="(v: number) => { remote.masterVolume.value = v; remote.setMasterVolume(v); }"
-          :min="0"
-          :max="1"
-          :step="0.01"
-          hide-details
-          density="compact"
-          style="max-width: 120px"
-        />
-      </template>
+      <VSpacer />
+
+      <VBtn
+        :icon="showPlayIcon ? 'mdi-play' : 'mdi-pause'"
+        :disabled="!anyPlaying && !anyPaused"
+        variant="tonal"
+        size="small"
+        rounded="circle"
+        class="ml-1"
+        @click="togglePause"
+      />
+      <VBtn
+        icon="mdi-stop"
+        variant="tonal"
+        size="small"
+        rounded="circle"
+        class="ml-1"
+        @click="stopAll"
+      />
+      <VBtn
+        icon="mdi-volume-high"
+        variant="text"
+        size="small"
+        class="ml-1"
+      />
+      <VSlider
+        :model-value="localMasterVolume"
+        @update:model-value="setMasterVolume"
+        :min="0"
+        :max="1"
+        :step="0.01"
+        hide-details
+        density="compact"
+        style="flex: 0 0 120px;"
+        class="mr-4"
+      />
+
       <template #extension>
-        <VTabs v-model="activeTab" color="primary" density="compact" v-if="remote.groups.value.length > 0" class="app-bar-tabs">
+        <VTabs v-model="activeTab" color="primary" density="compact" v-if="remote.groups.value.length > 0" class="app-bar-tabs" show-arrows>
           <VTab
             v-for="(group, i) in remote.groups.value"
             :key="group.id"
