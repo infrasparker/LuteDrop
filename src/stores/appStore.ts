@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { Group, Comp, Track, AppState, TrackPlaybackState, CompStatus, LibraryEntry, Configuration } from '@generated/index';
+import type { Group, Comp, Track, AppState, TrackPlaybackState, CompStatus, LibraryEntry, Configuration, BulkImportProgress } from '@generated/index';
 import { useToast } from '../composables/useToast';
 
 export const useAppStore = defineStore('app', () => {
@@ -14,6 +14,10 @@ export const useAppStore = defineStore('app', () => {
   const editEntryId = ref<string | null>(null);
   const configurations = ref<Configuration[]>([]);
   const activeConfigurationId = ref<string>('');
+
+  /// Non-null while a background library import is active. Drives the
+  /// bottom-bar progress indicator and disables the Import menu.
+  const importProgress = ref<BulkImportProgress | null>(null);
 
   // --- Mute state (mirrors audio engine, not persisted to DB) ---
   const masterMuted = ref(false);
@@ -142,6 +146,7 @@ export const useAppStore = defineStore('app', () => {
     editEntryId,
     configurations,
     activeConfigurationId,
+    importProgress,
     masterMuted,
     mutedTracks,
     mutedClips,

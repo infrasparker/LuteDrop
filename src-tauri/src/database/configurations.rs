@@ -226,7 +226,7 @@ mod tests {
         let config_id = ensure_test_config(&conn);
 
         let entry_id = crate::database::library::insert_library_entry(
-            &conn, "/tmp/test.mp3", None, "Test Sound", None, None, None,
+            &conn, "/tmp/test.mp3", None, "Test Sound", None, None, None, "music",
         ).expect("insert library entry");
 
         let group_id = hierarchy::insert_group(&conn, "Battle", &config_id).expect("group");

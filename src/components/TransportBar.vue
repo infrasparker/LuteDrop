@@ -30,6 +30,12 @@ const anyPaused = computed(() => {
 
 const showPlayIcon = computed(() => !anyPlaying.value && anyPaused.value);
 
+const importProgressPercent = computed(() => {
+  const p = store.importProgress;
+  if (!p || p.total === 0) return 0;
+  return Math.round((p.processed / p.total) * 100);
+});
+
 function setMasterVolume(v: number): void {
   audio.masterVolume.value = v;
   audio.setMasterVolume(v);
@@ -49,7 +55,21 @@ function togglePause(): void {
 </script>
 
 <template>
-  <VFooter app color="surface" elevation="4" class="pa-2">
+  <VFooter app color="surface" elevation="4" class="pa-2 footer-grid">
+    <div class="footer-slot footer-slot-left">
+      <div v-if="store.importProgress" class="import-indicator" :title="`Importing ${store.importProgress.processed} of ${store.importProgress.total}`">
+        <VProgressCircular
+          :model-value="importProgressPercent"
+          size="20"
+          width="2"
+          color="primary"
+        />
+        <span class="import-label">
+          Importing {{ store.importProgress.processed }}/{{ store.importProgress.total }}
+        </span>
+      </div>
+    </div>
+
     <div class="transport-grid">
       <div class="transport-left">
         <span style="white-space: nowrap;" :class="playingCount > 0 ? 'text-primary' : 'text-medium-emphasis'">
@@ -92,21 +112,39 @@ function togglePause(): void {
           :step="0.01"
           hide-details
           density="compact"
-          style="max-width: 120px;"
+          class="volume-slider"
         />
       </div>
     </div>
+
+    <div class="footer-slot footer-slot-right"></div>
   </VFooter>
 </template>
 
 <style scoped>
-.transport-grid {
+.footer-grid {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
+  gap: 12px;
+}
+
+.footer-slot {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.footer-slot-right {
+  justify-content: flex-end;
+}
+
+.transport-grid {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
   width: 100%;
-  max-width: 450px;
-  margin: 0 auto;
+  max-width: 600px;
   gap: 12px;
 }
 
@@ -124,5 +162,25 @@ function togglePause(): void {
   align-items: center;
   justify-content: end;
   gap: 8px;
+}
+
+.volume-slider {
+  min-width: 100px;
+  max-width: 240px;
+  flex: 1;
+}
+
+.import-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.72);
+  white-space: nowrap;
+}
+
+.import-label {
+  font-variant-numeric: tabular-nums;
 }
 </style>

@@ -21,6 +21,8 @@ const { libraryEntries } = storeToRefs(store);
 
 const searchQuery = ref('');
 const selectedTags = ref<string[]>([]);
+const untagged = ref(false);
+const selectedType = ref<string>('all');
 const selectedIds = ref<Set<string>>(new Set());
 
 const filteredEntries = computed(() => {
@@ -28,10 +30,13 @@ const filteredEntries = computed(() => {
     const matchesSearch =
       searchQuery.value === '' ||
       entry.name.toLowerCase().includes(searchQuery.value.toLowerCase());
-    const matchesTags =
-      selectedTags.value.length === 0 ||
-      selectedTags.value.every((tag) => entry.tags.includes(tag));
-    return matchesSearch && matchesTags;
+    const matchesTags = untagged.value
+      ? entry.tags.length === 0
+      : selectedTags.value.length === 0 ||
+        selectedTags.value.every((tag) => entry.tags.includes(tag));
+    const matchesType =
+      selectedType.value === 'all' || entry.entryType === selectedType.value;
+    return matchesSearch && matchesTags && matchesType;
   });
 });
 
@@ -50,6 +55,8 @@ function close(): void {
   selectedIds.value = new Set();
   searchQuery.value = '';
   selectedTags.value = [];
+  untagged.value = false;
+  selectedType.value = 'all';
   emit('update:modelValue', false);
 }
 
@@ -83,9 +90,18 @@ async function addClips(): Promise<void> {
           hide-details
         />
 
+        <!-- Type filter -->
+        <div class="mb-2">
+          <VBtnToggle v-model="selectedType" mandatory density="compact" variant="outlined" divided>
+            <VBtn value="all" size="small">All</VBtn>
+            <VBtn value="music" size="small" prepend-icon="mdi-music-note">Music</VBtn>
+            <VBtn value="ambiance" size="small" prepend-icon="mdi-weather-fog">Ambiance</VBtn>
+          </VBtnToggle>
+        </div>
+
         <!-- Tag filter -->
         <div class="mb-3">
-          <TagFilter v-model:selectedTags="selectedTags" />
+          <TagFilter v-model:selectedTags="selectedTags" v-model:untagged="untagged" />
         </div>
 
         <!-- Entry count -->

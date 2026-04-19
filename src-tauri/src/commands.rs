@@ -2,7 +2,7 @@ use serde::Serialize;
 use tauri::State;
 use std::sync::Arc;
 use crate::actions;
-use crate::models::AppState;
+use crate::models::{AppState, LibraryEntryUsage};
 use crate::state::AppStateContainer;
 use crate::waveform;
 
@@ -224,8 +224,9 @@ pub fn import_library_entry(
     duration: Option<f64>,
     sample_rate: Option<i64>,
     file_size: Option<i64>,
+    entry_type: String,
 ) -> Result<AppState, String> {
-    actions::import_library_entry(&state, file_path, content_hash, name, duration, sample_rate, file_size)
+    actions::import_library_entry(&state, file_path, content_hash, name, duration, sample_rate, file_size, entry_type)
 }
 
 #[tauri::command]
@@ -235,6 +236,15 @@ pub fn update_library_entry_tags(
     tags: Vec<String>,
 ) -> Result<AppState, String> {
     actions::update_library_entry_tags(&state, &entry_id, tags)
+}
+
+#[tauri::command]
+pub fn update_library_entry_type(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_id: String,
+    entry_type: String,
+) -> Result<AppState, String> {
+    actions::update_library_entry_type_action(&state, &entry_id, &entry_type)
 }
 
 #[tauri::command]
@@ -273,6 +283,29 @@ pub fn delete_library_entry(
     entry_id: String,
 ) -> Result<AppState, String> {
     actions::delete_library_entry_action(&state, &entry_id)
+}
+
+#[tauri::command]
+pub fn get_library_entry_usage(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_id: String,
+) -> Result<Vec<LibraryEntryUsage>, String> {
+    actions::get_library_entry_usage_action(&state, &entry_id)
+}
+
+#[tauri::command]
+pub fn scan_folder_for_audio(folder_path: String) -> Result<Vec<String>, String> {
+    actions::scan_folder_for_audio_action(&folder_path)
+}
+
+#[tauri::command]
+pub fn bulk_import_library_entries(
+    state: State<'_, Arc<AppStateContainer>>,
+    paths: Vec<String>,
+    tags: Vec<String>,
+    entry_type: String,
+) -> Result<(), String> {
+    actions::start_bulk_import_library_entries_action(state.inner(), paths, tags, entry_type)
 }
 
 #[tauri::command]

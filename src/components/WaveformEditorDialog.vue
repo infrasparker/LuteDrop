@@ -51,7 +51,8 @@ async function toggleLoop(): Promise<void> {
 
 // Local editable fields
 const editName = ref('');
-const editTags = ref('');
+const editTags = ref<string[]>([]);
+const editEntryType = ref('music');
 const localGain = ref(1.0);
 
 const previewState = computed(() => store.playbackStates.get('__library'));
@@ -81,7 +82,8 @@ function togglePreview(): void {
 watch(() => props.modelValue, (open) => {
   if (open && entry.value) {
     editName.value = entry.value.name;
-    editTags.value = entry.value.tags.join(', ');
+    editTags.value = [...entry.value.tags];
+    editEntryType.value = entry.value.entryType;
     localGain.value = entry.value.volume;
   }
 }, { immediate: true });
@@ -104,12 +106,21 @@ async function saveName(): Promise<void> {
 async function saveTags(): Promise<void> {
   if (!entry.value) return;
   const tags = editTags.value
-    .split(',')
     .map((t) => t.trim())
     .filter((t) => t.length > 0);
   await store.command('update_library_entry_tags', {
     entryId: props.entryId,
     tags,
+  });
+}
+
+// --- Type ---
+async function saveEntryType(v: string): Promise<void> {
+  editEntryType.value = v;
+  if (!entry.value || v === entry.value.entryType) return;
+  await store.command('update_library_entry_type', {
+    entryId: props.entryId,
+    entryType: v,
   });
 }
 
@@ -222,29 +233,43 @@ async function relocateFile(): Promise<void> {
       </div>
 
       <VCardText>
-        <!-- Name -->
-        <VTextField
-          v-model="editName"
-          label="Name"
-          variant="outlined"
-          density="compact"
-          hide-details
-          class="mb-3"
-          @blur="saveName"
-          @keydown.enter="saveName"
-        />
+        <!-- Name + Type row -->
+        <div class="d-flex ga-3 mb-3">
+          <VTextField
+            v-model="editName"
+            label="Name"
+            variant="outlined"
+            density="compact"
+            hide-details
+            class="flex-grow-1"
+            @blur="saveName"
+            @keydown.enter="saveName"
+          />
+          <VSelect
+            :model-value="editEntryType"
+            @update:model-value="saveEntryType"
+            :items="[{ title: 'Music', value: 'music' }, { title: 'Ambiance', value: 'ambiance' }]"
+            label="Type"
+            variant="outlined"
+            density="compact"
+            hide-details
+            style="max-width: 160px;"
+          />
+        </div>
 
         <!-- Tags -->
-        <VTextField
+        <VCombobox
           v-model="editTags"
-          label="Tags (comma-separated)"
+          :items="store.tags"
+          label="Tags"
           variant="outlined"
           density="compact"
           hide-details
+          multiple
+          chips
+          closable-chips
           class="mb-3"
-          hint="e.g. ambient, combat, tavern"
-          @blur="saveTags"
-          @keydown.enter="saveTags"
+          @update:model-value="saveTags"
         />
 
         <!-- Volume -->

@@ -1,9 +1,12 @@
 export type { AppState } from "./AppState";
+export type { BulkImportProgress } from "./BulkImportProgress";
 export type { Clip } from "./Clip";
 export type { Comp } from "./Comp";
 export type { Configuration } from "./Configuration";
+export type { EntryType } from "./EntryType";
 export type { Group } from "./Group";
 export type { LibraryEntry } from "./LibraryEntry";
+export type { LibraryEntryUsage } from "./LibraryEntryUsage";
 export type { Track } from "./Track";
 export type { TrackMode } from "./TrackMode";
 export type { TrackPlaybackState } from "./TrackPlaybackState";

@@ -203,6 +203,7 @@ mod tests {
             Some(60.0),
             Some(44100),
             Some(1024),
+            "music",
         )
         .expect("insert entry");
 

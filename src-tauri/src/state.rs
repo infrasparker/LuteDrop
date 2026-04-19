@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 use rusqlite::Connection;
 use tauri::Emitter;
@@ -14,6 +15,9 @@ pub struct AppStateContainer {
     pub peak_cache: PeakCache,
     pub db_path: PathBuf,
     pub missing_entry_ids: Mutex<HashSet<String>>,
+    /// True while a background library import is running. Used to block
+    /// overlapping imports. Set via `try_claim_import` / `release_import`.
+    pub import_in_progress: AtomicBool,
     app_handle: Mutex<Option<tauri::AppHandle>>,
 }
 
@@ -27,7 +31,31 @@ impl AppStateContainer {
             peak_cache: PeakCache::new(peak_cache_dir),
             db_path,
             missing_entry_ids: Mutex::new(HashSet::new()),
+            import_in_progress: AtomicBool::new(false),
             app_handle: Mutex::new(None),
+        }
+    }
+
+    /// Atomically claims the import slot. Returns `true` if acquired, `false`
+    /// if another import is already running. Pair with `release_import`.
+    pub fn try_claim_import(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        self.import_in_progress
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    pub fn release_import(&self) {
+        use std::sync::atomic::Ordering;
+        self.import_in_progress.store(false, Ordering::Release);
+    }
+
+    /// Emits a Tauri event to the frontend if the app handle is set.
+    pub fn emit<P: serde::Serialize + Clone>(&self, event: &str, payload: P) {
+        if let Ok(handle) = self.app_handle.lock() {
+            if let Some(ref h) = *handle {
+                let _ = h.emit(event, payload);
+            }
         }
     }
 

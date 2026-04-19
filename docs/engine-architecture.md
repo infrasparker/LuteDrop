@@ -24,7 +24,8 @@ audio/
   orchestrator.rs — Track lifecycle: setup, play, pause, stop, poll, volume
   transitions.rs  — TransitionManager: crossfade, gap, gapless logic
   mixer.rs        — Volume computation and mute state
-  util.rs         — probe_duration, amplitude_to_decibels, CROSSFADE_OVERLAP
+  util.rs         — probe_duration, amplitude_to_decibels, CROSSFADE_OVERLAP,
+                    AUDIO_EXTENSIONS, is_audio_path
 ```
 
 Dependency direction (no cycles):

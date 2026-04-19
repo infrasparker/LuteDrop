@@ -3,6 +3,18 @@ use kira::Decibels;
 /// Standard crossfade overlap duration in seconds.
 pub const CROSSFADE_OVERLAP: f64 = 4.0;
 
+/// File extensions (lowercase, no leading dot) treated as importable audio.
+/// Single source of truth for folder scans and import filters on the backend.
+pub const AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav", "ogg", "flac", "aac", "m4a", "wma"];
+
+/// Returns true if `path`'s extension (case-insensitive) is in `AUDIO_EXTENSIONS`.
+pub fn is_audio_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| AUDIO_EXTENSIONS.iter().any(|a| a.eq_ignore_ascii_case(ext)))
+        .unwrap_or(false)
+}
+
 /// Quickly probe an audio file for its duration in seconds.
 /// Tries metadata first (time_base * n_frames), falls back to
 /// byte-length estimate for VBR files without frame counts.

@@ -470,6 +470,7 @@ mod tests {
             None,
             None,
             None,
+            "music",
         )
         .expect("insert library entry");
 
@@ -527,11 +528,11 @@ mod tests {
         let config_id = setup_test_config(&conn);
 
         // Create the minimum required hierarchy.
-        let entry1 = insert_library_entry(&conn, "/tmp/c1.mp3", None, "C1", None, None, None)
+        let entry1 = insert_library_entry(&conn, "/tmp/c1.mp3", None, "C1", None, None, None, "music")
             .expect("entry1");
-        let entry2 = insert_library_entry(&conn, "/tmp/c2.mp3", None, "C2", None, None, None)
+        let entry2 = insert_library_entry(&conn, "/tmp/c2.mp3", None, "C2", None, None, None, "music")
             .expect("entry2");
-        let entry3 = insert_library_entry(&conn, "/tmp/c3.mp3", None, "C3", None, None, None)
+        let entry3 = insert_library_entry(&conn, "/tmp/c3.mp3", None, "C3", None, None, None, "music")
             .expect("entry3");
 
         let group_id = insert_group(&conn, "G", &config_id).expect("group");

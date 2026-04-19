@@ -4,16 +4,21 @@ import { storeToRefs } from 'pinia';
 
 const props = defineProps<{
   selectedTags: string[];
+  untagged?: boolean;
 }>();
 
 const emit = defineEmits<{
   'update:selectedTags': [tags: string[]];
+  'update:untagged': [value: boolean];
 }>();
 
 const store = useAppStore();
 const { tags } = storeToRefs(store);
 
 function toggleTag(tag: string): void {
+  if (props.untagged) {
+    emit('update:untagged', false);
+  }
   const current = props.selectedTags;
   if (current.includes(tag)) {
     emit('update:selectedTags', current.filter((t) => t !== tag));
@@ -21,10 +26,28 @@ function toggleTag(tag: string): void {
     emit('update:selectedTags', [...current, tag]);
   }
 }
+
+function toggleUntagged(): void {
+  const next = !props.untagged;
+  if (next && props.selectedTags.length > 0) {
+    emit('update:selectedTags', []);
+  }
+  emit('update:untagged', next);
+}
 </script>
 
 <template>
   <div class="d-flex flex-wrap ga-1">
+    <VChip
+      :color="untagged ? 'primary' : undefined"
+      :variant="untagged ? 'flat' : 'outlined'"
+      size="small"
+      clickable
+      prepend-icon="mdi-tag-off"
+      @click="toggleUntagged"
+    >
+      Untagged
+    </VChip>
     <VChip
       v-for="tag in tags"
       :key="tag"
@@ -36,6 +59,6 @@ function toggleTag(tag: string): void {
     >
       {{ tag }}
     </VChip>
-    <span v-if="tags.length === 0" class="text-caption text-medium-emphasis">No tags yet</span>
+    <span v-if="tags.length === 0 && !untagged" class="text-caption text-medium-emphasis align-self-center">No tags yet</span>
   </div>
 </template>

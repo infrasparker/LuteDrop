@@ -1,22 +1,26 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
 import { storeToRefs } from 'pinia';
+import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useAppStore } from '../stores/appStore';
 import { useLibraryImport } from '../composables/useLibraryImport';
 import { useAudio } from '../composables/useAudio';
 import TagFilter from '../components/TagFilter.vue';
-import type { LibraryEntry } from '@generated/index';
+import ImportDialog from '../components/ImportDialog.vue';
+import ConfirmDialog from '../components/ConfirmDialog.vue';
+import type { LibraryEntry, LibraryEntryUsage } from '@generated/index';
 
 const store = useAppStore();
 const { libraryEntries, tags } = storeToRefs(store);
-const { importFiles, importFolder } = useLibraryImport();
+const { pickFiles, pickFolder, runImport } = useLibraryImport();
 const audio = useAudio();
 
 const searchQuery = ref('');
 const selectedTags = ref<string[]>([]);
+const untagged = ref(false);
+const selectedType = ref<string>('all');
 
-// Remove stale tags from the filter when they no longer exist in the store
 watch(tags, (current) => {
   const stale = selectedTags.value.filter((t) => !current.includes(t));
   if (stale.length > 0) {
@@ -29,24 +33,26 @@ const filteredEntries = computed(() => {
     const matchesSearch =
       searchQuery.value === '' ||
       entry.name.toLowerCase().includes(searchQuery.value.toLowerCase());
-    const matchesTags =
-      selectedTags.value.length === 0 ||
-      selectedTags.value.every((tag) => entry.tags.includes(tag));
-    return matchesSearch && matchesTags;
+    const matchesTags = untagged.value
+      ? entry.tags.length === 0
+      : selectedTags.value.length === 0 ||
+        selectedTags.value.every((tag) => entry.tags.includes(tag));
+    const matchesType =
+      selectedType.value === 'all' || entry.entryType === selectedType.value;
+    return matchesSearch && matchesTags && matchesType;
   });
 });
 
-// Table columns
 const headers = [
   { title: '', key: 'status', sortable: true, width: '48px',
     sort: (a: boolean, b: boolean) => (a === b ? 0 : a ? -1 : 1) },
-  { title: 'Name', key: 'name', sortable: true },
-  { title: 'Tags', key: 'tags', sortable: false, width: '250px' },
+  { title: 'Type', key: 'entryType', sortable: true, width: '60px' },
+  { title: 'Name', key: 'name', sortable: true, width: '40%' },
+  { title: 'Tags', key: 'tags', sortable: false },
   { title: 'Duration', key: 'duration', sortable: true, width: '80px', align: 'end' as const },
   { title: '', key: 'actions', sortable: false, width: '80px', align: 'end' as const },
 ];
 
-// Preview playback
 const previewState = computed(() => store.playbackStates.get('__library'));
 
 function isPreviewPlaying(entryId: string): boolean {
@@ -92,12 +98,69 @@ async function removeTag(entryId: string, tag: string): Promise<void> {
   await store.command('update_library_entry_tags', { entryId, tags: newTags });
 }
 
-// Delete entry
+// --- Import flow ---
+
+const showImportDialog = ref(false);
+const pendingImportPaths = ref<string[]>([]);
+
+async function startImportFiles(): Promise<void> {
+  const paths = await pickFiles();
+  if (paths.length === 0) return;
+  pendingImportPaths.value = paths;
+  showImportDialog.value = true;
+}
+
+async function startImportFolder(): Promise<void> {
+  const paths = await pickFolder();
+  if (paths.length === 0) return;
+  pendingImportPaths.value = paths;
+  showImportDialog.value = true;
+}
+
+async function handleImportConfirm(payload: { paths: string[]; tags: string[]; entryType: string }): Promise<void> {
+  pendingImportPaths.value = [];
+  await runImport(payload.paths, payload.tags, payload.entryType);
+}
+
+// --- Delete flow ---
+
+const showDeleteConfirm = ref(false);
+const deleteTargetId = ref<string | null>(null);
+const deleteTargetName = ref('');
+const deleteUsage = ref<LibraryEntryUsage[]>([]);
+
 async function deleteEntry(entryId: string): Promise<void> {
+  const entry = libraryEntries.value.find((e) => e.id === entryId);
+  let usage: LibraryEntryUsage[];
+  try {
+    usage = await invoke<LibraryEntryUsage[]>('get_library_entry_usage', { entryId });
+  } catch (e) {
+    usage = [];
+    console.error('Failed to fetch library entry usage', e);
+  }
+
+  if (usage.length === 0) {
+    await store.command('delete_library_entry', { entryId });
+    return;
+  }
+
+  deleteTargetId.value = entryId;
+  deleteTargetName.value = entry?.name ?? '';
+  deleteUsage.value = usage;
+  showDeleteConfirm.value = true;
+}
+
+async function confirmDelete(): Promise<void> {
+  const entryId = deleteTargetId.value;
+  deleteTargetId.value = null;
+  deleteUsage.value = [];
+  deleteTargetName.value = '';
+  if (!entryId) return;
   await store.command('delete_library_entry', { entryId });
 }
 
-// Relocate entry
+// --- Relocate flow ---
+
 const AUDIO_EXTENSIONS = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'wma'];
 
 async function relocateEntry(entryId: string): Promise<void> {
@@ -112,7 +175,6 @@ async function relocateEntry(entryId: string): Promise<void> {
 
 <template>
   <div class="d-flex flex-column pa-3" style="height: 100%;">
-    <!-- Teleport search + import into app bar main row -->
     <Teleport to="#app-bar-main">
       <VTextField
         v-model="searchQuery"
@@ -127,26 +189,47 @@ async function relocateEntry(entryId: string): Promise<void> {
         class="flex-grow-1"
         style="max-width: 500px;"
       />
+      <VBtnToggle v-model="selectedType" mandatory density="compact" variant="outlined" divided class="ml-3">
+        <VBtn value="all" size="small">All</VBtn>
+        <VBtn value="music" size="small" prepend-icon="mdi-music-note">Music</VBtn>
+        <VBtn value="ambiance" size="small" prepend-icon="mdi-weather-fog">Ambiance</VBtn>
+      </VBtnToggle>
       <VSpacer />
-      <VBtn prepend-icon="mdi-file-music" variant="tonal" size="small" rounded="xl" @click="importFiles">
-        Import Files
-      </VBtn>
-      <VBtn prepend-icon="mdi-folder-music" variant="tonal" size="small" rounded="xl" class="ml-2" @click="importFolder">
-        Import Folder
-      </VBtn>
+      <VMenu :disabled="!!store.importProgress">
+        <template #activator="{ props: menuProps }">
+          <VBtn
+            v-bind="menuProps"
+            prepend-icon="mdi-import"
+            append-icon="mdi-menu-down"
+            variant="tonal"
+            size="small"
+            rounded="xl"
+            :disabled="!!store.importProgress"
+            :title="store.importProgress ? 'Import in progress...' : undefined"
+          >
+            Import
+          </VBtn>
+        </template>
+        <VList density="compact">
+          <VListItem prepend-icon="mdi-file-music" @click="startImportFiles">
+            <VListItemTitle>Files...</VListItemTitle>
+          </VListItem>
+          <VListItem prepend-icon="mdi-folder-music" @click="startImportFolder">
+            <VListItemTitle>Folder...</VListItemTitle>
+          </VListItem>
+        </VList>
+      </VMenu>
     </Teleport>
 
-    <!-- Tag filter + count -->
     <div class="d-flex align-end mb-2 ga-2">
       <div class="d-flex flex-wrap ga-1 flex-grow-1" style="min-width: 0;">
-        <TagFilter v-model:selectedTags="selectedTags" />
+        <TagFilter v-model:selectedTags="selectedTags" v-model:untagged="untagged" />
       </div>
       <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
         {{ filteredEntries.length }} {{ filteredEntries.length === 1 ? 'entry' : 'entries' }}
       </span>
     </div>
 
-    <!-- Entry data table -->
     <VDataTableVirtual
       v-if="filteredEntries.length > 0"
       :headers="headers"
@@ -185,6 +268,12 @@ async function relocateEntry(entryId: string): Promise<void> {
         />
       </template>
 
+      <template #item.entryType="{ item }">
+        <VIcon size="small" :title="item.entryType === 'ambiance' ? 'Ambiance' : 'Music'">
+          {{ item.entryType === 'ambiance' ? 'mdi-weather-fog' : 'mdi-music-note' }}
+        </VIcon>
+      </template>
+
       <template #item.tags="{ item }">
         <VChip
           v-for="tag in item.tags"
@@ -215,7 +304,6 @@ async function relocateEntry(entryId: string): Promise<void> {
       </template>
     </VDataTableVirtual>
 
-    <!-- Empty state -->
     <div
       v-else
       class="d-flex flex-column align-center justify-center text-medium-emphasis pa-8"
@@ -224,6 +312,38 @@ async function relocateEntry(entryId: string): Promise<void> {
       <span>Import some audio files</span>
     </div>
 
+    <ImportDialog
+      v-model="showImportDialog"
+      :paths="pendingImportPaths"
+      @import="handleImportConfirm"
+    />
+
+    <ConfirmDialog
+      v-model="showDeleteConfirm"
+      title="Delete library entry?"
+      confirm-label="Delete"
+      confirm-color="error"
+      @confirm="confirmDelete"
+    >
+      <div class="mb-2">
+        <strong>{{ deleteTargetName }}</strong> is used in
+        {{ deleteUsage.length }} clip{{ deleteUsage.length === 1 ? '' : 's' }}:
+      </div>
+      <VList density="compact" class="usage-list pa-0 mb-2" max-height="220">
+        <VListItem
+          v-for="usage in deleteUsage"
+          :key="usage.clipId"
+          density="compact"
+        >
+          <VListItemTitle>
+            {{ usage.compName }} <VIcon size="x-small">mdi-chevron-right</VIcon> {{ usage.trackName }}
+          </VListItemTitle>
+        </VListItem>
+      </VList>
+      <div class="text-caption text-warning">
+        Deleting will remove this entry and every clip that uses it.
+      </div>
+    </ConfirmDialog>
   </div>
 </template>
 
@@ -236,5 +356,11 @@ async function relocateEntry(entryId: string): Promise<void> {
 .library-table {
   height: 0;
   min-height: 0;
+}
+
+.usage-list {
+  overflow-y: auto;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
 }
 </style>

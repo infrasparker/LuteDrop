@@ -20,6 +20,9 @@ pub fn run() {
         .plugin(
             tauri_plugin_log::Builder::default()
                 .level(log::LevelFilter::Info)
+                .level_for("symphonia_metadata", log::LevelFilter::Warn)
+                .level_for("symphonia_core", log::LevelFilter::Warn)
+                .level_for("symphonia_bundle_mp3", log::LevelFilter::Warn)
                 .build(),
         )
         .plugin(tauri_plugin_dialog::init())
@@ -74,8 +77,8 @@ pub fn run() {
 
             // Start the axum WebSocket server on its own thread with a tokio runtime
             let server_container = container.clone();
-            let remote_dist = std::env::current_dir()
-                .unwrap_or_default()
+            let remote_dist = app.path().resource_dir()
+                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default())
                 .join("dist-remote")
                 .to_string_lossy()
                 .to_string();
@@ -125,11 +128,15 @@ pub fn run() {
             commands::get_waveform_data,
             commands::get_server_info,
             commands::import_library_entry,
+            commands::bulk_import_library_entries,
+            commands::scan_folder_for_audio,
             commands::update_library_entry_tags,
+            commands::update_library_entry_type,
             commands::update_library_entry_markers,
             commands::update_library_entry_volume,
             commands::rename_library_entry,
             commands::delete_library_entry,
+            commands::get_library_entry_usage,
             commands::relocate_library_entry,
             commands::play_library_sound,
             commands::stop_library_sound,

@@ -2162,6 +2162,7 @@ dependencies = [
  "tower-http",
  "ts-rs",
  "uuid",
+ "walkdir",
 ]
 
 [[package]]

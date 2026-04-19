@@ -9,7 +9,7 @@ use std::path::Path;
 use uuid::Uuid;
 
 use crate::models::{
-    AppState, Clip, Comp, Configuration, Group, LibraryEntry, Track, TrackMode, TrackTransition,
+    AppState, Clip, Comp, Configuration, EntryType, Group, LibraryEntry, Track, TrackMode, TrackTransition,
 };
 
 /// Opens (or creates) the SQLite database at `path`, enables WAL mode and
@@ -47,7 +47,8 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
             trim_end     REAL,
             loop_start   REAL,
             loop_end     REAL,
-            created_at   TEXT NOT NULL
+            created_at   TEXT NOT NULL,
+            entry_type   TEXT NOT NULL DEFAULT 'music'
         );
 
         CREATE TABLE IF NOT EXISTS tags (
@@ -105,7 +106,7 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
             sort_order       INTEGER NOT NULL
         );
 
-        INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '2');
+        INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '3');
     ")
 }
 
@@ -222,7 +223,7 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
     let mut stmt = conn
         .prepare(
             "SELECT id, file_path, content_hash, name, duration, sample_rate, file_size,
-                    volume, trim_start, trim_end, loop_start, loop_end, created_at
+                    volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type
              FROM library_entries
              ORDER BY name ASC",
         )
@@ -244,6 +245,7 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
                 row.get::<_, Option<f64>>(10)?,     // loop_start
                 row.get::<_, Option<f64>>(11)?,     // loop_end
                 row.get::<_, String>(12)?,          // created_at
+                row.get::<_, String>(13)?,          // entry_type
             ))
         })
         .map_err(|e| format!("Failed to query library_entries: {e}"))?
@@ -252,7 +254,7 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
 
     let mut entries = Vec::with_capacity(rows.len());
     for (id, file_path, content_hash, name, duration, sample_rate, file_size,
-         volume, trim_start, trim_end, loop_start, loop_end, created_at) in rows
+         volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type) in rows
     {
         let tags = library::get_tags_for_entry(conn, &id)?;
         entries.push(LibraryEntry {
@@ -270,6 +272,7 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
             loop_end,
             created_at,
             tags,
+            entry_type: EntryType::from_str(&entry_type),
         });
     }
 
@@ -596,6 +599,7 @@ mod tests {
             Some(180.0),
             Some(44100),
             Some(2048),
+            "music",
         )
         .expect("insert library entry");
 

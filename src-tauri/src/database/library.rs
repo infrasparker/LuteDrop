@@ -1,6 +1,8 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
+use crate::models::LibraryEntryUsage;
+
 // ─── Helper ───────────────────────────────────────────────────────────────────
 
 /// Returns the current time as milliseconds since the Unix epoch, as a string.
@@ -24,6 +26,7 @@ pub fn insert_library_entry(
     duration: Option<f64>,
     sample_rate: Option<i64>,
     file_size: Option<i64>,
+    entry_type: &str,
 ) -> Result<String, String> {
     let id = Uuid::new_v4().to_string();
     let created_at = chrono_now();
@@ -31,9 +34,9 @@ pub fn insert_library_entry(
     conn.execute(
         "INSERT INTO library_entries
              (id, file_path, content_hash, name, duration, sample_rate, file_size,
-              volume, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1.0, ?8)",
-        params![id, file_path, content_hash, name, duration, sample_rate, file_size, created_at],
+              volume, created_at, entry_type)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1.0, ?8, ?9)",
+        params![id, file_path, content_hash, name, duration, sample_rate, file_size, created_at, entry_type],
     )
     .map_err(|e| format!("Failed to insert library entry: {e}"))?;
 
@@ -80,6 +83,20 @@ pub fn update_library_entry_name(
         params![name, id],
     )
     .map_err(|e| format!("Failed to update name: {e}"))?;
+    Ok(())
+}
+
+/// Updates the `entry_type` column for the given entry.
+pub fn update_library_entry_type(
+    conn: &Connection,
+    id: &str,
+    entry_type: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE library_entries SET entry_type = ?1 WHERE id = ?2",
+        params![entry_type, id],
+    )
+    .map_err(|e| format!("Failed to update entry type: {e}"))?;
     Ok(())
 }
 
@@ -220,28 +237,60 @@ pub fn update_library_entry_file_path(
     Ok(())
 }
 
-/// Deletes a library entry.
-/// Fails with a descriptive error if any clips still reference the entry.
-pub fn delete_library_entry(conn: &Connection, id: &str) -> Result<(), String> {
-    let ref_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM clips WHERE library_entry_id = ?1",
-            params![id],
-            |row| row.get(0),
+/// Returns every clip that references the given library entry, with the
+/// enclosing comp and track names for display. Empty vec when unreferenced.
+pub fn get_entry_usage(
+    conn: &Connection,
+    entry_id: &str,
+) -> Result<Vec<LibraryEntryUsage>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT clips.id, comps.name, tracks.name
+             FROM clips
+             JOIN tracks ON tracks.id = clips.track_id
+             JOIN comps  ON comps.id  = tracks.comp_id
+             WHERE clips.library_entry_id = ?1
+             ORDER BY comps.name ASC, tracks.name ASC",
         )
-        .map_err(|e| format!("Failed to count clip references: {e}"))?;
+        .map_err(|e| format!("Failed to prepare get_entry_usage: {e}"))?;
 
-    if ref_count > 0 {
-        return Err(format!(
-            "Cannot delete library entry: still referenced by {ref_count} clip(s)"
-        ));
-    }
+    let rows = stmt
+        .query_map(params![entry_id], |row| {
+            Ok(LibraryEntryUsage {
+                clip_id: row.get::<_, String>(0)?,
+                comp_name: row.get::<_, String>(1)?,
+                track_name: row.get::<_, String>(2)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query entry usage: {e}"))?;
 
-    conn.execute(
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to collect entry usage: {e}"))
+}
+
+/// Deletes a library entry and cascade-deletes all clips that reference it.
+/// Wrapped in a transaction so the operation is atomic — needed because
+/// `PRAGMA foreign_keys=ON` would otherwise reject the library_entry delete
+/// while clips still reference it.
+pub fn delete_library_entry(conn: &Connection, id: &str) -> Result<(), String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin delete transaction: {e}"))?;
+
+    tx.execute(
+        "DELETE FROM clips WHERE library_entry_id = ?1",
+        params![id],
+    )
+    .map_err(|e| format!("Failed to delete referencing clips: {e}"))?;
+
+    tx.execute(
         "DELETE FROM library_entries WHERE id = ?1",
         params![id],
     )
     .map_err(|e| format!("Failed to delete library entry: {e}"))?;
+
+    tx.commit()
+        .map_err(|e| format!("Failed to commit delete transaction: {e}"))?;
 
     Ok(())
 }
@@ -390,6 +439,7 @@ mod tests {
             Some(120.0),
             Some(44100),
             Some(1024),
+            "music",
         )
         .expect("insert should succeed");
 
@@ -414,6 +464,7 @@ mod tests {
             None,
             None,
             None,
+            "music",
         )
         .expect("first insert should succeed");
 
@@ -425,6 +476,7 @@ mod tests {
             None,
             None,
             None,
+            "music",
         );
 
         assert!(result.is_err(), "inserting duplicate file_path should fail");
@@ -443,6 +495,7 @@ mod tests {
             None,
             None,
             None,
+            "music",
         )
         .expect("insert should succeed");
 
@@ -459,24 +512,11 @@ mod tests {
         assert!((stored - 0.5).abs() < 1e-9, "volume should be 0.5, got {stored}");
     }
 
-    // ── 4. delete_blocked_by_clips ────────────────────────────────────────────
+    // ── 4. delete_cascades_to_clips ───────────────────────────────────────────
 
-    #[test]
-    fn delete_blocked_by_clips() {
-        let conn = open_memory_db();
-
-        // Build the full hierarchy: group → comp → track → clip
-        let entry_id = insert_library_entry(
-            &conn,
-            "/tmp/clip-ref.mp3",
-            None,
-            "Clip Ref Track",
-            None,
-            None,
-            None,
-        )
-        .expect("insert entry");
-
+    /// Build the `config → group → comp → track` hierarchy and return
+    /// `(config_id, group_id, comp_id, track_id, comp_name, track_name)`.
+    fn make_hierarchy(conn: &Connection, comp_name: &str, track_name: &str) -> (String, String) {
         let config_id = Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO configurations (id, name, created_at, sort_order) VALUES (?1, 'Test', '0', 1000)",
@@ -493,17 +533,38 @@ mod tests {
 
         let comp_id = Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO comps (id, group_id, name, sort_order) VALUES (?1, ?2, 'C', 0)",
-            params![comp_id, group_id],
+            "INSERT INTO comps (id, group_id, name, sort_order) VALUES (?1, ?2, ?3, 0)",
+            params![comp_id, group_id, comp_name],
         )
         .expect("insert comp");
 
         let track_id = Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO tracks (id, comp_id, name, sort_order) VALUES (?1, ?2, 'T', 0)",
-            params![track_id, comp_id],
+            "INSERT INTO tracks (id, comp_id, name, sort_order) VALUES (?1, ?2, ?3, 0)",
+            params![track_id, comp_id, track_name],
         )
         .expect("insert track");
+
+        (comp_id, track_id)
+    }
+
+    #[test]
+    fn delete_cascades_to_clips() {
+        let conn = open_memory_db();
+
+        let entry_id = insert_library_entry(
+            &conn,
+            "/tmp/clip-ref.mp3",
+            None,
+            "Clip Ref Track",
+            None,
+            None,
+            None,
+            "music",
+        )
+        .expect("insert entry");
+
+        let (_comp_id, track_id) = make_hierarchy(&conn, "Thunder Storm", "Rain");
 
         let clip_id = Uuid::new_v4().to_string();
         conn.execute(
@@ -513,13 +574,63 @@ mod tests {
         )
         .expect("insert clip");
 
-        let result = delete_library_entry(&conn, &entry_id);
-        assert!(result.is_err(), "delete should be blocked");
-        let msg = result.unwrap_err();
-        assert!(
-            msg.contains("1 clip(s)"),
-            "error should mention clip count, got: {msg}"
-        );
+        delete_library_entry(&conn, &entry_id).expect("cascade delete should succeed");
+
+        let clip_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM clips WHERE library_entry_id = ?1",
+                params![entry_id],
+                |row| row.get(0),
+            )
+            .expect("count clips");
+        assert_eq!(clip_count, 0, "referencing clips should be deleted");
+
+        let entry_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM library_entries WHERE id = ?1",
+                params![entry_id],
+                |row| row.get(0),
+            )
+            .expect("count entries");
+        assert_eq!(entry_count, 0, "entry itself should be deleted");
+    }
+
+    // ── 4b. get_entry_usage_returns_locations ─────────────────────────────────
+
+    #[test]
+    fn get_entry_usage_returns_locations() {
+        let conn = open_memory_db();
+
+        let entry_id = insert_library_entry(
+            &conn,
+            "/tmp/usage.mp3",
+            None,
+            "Usage Test",
+            None,
+            None,
+            None,
+            "music",
+        )
+        .expect("insert entry");
+
+        let (_comp_id, track_id) = make_hierarchy(&conn, "Rain Scene", "Drops");
+
+        let clip_id = Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO clips (id, track_id, library_entry_id, sort_order)
+             VALUES (?1, ?2, ?3, 0)",
+            params![clip_id, track_id, entry_id],
+        )
+        .expect("insert clip");
+
+        let usage = get_entry_usage(&conn, &entry_id).expect("query usage");
+        assert_eq!(usage.len(), 1, "expected one usage row");
+        assert_eq!(usage[0].clip_id, clip_id);
+        assert_eq!(usage[0].comp_name, "Rain Scene");
+        assert_eq!(usage[0].track_name, "Drops");
+
+        let empty = get_entry_usage(&conn, "no-such-entry").expect("query no-such-entry");
+        assert!(empty.is_empty(), "unreferenced entry should return empty vec");
     }
 
     // ── 5. delete_succeeds_when_unreferenced ──────────────────────────────────
@@ -535,6 +646,7 @@ mod tests {
             None,
             None,
             None,
+            "music",
         )
         .expect("insert should succeed");
 
@@ -564,6 +676,7 @@ mod tests {
             None,
             None,
             None,
+            "music",
         )
         .expect("insert");
 
@@ -592,6 +705,7 @@ mod tests {
             None,
             None,
             None,
+            "music",
         )
         .expect("insert");
 
@@ -616,6 +730,7 @@ mod tests {
             None,
             None,
             None,
+            "music",
         )
         .expect("insert");
 
@@ -630,7 +745,7 @@ mod tests {
     #[test]
     fn loop_clamped_to_trim_bounds() {
         let conn = open_memory_db();
-        let id = insert_library_entry(&conn, "/c.mp3", Some("c"), "C", None, None, None).unwrap();
+        let id = insert_library_entry(&conn, "/c.mp3", Some("c"), "C", None, None, None, "music").unwrap();
         // Set trim bounds directly, then verify loop clamping via update_library_entry_loop
         conn.execute(
             "UPDATE library_entries SET trim_start = 10.0, trim_end = 50.0 WHERE id = ?1",
@@ -650,7 +765,7 @@ mod tests {
     #[test]
     fn loop_start_must_be_less_than_end() {
         let conn = open_memory_db();
-        let id = insert_library_entry(&conn, "/e.mp3", Some("e"), "E", None, None, None).unwrap();
+        let id = insert_library_entry(&conn, "/e.mp3", Some("e"), "E", None, None, None, "music").unwrap();
         let result = update_library_entry_loop(&conn, &id, Some(50.0), Some(10.0));
         assert!(result.is_err());
     }

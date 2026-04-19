@@ -4,6 +4,23 @@ use ts_rs::TS;
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
+pub enum EntryType {
+    Music,
+    Ambiance,
+}
+
+impl EntryType {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "ambiance" => EntryType::Ambiance,
+            _ => EntryType::Music,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
 pub struct LibraryEntry {
     pub id: String,
     pub file_path: String,
@@ -19,6 +36,7 @@ pub struct LibraryEntry {
     pub loop_end: Option<f64>,
     pub created_at: String,
     pub tags: Vec<String>,
+    pub entry_type: EntryType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -137,4 +155,27 @@ pub struct TrackPlaybackState {
     pub is_paused: bool,
     pub current_clip_id: Option<String>,
     pub current_time: f64,
+}
+
+/// One location (clip) where a library entry is referenced.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryEntryUsage {
+    pub clip_id: String,
+    pub comp_name: String,
+    pub track_name: String,
+}
+
+/// Emitted to the frontend during a background library import. The same
+/// payload is used for the `library-import-progress` (per-file tick) and
+/// `library-import-complete` (final) events; on completion `processed == total`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct BulkImportProgress {
+    pub processed: u32,
+    pub imported: u32,
+    pub skipped: u32,
+    pub total: u32,
 }

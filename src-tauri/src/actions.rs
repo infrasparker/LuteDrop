@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
+use crate::audio::util::is_audio_path;
 use crate::database;
 use crate::database::{configurations, hierarchy, library};
-use crate::models::{AppState, Track};
+use crate::models::{AppState, BulkImportProgress, LibraryEntryUsage, Track};
 use crate::state::AppStateContainer;
 use rusqlite::params;
 
@@ -303,6 +306,7 @@ pub fn import_library_entry(
     duration: Option<f64>,
     sample_rate: Option<i64>,
     file_size: Option<i64>,
+    entry_type: String,
 ) -> Result<AppState, String> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
@@ -341,6 +345,7 @@ pub fn import_library_entry(
             duration,
             sample_rate,
             file_size,
+            &entry_type,
         )?;
 
         // Probe duration from the audio file if not already provided
@@ -372,6 +377,18 @@ pub fn update_library_entry_tags(
             library::add_tag_to_entry(conn, entry_id, tag_name)?;
         }
 
+        Ok(())
+    })?;
+    load_state(container)
+}
+
+pub fn update_library_entry_type_action(
+    container: &AppStateContainer,
+    entry_id: &str,
+    entry_type: &str,
+) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        library::update_library_entry_type(conn, entry_id, entry_type)?;
         Ok(())
     })?;
     load_state(container)
@@ -426,6 +443,203 @@ pub fn delete_library_entry_action(
     })?;
     container.mark_entry_found(entry_id);
     load_state(container)
+}
+
+pub fn get_library_entry_usage_action(
+    container: &AppStateContainer,
+    entry_id: &str,
+) -> Result<Vec<LibraryEntryUsage>, String> {
+    with_db(container, |conn| library::get_entry_usage(conn, entry_id))
+}
+
+/// Recursively walks `folder_path` and returns every audio file found inside,
+/// filtered by `AUDIO_EXTENSIONS`. Unreadable sub-entries are skipped silently;
+/// an unreadable root surfaces as an error.
+pub fn scan_folder_for_audio_action(folder_path: &str) -> Result<Vec<String>, String> {
+    let root = std::path::Path::new(folder_path);
+    if !root.exists() {
+        return Err(format!("Folder does not exist: {folder_path}"));
+    }
+    if !root.is_dir() {
+        return Err(format!("Not a directory: {folder_path}"));
+    }
+
+    let mut paths = Vec::new();
+    for entry in walkdir::WalkDir::new(root).follow_links(false).into_iter().filter_map(|e| e.ok()) {
+        if entry.file_type().is_file() && is_audio_path(entry.path()) {
+            if let Some(s) = entry.path().to_str() {
+                paths.push(s.to_string());
+            }
+        }
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+/// Kicks off a background library import. The command returns immediately;
+/// the spawned thread processes each file with its own short transaction and
+/// emits `library-import-progress` after each file plus
+/// `library-import-complete` when finished. Fails fast with an error if
+/// another import is already running.
+///
+/// Per-file transactions (vs. one batch transaction) mean a bad file in
+/// position 47 doesn't roll back the first 46 successful imports.
+pub fn start_bulk_import_library_entries_action(
+    container: &Arc<AppStateContainer>,
+    paths: Vec<String>,
+    tags: Vec<String>,
+    entry_type: String,
+) -> Result<(), String> {
+    if !container.try_claim_import() {
+        return Err("Another import is already running".to_string());
+    }
+
+    let container = container.clone();
+    std::thread::spawn(move || {
+        run_bulk_import(container, paths, tags, entry_type);
+    });
+
+    Ok(())
+}
+
+fn run_bulk_import(container: Arc<AppStateContainer>, paths: Vec<String>, tags: Vec<String>, entry_type: String) {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    let total = paths.len() as u32;
+    let mut imported: u32 = 0;
+    let mut skipped: u32 = 0;
+
+    // Announce the task so the frontend can show an indicator before the first file completes.
+    container.emit(
+        "library-import-progress",
+        BulkImportProgress { processed: 0, imported, skipped, total },
+    );
+
+    for (i, file_path) in paths.iter().enumerate() {
+        let processed = (i as u32) + 1;
+
+        // Hash the file outside the DB lock.
+        let hash = match std::fs::File::open(file_path) {
+            Ok(mut file) => {
+                let mut hasher = Sha256::new();
+                let mut buf = [0u8; 65536];
+                let mut read_err: Option<String> = None;
+                loop {
+                    match file.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => hasher.update(&buf[..n]),
+                        Err(e) => {
+                            read_err = Some(e.to_string());
+                            break;
+                        }
+                    }
+                }
+                if let Some(e) = read_err {
+                    log::warn!("Skipping {file_path} (read error: {e})");
+                    skipped += 1;
+                    emit_progress(&container, processed, imported, skipped, total);
+                    continue;
+                }
+                format!("{:x}", hasher.finalize())
+            }
+            Err(e) => {
+                log::warn!("Skipping {file_path} (open error: {e})");
+                skipped += 1;
+                emit_progress(&container, processed, imported, skipped, total);
+                continue;
+            }
+        };
+
+        // Per-file transaction: insert + tag in one unit, then probe duration after commit.
+        let file_result: Result<Option<String>, String> = (|| {
+            let conn = container
+                .db
+                .lock()
+                .map_err(|e| format!("db lock poisoned: {e}"))?;
+
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("begin tx: {e}"))?;
+
+            if library::get_library_entry_by_hash(&conn, &hash)?.is_some() {
+                return Ok(None); // skip
+            }
+
+            let derived_name = std::path::Path::new(file_path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Unknown")
+                .to_string();
+
+            let id = match library::insert_library_entry(
+                &conn,
+                file_path,
+                Some(&hash),
+                &derived_name,
+                None,
+                None,
+                None,
+                &entry_type,
+            ) {
+                Ok(id) => id,
+                Err(e) => {
+                    if e.contains("UNIQUE constraint") {
+                        return Ok(None); // file_path collision = skip
+                    }
+                    return Err(e);
+                }
+            };
+
+            for tag_name in &tags {
+                library::add_tag_to_entry(&conn, &id, tag_name)?;
+            }
+
+            tx.commit().map_err(|e| format!("commit: {e}"))?;
+            Ok(Some(id))
+        })();
+
+        match file_result {
+            Ok(Some(id)) => {
+                imported += 1;
+                // Probe duration after the insert tx has committed so the UI sees
+                // the row immediately and the duration fills in shortly after.
+                if let Some(dur) = crate::audio::util::probe_duration(file_path) {
+                    if let Ok(conn) = container.db.lock() {
+                        let _ = library::update_library_entry_duration(&conn, &id, dur, None);
+                    }
+                }
+            }
+            Ok(None) => {
+                skipped += 1;
+            }
+            Err(e) => {
+                log::warn!("Skipping {file_path}: {e}");
+                skipped += 1;
+            }
+        }
+
+        emit_progress(&container, processed, imported, skipped, total);
+    }
+
+    container.emit(
+        "library-import-complete",
+        BulkImportProgress { processed: total, imported, skipped, total },
+    );
+    container.release_import();
+}
+
+fn emit_progress(
+    container: &AppStateContainer,
+    processed: u32,
+    imported: u32,
+    skipped: u32,
+    total: u32,
+) {
+    container.emit(
+        "library-import-progress",
+        BulkImportProgress { processed, imported, skipped, total },
+    );
 }
 
 pub fn relocate_library_entry(
