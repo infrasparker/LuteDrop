@@ -34,6 +34,13 @@ pub struct AudioEngine {
     // object graph torn down innermost-first (Sounds → Groups → Engine).
     tracks: HashMap<String, ManagedTrack>,
     library_sound: Option<SoundHandle>,
+    /// De-click holding area for the LIBRARY sound. When a library sound is
+    /// stopped/replaced we request a fade-out then park the handle here until
+    /// the fade has finished; dropping it (which runs `ma_sound_uninit`) before
+    /// the ramp completes would cut the tail and produce a click. The reaper in
+    /// `poll()` drops each entry once `Instant` (the reap deadline) has passed.
+    /// Declared before `engine` so any parked sounds drop before the engine.
+    fading_out: Vec<(SoundHandle, std::time::Instant)>,
     library_loop_info: Option<LibraryLoopInfo>,
     master_volume: f64,
     mute_state: MuteState,
@@ -50,6 +57,7 @@ impl AudioEngine {
         Ok(Self {
             tracks: HashMap::new(),
             library_sound: None,
+            fading_out: Vec::new(),
             library_loop_info: None,
             master_volume: 1.0,
             mute_state: MuteState::new(),
@@ -216,11 +224,33 @@ impl AudioEngine {
     }
 
     pub fn stop_library_sound(&mut self) {
-        if let Some(ref mut snd) = self.library_sound {
-            sound::stop(snd, None);
+        if let Some(snd) = self.library_sound.take() {
+            // Use the sound's own fade_out if it has one, else a small de-click
+            // default. A SEEK is `stop_library_sound` + `play_library_sound`, so
+            // the short floor also covers the seek-replacement case.
+            let fade = snd.fade_out.unwrap_or(0.02);
+            self.retire(snd, fade);
         }
-        self.library_sound = None;
         self.library_loop_info = None;
+    }
+
+    /// Deferred destruction: request a fade-out on `snd`, then park it in the
+    /// holding area until the fade has finished. The `poll` reaper drops it
+    /// afterwards. This keeps the sound in the mixer for the whole ramp so the
+    /// fade is actually audible (dropping it immediately runs `ma_sound_uninit`
+    /// mid-fade → hard cut → click).
+    fn retire(&mut self, mut snd: SoundHandle, fade_secs: f64) {
+        let fade = fade_secs.max(0.01);
+        sound::stop(&mut snd, Some(std::time::Duration::from_secs_f64(fade)));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(fade + 0.05);
+        self.fading_out.push((snd, deadline));
+    }
+
+    /// Drop any parked sounds whose fade-out has completed. Called every poll
+    /// tick (which runs continuously, even when idle), so nothing leaks.
+    fn reap_fading(&mut self) {
+        let now = std::time::Instant::now();
+        self.fading_out.retain(|(_, deadline)| now < *deadline);
     }
 
     // --- State queries ---
@@ -292,6 +322,15 @@ impl AudioEngine {
         }
 
         if library_needs_loop {
+            // The outgoing instance was already stopped with a LOOP_CROSSFADE_SECS
+            // fade above. Park it in the holding area so it keeps mixing through
+            // its fade-out (overlapping the incoming fade-in) instead of being
+            // dropped here — dropping would uninit it mid-fade and pop.
+            if let Some(outgoing) = self.library_sound.take() {
+                let deadline = std::time::Instant::now()
+                    + std::time::Duration::from_secs_f64(LOOP_CROSSFADE_SECS + 0.05);
+                self.fading_out.push((outgoing, deadline));
+            }
             if let Some(ref info) = self.library_loop_info {
                 let params = PlayParams {
                     file_path: info.file_path.clone(),
@@ -313,6 +352,9 @@ impl AudioEngine {
         } else if library_stopped {
             self.library_sound = None;
         }
+
+        // Reap any parked library sounds whose fade-out has finished.
+        self.reap_fading();
 
         // Always emit library sound state so frontend can detect when it stops
         let lib_state = match &self.library_sound {

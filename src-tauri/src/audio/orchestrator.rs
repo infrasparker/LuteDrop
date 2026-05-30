@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use rand::Rng;
 use crate::models::{Track, TrackMode, TrackPlaybackState};
 use super::ffi;
@@ -13,9 +14,38 @@ pub struct ManagedTrack {
     pub group: ffi::Group,
     pub config: Track,
     pub current_sound: Option<SoundHandle>,
+    /// De-click holding area for sounds that have been stopped/replaced on this
+    /// track. We request a fade-out, then park the handle here until the fade
+    /// finishes so it keeps mixing through the ramp; dropping it immediately
+    /// runs `ma_sound_uninit` mid-fade → hard cut → click. Reaped in
+    /// `poll_track`. Declared adjacent to `current_sound` so parked sounds share
+    /// its teardown ordering relative to `group`.
+    pub fading_out: Vec<(SoundHandle, Instant)>,
     pub current_clip_index: Option<usize>,
     pub is_paused: bool,
     pub transitions: TransitionManager,
+}
+
+impl ManagedTrack {
+    /// Deferred destruction: request a fade-out then park the handle until the
+    /// ramp completes. The reaper in `poll_track` drops it afterwards.
+    fn retire(&mut self, mut snd: SoundHandle, fade_secs: f64) {
+        let fade = fade_secs.max(0.01);
+        sound::stop(&mut snd, Some(Duration::from_secs_f64(fade)));
+        self.fading_out.push((snd, Instant::now() + Duration::from_secs_f64(fade + 0.05)));
+    }
+
+    /// Park an already-stopped handle (its fade was requested elsewhere, e.g.
+    /// the seamless-loop crossfade) so it isn't dropped mid-fade.
+    fn park(&mut self, snd: SoundHandle, fade_secs: f64) {
+        self.fading_out.push((snd, Instant::now() + Duration::from_secs_f64(fade_secs.max(0.01) + 0.05)));
+    }
+
+    /// Drop parked sounds whose fade-out has completed.
+    fn reap_fading(&mut self) {
+        let now = Instant::now();
+        self.fading_out.retain(|(_, deadline)| now < *deadline);
+    }
 }
 
 pub fn setup_track(
@@ -41,6 +71,7 @@ pub fn setup_track(
         group,
         config: config.clone(),
         current_sound: None,
+        fading_out: Vec::new(),
         current_clip_index: None,
         is_paused: false,
         transitions: TransitionManager::new(),
@@ -136,15 +167,13 @@ pub fn stop_track(tracks: &mut HashMap<String, ManagedTrack>, track_id: &str) ->
     track.is_paused = false;
     track.current_clip_index = None;
     track.transitions.reset();
-    if let Some(ref mut snd) = track.current_sound {
-        let fade = if track.config.fade_out > 0.0 {
-            Some(std::time::Duration::from_secs_f64(track.config.fade_out))
-        } else {
-            None
-        };
-        sound::stop(snd, fade);
+    // Deferred destruction: fade the sound out and park it until the ramp
+    // completes, instead of dropping it immediately (which would uninit it
+    // mid-fade → click). The reaper in `poll_track` drops it after the fade.
+    if let Some(snd) = track.current_sound.take() {
+        let fade = if track.config.fade_out > 0.0 { track.config.fade_out } else { 0.02 };
+        track.retire(snd, fade);
     }
-    track.current_sound = None;
     Ok(())
 }
 
@@ -243,6 +272,12 @@ pub fn poll_track(
     missing_entries: &mut Vec<String>,
     found_entries: &mut Vec<String>,
 ) {
+    // Reap any parked sounds whose fade-out has completed. Done first so it runs
+    // every tick regardless of which transition branch returns early below.
+    if let Some(track) = tracks.get_mut(track_id) {
+        track.reap_fading();
+    }
+
     // Gather state for transition check
     let (position, clip_duration, clip_start, mode, current_clip_index, clip_count, is_paused, sound_playing, sound_stopped) = {
         let track = match tracks.get(track_id) {
@@ -459,9 +494,12 @@ fn schedule_loop_restart(
     let volume = mixer::clip_sound_volume(clip.volume, clip.library_volume, mute_state.clip_muted(&clip.id));
 
     // Fade the outgoing instance OUT over the crossfade window (do NOT stop it
-    // abruptly) so it overlaps the incoming fade-in.
-    if let Some(ref mut snd) = track.current_sound {
-        sound::stop(snd, Some(std::time::Duration::from_secs_f64(LOOP_CROSSFADE_SECS)));
+    // abruptly) so it overlaps the incoming fade-in. Take it out of
+    // `current_sound` and park it so the upcoming `current_sound = Some(new)`
+    // doesn't drop (uninit) it mid-fade — that drop was the residual loop pop.
+    if let Some(mut snd) = track.current_sound.take() {
+        sound::stop(&mut snd, Some(Duration::from_secs_f64(LOOP_CROSSFADE_SECS)));
+        track.park(snd, LOOP_CROSSFADE_SECS);
     }
 
     let params = PlayParams {
