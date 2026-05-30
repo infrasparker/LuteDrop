@@ -2,9 +2,10 @@ use std::fs::File;
 use std::path::Path;
 use kira::Frame;
 use ogg::PacketReader;
-use opus_rs::OpusDecoder;
+use audiopus::{coder::Decoder, Channels, SampleRate};
 
-/// Max samples per channel in a single Opus packet (120 ms at 48 kHz).
+/// Output buffer capacity per channel: max samples in one Opus packet
+/// (120 ms at 48 kHz). libopus reports the actual count it decoded.
 const MAX_FRAME_SIZE: usize = 5760;
 /// Opus is always decoded at 48 kHz regardless of the original sample rate.
 const OPUS_SAMPLE_RATE: u32 = 48000;
@@ -15,56 +16,8 @@ pub struct DecodedAudio {
     pub sample_rate: u32,
 }
 
-/// Number of PCM samples per channel that a single Opus packet decodes to at
-/// 48 kHz, derived from the packet's TOC byte per RFC 6716.
-///
-/// This MUST be exact: `opus-rs`'s `decode` treats the caller-supplied
-/// `frame_size` as the authoritative output length (it computes
-/// `sub_frame_size = frame_size / frame_count` and emits that many samples),
-/// rather than as a buffer capacity like libopus. Passing a too-large value
-/// makes it pad every packet with silence.
-fn opus_packet_samples_per_channel(packet: &[u8]) -> usize {
-    let toc = packet[0];
-    let config = toc >> 3;
-
-    // Samples per frame at 48 kHz, by mode/config (RFC 6716 §3.1).
-    let per_frame = if config < 12 {
-        // SILK-only: 10 / 20 / 40 / 60 ms.
-        let ms = match config & 0x03 {
-            0 => 10,
-            1 => 20,
-            2 => 40,
-            _ => 60,
-        };
-        48 * ms
-    } else if config < 16 {
-        // Hybrid: 10 or 20 ms.
-        let ms = if config & 0x01 == 0 { 10 } else { 20 };
-        48 * ms
-    } else {
-        // CELT-only: 2.5 / 5 / 10 / 20 ms -> 120 / 240 / 480 / 960 samples.
-        let period = (config & 0x03) as u32;
-        (48000 / (400u32 >> period)) as usize
-    };
-
-    // Frame count from the TOC code (low 2 bits); code 3 stores it in byte 1.
-    let frame_count = match toc & 0x03 {
-        0 => 1,
-        1 | 2 => 2,
-        _ => {
-            if packet.len() >= 2 {
-                (packet[1] & 0x3F) as usize
-            } else {
-                1
-            }
-        }
-    };
-
-    per_frame * frame_count
-}
-
-/// Decodes an Ogg-contained Opus file to interleaved stereo PCM frames.
-/// Supports mono and stereo streams (the common cases for music).
+/// Decodes an Ogg-contained Opus file to interleaved stereo PCM frames using
+/// libopus (the reference decoder). Supports mono and stereo streams.
 pub fn decode_opus(path: &Path) -> Result<DecodedAudio, String> {
     let file = File::open(path).map_err(|e| format!("Failed to open opus file: {e}"))?;
     let mut reader = PacketReader::new(file);
@@ -88,7 +41,12 @@ pub fn decode_opus(path: &Path) -> Result<DecodedAudio, String> {
         .read_packet()
         .map_err(|e| format!("Failed to read opus tags: {e}"))?;
 
-    let mut decoder = OpusDecoder::new(OPUS_SAMPLE_RATE as i32, channels)
+    let opus_channels = if channels == 1 {
+        Channels::Mono
+    } else {
+        Channels::Stereo
+    };
+    let mut decoder = Decoder::new(SampleRate::Hz48000, opus_channels)
         .map_err(|e| format!("Failed to create opus decoder: {e}"))?;
 
     let mut frames: Vec<Frame> = Vec::new();
@@ -101,13 +59,11 @@ pub fn decode_opus(path: &Path) -> Result<DecodedAudio, String> {
         if packet.data.is_empty() {
             continue;
         }
-        let frame_size = opus_packet_samples_per_channel(&packet.data);
-        if frame_size == 0 || frame_size > MAX_FRAME_SIZE {
-            continue;
-        }
 
+        // libopus determines the frame size from the packet and returns the
+        // number of samples (per channel) it wrote into `pcm`.
         let decoded_per_channel = decoder
-            .decode(&packet.data, frame_size, &mut pcm)
+            .decode_float(Some(&packet.data[..]), &mut pcm[..], false)
             .map_err(|e| format!("Opus decode error: {e}"))?;
 
         for i in 0..decoded_per_channel {
