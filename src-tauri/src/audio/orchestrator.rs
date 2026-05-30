@@ -401,8 +401,10 @@ pub fn get_playback_state(track: &ManagedTrack) -> TrackPlaybackState {
 // --- Internal helpers ---
 
 /// Sample-accurate seamless loop restart: create the next loop instance and
-/// schedule it to begin exactly at the loop boundary (engine clock + lead),
-/// while the outgoing sound fades out over the crossfade window.
+/// schedule it to begin at the START of the crossfade window (engine clock +
+/// lead) with a fade-in, while the outgoing sound fades out over the same
+/// window. The two overlap across LOOP_CROSSFADE_SECS so they sum smoothly
+/// through the loop point (no butt-join seam / pop).
 fn schedule_loop_restart(
     tracks: &mut HashMap<String, ManagedTrack>,
     engine: &ffi::Engine,
@@ -431,16 +433,33 @@ fn schedule_loop_restart(
         None => return,
     };
 
-    // Lead = how many engine frames until the loop point, so the next instance
-    // starts sample-accurately at `le`. Uses the ENGINE sample rate (the device
-    // clock that schedule_start_frame is measured in), not the file rate.
-    let seconds_until_loop = (le - position).max(0.0);
-    let lead = (seconds_until_loop * engine.sample_rate() as f64) as u64;
+    // Seamless crossfade: the incoming loop instance must OVERLAP the outgoing
+    // one across the whole crossfade window — not butt-join at the loop point.
+    //
+    // We are triggered at `position >= le - LOOP_CROSSFADE_SECS`, i.e. at (or a
+    // hair into) the start of the crossfade window. The incoming instance is
+    // scheduled to start at that window-start and fades IN over
+    // LOOP_CROSSFADE_SECS, while the outgoing instance fades OUT over the same
+    // window. Both are audible together for the whole crossfade, so the signals
+    // sum smoothly through the loop point with no zero-crossing seam.
+    //
+    // The PREVIOUS code scheduled the incoming at `le` (lead = le - position),
+    // i.e. only AFTER the outgoing had already faded to silence at `le`. That
+    // left an instantaneous level dip / discontinuity at the boundary — the
+    // residual pop. Anchoring the incoming to the window START fixes it.
+    //
+    // Lead is measured in ENGINE frames (the device clock schedule_start_frame
+    // uses), not the file rate. It is ~0 here (clamped so we never schedule in
+    // the past), but computing it explicitly keeps the start sample-accurate and
+    // robust to small poll-timing jitter.
+    let seconds_until_window_start = (le - LOOP_CROSSFADE_SECS - position).max(0.0);
+    let lead = (seconds_until_window_start * engine.sample_rate() as f64) as u64;
     let start_frame = engine.time_frames() + lead;
 
     let volume = mixer::clip_sound_volume(clip.volume, clip.library_volume, mute_state.clip_muted(&clip.id));
 
-    // Fade the outgoing instance out over the crossfade window.
+    // Fade the outgoing instance OUT over the crossfade window (do NOT stop it
+    // abruptly) so it overlaps the incoming fade-in.
     if let Some(ref mut snd) = track.current_sound {
         sound::stop(snd, Some(std::time::Duration::from_secs_f64(LOOP_CROSSFADE_SECS)));
     }

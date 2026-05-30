@@ -19,12 +19,6 @@ impl MuteState {
         }
     }
 
-    pub fn is_muted(&self, track_id: &str, clip_id: &str) -> bool {
-        self.master
-            || self.tracks.get(track_id).copied().unwrap_or(false)
-            || self.clips.get(clip_id).copied().unwrap_or(false)
-    }
-
     pub fn track_muted(&self, track_id: &str) -> bool {
         self.tracks.get(track_id).copied().unwrap_or(false)
     }

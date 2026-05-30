@@ -11,15 +11,20 @@
 // NOTE: `ma_decoding_backend_libopus` is declared in miniaudio_libopus.h as
 // `extern ma_decoding_backend_vtable*` -- it is ALREADY a pointer, so the
 // backends array holds it directly (NOT its address).
-static ma_result ld_make_decoder(const char* path, ma_decoder* dec) {
+// Path is a wide (UTF-16) string and we call miniaudio's `_w` file APIs. On
+// Windows, miniaudio's narrow file APIs route the path through fopen, which
+// interprets the bytes in the ANSI/locale codepage rather than UTF-8 -- so any
+// non-ASCII UTF-8 path fails to open. The wide APIs go straight to _wfopen, so
+// Unicode paths (smart quotes, accents, CJK, etc.) open correctly.
+static ma_result ld_make_decoder(const wchar_t* path, ma_decoder* dec) {
     ma_decoding_backend_vtable* backends[] = { ma_decoding_backend_libopus };
     ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 0, 0);
     cfg.ppCustomBackendVTables = backends;
     cfg.customBackendCount = 1;
-    return ma_decoder_init_file(path, &cfg, dec);
+    return ma_decoder_init_file_w(path, &cfg, dec);
 }
 
-int ld_decode_file(const char* path, float** out, uint64_t* out_frames,
+int ld_decode_file(const wchar_t* path, float** out, uint64_t* out_frames,
                    uint32_t* out_channels, uint32_t* out_sample_rate) {
     ma_decoder dec;
     if (ld_make_decoder(path, &dec) != MA_SUCCESS) return 1;
@@ -60,7 +65,7 @@ int ld_decode_file(const char* path, float** out, uint64_t* out_frames,
 
 void ld_free_decoded(float* p) { free(p); }
 
-double ld_file_duration_secs(const char* path) {
+double ld_file_duration_secs(const wchar_t* path) {
     ma_decoder dec;
     if (ld_make_decoder(path, &dec) != MA_SUCCESS) return -1.0;
     ma_uint64 total = 0;
@@ -159,7 +164,7 @@ void ld_group_destroy(ld_group* g) {
     free(g);
 }
 
-ld_sound* ld_sound_create(ld_engine* e, ld_group* g, const char* path, int stream) {
+ld_sound* ld_sound_create(ld_engine* e, ld_group* g, const wchar_t* path, int stream) {
     if (e == NULL || path == NULL) return NULL;
     ld_sound* s = (ld_sound*)calloc(1, sizeof(ld_sound));
     if (s == NULL) return NULL;
@@ -169,7 +174,9 @@ ld_sound* ld_sound_create(ld_engine* e, ld_group* g, const char* path, int strea
     if (stream != 0) flags |= MA_SOUND_FLAG_STREAM;
 
     ma_sound_group* pGroup = (g != NULL) ? &g->group : NULL;
-    if (ma_sound_init_from_file(&e->engine, path, flags, pGroup, NULL, &s->sound) != MA_SUCCESS) {
+    // Wide path -> ma_sound_init_from_file_w so Unicode paths open on Windows
+    // (the narrow variant misinterprets UTF-8 bytes via the ANSI codepage).
+    if (ma_sound_init_from_file_w(&e->engine, path, flags, pGroup, NULL, &s->sound) != MA_SUCCESS) {
         free(s);
         return NULL;
     }

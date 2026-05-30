@@ -1,11 +1,18 @@
 #ifndef LD_SHIM_H
 #define LD_SHIM_H
 #include <stdint.h>
+#include <wchar.h>
+
+// Paths are passed as wide (UTF-16) strings and forwarded to miniaudio's `_w`
+// file APIs. On Windows the narrow file APIs route through fopen and interpret
+// path bytes in the ANSI/locale codepage, so non-ASCII UTF-8 paths fail to
+// open; the wide APIs (_wfopen) handle full Unicode. Rust builds these from
+// OsStr::encode_wide (see audio/ffi.rs).
 
 // ---- Offline decode (Task 1) ------------------------------------------------
 // Decode a whole audio file (any miniaudio format incl .opus) to interleaved f32.
 // Returns 0 on success. Caller frees with ld_free_decoded.
-int ld_decode_file(const char* path, float** out_interleaved,
+int ld_decode_file(const wchar_t* path, float** out_interleaved,
                    uint64_t* out_frames, uint32_t* out_channels, uint32_t* out_sample_rate);
 void ld_free_decoded(float* p);
 
@@ -14,7 +21,7 @@ void ld_free_decoded(float* p);
 // and divides by the output sample rate -- NO full decode. Returns the duration in
 // seconds, or a negative value if the file can't be opened or its length is unknown
 // (e.g. a streamed source with no reported length).
-double ld_file_duration_secs(const char* path);
+double ld_file_duration_secs(const wchar_t* path);
 
 // ---- Playback layer (Task 2) ------------------------------------------------
 // Opaque handles. The shim owns the underlying miniaudio structs.
@@ -37,7 +44,7 @@ void       ld_group_destroy(ld_group*);
 
 // Sound wraps ma_sound. stream != 0 => streaming (use for playback);
 // group may be NULL (routes to the engine endpoint). Returns NULL on failure.
-ld_sound*  ld_sound_create(ld_engine*, ld_group*, const char* path, int stream);
+ld_sound*  ld_sound_create(ld_engine*, ld_group*, const wchar_t* path, int stream);
 int        ld_sound_play(ld_sound*, double start_secs, double fade_in_secs);
 void       ld_sound_stop(ld_sound*, double fade_out_secs);
 void       ld_sound_pause(ld_sound*);    // = stop (keeps cursor)

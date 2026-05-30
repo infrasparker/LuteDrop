@@ -1,16 +1,29 @@
-use std::ffi::CString;
-use std::os::raw::{c_char, c_float, c_int};
+use std::os::raw::{c_float, c_int};
+use std::os::windows::ffi::OsStrExt;
+
+/// Encode a path as a NUL-terminated UTF-16 buffer for miniaudio's wide (`_w`)
+/// file APIs. On Windows `wchar_t` is 16-bit (matches `u16`), and the wide APIs
+/// open paths via `_wfopen`, which handles full Unicode — unlike the narrow
+/// APIs that misinterpret UTF-8 bytes through the ANSI/locale codepage. This is
+/// the fix for non-ASCII audio paths (smart quotes, accents, CJK) failing to
+/// decode/play. Windows is the only target, so this is unconditionally Windows.
+fn to_wide(path: &str) -> Vec<u16> {
+    std::ffi::OsStr::new(path)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
 
 extern "C" {
     fn ld_decode_file(
-        path: *const c_char,
+        path: *const u16,
         out: *mut *mut c_float,
         frames: *mut u64,
         channels: *mut u32,
         sample_rate: *mut u32,
     ) -> c_int;
     fn ld_free_decoded(p: *mut c_float);
-    fn ld_file_duration_secs(path: *const c_char) -> f64;
+    fn ld_file_duration_secs(path: *const u16) -> f64;
 
     fn ld_engine_create() -> *mut LdEngine;
     fn ld_engine_destroy(e: *mut LdEngine);
@@ -25,7 +38,7 @@ extern "C" {
     fn ld_sound_create(
         e: *mut LdEngine,
         g: *mut LdGroup,
-        path: *const c_char,
+        path: *const u16,
         stream: c_int,
     ) -> *mut LdSound;
     fn ld_sound_play(s: *mut LdSound, start_secs: f64, fade_in_secs: f64) -> c_int;
@@ -129,10 +142,10 @@ impl Engine {
         path: &str,
         stream: bool,
     ) -> Result<Sound, String> {
-        let c = CString::new(path).map_err(|e| e.to_string())?;
+        let wide = to_wide(path);
         let gptr = group.map_or(std::ptr::null_mut(), |g| g.ptr);
         let ptr =
-            unsafe { ld_sound_create(self.0, gptr, c.as_ptr(), if stream { 1 } else { 0 }) };
+            unsafe { ld_sound_create(self.0, gptr, wide.as_ptr(), if stream { 1 } else { 0 }) };
         if ptr.is_null() {
             return Err(format!("failed to create sound for {path}"));
         }
@@ -229,10 +242,10 @@ pub struct Decoded {
 }
 
 pub fn decode_file(path: &str) -> Result<Decoded, String> {
-    let c = CString::new(path).map_err(|e| e.to_string())?;
+    let wide = to_wide(path);
     let (mut out, mut frames, mut channels, mut sr) =
         (std::ptr::null_mut(), 0u64, 0u32, 0u32);
-    let rc = unsafe { ld_decode_file(c.as_ptr(), &mut out, &mut frames, &mut channels, &mut sr) };
+    let rc = unsafe { ld_decode_file(wide.as_ptr(), &mut out, &mut frames, &mut channels, &mut sr) };
     if rc != 0 || out.is_null() {
         return Err(format!("decode failed for {path}"));
     }
@@ -251,8 +264,8 @@ pub fn decode_file(path: &str) -> Result<Decoded, String> {
 /// count, divides by the sample rate (no full decode). Returns `None` if the
 /// file can't be opened or its length is unknown.
 pub fn file_duration_secs(path: &str) -> Option<f64> {
-    let c = CString::new(path).ok()?;
-    let secs = unsafe { ld_file_duration_secs(c.as_ptr()) };
+    let wide = to_wide(path);
+    let secs = unsafe { ld_file_duration_secs(wide.as_ptr()) };
     if secs > 0.0 {
         Some(secs)
     } else {
@@ -274,6 +287,27 @@ mod tests {
         assert!((d.frames as i64 - 5_760_000).abs() < 10_000, "frames={}", d.frames);
         let peak = d.samples.iter().fold(0f32, |m, &s| m.max(s.abs()));
         assert!(peak > 0.01, "silent (peak {peak})");
+    }
+
+    #[test]
+    fn decodes_non_ascii_path() {
+        // Copy the fixture to a temp path with non-ASCII chars (smart quote,
+        // accents, CJK) and decode it. This proves the wide (UTF-16) file-open
+        // fix without needing the real library: the old narrow CString path
+        // failed to open such paths on Windows.
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.opus");
+        let dst = std::env::temp_dir().join("sämple_é’カ_ld_test.opus");
+        let _ = std::fs::remove_file(&dst); // best-effort clean from a prior run
+        std::fs::copy(&src, &dst).expect("copy fixture to unicode temp path");
+
+        let result = decode_file(dst.to_str().unwrap());
+
+        // Clean up before asserting so a failure doesn't leak the temp file.
+        let _ = std::fs::remove_file(&dst);
+
+        let d = result.expect("decode of non-ASCII path");
+        assert!(d.frames > 0, "decoded zero frames from unicode path");
+        assert_eq!(d.sample_rate, 48000);
     }
 
     #[test]
