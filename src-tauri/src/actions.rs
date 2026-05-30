@@ -892,7 +892,8 @@ pub fn play_library_sound(
     // File exists — clear stale missing state if any
     container.mark_entry_found(entry_id);
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
-    let vol = crate::audio::util::amplitude_to_decibels(audio.get_master_volume() * volume);
+    // Volume is linear now; master is applied by the engine node automatically.
+    let vol = volume.clamp(0.0, 1.0) as f32;
     let loop_region = match (loop_start, loop_end) {
         (Some(ls), Some(le)) if le > ls => Some((ls, le)),
         (None, Some(le)) if le > 0.0 => Some((0.0, le)),

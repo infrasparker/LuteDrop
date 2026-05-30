@@ -1,5 +1,3 @@
-use kira::Decibels;
-
 /// Standard crossfade overlap duration in seconds.
 pub const CROSSFADE_OVERLAP: f64 = 4.0;
 
@@ -64,17 +62,6 @@ pub fn probe_duration(path: &str) -> Option<f64> {
     }
 
     None
-}
-
-/// Converts a linear amplitude (0.0 - 1.0) to kira Decibels.
-/// Uses the standard formula: dB = 20 * log10(amplitude).
-/// Clamps very small values to silence.
-pub fn amplitude_to_decibels(amp: f64) -> Decibels {
-    if amp <= 0.0001 {
-        Decibels::SILENCE
-    } else {
-        Decibels(20.0 * (amp as f32).log10())
-    }
 }
 
 #[cfg(test)]

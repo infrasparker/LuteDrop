@@ -1,23 +1,33 @@
 use std::time::Duration;
-use kira::sound::streaming::{StreamingSoundData, StreamingSoundHandle};
-use kira::sound::{FromFileError, PlaybackState};
-use kira::track::TrackHandle;
-use kira::{AudioManager, Decibels, Easing, Tween};
-use super::util::probe_duration;
+use super::ffi;
 
+/// Playback state of a single sound. Replaces kira's `PlaybackState`; the audio
+/// module (`mod.rs`, `orchestrator.rs`) matches on these variants.
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub enum PlaybackState {
+    Playing,
+    Paused,
+    Stopped,
+}
+
+/// One playing/loaded clip backed by a miniaudio `ma_sound`.
 pub struct SoundHandle {
-    pub handle: StreamingSoundHandle<FromFileError>,
+    pub sound: ffi::Sound,
     pub fade_out: Option<f64>,
     pub duration: Option<f64>,
     pub start_position: Option<f64>,
     /// Stored for manual crossfade looping in the poll loop.
     pub loop_region: Option<(f64, f64)>,
+    /// We track paused state ourselves; miniaudio reports a paused sound as
+    /// "not playing", which is indistinguishable from "stopped" otherwise.
+    pub paused: bool,
 }
 
 pub struct PlayParams {
     pub file_path: String,
     pub start_position: f64,
-    pub volume: Decibels,
+    /// Linear volume (0.0..=1.0). miniaudio multiplies engine × group × sound.
+    pub volume: f32,
     pub trim_start: Option<f64>,
     pub trim_end: Option<f64>,
     pub loop_region: Option<(f64, f64)>,
@@ -25,58 +35,39 @@ pub struct PlayParams {
     pub fade_out: Option<f64>,
 }
 
+/// Create a streaming sound in `group` and start it.
+///
+/// Opus (and every other format) streams natively now — no path resolver /
+/// transcode cache. Loop region is NOT applied to the sound itself; it is stored
+/// on the handle and managed with a crossfade overlap by the poll loop.
 pub fn play(
-    _manager: &mut AudioManager,
-    track_handle: &mut TrackHandle,
+    engine: &ffi::Engine,
+    group: &ffi::Group,
     params: PlayParams,
 ) -> Result<SoundHandle, String> {
-    // Formats symphonia can't stream (opus) are transcoded to a cached WAV here;
-    // everything else resolves to its own path unchanged. Either way, kira then
-    // streams `playable` from disk — no whole-file decode held in RAM.
-    let playable = super::cache::resolve(std::path::Path::new(&params.file_path))?;
+    let sound = engine.create_sound(Some(group), &params.file_path, true)?;
+    sound.set_volume(params.volume);
 
-    let mut sound_data = StreamingSoundData::from_file(&playable)
-        .map_err(|e| format!("Failed to load audio file '{}': {}", params.file_path, e))?;
+    let fade_in = params.fade_in.unwrap_or(0.0);
+    sound
+        .play(params.start_position, fade_in)
+        .map_err(|e| format!("Failed to play sound '{}': {}", params.file_path, e))?;
 
-    // Apply start position
-    if params.start_position > 0.0 {
-        sound_data = sound_data.start_position(params.start_position);
-    }
-
-    // Loop region is NOT applied via Kira's native loop_region because it
-    // performs a hard sample jump at the boundary, causing an audible pop.
-    // Instead, loop_region is stored on the SoundHandle and managed manually
-    // in the poll loop with a crossfade overlap.
-
-    // Apply fade in
-    if let Some(fade_secs) = params.fade_in {
-        if fade_secs > 0.0 {
-            sound_data = sound_data.fade_in_tween(Tween {
-                duration: Duration::from_secs_f64(fade_secs),
-                easing: Easing::InPowi(2),
-                ..Default::default()
-            });
+    // Effective duration: explicit trim_end wins, else the file length.
+    let duration = match params.trim_end {
+        Some(te) => Some(te),
+        None => {
+            let len = sound.length_secs();
+            if len > 0.0 {
+                Some(len)
+            } else {
+                None
+            }
         }
-    }
-
-    // Apply volume
-    sound_data = sound_data.volume(params.volume);
-
-    // Play on the given mixer sub-track
-    let handle = track_handle
-        .play(sound_data)
-        .map_err(|e| format!("Failed to play sound: {}", e))?;
-
-    // Compute effective duration
-    let raw_duration = probe_duration(playable.to_str().unwrap_or(&params.file_path));
-    let duration = match (params.trim_end, raw_duration) {
-        (Some(te), _) => Some(te),
-        (None, Some(d)) => Some(d),
-        _ => None,
     };
 
     Ok(SoundHandle {
-        handle,
+        sound,
         fade_out: params.fade_out,
         duration,
         start_position: if params.start_position > 0.0 {
@@ -85,53 +76,48 @@ pub fn play(
             params.trim_start
         },
         loop_region: params.loop_region,
+        paused: false,
     })
 }
 
 pub fn stop(sound: &mut SoundHandle, fade_override: Option<Duration>) {
-    let fade = fade_override.unwrap_or_else(|| {
-        sound.fade_out
-            .map(Duration::from_secs_f64)
-            .unwrap_or(Duration::from_millis(10))
-    });
-    let _ = sound.handle.stop(Tween {
-        duration: fade,
-        ..Default::default()
-    });
+    let fade = fade_override
+        .map(|d| d.as_secs_f64())
+        .or(sound.fade_out)
+        .unwrap_or(0.01);
+    sound.sound.stop(fade);
+    sound.paused = false;
 }
 
 pub fn stop_quick(sound: &mut SoundHandle) {
-    let _ = sound.handle.stop(Tween {
-        duration: Duration::from_millis(10),
-        ..Default::default()
-    });
+    sound.sound.stop(0.0);
+    sound.paused = false;
 }
 
 pub fn pause(sound: &mut SoundHandle) {
-    sound.handle.pause(Tween {
-        duration: Duration::from_millis(50),
-        ..Default::default()
-    });
+    sound.sound.pause();
+    sound.paused = true;
 }
 
 pub fn resume(sound: &mut SoundHandle) {
-    sound.handle.resume(Tween {
-        duration: Duration::from_millis(50),
-        ..Default::default()
-    });
+    sound.sound.resume();
+    sound.paused = false;
 }
 
 pub fn position(sound: &SoundHandle) -> f64 {
-    sound.handle.position()
+    sound.sound.position_secs()
 }
 
 pub fn state(sound: &SoundHandle) -> PlaybackState {
-    sound.handle.state()
+    if sound.paused {
+        PlaybackState::Paused
+    } else if sound.sound.at_end() || !sound.sound.is_playing() {
+        PlaybackState::Stopped
+    } else {
+        PlaybackState::Playing
+    }
 }
 
-pub fn set_volume(sound: &mut SoundHandle, volume: Decibels) {
-    sound.handle.set_volume(volume, Tween {
-        duration: Duration::from_millis(50),
-        ..Default::default()
-    });
+pub fn set_volume(sound: &mut SoundHandle, volume: f32) {
+    sound.sound.set_volume(volume);
 }

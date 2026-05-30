@@ -8,14 +8,11 @@ pub mod transitions;
 pub mod util;
 
 use std::collections::HashMap;
-use kira::track::TrackBuilder;
-use kira::{AudioManager, AudioManagerSettings};
 
 use crate::models::{Track, TrackPlaybackState};
 use mixer::MuteState;
 use orchestrator::ManagedTrack;
-use sound::{PlayParams, SoundHandle};
-use util::amplitude_to_decibels;
+use sound::{PlayParams, PlaybackState, SoundHandle};
 
 const LIBRARY_TRACK_ID: &str = "__library";
 
@@ -26,7 +23,7 @@ const LOOP_CROSSFADE_SECS: f64 = 0.06;
 /// Info needed to restart a library sound at loop_start for crossfade looping.
 struct LibraryLoopInfo {
     file_path: String,
-    volume: kira::Decibels,
+    volume: f32,
     trim_start: Option<f64>,
     trim_end: Option<f64>,
     loop_region: Option<(f64, f64)>,
@@ -34,36 +31,39 @@ struct LibraryLoopInfo {
 }
 
 pub struct AudioEngine {
-    manager: AudioManager,
+    // Fields are declared so playing sounds / groups drop before the engine.
+    // Rust drops struct fields in declaration order; miniaudio requires the
+    // object graph torn down innermost-first (Sounds → Groups → Engine).
     tracks: HashMap<String, ManagedTrack>,
-    master_volume: f64,
-    mute_state: MuteState,
     library_sound: Option<SoundHandle>,
     library_loop_info: Option<LibraryLoopInfo>,
-    library_track_handle: kira::track::TrackHandle,
+    master_volume: f64,
+    mute_state: MuteState,
+    /// Sub-mix group for library preview playback.
+    library_group: ffi::Group,
+    /// Owns the whole audio graph; declared LAST so it outlives all groups/sounds.
+    engine: ffi::Engine,
 }
 
 impl AudioEngine {
     pub fn new() -> Result<Self, String> {
-        let mut manager = AudioManager::new(AudioManagerSettings::default())
-            .map_err(|e| format!("Failed to create audio manager: {}", e))?;
-        let library_track_handle = manager.add_sub_track(TrackBuilder::default())
-            .map_err(|e| format!("Failed to create library track: {}", e))?;
+        let engine = ffi::Engine::new()?;
+        let library_group = engine.create_group()?;
         Ok(Self {
-            manager,
             tracks: HashMap::new(),
-            master_volume: 1.0,
-            mute_state: MuteState::new(),
             library_sound: None,
             library_loop_info: None,
-            library_track_handle,
+            master_volume: 1.0,
+            mute_state: MuteState::new(),
+            library_group,
+            engine,
         })
     }
 
     // --- Track operations ---
 
     pub fn setup_track(&mut self, config: &Track) -> Result<(), String> {
-        orchestrator::setup_track(&mut self.manager, &mut self.tracks, config)
+        orchestrator::setup_track(&self.engine, &mut self.tracks, &self.mute_state, config)
     }
 
     pub fn update_track_config(&mut self, config: &Track) {
@@ -76,16 +76,16 @@ impl AudioEngine {
 
     pub fn play_track(&mut self, track_id: &str) -> Result<(), String> {
         self.stop_library_sound();
-        orchestrator::play_track(&mut self.tracks, &mut self.manager, track_id, self.master_volume, &self.mute_state)
+        orchestrator::play_track(&mut self.tracks, &self.engine, track_id, &self.mute_state)
     }
 
     pub fn play_track_clip(&mut self, track_id: &str, clip_id: &str) -> Result<(), String> {
         self.stop_library_sound();
-        orchestrator::play_track_clip(&mut self.tracks, &mut self.manager, track_id, clip_id, self.master_volume, &self.mute_state)
+        orchestrator::play_track_clip(&mut self.tracks, &self.engine, track_id, clip_id, &self.mute_state)
     }
 
     pub fn play_track_from(&mut self, track_id: &str, position: f64) -> Result<(), String> {
-        orchestrator::play_track_from(&mut self.tracks, &mut self.manager, track_id, position, self.master_volume, &self.mute_state)
+        orchestrator::play_track_from(&mut self.tracks, &self.engine, track_id, position, &self.mute_state)
     }
 
     pub fn pause_track(&mut self, track_id: &str) -> Result<(), String> {
@@ -120,6 +120,10 @@ impl AudioEngine {
     }
 
     // --- Volume ---
+    //
+    // Native miniaudio hierarchy: master = engine node, track = group node,
+    // clip = sound node. miniaudio multiplies them automatically, so there is
+    // no master×track×clip recompute / per-sound re-apply loop anymore.
 
     pub fn get_master_volume(&self) -> f64 {
         self.master_volume
@@ -127,51 +131,54 @@ impl AudioEngine {
 
     pub fn set_master_volume(&mut self, volume: f64) {
         self.master_volume = volume.clamp(0.0, 1.0);
-        let ids: Vec<String> = self.tracks.keys().cloned().collect();
-        for id in ids {
-            let vol = self.tracks.get(&id).map(|t| t.config.volume).unwrap_or(1.0);
-            orchestrator::set_track_volume(&mut self.tracks, &id, vol, self.master_volume, &self.mute_state);
-        }
-        // Update library sound volume too
-        if let Some(ref mut snd) = self.library_sound {
-            sound::set_volume(snd, amplitude_to_decibels(self.master_volume));
+        if !self.mute_state.master {
+            self.engine.set_master_volume(self.master_volume as f32);
         }
     }
 
     pub fn set_track_volume(&mut self, track_id: &str, volume: f64) -> Result<(), String> {
-        orchestrator::set_track_volume(&mut self.tracks, track_id, volume, self.master_volume, &self.mute_state);
+        orchestrator::set_track_volume(&mut self.tracks, track_id, volume, &self.mute_state);
         Ok(())
     }
 
     pub fn set_clip_volume(&mut self, clip_id: &str, volume: f64) -> Result<(), String> {
-        orchestrator::set_clip_volume(&mut self.tracks, clip_id, volume, self.master_volume, &self.mute_state);
+        orchestrator::set_clip_volume(&mut self.tracks, clip_id, volume, &self.mute_state);
         Ok(())
     }
 
     // --- Mute ---
+    //
+    // Mute sets the affected node's volume to 0; unmute restores the stored
+    // (intended) level. MuteState tracks intent for bookkeeping / snapshots.
 
     pub fn toggle_master_mute(&mut self) -> bool {
         self.mute_state.master = !self.mute_state.master;
-        self.refresh_all_volumes();
+        let vol = if self.mute_state.master { 0.0 } else { self.master_volume as f32 };
+        self.engine.set_master_volume(vol);
         self.mute_state.master
     }
 
     pub fn toggle_track_mute(&mut self, track_id: &str) -> bool {
         let new_state = !self.mute_state.tracks.get(track_id).copied().unwrap_or(false);
         self.mute_state.set_track_muted(track_id, new_state);
-        self.refresh_track_volume(track_id);
+        orchestrator::refresh_track_group_volume(&mut self.tracks, track_id, &self.mute_state);
         new_state
     }
 
     pub fn toggle_clip_mute(&mut self, clip_id: &str) -> bool {
         let new_state = !self.mute_state.clips.get(clip_id).copied().unwrap_or(false);
         self.mute_state.set_clip_muted(clip_id, new_state);
-        // Find which track owns this clip and refresh its volume
+        // Re-apply the owning track's currently-playing sound volume.
         let track_id = self.tracks.iter()
             .find(|(_, t)| t.config.clips.iter().any(|c| c.id == clip_id))
             .map(|(id, _)| id.clone());
         if let Some(tid) = track_id {
-            self.refresh_track_volume(&tid);
+            // set_clip_volume with the existing clip volume re-applies the sound node.
+            let cur = self.tracks.get(&tid)
+                .and_then(|t| t.config.clips.iter().find(|c| c.id == clip_id))
+                .map(|c| c.volume)
+                .unwrap_or(1.0);
+            orchestrator::set_clip_volume(&mut self.tracks, clip_id, cur, &self.mute_state);
         }
         new_state
     }
@@ -183,7 +190,7 @@ impl AudioEngine {
         let new_state = !all_muted;
         for id in track_ids {
             self.mute_state.set_track_muted(id, new_state);
-            self.refresh_track_volume(id);
+            orchestrator::refresh_track_group_volume(&mut self.tracks, id, &self.mute_state);
         }
         new_state
     }
@@ -204,7 +211,7 @@ impl AudioEngine {
             loop_region: params.loop_region,
             loop_start_position: ls,
         });
-        let snd = sound::play(&mut self.manager, &mut self.library_track_handle, params)?;
+        let snd = sound::play(&self.engine, &self.library_group, params)?;
         self.library_sound = Some(snd);
         self.library_loop_info = restart_info;
         Ok(())
@@ -232,8 +239,8 @@ impl AudioEngine {
             let st = sound::state(snd);
             states.push(TrackPlaybackState {
                 track_id: LIBRARY_TRACK_ID.to_string(),
-                is_playing: matches!(st, kira::sound::PlaybackState::Playing | kira::sound::PlaybackState::Resuming),
-                is_paused: matches!(st, kira::sound::PlaybackState::Paused | kira::sound::PlaybackState::Pausing),
+                is_playing: matches!(st, PlaybackState::Playing),
+                is_paused: matches!(st, PlaybackState::Paused),
                 current_clip_id: None,
                 current_time: sound::position(snd),
             });
@@ -253,7 +260,7 @@ impl AudioEngine {
             .collect();
 
         for id in &track_ids {
-            orchestrator::poll_track(&mut self.tracks, &mut self.manager, id, self.master_volume, &self.mute_state, &mut missing_entries, &mut found_entries);
+            orchestrator::poll_track(&mut self.tracks, &self.engine, id, &self.mute_state, &mut missing_entries, &mut found_entries);
         }
 
         let mut states: Vec<TrackPlaybackState> = self.tracks.values()
@@ -267,7 +274,7 @@ impl AudioEngine {
         if let Some(ref mut snd) = self.library_sound {
             let st = sound::state(snd);
             let pos = sound::position(snd);
-            let is_playing = matches!(st, kira::sound::PlaybackState::Playing | kira::sound::PlaybackState::Resuming);
+            let is_playing = matches!(st, PlaybackState::Playing);
 
             if is_playing {
                 if let Some((_ls, le)) = snd.loop_region {
@@ -298,7 +305,7 @@ impl AudioEngine {
                     fade_in: Some(LOOP_CROSSFADE_SECS),
                     fade_out: None,
                 };
-                match sound::play(&mut self.manager, &mut self.library_track_handle, params) {
+                match sound::play(&self.engine, &self.library_group, params) {
                     Ok(new_snd) => { self.library_sound = Some(new_snd); }
                     Err(_) => { self.library_sound = None; self.library_loop_info = None; }
                 }
@@ -315,8 +322,8 @@ impl AudioEngine {
                 let st = sound::state(snd);
                 TrackPlaybackState {
                     track_id: LIBRARY_TRACK_ID.to_string(),
-                    is_playing: matches!(st, kira::sound::PlaybackState::Playing | kira::sound::PlaybackState::Resuming),
-                    is_paused: matches!(st, kira::sound::PlaybackState::Paused | kira::sound::PlaybackState::Pausing),
+                    is_playing: matches!(st, PlaybackState::Playing),
+                    is_paused: matches!(st, PlaybackState::Paused),
                     current_clip_id: None,
                     current_time: sound::position(snd),
                 }
@@ -332,21 +339,5 @@ impl AudioEngine {
         states.push(lib_state);
 
         (states, missing_entries, found_entries)
-    }
-
-    // --- Internal ---
-
-    fn refresh_all_volumes(&mut self) {
-        let ids: Vec<String> = self.tracks.keys().cloned().collect();
-        for id in ids {
-            self.refresh_track_volume(&id);
-        }
-    }
-
-    pub(crate) fn refresh_track_volume(&mut self, track_id: &str) {
-        if let Some(track) = self.tracks.get(track_id) {
-            let vol = track.config.volume;
-            orchestrator::set_track_volume(&mut self.tracks, track_id, vol, self.master_volume, &self.mute_state);
-        }
     }
 }
