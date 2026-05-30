@@ -1,51 +1,24 @@
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 use rand::Rng;
 use crate::models::{Track, TrackMode, TrackPlaybackState};
 use super::ffi;
-use super::sound::{self, SoundHandle, PlayParams, PlaybackState};
+use super::sound::{PlayParams, PlaybackState};
 use super::mixer::{self, MuteState};
 use super::transitions::{TransitionManager, TransitionAction};
-
-/// Must match LOOP_CROSSFADE_SECS in mod.rs.
-const LOOP_CROSSFADE_SECS: f64 = 0.06;
+use super::voice::Voice;
 
 pub struct ManagedTrack {
-    pub group: ffi::Group,
+    /// Single-sound playback for this track: owns the sub-mix group, the current
+    /// clip's sound, the de-click fade-out reaper, and the seamless-loop
+    /// crossfade. The multi-clip sequencing (which/when) lives in this module +
+    /// `TransitionManager`; the actual play/stop/loop/reap is delegated to the
+    /// Voice. Declared before any field that must outlive it (none here; the
+    /// engine lives in `AudioEngine`).
+    pub voice: Voice,
     pub config: Track,
-    pub current_sound: Option<SoundHandle>,
-    /// De-click holding area for sounds that have been stopped/replaced on this
-    /// track. We request a fade-out, then park the handle here until the fade
-    /// finishes so it keeps mixing through the ramp; dropping it immediately
-    /// runs `ma_sound_uninit` mid-fade → hard cut → click. Reaped in
-    /// `poll_track`. Declared adjacent to `current_sound` so parked sounds share
-    /// its teardown ordering relative to `group`.
-    pub fading_out: Vec<(SoundHandle, Instant)>,
     pub current_clip_index: Option<usize>,
     pub is_paused: bool,
     pub transitions: TransitionManager,
-}
-
-impl ManagedTrack {
-    /// Deferred destruction: request a fade-out then park the handle until the
-    /// ramp completes. The reaper in `poll_track` drops it afterwards.
-    fn retire(&mut self, mut snd: SoundHandle, fade_secs: f64) {
-        let fade = fade_secs.max(0.01);
-        sound::stop(&mut snd, Some(Duration::from_secs_f64(fade)));
-        self.fading_out.push((snd, Instant::now() + Duration::from_secs_f64(fade + 0.05)));
-    }
-
-    /// Park an already-stopped handle (its fade was requested elsewhere, e.g.
-    /// the seamless-loop crossfade) so it isn't dropped mid-fade.
-    fn park(&mut self, snd: SoundHandle, fade_secs: f64) {
-        self.fading_out.push((snd, Instant::now() + Duration::from_secs_f64(fade_secs.max(0.01) + 0.05)));
-    }
-
-    /// Drop parked sounds whose fade-out has completed.
-    fn reap_fading(&mut self) {
-        let now = Instant::now();
-        self.fading_out.retain(|(_, deadline)| now < *deadline);
-    }
 }
 
 pub fn setup_track(
@@ -59,19 +32,18 @@ pub fn setup_track(
         return Ok(());
     }
 
-    let group = engine
-        .create_group()
+    // Tracks anchor their seamless-loop restart to the engine clock (sample
+    // accurate), unlike the library preview.
+    let voice = Voice::with_anchor(engine, true)
         .map_err(|e| format!("Failed to create sub-track: {}", e))?;
-    group.set_volume(mixer::track_group_volume(
+    voice.set_group_volume(mixer::track_group_volume(
         config.volume,
         mute_state.track_muted(&config.id),
     ));
 
     tracks.insert(config.id.clone(), ManagedTrack {
-        group,
+        voice,
         config: config.clone(),
-        current_sound: None,
-        fading_out: Vec::new(),
         current_clip_index: None,
         is_paused: false,
         transitions: TransitionManager::new(),
@@ -144,18 +116,14 @@ pub fn pause_track(tracks: &mut HashMap<String, ManagedTrack>, track_id: &str) -
     };
     track.is_paused = true;
     track.transitions.reset();
-    if let Some(ref mut snd) = track.current_sound {
-        sound::pause(snd);
-    }
+    track.voice.pause();
     Ok(())
 }
 
 pub fn resume_track(tracks: &mut HashMap<String, ManagedTrack>, track_id: &str) -> Result<(), String> {
     let track = tracks.get_mut(track_id).ok_or_else(|| format!("Track not found: {}", track_id))?;
     track.is_paused = false;
-    if let Some(ref mut snd) = track.current_sound {
-        sound::resume(snd);
-    }
+    track.voice.resume();
     Ok(())
 }
 
@@ -169,11 +137,9 @@ pub fn stop_track(tracks: &mut HashMap<String, ManagedTrack>, track_id: &str) ->
     track.transitions.reset();
     // Deferred destruction: fade the sound out and park it until the ramp
     // completes, instead of dropping it immediately (which would uninit it
-    // mid-fade → click). The reaper in `poll_track` drops it after the fade.
-    if let Some(snd) = track.current_sound.take() {
-        let fade = if track.config.fade_out > 0.0 { track.config.fade_out } else { 0.02 };
-        track.retire(snd, fade);
-    }
+    // mid-fade → click). The Voice's reaper (in `poll_track`) drops it after.
+    let fade = if track.config.fade_out > 0.0 { Some(track.config.fade_out) } else { Some(0.02) };
+    track.voice.stop(fade);
     Ok(())
 }
 
@@ -189,9 +155,10 @@ pub fn pause_all(tracks: &mut HashMap<String, ManagedTrack>) {
     for id in ids {
         let is_playing = tracks.get(&id).map(|t| {
             if t.is_paused { return false; }
-            match &t.current_sound {
-                Some(snd) => matches!(sound::state(snd), PlaybackState::Playing),
-                None => t.transitions.has_pending(),
+            if t.voice.has_current() {
+                matches!(t.voice.state(), PlaybackState::Playing)
+            } else {
+                t.transitions.has_pending()
             }
         }).unwrap_or(false);
         if is_playing {
@@ -220,7 +187,7 @@ pub fn set_track_volume(
 ) {
     if let Some(track) = tracks.get_mut(track_id) {
         track.config.volume = volume.clamp(0.0, 1.0);
-        track.group.set_volume(mixer::track_group_volume(
+        track.voice.set_group_volume(mixer::track_group_volume(
             track.config.volume,
             mute_state.track_muted(track_id),
         ));
@@ -236,7 +203,7 @@ pub fn refresh_track_group_volume(
 ) {
     if let Some(track) = tracks.get(track_id) {
         let vol = mixer::track_group_volume(track.config.volume, mute_state.track_muted(track_id));
-        track.group.set_volume(vol);
+        track.voice.set_group_volume(vol);
     }
 }
 
@@ -275,7 +242,7 @@ pub fn poll_track(
     // Reap any parked sounds whose fade-out has completed. Done first so it runs
     // every tick regardless of which transition branch returns early below.
     if let Some(track) = tracks.get_mut(track_id) {
-        track.reap_fading();
+        track.voice.reap();
     }
 
     // Gather state for transition check
@@ -284,31 +251,43 @@ pub fn poll_track(
             Some(t) => t,
             None => return,
         };
-        let (pos, playing, stopped) = match &track.current_sound {
-            Some(snd) => {
-                let st = sound::state(snd);
-                (sound::position(snd),
-                 matches!(st, PlaybackState::Playing),
-                 matches!(st, PlaybackState::Stopped))
-            }
-            None => (0.0, false, false),
+        let (pos, playing, stopped) = if track.voice.has_current() {
+            let st = track.voice.state();
+            (track.voice.position(),
+             matches!(st, PlaybackState::Playing),
+             matches!(st, PlaybackState::Stopped))
+        } else {
+            (0.0, false, false)
         };
-        let dur = track.current_sound.as_ref().and_then(|s| s.duration);
-        let start = track.current_sound.as_ref().and_then(|s| s.start_position);
+        let dur = track.voice.duration();
+        let start = track.voice.start_position();
         (pos, dur, start, track.config.mode.clone(), track.current_clip_index, track.config.clips.len(), track.is_paused, playing, stopped)
     };
 
-    // Handle seamless loop crossfade before checking transitions.
-    if sound_playing && !is_paused {
-        let needs_loop = {
-            let track = match tracks.get(track_id) { Some(t) => t, None => return };
-            match &track.current_sound {
-                Some(snd) => matches!(snd.loop_region, Some((_, le)) if position >= le - LOOP_CROSSFADE_SECS),
-                None => false,
-            }
+    // Handle the seamless loop crossfade before checking transitions. The Voice
+    // performs the crossfade (anchored restart + park the outgoing) when within
+    // the crossfade window; tracks gate it on `!is_paused` and never stop a
+    // non-looping sound at trim_end here (the transition state machine does).
+    {
+        let looped = {
+            let track = match tracks.get_mut(track_id) { Some(t) => t, None => return };
+            matches!(
+                track.voice.poll_loop(engine, sound_playing && !is_paused, false),
+                super::voice::PollResult::Looped
+            )
         };
-        if needs_loop {
-            schedule_loop_restart(tracks, engine, track_id, position, mute_state, missing_entries, found_entries);
+        if looped {
+            // Report the restarted clip's library entry, or a missing file, the
+            // same way the old `schedule_loop_restart` did.
+            if let Some(track) = tracks.get(track_id) {
+                if let Some(clip) = track.current_clip_index.and_then(|idx| track.config.clips.get(idx)) {
+                    if track.voice.has_current() {
+                        found_entries.push(clip.library_entry_id.clone());
+                    } else if !std::path::Path::new(&clip.file_path).exists() {
+                        missing_entries.push(clip.library_entry_id.clone());
+                    }
+                }
+            }
             return;
         }
     }
@@ -327,8 +306,10 @@ pub fn poll_track(
     match action {
         TransitionAction::StartCrossfade { next_clip_index, duration } => {
             if let Some(track) = tracks.get_mut(track_id) {
-                let old_sound = track.current_sound.take();
-                if let Some(old) = old_sound {
+                // Hand the outgoing sound to the clip-crossfade transition (which
+                // owns its own outgoing fade + cleanup). `take_current` removes it
+                // without stopping so the transition can fade it.
+                if let Some(old) = track.voice.take_current() {
                     track.transitions.begin_crossfade(old, duration);
                 }
             }
@@ -373,7 +354,7 @@ pub fn poll_track(
         }
         TransitionAction::ScheduleGap { next_clip_index, delay_seconds } => {
             if let Some(track) = tracks.get_mut(track_id) {
-                track.current_sound = None;
+                track.voice.clear_current();
                 track.transitions.schedule_gap(next_clip_index, delay_seconds);
             }
         }
@@ -412,12 +393,11 @@ pub fn poll_track(
 }
 
 pub fn get_playback_state(track: &ManagedTrack) -> TrackPlaybackState {
-    let (is_playing, is_paused_state, current_time) = match &track.current_sound {
-        Some(snd) => {
-            let st = sound::state(snd);
-            (matches!(st, PlaybackState::Playing), matches!(st, PlaybackState::Paused), sound::position(snd))
-        }
-        None => (track.transitions.has_pending(), track.is_paused, 0.0),
+    let (is_playing, is_paused_state, current_time) = if track.voice.has_current() {
+        let st = track.voice.state();
+        (matches!(st, PlaybackState::Playing), matches!(st, PlaybackState::Paused), track.voice.position())
+    } else {
+        (track.transitions.has_pending(), track.is_paused, 0.0)
     };
 
     let current_clip_id = track.current_clip_index
@@ -435,98 +415,6 @@ pub fn get_playback_state(track: &ManagedTrack) -> TrackPlaybackState {
 
 // --- Internal helpers ---
 
-/// Sample-accurate seamless loop restart: create the next loop instance and
-/// schedule it to begin at the START of the crossfade window (engine clock +
-/// lead) with a fade-in, while the outgoing sound fades out over the same
-/// window. The two overlap across LOOP_CROSSFADE_SECS so they sum smoothly
-/// through the loop point (no butt-join seam / pop).
-fn schedule_loop_restart(
-    tracks: &mut HashMap<String, ManagedTrack>,
-    engine: &ffi::Engine,
-    track_id: &str,
-    position: f64,
-    mute_state: &MuteState,
-    missing_entries: &mut Vec<String>,
-    found_entries: &mut Vec<String>,
-) {
-    let track = match tracks.get_mut(track_id) {
-        Some(t) => t,
-        None => return,
-    };
-
-    let (loop_region, clip_idx) = match (&track.current_sound, track.current_clip_index) {
-        (Some(snd), Some(idx)) => (snd.loop_region, idx),
-        _ => return,
-    };
-    let (ls, le) = match loop_region {
-        Some(r) => r,
-        None => return,
-    };
-
-    let clip = match track.config.clips.get(clip_idx) {
-        Some(c) => c.clone(),
-        None => return,
-    };
-
-    // Seamless crossfade: the incoming loop instance must OVERLAP the outgoing
-    // one across the whole crossfade window — not butt-join at the loop point.
-    //
-    // We are triggered at `position >= le - LOOP_CROSSFADE_SECS`, i.e. at (or a
-    // hair into) the start of the crossfade window. The incoming instance is
-    // scheduled to start at that window-start and fades IN over
-    // LOOP_CROSSFADE_SECS, while the outgoing instance fades OUT over the same
-    // window. Both are audible together for the whole crossfade, so the signals
-    // sum smoothly through the loop point with no zero-crossing seam.
-    //
-    // The PREVIOUS code scheduled the incoming at `le` (lead = le - position),
-    // i.e. only AFTER the outgoing had already faded to silence at `le`. That
-    // left an instantaneous level dip / discontinuity at the boundary — the
-    // residual pop. Anchoring the incoming to the window START fixes it.
-    //
-    // Lead is measured in ENGINE frames (the device clock schedule_start_frame
-    // uses), not the file rate. It is ~0 here (clamped so we never schedule in
-    // the past), but computing it explicitly keeps the start sample-accurate and
-    // robust to small poll-timing jitter.
-    let seconds_until_window_start = (le - LOOP_CROSSFADE_SECS - position).max(0.0);
-    let lead = (seconds_until_window_start * engine.sample_rate() as f64) as u64;
-    let start_frame = engine.time_frames() + lead;
-
-    let volume = mixer::clip_sound_volume(clip.volume, clip.library_volume, mute_state.clip_muted(&clip.id));
-
-    // Fade the outgoing instance OUT over the crossfade window (do NOT stop it
-    // abruptly) so it overlaps the incoming fade-in. Take it out of
-    // `current_sound` and park it so the upcoming `current_sound = Some(new)`
-    // doesn't drop (uninit) it mid-fade — that drop was the residual loop pop.
-    if let Some(mut snd) = track.current_sound.take() {
-        sound::stop(&mut snd, Some(Duration::from_secs_f64(LOOP_CROSSFADE_SECS)));
-        track.park(snd, LOOP_CROSSFADE_SECS);
-    }
-
-    let params = PlayParams {
-        file_path: clip.file_path.clone(),
-        start_position: ls,
-        volume,
-        trim_start: clip.trim_start,
-        trim_end: clip.trim_end,
-        loop_region,
-        fade_in: Some(LOOP_CROSSFADE_SECS),
-        fade_out: None,
-    };
-
-    match sound::play(engine, &track.group, params) {
-        Ok(new_snd) => {
-            new_snd.sound.schedule_start_frame(start_frame);
-            track.current_sound = Some(new_snd);
-            found_entries.push(clip.library_entry_id.clone());
-        }
-        Err(_) => {
-            if !std::path::Path::new(&clip.file_path).exists() {
-                missing_entries.push(clip.library_entry_id.clone());
-            }
-        }
-    }
-}
-
 fn start_clip(
     tracks: &mut HashMap<String, ManagedTrack>,
     engine: &ffi::Engine,
@@ -539,11 +427,6 @@ fn start_clip(
     let track = tracks.get_mut(track_id).ok_or_else(|| format!("Track not found: {}", track_id))?;
     let clip = track.config.clips.get(clip_index)
         .ok_or_else(|| format!("Clip index {} out of range", clip_index))?.clone();
-
-    // Stop current sound
-    if let Some(ref mut snd) = track.current_sound {
-        sound::stop_quick(snd);
-    }
 
     // Clip-level (sound node) volume. Track/master gain come from group/engine nodes.
     let volume = mixer::clip_sound_volume(clip.volume, clip.library_volume, mute_state.clip_muted(&clip.id));
@@ -583,8 +466,7 @@ fn start_clip(
         fade_out: if track.config.fade_out > 0.0 { Some(track.config.fade_out) } else { None },
     };
 
-    let snd = sound::play(engine, &track.group, params)?;
-    track.current_sound = Some(snd);
+    track.voice.play(engine, params)?;
     track.current_clip_index = Some(clip_index);
     track.transitions.clip_started();
     track.is_paused = false;
@@ -618,9 +500,6 @@ fn refresh_current_sound_volume(
             .unwrap_or((1.0, 1.0, String::new()));
 
         let vol = mixer::clip_sound_volume(clip_vol, lib_vol, mute_state.clip_muted(&clip_id));
-
-        if let Some(ref mut snd) = track.current_sound {
-            sound::set_volume(snd, vol);
-        }
+        track.voice.set_volume(vol);
     }
 }
