@@ -6,7 +6,18 @@ A soundscape and ambient audio manager for tabletop RPGs, live performances, and
 
 ### Install
 
-Download and run the installer from the [Releases](../../releases) page.
+Grab the latest build from the [Releases](../../releases) page. Each release ships in two
+forms:
+
+- **Installer** — `LuteDrop_<version>_x64-setup.exe` (NSIS) or `LuteDrop_<version>_x64_en-US.msi`.
+  Installs to Program Files with Start-menu shortcuts.
+- **Portable** — `lutedrop.7z` (recommended) or the bare `lutedrop.exe`. No install; unzip and
+  run `lutedrop.exe`. Use the **`.7z`**, not the bare exe, if you want the phone remote: the
+  archive includes the `dist-remote/` folder the exe needs beside it. The bare `lutedrop.exe`
+  runs the desktop app fine on its own.
+
+Either way you need the **Microsoft Edge WebView2 Runtime** (preinstalled on Windows 11; the
+installer fetches it automatically, the portable build assumes it's present).
 
 ### Import Audio
 
@@ -166,9 +177,24 @@ src-tauri/target/release/bundle/
   msi/LuteDrop_<version>_x64_en-US.msi    # MSI installer
 ```
 
-Bump the version in `src-tauri/tauri.conf.json` (and `package.json`) before building a new
-release. To publish, attach the installer from `bundle/nsis/` to a GitHub
-[Release](../../releases).
+Bump the version in `src-tauri/tauri.conf.json`, `package.json`, and `src-tauri/Cargo.toml`
+before building a new release.
+
+### Portable build
+
+For a no-install **portable** download, package the standalone binary with the remote web
+assets it expects beside it:
+
+```sh
+mkdir portable
+cp src-tauri/target/release/lutedrop.exe portable/
+cp -r dist-remote portable/dist-remote      # so the phone remote works
+cd portable && 7z a -mx=9 lutedrop.7z lutedrop.exe dist-remote
+```
+
+`lutedrop.exe` runs the desktop app by itself; the `dist-remote/` folder beside it enables the
+port-3333 phone remote. Attach `lutedrop.7z` (and optionally the bare `lutedrop.exe`) to the
+GitHub [Release](../../releases) alongside the installers.
 
 ### Audio engine
 
