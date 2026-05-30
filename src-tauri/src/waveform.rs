@@ -8,13 +8,6 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::SystemTime;
 
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::DecoderOptions;
-use symphonia::core::formats::FormatOptions;
-use symphonia::core::io::MediaSourceStream;
-use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
-
 /// How many raw audio samples are condensed into one peak value.
 /// 256 is the Audacity/DAW standard — good balance of resolution vs file size.
 const SAMPLES_PER_PEAK: u32 = 256;
@@ -26,7 +19,7 @@ const MAGIC: &[u8; 4] = b"LDPK";
 const FORMAT_VERSION: u8 = 1;
 
 /// Accumulates absolute mono sample values into peak buckets of
-/// `SAMPLES_PER_PEAK` samples each. Shared by the symphonia and opus decode paths.
+/// `SAMPLES_PER_PEAK` samples each.
 struct PeakAccumulator {
     peaks: Vec<f32>,
     current_peak: f32,
@@ -255,97 +248,29 @@ fn read_cache(audio_path: &Path, cache_dir: &Path) -> Option<CachedPeaks> {
 /// Decode the entire audio file and generate the peak cache.
 /// Writes the .peaks file to cache_dir and returns the CachedPeaks.
 fn generate_cache(audio_path: &Path, cache_dir: &Path) -> Result<CachedPeaks, String> {
-    // Resolve to a symphonia-decodable path (opus -> cached WAV); other formats
-    // resolve to themselves. The .peaks cache stays keyed by the original path.
-    let playable = crate::audio::cache::resolve(audio_path)?;
+    // Decode the whole file (any miniaudio-supported format incl. .opus) to
+    // interleaved f32 via the shim. The .peaks cache stays keyed by the original path.
+    let path_str = audio_path
+        .to_str()
+        .ok_or_else(|| format!("Non-UTF8 path: {}", audio_path.display()))?;
+    let decoded = crate::audio::ffi::decode_file(path_str)?;
 
-    let file = File::open(&playable)
-        .map_err(|e| format!("Failed to open file: {}", e))?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-
-    let mut hint = Hint::new();
-    if let Some(ext) = playable.extension().and_then(|e| e.to_str()) {
-        hint.with_extension(ext);
-    }
-
-    let probed = symphonia::default::get_probe()
-        .format(
-            &hint,
-            mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-        )
-        .map_err(|e| format!("Failed to probe audio format: {}", e))?;
-
-    let mut format_reader = probed.format;
-
-    let track = format_reader
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
-        .ok_or_else(|| "No audio track found".to_string())?;
-
-    let track_id = track.id;
-    let codec_params = track.codec_params.clone();
-
-    let sample_rate = codec_params
-        .sample_rate
-        .ok_or_else(|| "Unknown sample rate".to_string())?;
-
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&codec_params, &DecoderOptions::default())
-        .map_err(|e| format!("Failed to create decoder: {}", e))?;
+    let channels = decoded.channels.max(1) as usize;
+    let sample_rate = decoded.sample_rate;
 
     let mut acc = PeakAccumulator::new();
 
-    loop {
-        let packet = match format_reader.next_packet() {
-            Ok(packet) => packet,
-            Err(symphonia::core::errors::Error::IoError(ref e))
-                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                break;
-            }
-            Err(symphonia::core::errors::Error::ResetRequired) => break,
-            Err(e) => return Err(format!("Error reading packet: {}", e)),
-        };
-
-        if packet.track_id() != track_id {
-            continue;
-        }
-
-        let decoded = match decoder.decode(&packet) {
-            Ok(buf) => buf,
-            Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
-            Err(e) => return Err(format!("Decode error: {}", e)),
-        };
-
-        let spec = *decoded.spec();
-        let num_frames = decoded.frames();
-        let num_channels = spec.channels.count();
-
-        if num_frames == 0 || num_channels == 0 {
-            continue;
-        }
-
-        let mut sample_buf = SampleBuffer::<f32>::new(num_frames as u64, spec);
-        sample_buf.copy_interleaved_ref(decoded);
-        let samples = sample_buf.samples();
-
-        for frame_idx in 0..num_frames {
-            let mut mono_sum: f32 = 0.0;
-            for ch in 0..num_channels {
-                mono_sum += samples[frame_idx * num_channels + ch];
-            }
-            acc.push(mono_sum / num_channels as f32);
-        }
+    // Mix each frame to mono: average the per-channel samples.
+    for frame in decoded.samples.chunks_exact(channels) {
+        let mono_sum: f32 = frame.iter().sum();
+        acc.push(mono_sum / channels as f32);
     }
 
-    let (peaks, total_samples) = acc.finish();
+    let (peaks, _acc_total) = acc.finish();
     let cached = CachedPeaks {
         sample_rate,
         samples_per_peak: SAMPLES_PER_PEAK,
-        total_samples,
+        total_samples: decoded.frames,
         peaks,
     };
 

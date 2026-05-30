@@ -454,7 +454,6 @@ pub fn delete_library_entry_action(
 
     if let Some(fp) = file_path {
         let p = std::path::Path::new(&fp);
-        crate::audio::cache::evict(p);
         container.peak_cache.evict(p);
     }
 
@@ -462,11 +461,10 @@ pub fn delete_library_entry_action(
     load_state(container)
 }
 
-/// Removes cache files (transcode WAVs + peak data) no longer referenced by any
-/// library entry. Called once at startup to reclaim disk.
+/// Removes peak cache files no longer referenced by any library entry.
+/// Called once at startup to reclaim disk.
 pub fn gc_caches(container: &AppStateContainer) {
     let paths = with_db(container, |conn| library::get_all_file_paths(conn)).unwrap_or_default();
-    crate::audio::cache::gc(&paths);
     container.peak_cache.gc(&paths);
 }
 
@@ -686,11 +684,10 @@ pub fn relocate_library_entry(
         Ok(())
     })?;
 
-    // Evict old caches (in-memory + disk .peaks file, and any transcode WAV)
+    // Evict old peak caches (in-memory + disk .peaks file)
     if old_file_path != new_file_path {
         let old = std::path::Path::new(&old_file_path);
         container.peak_cache.evict(old);
-        crate::audio::cache::evict(old);
     }
 
     if std::path::Path::new(&new_file_path).exists() {
@@ -892,7 +889,8 @@ pub fn play_library_sound(
     // File exists — clear stale missing state if any
     container.mark_entry_found(entry_id);
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
-    let vol = crate::audio::util::amplitude_to_decibels(audio.get_master_volume() * volume);
+    // Volume is linear now; master is applied by the engine node automatically.
+    let vol = volume.clamp(0.0, 1.0) as f32;
     let loop_region = match (loop_start, loop_end) {
         (Some(ls), Some(le)) if le > ls => Some((ls, le)),
         (None, Some(le)) if le > 0.0 => Some((0.0, le)),

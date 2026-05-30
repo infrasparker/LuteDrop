@@ -6,7 +6,18 @@ A soundscape and ambient audio manager for tabletop RPGs, live performances, and
 
 ### Install
 
-Download and run the installer from the [Releases](../../releases) page.
+Grab the latest build from the [Releases](../../releases) page. Each release ships in two
+forms:
+
+- **Installer** — `LuteDrop_<version>_x64-setup.exe` (NSIS) or `LuteDrop_<version>_x64_en-US.msi`.
+  Installs to Program Files with Start-menu shortcuts.
+- **Portable** — `lutedrop.7z` (recommended) or the bare `lutedrop.exe`. No install; unzip and
+  run `lutedrop.exe`. Use the **`.7z`**, not the bare exe, if you want the phone remote: the
+  archive includes the `dist-remote/` folder the exe needs beside it. The bare `lutedrop.exe`
+  runs the desktop app fine on its own.
+
+Either way you need the **Microsoft Edge WebView2 Runtime** (preinstalled on Windows 11; the
+installer fetches it automatically, the portable build assumes it's present).
 
 ### Import Audio
 
@@ -110,8 +121,19 @@ LuteDrop is a [Tauri 2](https://tauri.app) app: a Vue 3 + Vite frontend with a R
 - **Visual Studio C++ Build Tools** — the MSVC compiler/linker + Windows SDK that the
   Rust `msvc` toolchain links against. Install the "Desktop development with C++" workload
   (e.g. `winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"`).
-- **CMake** (`winget install Kitware.CMake`) — required to build **libopus** from source for
-  Opus (`.opus`) playback support. Must be on `PATH`.
+- **The Opus C libraries** (libogg / libopus / opusfile). The audio engine is
+  [miniaudio](https://miniaud.io) (vendored in `src-tauri/vendor/`); its `ma_libopus`
+  decoding backend links the xiph Opus stack **statically**. Get them via
+  [vcpkg](https://github.com/microsoft/vcpkg):
+  ```sh
+  git clone https://github.com/microsoft/vcpkg
+  vcpkg\bootstrap-vcpkg.bat
+  vcpkg\vcpkg install opusfile:x64-windows-static
+  ```
+  `src-tauri/build.rs` links these from the `x64-windows-static` triplet — it currently
+  expects vcpkg at `C:\Users\<you>\vcpkg`; adjust the path in `build.rs` if yours differs.
+- **CMake** (`winget install Kitware.CMake`) — only used *by vcpkg* to build the Opus libs
+  above; the app itself compiles its C shim with the `cc` crate (no CMake at app build time).
 
 ### Setup
 
@@ -155,15 +177,35 @@ src-tauri/target/release/bundle/
   msi/LuteDrop_<version>_x64_en-US.msi    # MSI installer
 ```
 
-Bump the version in `src-tauri/tauri.conf.json` (and `package.json`) before building a new
-release. To publish, attach the installer from `bundle/nsis/` to a GitHub
-[Release](../../releases).
+Bump the version in `src-tauri/tauri.conf.json`, `package.json`, and `src-tauri/Cargo.toml`
+before building a new release.
 
-### Audio format notes
+### Portable build
 
-Most formats (mp3, wav, ogg, flac, aac, m4a, wma) are streamed directly via Symphonia.
-Symphonia has no Opus decoder, so `.opus` files are transcoded once to a 16-bit WAV in a
-local cache (`%APPDATA%/com.lutedrop/audio-cache/`) using libopus, then streamed like any
-other file. The cache is lazy, size-capped (LRU), and garbage-collected on startup; the
-original `.opus` remains the only source of truth. This is why CMake/libopus is a build
-requirement.
+For a no-install **portable** download, package the standalone binary with the remote web
+assets it expects beside it:
+
+```sh
+mkdir portable
+cp src-tauri/target/release/lutedrop.exe portable/
+cp -r dist-remote portable/dist-remote      # so the phone remote works
+cd portable && 7z a -mx=9 lutedrop.7z lutedrop.exe dist-remote
+```
+
+`lutedrop.exe` runs the desktop app by itself; the `dist-remote/` folder beside it enables the
+port-3333 phone remote. Attach `lutedrop.7z` (and optionally the bare `lutedrop.exe`) to the
+GitHub [Release](../../releases) alongside the installers.
+
+### Audio engine
+
+Playback and mixing are handled by [miniaudio](https://miniaud.io) (vendored, called through
+a small C shim in `src-tauri/vendor/` plus `src-tauri/src/audio/ffi.rs`). Every supported
+format — mp3, wav, ogg, flac, aac, m4a, wma, **and opus** — is **streamed directly from
+disk**: no whole-file decode, no transcoding, no cache. Opus is decoded by miniaudio's
+`ma_libopus` backend (xiph libogg/libopus/opusfile, linked statically). Waveform peaks and
+durations come from the same miniaudio decoder. Files on disk are never modified or
+duplicated, so a library can be shared with other tools (e.g. Navidrome) without conflict.
+
+The mixer maps directly onto miniaudio's node hierarchy: master volume on the engine,
+per-track volume on a sound group, per-clip volume on the sound, and mute by zeroing the
+relevant node. Seamless loops use miniaudio's sample-accurate scheduling for crossfades.
