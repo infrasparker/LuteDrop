@@ -34,7 +34,11 @@ pub fn run() {
                 app_data.join("lutedrop.db")
             };
             // Peak cache directory lives inside the app data folder
-            let peak_cache_dir = db_path.parent().unwrap_or(db_path.as_ref()).join("peaks");
+            let app_data_dir = db_path.parent().unwrap_or(db_path.as_ref()).to_path_buf();
+            let peak_cache_dir = app_data_dir.join("peaks");
+
+            // Transcode cache (opus -> WAV) for formats kira can't stream directly.
+            audio::cache::init(app_data_dir.join("audio-cache"));
 
             // Open (or create) the SQLite database
             let conn = database::open_db(&db_path)
@@ -53,6 +57,10 @@ pub fn run() {
 
             // Scan for missing files before sharing state with frontend
             actions::scan_missing_files(&container);
+
+            // Reclaim disk from cache files no longer referenced by the library
+            // (deleted/relocated entries, stale transcodes).
+            actions::gc_caches(&container);
 
             // Give the container the app handle so it can emit events
             container.set_app_handle(app.handle().clone());

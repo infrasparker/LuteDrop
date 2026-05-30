@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod mixer;
 pub mod opus_decode;
 pub mod orchestrator;

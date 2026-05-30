@@ -25,11 +25,7 @@ pub fn probe_duration(path: &str) -> Option<f64> {
         .map(|e| e.eq_ignore_ascii_case("opus"))
         .unwrap_or(false)
     {
-        let decoded = crate::audio::opus_decode::decode_opus(std::path::Path::new(path)).ok()?;
-        if decoded.sample_rate == 0 {
-            return None;
-        }
-        return Some(decoded.frames.len() as f64 / decoded.sample_rate as f64);
+        return crate::audio::opus_decode::opus_duration_secs(std::path::Path::new(path));
     }
 
     use symphonia::core::formats::FormatOptions;

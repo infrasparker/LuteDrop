@@ -128,6 +128,37 @@ pub fn decode_opus(path: &Path) -> Result<DecodedAudio, String> {
     Ok(DecodedAudio { frames, sample_rate: OPUS_SAMPLE_RATE })
 }
 
+/// Duration of an Ogg-Opus file in seconds, read from the final page's granule
+/// position — no decoding required. Opus granules are counted at 48 kHz and
+/// include the encoder pre-skip, which is subtracted out.
+pub fn opus_duration_secs(path: &Path) -> Option<f64> {
+    let data = std::fs::read(path).ok()?;
+    let mut pre_skip: i64 = 0;
+    let mut last_granule: i64 = 0;
+    let mut idx = 0;
+    while let Some(rel) = data[idx..].windows(4).position(|w| w == b"OggS") {
+        let p = idx + rel;
+        if p + 14 > data.len() {
+            break;
+        }
+        let granule = i64::from_le_bytes(data[p + 6..p + 14].try_into().ok()?);
+        if granule >= 0 {
+            last_granule = granule;
+        }
+        let nseg = *data.get(p + 26)? as usize;
+        let payload = p + 27 + nseg;
+        if data.len() >= payload + 12 && &data[payload..payload + 8] == b"OpusHead" {
+            pre_skip = u16::from_le_bytes([data[payload + 10], data[payload + 11]]) as i64;
+        }
+        idx = p + 4;
+    }
+    let samples = last_granule - pre_skip;
+    if samples <= 0 {
+        return None;
+    }
+    Some(samples as f64 / OPUS_SAMPLE_RATE as f64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

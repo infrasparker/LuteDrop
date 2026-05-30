@@ -33,6 +33,7 @@ chrono = "0.4"
 walkdir = "2"
 opus-rs = "0.1.22"
 ogg = "0.9.2"
+hound = "3.5.1"
 
 [dev-dependencies]
 tempfile = "3"

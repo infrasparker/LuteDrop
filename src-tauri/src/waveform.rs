@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
@@ -113,6 +114,25 @@ impl PeakCache {
         }
         let disk_path = cache_path(path, &self.cache_dir);
         let _ = fs::remove_file(disk_path);
+    }
+
+    /// Deletes any on-disk .peaks file not referenced by a current source path.
+    /// Run at startup to reclaim space from deleted/relocated library entries.
+    pub fn gc(&self, valid_paths: &[String]) {
+        let expected: HashSet<PathBuf> = valid_paths
+            .iter()
+            .map(|p| cache_path(Path::new(p), &self.cache_dir))
+            .collect();
+        if let Ok(entries) = fs::read_dir(&self.cache_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("peaks")
+                    && !expected.contains(&path)
+                {
+                    let _ = fs::remove_file(path);
+                }
+            }
+        }
     }
 }
 
@@ -235,33 +255,16 @@ fn read_cache(audio_path: &Path, cache_dir: &Path) -> Option<CachedPeaks> {
 /// Decode the entire audio file and generate the peak cache.
 /// Writes the .peaks file to cache_dir and returns the CachedPeaks.
 fn generate_cache(audio_path: &Path, cache_dir: &Path) -> Result<CachedPeaks, String> {
-    if audio_path.extension().and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("opus")).unwrap_or(false)
-    {
-        let decoded = crate::audio::opus_decode::decode_opus(audio_path)?;
-        let mut acc = PeakAccumulator::new();
-        for f in &decoded.frames {
-            acc.push((f.left + f.right) * 0.5);
-        }
-        let (peaks, total_samples) = acc.finish();
-        let cached = CachedPeaks {
-            sample_rate: decoded.sample_rate,
-            samples_per_peak: SAMPLES_PER_PEAK,
-            total_samples,
-            peaks,
-        };
-        if let Err(e) = write_cache(audio_path, &cached, cache_dir) {
-            log::warn!("Failed to write peak cache for {}: {}", audio_path.display(), e);
-        }
-        return Ok(cached);
-    }
+    // Resolve to a symphonia-decodable path (opus -> cached WAV); other formats
+    // resolve to themselves. The .peaks cache stays keyed by the original path.
+    let playable = crate::audio::cache::resolve(audio_path)?;
 
-    let file = File::open(audio_path)
+    let file = File::open(&playable)
         .map_err(|e| format!("Failed to open file: {}", e))?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
     let mut hint = Hint::new();
-    if let Some(ext) = audio_path.extension().and_then(|e| e.to_str()) {
+    if let Some(ext) = playable.extension().and_then(|e| e.to_str()) {
         hint.with_extension(ext);
     }
 
