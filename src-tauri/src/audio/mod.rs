@@ -1,4 +1,5 @@
 pub mod mixer;
+pub mod opus_decode;
 pub mod orchestrator;
 pub mod sound;
 pub mod transitions;
