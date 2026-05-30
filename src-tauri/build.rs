@@ -27,9 +27,32 @@ fn main() {
 }
 
 fn build_audio_shim() {
+    println!("cargo:rerun-if-env-changed=VCPKG_ROOT");
+
+    // Resolve vcpkg root: prefer the VCPKG_ROOT env var, fall back to %USERPROFILE%\vcpkg.
+    let vcpkg_root = if let Ok(root) = std::env::var("VCPKG_ROOT") {
+        PathBuf::from(root)
+    } else {
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .expect("Neither VCPKG_ROOT nor USERPROFILE/HOME is set; cannot locate vcpkg");
+        PathBuf::from(home).join("vcpkg")
+    };
+
     // vcpkg x64-windows-static triplet install root.
-    let vcpkg_installed =
-        PathBuf::from(r"C:\Users\Infrasparker\vcpkg\installed\x64-windows-static");
+    let vcpkg_installed = vcpkg_root.join("installed").join("x64-windows-static");
+
+    if !vcpkg_installed.exists() {
+        panic!(
+            "vcpkg x64-windows-static triplet not found at `{}`.\n\
+             Run: vcpkg install opusfile:x64-windows-static\n\
+             If vcpkg is not at the default location (~\\vcpkg), set the VCPKG_ROOT \
+             environment variable to its root directory.\n\
+             See the README for full setup instructions.",
+            vcpkg_installed.display()
+        );
+    }
+
     let include = vcpkg_installed.join("include");
     let lib = vcpkg_installed.join("lib");
 

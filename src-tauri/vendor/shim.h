@@ -55,6 +55,11 @@ double     ld_sound_length_secs(ld_sound*);   // total length in seconds (0 if u
 int        ld_sound_is_playing(ld_sound*);
 int        ld_sound_at_end(ld_sound*);
 void       ld_sound_schedule_start_frame(ld_sound*, uint64_t engine_frame);
+// Schedule a faded stop `secs_from_now` seconds ahead (computed on the engine
+// clock) with a `fade_secs` ramp to silence ending at the stop point, so a clip
+// with a trim_end stops exactly there without overshoot or a hard-cut click.
+// Floored at LD_MIN_FADE_MS and clamped so the fade never starts in the past.
+void       ld_sound_schedule_stop_secs(ld_sound*, double secs_from_now, double fade_secs);
 void       ld_sound_destroy(ld_sound*);
 
 #endif

@@ -4,48 +4,29 @@ pub mod orchestrator;
 pub mod sound;
 pub mod transitions;
 pub mod util;
+pub mod voice;
 
 use std::collections::HashMap;
 
 use crate::models::{Track, TrackPlaybackState};
 use mixer::MuteState;
 use orchestrator::ManagedTrack;
-use sound::{PlayParams, PlaybackState, SoundHandle};
+use sound::{PlayParams, PlaybackState};
+use voice::Voice;
 
 const LIBRARY_TRACK_ID: &str = "__library";
-
-/// How far before loop_end (in seconds) to trigger the crossfade restart.
-/// Must be larger than the poll interval (50ms) to reliably catch it.
-const LOOP_CROSSFADE_SECS: f64 = 0.06;
-
-/// Info needed to restart a library sound at loop_start for crossfade looping.
-struct LibraryLoopInfo {
-    file_path: String,
-    volume: f32,
-    trim_start: Option<f64>,
-    trim_end: Option<f64>,
-    loop_region: Option<(f64, f64)>,
-    loop_start_position: f64,
-}
 
 pub struct AudioEngine {
     // Fields are declared so playing sounds / groups drop before the engine.
     // Rust drops struct fields in declaration order; miniaudio requires the
     // object graph torn down innermost-first (Sounds → Groups → Engine).
     tracks: HashMap<String, ManagedTrack>,
-    library_sound: Option<SoundHandle>,
-    /// De-click holding area for the LIBRARY sound. When a library sound is
-    /// stopped/replaced we request a fade-out then park the handle here until
-    /// the fade has finished; dropping it (which runs `ma_sound_uninit`) before
-    /// the ramp completes would cut the tail and produce a click. The reaper in
-    /// `poll()` drops each entry once `Instant` (the reap deadline) has passed.
-    /// Declared before `engine` so any parked sounds drop before the engine.
-    fading_out: Vec<(SoundHandle, std::time::Instant)>,
-    library_loop_info: Option<LibraryLoopInfo>,
+    /// Single-sound playback for the library preview: owns its sub-mix group, the
+    /// current sound, the de-click fade-out reaper, and the seamless-loop
+    /// crossfade. Declared before `engine` so its group/sounds drop first.
+    library: Voice,
     master_volume: f64,
     mute_state: MuteState,
-    /// Sub-mix group for library preview playback.
-    library_group: ffi::Group,
     /// Owns the whole audio graph; declared LAST so it outlives all groups/sounds.
     engine: ffi::Engine,
 }
@@ -53,15 +34,14 @@ pub struct AudioEngine {
 impl AudioEngine {
     pub fn new() -> Result<Self, String> {
         let engine = ffi::Engine::new()?;
-        let library_group = engine.create_group()?;
+        // Library preview does NOT sample-accurately anchor its loop restart
+        // (matches the pre-refactor library behavior).
+        let library = Voice::new(&engine)?;
         Ok(Self {
             tracks: HashMap::new(),
-            library_sound: None,
-            fading_out: Vec::new(),
-            library_loop_info: None,
+            library,
             master_volume: 1.0,
             mute_state: MuteState::new(),
-            library_group,
             engine,
         })
     }
@@ -113,16 +93,12 @@ impl AudioEngine {
 
     pub fn pause_all(&mut self) {
         orchestrator::pause_all(&mut self.tracks);
-        if let Some(ref mut snd) = self.library_sound {
-            sound::pause(snd);
-        }
+        self.library.pause();
     }
 
     pub fn resume_all(&mut self) {
         orchestrator::resume_all(&mut self.tracks);
-        if let Some(ref mut snd) = self.library_sound {
-            sound::resume(snd);
-        }
+        self.library.resume();
     }
 
     // --- Volume ---
@@ -208,49 +184,21 @@ impl AudioEngine {
     // --- Library playback ---
 
     pub fn play_library_sound(&mut self, params: PlayParams) -> Result<(), String> {
+        // A SEEK is `stop_library_sound` + `play_library_sound`; the de-click stop
+        // (below) keeps the outgoing sound mixing through its fade so the
+        // replacement doesn't click.
         self.stop_library_sound();
-        let restart_info = params.loop_region.map(|(ls, _)| LibraryLoopInfo {
-            file_path: params.file_path.clone(),
-            volume: params.volume,
-            trim_start: params.trim_start,
-            trim_end: params.trim_end,
-            loop_region: params.loop_region,
-            loop_start_position: ls,
-        });
-        let snd = sound::play(&self.engine, &self.library_group, params)?;
-        self.library_sound = Some(snd);
-        self.library_loop_info = restart_info;
-        Ok(())
+        // Schedule a de-clicked faded stop at trim_end (Fix 1): the library
+        // preview never crossfades and `poll_loop(stop_at_end=true)` still
+        // detects the resulting Stopped state to finish. For a looping preview
+        // `play_scheduled` no-ops the schedule (loop_region is Some).
+        self.library.play_scheduled(&self.engine, params)
     }
 
     pub fn stop_library_sound(&mut self) {
-        if let Some(snd) = self.library_sound.take() {
-            // Use the sound's own fade_out if it has one, else a small de-click
-            // default. A SEEK is `stop_library_sound` + `play_library_sound`, so
-            // the short floor also covers the seek-replacement case.
-            let fade = snd.fade_out.unwrap_or(0.02);
-            self.retire(snd, fade);
-        }
-        self.library_loop_info = None;
-    }
-
-    /// Deferred destruction: request a fade-out on `snd`, then park it in the
-    /// holding area until the fade has finished. The `poll` reaper drops it
-    /// afterwards. This keeps the sound in the mixer for the whole ramp so the
-    /// fade is actually audible (dropping it immediately runs `ma_sound_uninit`
-    /// mid-fade → hard cut → click).
-    fn retire(&mut self, mut snd: SoundHandle, fade_secs: f64) {
-        let fade = fade_secs.max(0.01);
-        sound::stop(&mut snd, Some(std::time::Duration::from_secs_f64(fade)));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs_f64(fade + 0.05);
-        self.fading_out.push((snd, deadline));
-    }
-
-    /// Drop any parked sounds whose fade-out has completed. Called every poll
-    /// tick (which runs continuously, even when idle), so nothing leaks.
-    fn reap_fading(&mut self) {
-        let now = std::time::Instant::now();
-        self.fading_out.retain(|(_, deadline)| now < *deadline);
+        // Use the sound's own fade_out if it has one, else a small de-click
+        // default. The Voice parks the outgoing sound until the fade finishes.
+        self.library.stop(None);
     }
 
     // --- State queries ---
@@ -263,14 +211,14 @@ impl AudioEngine {
             .map(orchestrator::get_playback_state)
             .collect();
 
-        if let Some(ref snd) = self.library_sound {
-            let st = sound::state(snd);
+        if self.library.has_current() {
+            let st = self.library.state();
             states.push(TrackPlaybackState {
                 track_id: LIBRARY_TRACK_ID.to_string(),
                 is_playing: matches!(st, PlaybackState::Playing),
                 is_paused: matches!(st, PlaybackState::Paused),
                 current_clip_id: None,
-                current_time: sound::position(snd),
+                current_time: self.library.position(),
             });
         }
 
@@ -296,85 +244,30 @@ impl AudioEngine {
             .map(orchestrator::get_playback_state)
             .collect();
 
-        // Check library sound: handle loop crossfade or stop at trim_end
-        let mut library_stopped = false;
-        let mut library_needs_loop = false;
-        if let Some(ref mut snd) = self.library_sound {
-            let st = sound::state(snd);
-            let pos = sound::position(snd);
-            let is_playing = matches!(st, PlaybackState::Playing);
+        // Drop finished held sounds, then drive the library's seamless-loop
+        // crossfade / stop-at-trim-end. The Voice holds the outgoing loop
+        // instance so it keeps mixing through its fade (no mid-fade drop / pop).
+        self.library.drop_finished();
+        self.library.poll_loop(&self.engine, true, true);
 
-            if is_playing {
-                if let Some((_ls, le)) = snd.loop_region {
-                    // Crossfade-loop: fade out current and restart at loop_start
-                    if pos >= le - LOOP_CROSSFADE_SECS {
-                        sound::stop(snd, Some(std::time::Duration::from_secs_f64(LOOP_CROSSFADE_SECS)));
-                        library_needs_loop = true;
-                    }
-                } else if let Some(end) = snd.duration {
-                    // Non-looping: stop at trim_end
-                    if pos >= end {
-                        sound::stop_quick(snd);
-                        library_stopped = true;
-                    }
-                }
+        // Always emit library sound state so frontend can detect when it stops.
+        let lib_state = if self.library.has_current() {
+            let st = self.library.state();
+            TrackPlaybackState {
+                track_id: LIBRARY_TRACK_ID.to_string(),
+                is_playing: matches!(st, PlaybackState::Playing),
+                is_paused: matches!(st, PlaybackState::Paused),
+                current_clip_id: None,
+                current_time: self.library.position(),
             }
-        }
-
-        if library_needs_loop {
-            // The outgoing instance was already stopped with a LOOP_CROSSFADE_SECS
-            // fade above. Park it in the holding area so it keeps mixing through
-            // its fade-out (overlapping the incoming fade-in) instead of being
-            // dropped here — dropping would uninit it mid-fade and pop.
-            if let Some(outgoing) = self.library_sound.take() {
-                let deadline = std::time::Instant::now()
-                    + std::time::Duration::from_secs_f64(LOOP_CROSSFADE_SECS + 0.05);
-                self.fading_out.push((outgoing, deadline));
-            }
-            if let Some(ref info) = self.library_loop_info {
-                let params = PlayParams {
-                    file_path: info.file_path.clone(),
-                    start_position: info.loop_start_position,
-                    volume: info.volume,
-                    trim_start: info.trim_start,
-                    trim_end: info.trim_end,
-                    loop_region: info.loop_region,
-                    fade_in: Some(LOOP_CROSSFADE_SECS),
-                    fade_out: None,
-                };
-                match sound::play(&self.engine, &self.library_group, params) {
-                    Ok(new_snd) => { self.library_sound = Some(new_snd); }
-                    Err(_) => { self.library_sound = None; self.library_loop_info = None; }
-                }
-            } else {
-                self.library_sound = None;
-            }
-        } else if library_stopped {
-            self.library_sound = None;
-        }
-
-        // Reap any parked library sounds whose fade-out has finished.
-        self.reap_fading();
-
-        // Always emit library sound state so frontend can detect when it stops
-        let lib_state = match &self.library_sound {
-            Some(snd) => {
-                let st = sound::state(snd);
-                TrackPlaybackState {
-                    track_id: LIBRARY_TRACK_ID.to_string(),
-                    is_playing: matches!(st, PlaybackState::Playing),
-                    is_paused: matches!(st, PlaybackState::Paused),
-                    current_clip_id: None,
-                    current_time: sound::position(snd),
-                }
-            }
-            None => TrackPlaybackState {
+        } else {
+            TrackPlaybackState {
                 track_id: LIBRARY_TRACK_ID.to_string(),
                 is_playing: false,
                 is_paused: false,
                 current_clip_id: None,
                 current_time: 0.0,
-            },
+            }
         };
         states.push(lib_state);
 
