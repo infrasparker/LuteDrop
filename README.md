@@ -11,7 +11,7 @@ Download and run the installer from the [Releases](../../releases) page.
 ### Import Audio
 
 1. Go to **Library** (sidebar).
-2. Click **Import Files** or **Import Folder** to add audio files (mp3, wav, ogg, flac, aac, m4a, wma).
+2. Click **Import Files** or **Import Folder** to add audio files (mp3, wav, ogg, flac, aac, m4a, wma, opus).
 3. Assign a **type** (Music or Ambiance) and optional **tags** during import.
 
 ### Organize Your Library
@@ -98,3 +98,72 @@ Configurations save your entire soundstage state (groups, compositions, tracks, 
 Use the transport bar at the bottom of the screen for global controls:
 - **Pause/Resume All** — Pause or resume every playing track
 - **Stop All** — Stop all playback
+
+## Development
+
+LuteDrop is a [Tauri 2](https://tauri.app) app: a Vue 3 + Vite frontend with a Rust backend.
+
+### Prerequisites
+
+- **Node.js** 18+ and npm
+- **Rust** (stable, `x86_64-pc-windows-msvc` toolchain) via [rustup](https://rustup.rs)
+- **Visual Studio C++ Build Tools** — the MSVC compiler/linker + Windows SDK that the
+  Rust `msvc` toolchain links against. Install the "Desktop development with C++" workload
+  (e.g. `winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"`).
+- **CMake** (`winget install Kitware.CMake`) — required to build **libopus** from source for
+  Opus (`.opus`) playback support. Must be on `PATH`.
+
+### Setup
+
+```sh
+npm install
+```
+
+### Run (dev)
+
+```sh
+cargo tauri dev      # or: npm run tauri dev
+```
+
+This launches Vite and the Rust backend with hot-reload and opens the app window. To also run
+the phone-remote dev server (port 3333) alongside it:
+
+```sh
+npm run dev:all
+```
+
+### Tests
+
+```sh
+cd src-tauri && cargo test
+```
+
+## Building a Release
+
+Produces an optimized binary and a Windows installer:
+
+```sh
+cargo tauri build    # or: npm run tauri build
+```
+
+This runs the frontend build (`npm run build` + `npm run build:remote`), compiles the Rust
+backend in release mode, and bundles installers. Output lands in:
+
+```
+src-tauri/target/release/bundle/
+  nsis/LuteDrop_<version>_x64-setup.exe   # NSIS installer
+  msi/LuteDrop_<version>_x64_en-US.msi    # MSI installer
+```
+
+Bump the version in `src-tauri/tauri.conf.json` (and `package.json`) before building a new
+release. To publish, attach the installer from `bundle/nsis/` to a GitHub
+[Release](../../releases).
+
+### Audio format notes
+
+Most formats (mp3, wav, ogg, flac, aac, m4a, wma) are streamed directly via Symphonia.
+Symphonia has no Opus decoder, so `.opus` files are transcoded once to a 16-bit WAV in a
+local cache (`%APPDATA%/com.lutedrop/audio-cache/`) using libopus, then streamed like any
+other file. The cache is lazy, size-capped (LRU), and garbage-collected on startup; the
+original `.opus` remains the only source of truth. This is why CMake/libopus is a build
+requirement.

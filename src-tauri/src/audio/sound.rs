@@ -30,7 +30,12 @@ pub fn play(
     track_handle: &mut TrackHandle,
     params: PlayParams,
 ) -> Result<SoundHandle, String> {
-    let mut sound_data = StreamingSoundData::from_file(&params.file_path)
+    // Formats symphonia can't stream (opus) are transcoded to a cached WAV here;
+    // everything else resolves to its own path unchanged. Either way, kira then
+    // streams `playable` from disk — no whole-file decode held in RAM.
+    let playable = super::cache::resolve(std::path::Path::new(&params.file_path))?;
+
+    let mut sound_data = StreamingSoundData::from_file(&playable)
         .map_err(|e| format!("Failed to load audio file '{}': {}", params.file_path, e))?;
 
     // Apply start position
@@ -42,12 +47,6 @@ pub fn play(
     // performs a hard sample jump at the boundary, causing an audible pop.
     // Instead, loop_region is stored on the SoundHandle and managed manually
     // in the poll loop with a crossfade overlap.
-    //
-    // TODO: Switching to FMOD (https://fmod.com) would give us sample-accurate
-    // loop crossfading natively, plus callback-driven transitions instead of
-    // polling. FMOD handles ~70% of our audio needs out of the box; the
-    // orchestrator/transition logic would remain custom. Free for indie
-    // (<$200k revenue). Rust bindings: libfmod crate.
 
     // Apply fade in
     if let Some(fade_secs) = params.fade_in {
@@ -69,7 +68,7 @@ pub fn play(
         .map_err(|e| format!("Failed to play sound: {}", e))?;
 
     // Compute effective duration
-    let raw_duration = probe_duration(&params.file_path);
+    let raw_duration = probe_duration(playable.to_str().unwrap_or(&params.file_path));
     let duration = match (params.trim_end, raw_duration) {
         (Some(te), _) => Some(te),
         (None, Some(d)) => Some(d),
@@ -92,7 +91,7 @@ pub fn play(
 pub fn stop(sound: &mut SoundHandle, fade_override: Option<Duration>) {
     let fade = fade_override.unwrap_or_else(|| {
         sound.fade_out
-            .map(|f| Duration::from_secs_f64(f))
+            .map(Duration::from_secs_f64)
             .unwrap_or(Duration::from_millis(10))
     });
     let _ = sound.handle.stop(Tween {
