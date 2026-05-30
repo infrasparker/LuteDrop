@@ -8,6 +8,12 @@ use super::sound::{self, PlayParams, PlaybackState, SoundHandle};
 /// Shared by the library preview loop and seamless-mode tracks.
 pub const LOOP_CROSSFADE_SECS: f64 = 0.06;
 
+/// De-click ramp applied to a scheduled trim-end stop. Short enough to be
+/// inaudible as a fade (the clip is supposed to end here) but long enough to
+/// kill the step-discontinuity click of cutting at a non-zero sample. Mirrors
+/// the shim's `LD_MIN_FADE_MS` floor; the shim re-floors anyway.
+const TRIM_STOP_FADE_SECS: f64 = 0.005;
+
 /// Everything needed to restart a sound at the start of its loop region for the
 /// seamless crossfade. Captured at `play` time from the same `PlayParams` used
 /// to start the sound, so the restart is byte-for-byte the same source/trim.
@@ -109,7 +115,32 @@ impl Voice {
     ///
     /// If `params.loop_region` is `Some`, loop-restart info is captured so
     /// `poll_loop` can perform the seamless crossfade.
+    ///
+    /// `schedule_trim_stop` requests a sample-accurate, de-clicked stop scheduled
+    /// at the clip's `trim_end` (see [`Voice::play_scheduled`] / Fix 1). It is
+    /// honored ONLY for a non-looping clip that has a `trim_end`; looping clips
+    /// (whose restart is driven by `poll_loop`) and clips that will be handed to
+    /// a clip-crossfade (whose own fade governs the outgoing tail) must pass
+    /// `false` so the scheduled stop doesn't kill the loop or short-cut the
+    /// crossfade.
     pub fn play(&mut self, engine: &ffi::Engine, params: PlayParams) -> Result<(), String> {
+        self.play_inner(engine, params, false)
+    }
+
+    /// Like [`Voice::play`] but schedules a de-clicked faded stop at the clip's
+    /// `trim_end` (non-looping clips only). Used by the library preview and by
+    /// non-crossfade track clips so the trim-end stop ramps to silence exactly at
+    /// the trim point instead of being hard-cut by a late poll check (Fix 1).
+    pub fn play_scheduled(&mut self, engine: &ffi::Engine, params: PlayParams) -> Result<(), String> {
+        self.play_inner(engine, params, true)
+    }
+
+    fn play_inner(
+        &mut self,
+        engine: &ffi::Engine,
+        params: PlayParams,
+        schedule_trim_stop: bool,
+    ) -> Result<(), String> {
         let restart = params.loop_region.map(|(ls, _)| LoopRestart {
             file_path: params.file_path.clone(),
             volume: params.volume,
@@ -119,9 +150,23 @@ impl Voice {
             loop_start_position: ls,
         });
 
+        // Capture what we need for the scheduled trim-end stop before `params` is
+        // moved into `sound::play`. Only for a non-looping clip with a trim_end.
+        let scheduled_stop = if schedule_trim_stop && params.loop_region.is_none() {
+            params.trim_end.map(|te| {
+                let start = params.start_position.max(params.trim_start.unwrap_or(0.0));
+                (te - start).max(0.0)
+            })
+        } else {
+            None
+        };
+
         self.stop_current_quick();
 
         let snd = sound::play(engine, &self.group, params)?;
+        if let Some(secs_from_now) = scheduled_stop {
+            snd.sound.schedule_stop_secs(secs_from_now, TRIM_STOP_FADE_SECS);
+        }
         self.current = Some(snd);
         self.loop_restart = restart;
         Ok(())

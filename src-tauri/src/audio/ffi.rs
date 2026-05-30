@@ -51,6 +51,7 @@ extern "C" {
     fn ld_sound_is_playing(s: *mut LdSound) -> c_int;
     fn ld_sound_at_end(s: *mut LdSound) -> c_int;
     fn ld_sound_schedule_start_frame(s: *mut LdSound, engine_frame: u64);
+    fn ld_sound_schedule_stop_secs(s: *mut LdSound, secs_from_now: f64, fade_secs: f64);
     fn ld_sound_destroy(s: *mut LdSound);
 }
 
@@ -225,6 +226,13 @@ impl Sound {
     /// Schedule the sound to start at an absolute engine frame (sample-accurate).
     pub fn schedule_start_frame(&self, engine_frame: u64) {
         unsafe { ld_sound_schedule_start_frame(self.ptr, engine_frame) }
+    }
+
+    /// Schedule a faded stop `secs_from_now` seconds ahead (engine clock) with a
+    /// `fade_secs` ramp to silence ending at the stop point. Used to stop a clip
+    /// exactly at its `trim_end` without overshoot or a hard-cut click.
+    pub fn schedule_stop_secs(&self, secs_from_now: f64, fade_secs: f64) {
+        unsafe { ld_sound_schedule_stop_secs(self.ptr, secs_from_now, fade_secs) }
     }
 }
 

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use rand::Rng;
-use crate::models::{Track, TrackMode, TrackPlaybackState};
+use crate::models::{Track, TrackMode, TrackPlaybackState, TrackTransition};
 use super::ffi;
 use super::sound::{PlayParams, PlaybackState};
 use super::mixer::{self, MuteState};
@@ -466,7 +466,25 @@ fn start_clip(
         fade_out: if track.config.fade_out > 0.0 { Some(track.config.fade_out) } else { None },
     };
 
-    track.voice.play(engine, params)?;
+    // Schedule a de-clicked faded stop at trim_end (Fix 1) EXCEPT for crossfade
+    // transitions: there the transition machine starts the next clip before
+    // trim_end and hands the outgoing off (`take_current` + `begin_crossfade`)
+    // for its own fade, so a scheduled trim-end stop would short-cut the
+    // crossfade. Looping (Seamless) clips also skip it, but `play_scheduled`
+    // already no-ops when `loop_region` is set, so we only special-case
+    // crossfade here. Gapless / Gap advance off the resulting Stopped state,
+    // which the scheduled stop still produces.
+    let uses_crossfade = matches!(
+        &track.config.mode,
+        TrackMode::Sequence { transition: TrackTransition::Crossfade, .. }
+            | TrackMode::Shuffle { transition: TrackTransition::Crossfade, .. }
+    );
+
+    if uses_crossfade {
+        track.voice.play(engine, params)?;
+    } else {
+        track.voice.play_scheduled(engine, params)?;
+    }
     track.current_clip_index = Some(clip_index);
     track.transitions.clip_started();
     track.is_paused = false;

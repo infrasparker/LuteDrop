@@ -191,7 +191,7 @@ ld_sound* ld_sound_create(ld_engine* e, ld_group* g, const wchar_t* path, int st
 // short tween. miniaudio does NOT ramp by default, so we enforce a minimum fade
 // on every transition here. These are FLOORS, not replacements: a longer
 // musical fade requested by the caller always wins (we take the max).
-#define LD_MIN_FADE_MS         10   // start / seek / stop
+#define LD_MIN_FADE_MS         4    // start / seek / stop (de-click floor; ~190 samples @48k)
 #define LD_MIN_PAUSE_FADE_MS   30   // pause / resume (slightly longer feels smoother)
 
 static ma_uint64 ld_max_u64(ma_uint64 a, ma_uint64 b) { return a > b ? a : b; }
@@ -280,6 +280,37 @@ int ld_sound_at_end(ld_sound* s) {
 void ld_sound_schedule_start_frame(ld_sound* s, uint64_t engine_frame) {
     if (s == NULL) return;
     ma_sound_set_start_time_in_pcm_frames(&s->sound, engine_frame);
+}
+
+// Schedule a sample-accurate, faded stop `secs_from_now` seconds in the future
+// (i.e. when the clip reaches its trim_end), ramping `fade_secs` to silence so
+// it hits the stop point already at zero -> no overshoot, no click.
+//
+// The stop time is computed on the ENGINE/device clock (engine sample rate), the
+// same clock ma_sound_is_playing / node state is evaluated against, so once it
+// fires the sound reports not-playing and the Rust poll loop / transition state
+// machine sees it as Stopped and advances normally. We floor the fade at
+// LD_MIN_FADE_MS for de-click and clamp it to the lead so we never schedule the
+// fade to start in the past. miniaudio's _with_fade applies a (-1 -> 0) fade,
+// i.e. from the sound's CURRENT volume down to silence, ending exactly at the
+// stop frame.
+void ld_sound_schedule_stop_secs(ld_sound* s, double secs_from_now, double fade_secs) {
+    if (s == NULL || s->owner == NULL) return;
+    ma_uint32 sr = ma_engine_get_sample_rate(&s->owner->engine);
+    if (sr == 0) return;
+    if (secs_from_now < 0.0) secs_from_now = 0.0;
+
+    ma_uint64 lead_frames = (ma_uint64)(secs_from_now * (double)sr);
+    ma_uint64 now = ma_engine_get_time_in_pcm_frames(&s->owner->engine);
+    ma_uint64 stop_frame = now + lead_frames;
+
+    ma_uint64 fade_frames =
+        ld_max_u64((ma_uint64)(fade_secs * (double)sr),
+                   (LD_MIN_FADE_MS * (ma_uint64)sr) / 1000);
+    // Never start the fade before the sound is even audible.
+    if (fade_frames > lead_frames) fade_frames = lead_frames;
+
+    ma_sound_set_stop_time_with_fade_in_pcm_frames(&s->sound, stop_frame, fade_frames);
 }
 
 void ld_sound_destroy(ld_sound* s) {
