@@ -802,6 +802,12 @@ pub fn set_clip_volume_action(container: &AppStateContainer, clip_id: &str, volu
     audio.set_clip_volume(clip_id, volume)
 }
 
+pub fn set_library_volume_action(container: &AppStateContainer, volume: f64) -> Result<(), String> {
+    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    audio.set_library_volume(volume);
+    Ok(())
+}
+
 pub fn activate_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result<(), String> {
     let track_configs = find_comp_tracks(container, comp_id)?;
     for track in &track_configs {

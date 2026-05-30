@@ -141,6 +141,11 @@ pub fn set_clip_volume(state: State<'_, Arc<AppStateContainer>>, clip_id: String
 }
 
 #[tauri::command]
+pub fn set_library_volume(state: State<'_, Arc<AppStateContainer>>, volume: f64) -> Result<(), String> {
+    actions::set_library_volume_action(&state, volume)
+}
+
+#[tauri::command]
 pub fn activate_comp(state: State<'_, Arc<AppStateContainer>>, comp_id: String) -> Result<(), String> {
     actions::activate_comp_audio(&state, &comp_id)
 }

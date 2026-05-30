@@ -105,6 +105,14 @@ export function useAudio() {
     }
   }
 
+  async function setLibraryVolume(volume: number): Promise<void> {
+    try {
+      await invoke('set_library_volume', { volume });
+    } catch (e) {
+      toast.showError(String(e));
+    }
+  }
+
   async function activateComp(compId: string): Promise<void> {
     try {
       await invoke('activate_comp', { compId });
@@ -254,6 +262,7 @@ export function useAudio() {
     setMasterVolume,
     setTrackVolume,
     setClipVolume,
+    setLibraryVolume,
     activateComp,
     stopComp,
     pauseComp,

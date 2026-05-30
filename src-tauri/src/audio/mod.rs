@@ -128,6 +128,10 @@ impl AudioEngine {
         Ok(())
     }
 
+    pub fn set_library_volume(&mut self, volume: f64) {
+        self.library.set_volume(volume.clamp(0.0, 1.0) as f32);
+    }
+
     // --- Mute ---
     //
     // Mute sets the affected node's volume to 0; unmute restores the stored

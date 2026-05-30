@@ -127,6 +127,9 @@ async function saveEntryType(v: string): Promise<void> {
 // --- Volume (local ref for smooth slider, persist on change) ---
 function setGain(v: number): void {
   localGain.value = v;
+  if (isPreviewPlaying.value) {
+    audio.setLibraryVolume(v);
+  }
 }
 
 async function persistGain(): Promise<void> {
