@@ -454,7 +454,6 @@ pub fn delete_library_entry_action(
 
     if let Some(fp) = file_path {
         let p = std::path::Path::new(&fp);
-        crate::audio::cache::evict(p);
         container.peak_cache.evict(p);
     }
 
@@ -462,11 +461,10 @@ pub fn delete_library_entry_action(
     load_state(container)
 }
 
-/// Removes cache files (transcode WAVs + peak data) no longer referenced by any
-/// library entry. Called once at startup to reclaim disk.
+/// Removes peak cache files no longer referenced by any library entry.
+/// Called once at startup to reclaim disk.
 pub fn gc_caches(container: &AppStateContainer) {
     let paths = with_db(container, |conn| library::get_all_file_paths(conn)).unwrap_or_default();
-    crate::audio::cache::gc(&paths);
     container.peak_cache.gc(&paths);
 }
 
@@ -686,11 +684,10 @@ pub fn relocate_library_entry(
         Ok(())
     })?;
 
-    // Evict old caches (in-memory + disk .peaks file, and any transcode WAV)
+    // Evict old peak caches (in-memory + disk .peaks file)
     if old_file_path != new_file_path {
         let old = std::path::Path::new(&old_file_path);
         container.peak_cache.evict(old);
-        crate::audio::cache::evict(old);
     }
 
     if std::path::Path::new(&new_file_path).exists() {

@@ -20,9 +20,6 @@ pub fn run() {
         .plugin(
             tauri_plugin_log::Builder::default()
                 .level(log::LevelFilter::Info)
-                .level_for("symphonia_metadata", log::LevelFilter::Warn)
-                .level_for("symphonia_core", log::LevelFilter::Warn)
-                .level_for("symphonia_bundle_mp3", log::LevelFilter::Warn)
                 .build(),
         )
         .plugin(tauri_plugin_dialog::init())
@@ -36,9 +33,6 @@ pub fn run() {
             // Peak cache directory lives inside the app data folder
             let app_data_dir = db_path.parent().unwrap_or(db_path.as_ref()).to_path_buf();
             let peak_cache_dir = app_data_dir.join("peaks");
-
-            // Transcode cache (opus -> WAV) for formats kira can't stream directly.
-            audio::cache::init(app_data_dir.join("audio-cache"));
 
             // Open (or create) the SQLite database
             let conn = database::open_db(&db_path)
@@ -58,8 +52,8 @@ pub fn run() {
             // Scan for missing files before sharing state with frontend
             actions::scan_missing_files(&container);
 
-            // Reclaim disk from cache files no longer referenced by the library
-            // (deleted/relocated entries, stale transcodes).
+            // Reclaim disk from peak cache files no longer referenced by the
+            // library (deleted/relocated entries).
             actions::gc_caches(&container);
 
             // Give the container the app handle so it can emit events
