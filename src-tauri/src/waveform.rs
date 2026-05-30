@@ -24,6 +24,44 @@ const MAGIC: &[u8; 4] = b"LDPK";
 /// Cache format version. Bump this if the binary layout changes.
 const FORMAT_VERSION: u8 = 1;
 
+/// Accumulates absolute mono sample values into peak buckets of
+/// `SAMPLES_PER_PEAK` samples each. Shared by the symphonia and opus decode paths.
+struct PeakAccumulator {
+    peaks: Vec<f32>,
+    current_peak: f32,
+    samples_in_bucket: u32,
+    total_samples: u64,
+}
+
+impl PeakAccumulator {
+    fn new() -> Self {
+        Self { peaks: Vec::new(), current_peak: 0.0, samples_in_bucket: 0, total_samples: 0 }
+    }
+
+    /// Push one mono sample (absolute value taken internally).
+    fn push(&mut self, sample: f32) {
+        let v = sample.abs();
+        if v > self.current_peak {
+            self.current_peak = v;
+        }
+        self.samples_in_bucket += 1;
+        self.total_samples += 1;
+        if self.samples_in_bucket >= SAMPLES_PER_PEAK {
+            self.peaks.push(self.current_peak);
+            self.current_peak = 0.0;
+            self.samples_in_bucket = 0;
+        }
+    }
+
+    /// Flush the final partial bucket and return (peaks, total_samples).
+    fn finish(mut self) -> (Vec<f32>, u64) {
+        if self.samples_in_bucket > 0 {
+            self.peaks.push(self.current_peak);
+        }
+        (self.peaks, self.total_samples)
+    }
+}
+
 /// Pre-computed peak data for one audio file.
 #[derive(Debug, Clone)]
 pub struct CachedPeaks {
@@ -197,6 +235,27 @@ fn read_cache(audio_path: &Path, cache_dir: &Path) -> Option<CachedPeaks> {
 /// Decode the entire audio file and generate the peak cache.
 /// Writes the .peaks file to cache_dir and returns the CachedPeaks.
 fn generate_cache(audio_path: &Path, cache_dir: &Path) -> Result<CachedPeaks, String> {
+    if audio_path.extension().and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("opus")).unwrap_or(false)
+    {
+        let decoded = crate::audio::opus_decode::decode_opus(audio_path)?;
+        let mut acc = PeakAccumulator::new();
+        for f in &decoded.frames {
+            acc.push((f.left + f.right) * 0.5);
+        }
+        let (peaks, total_samples) = acc.finish();
+        let cached = CachedPeaks {
+            sample_rate: decoded.sample_rate,
+            samples_per_peak: SAMPLES_PER_PEAK,
+            total_samples,
+            peaks,
+        };
+        if let Err(e) = write_cache(audio_path, &cached, cache_dir) {
+            log::warn!("Failed to write peak cache for {}: {}", audio_path.display(), e);
+        }
+        return Ok(cached);
+    }
+
     let file = File::open(audio_path)
         .map_err(|e| format!("Failed to open file: {}", e))?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
@@ -234,10 +293,7 @@ fn generate_cache(audio_path: &Path, cache_dir: &Path) -> Result<CachedPeaks, St
         .make(&codec_params, &DecoderOptions::default())
         .map_err(|e| format!("Failed to create decoder: {}", e))?;
 
-    let mut peaks: Vec<f32> = Vec::new();
-    let mut current_peak: f32 = 0.0;
-    let mut samples_in_bucket: u32 = 0;
-    let mut total_samples: u64 = 0;
+    let mut acc = PeakAccumulator::new();
 
     loop {
         let packet = match format_reader.next_packet() {
@@ -274,33 +330,15 @@ fn generate_cache(audio_path: &Path, cache_dir: &Path) -> Result<CachedPeaks, St
         let samples = sample_buf.samples();
 
         for frame_idx in 0..num_frames {
-            // Mix to mono
             let mut mono_sum: f32 = 0.0;
             for ch in 0..num_channels {
                 mono_sum += samples[frame_idx * num_channels + ch];
             }
-            let mono_val = (mono_sum / num_channels as f32).abs();
-
-            if mono_val > current_peak {
-                current_peak = mono_val;
-            }
-
-            samples_in_bucket += 1;
-            total_samples += 1;
-
-            if samples_in_bucket >= SAMPLES_PER_PEAK {
-                peaks.push(current_peak);
-                current_peak = 0.0;
-                samples_in_bucket = 0;
-            }
+            acc.push(mono_sum / num_channels as f32);
         }
     }
 
-    // Flush the last partial bucket
-    if samples_in_bucket > 0 {
-        peaks.push(current_peak);
-    }
-
+    let (peaks, total_samples) = acc.finish();
     let cached = CachedPeaks {
         sample_rate,
         samples_per_peak: SAMPLES_PER_PEAK,
@@ -502,6 +540,18 @@ mod tests {
         let _ = fs::remove_file(cache_path(&fake_audio, &cache_dir));
         let _ = fs::remove_file(&fake_audio);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn peak_accumulator_buckets_by_samples_per_peak() {
+        let mut acc = PeakAccumulator::new();
+        for _ in 0..SAMPLES_PER_PEAK { acc.push(0.5); }
+        for _ in 0..SAMPLES_PER_PEAK { acc.push(0.9); }
+        let (peaks, total) = acc.finish();
+        assert_eq!(peaks.len(), 2);
+        assert!((peaks[0] - 0.5).abs() < 1e-6);
+        assert!((peaks[1] - 0.9).abs() < 1e-6);
+        assert_eq!(total, (2 * SAMPLES_PER_PEAK) as u64);
     }
 
     #[test]
