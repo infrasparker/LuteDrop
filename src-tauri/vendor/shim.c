@@ -60,6 +60,17 @@ int ld_decode_file(const char* path, float** out, uint64_t* out_frames,
 
 void ld_free_decoded(float* p) { free(p); }
 
+double ld_file_duration_secs(const char* path) {
+    ma_decoder dec;
+    if (ld_make_decoder(path, &dec) != MA_SUCCESS) return -1.0;
+    ma_uint64 total = 0;
+    ma_result r = ma_decoder_get_length_in_pcm_frames(&dec, &total);
+    ma_uint32 sr = dec.outputSampleRate;
+    ma_decoder_uninit(&dec);
+    if (r != MA_SUCCESS || total == 0 || sr == 0) return -1.0;
+    return (double)total / (double)sr;
+}
+
 // ---- Playback layer (Task 2) ------------------------------------------------
 
 struct ld_engine {

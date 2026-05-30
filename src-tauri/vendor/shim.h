@@ -9,6 +9,13 @@ int ld_decode_file(const char* path, float** out_interleaved,
                    uint64_t* out_frames, uint32_t* out_channels, uint32_t* out_sample_rate);
 void ld_free_decoded(float* p);
 
+// Cheap duration probe: inits a decoder (libopus backend registered, same as
+// ld_decode_file), reads the PCM frame count via ma_decoder_get_length_in_pcm_frames
+// and divides by the output sample rate -- NO full decode. Returns the duration in
+// seconds, or a negative value if the file can't be opened or its length is unknown
+// (e.g. a streamed source with no reported length).
+double ld_file_duration_secs(const char* path);
+
 // ---- Playback layer (Task 2) ------------------------------------------------
 // Opaque handles. The shim owns the underlying miniaudio structs.
 typedef struct ld_engine ld_engine;

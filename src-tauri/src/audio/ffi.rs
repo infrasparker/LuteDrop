@@ -10,6 +10,7 @@ extern "C" {
         sample_rate: *mut u32,
     ) -> c_int;
     fn ld_free_decoded(p: *mut c_float);
+    fn ld_file_duration_secs(path: *const c_char) -> f64;
 
     fn ld_engine_create() -> *mut LdEngine;
     fn ld_engine_destroy(e: *mut LdEngine);
@@ -244,6 +245,19 @@ pub fn decode_file(path: &str) -> Result<Decoded, String> {
         channels,
         sample_rate: sr,
     })
+}
+
+/// Cheap duration probe via the shim: opens a decoder, reads the PCM frame
+/// count, divides by the sample rate (no full decode). Returns `None` if the
+/// file can't be opened or its length is unknown.
+pub fn file_duration_secs(path: &str) -> Option<f64> {
+    let c = CString::new(path).ok()?;
+    let secs = unsafe { ld_file_duration_secs(c.as_ptr()) };
+    if secs > 0.0 {
+        Some(secs)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
