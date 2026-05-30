@@ -2170,6 +2170,7 @@ version = "0.2.0"
 dependencies = [
  "audiopus",
  "axum",
+ "cc",
  "chrono",
  "hound",
  "kira",
