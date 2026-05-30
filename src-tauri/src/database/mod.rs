@@ -572,7 +572,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("schema_version row should exist");
-        assert_eq!(version, "2");
+        assert_eq!(version, "3");
     }
 
     #[test]

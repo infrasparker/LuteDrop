@@ -130,8 +130,10 @@ LuteDrop is a [Tauri 2](https://tauri.app) app: a Vue 3 + Vite frontend with a R
   vcpkg\bootstrap-vcpkg.bat
   vcpkg\vcpkg install opusfile:x64-windows-static
   ```
-  `src-tauri/build.rs` links these from the `x64-windows-static` triplet — it currently
-  expects vcpkg at `C:\Users\<you>\vcpkg`; adjust the path in `build.rs` if yours differs.
+  `src-tauri/build.rs` links these from the `x64-windows-static` triplet. The vcpkg root is
+  resolved from the **`VCPKG_ROOT`** environment variable if set, otherwise it falls back to
+  `%USERPROFILE%\vcpkg` (i.e. `~\vcpkg`). No path is hardcoded in `build.rs`; set `VCPKG_ROOT`
+  if your vcpkg install is elsewhere.
 - **CMake** (`winget install Kitware.CMake`) — only used *by vcpkg* to build the Opus libs
   above; the app itself compiles its C shim with the `cc` crate (no CMake at app build time).
 

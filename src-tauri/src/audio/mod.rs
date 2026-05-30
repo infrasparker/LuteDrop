@@ -244,10 +244,10 @@ impl AudioEngine {
             .map(orchestrator::get_playback_state)
             .collect();
 
-        // Reap finished parked sounds, then drive the library's seamless-loop
-        // crossfade / stop-at-trim-end. The Voice parks the outgoing loop
+        // Drop finished held sounds, then drive the library's seamless-loop
+        // crossfade / stop-at-trim-end. The Voice holds the outgoing loop
         // instance so it keeps mixing through its fade (no mid-fade drop / pop).
-        self.library.reap();
+        self.library.drop_finished();
         self.library.poll_loop(&self.engine, true, true);
 
         // Always emit library sound state so frontend can detect when it stops.

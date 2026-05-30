@@ -32,9 +32,9 @@ pub fn setup_track(
         return Ok(());
     }
 
-    // Tracks anchor their seamless-loop restart to the engine clock (sample
-    // accurate), unlike the library preview.
-    let voice = Voice::with_anchor(engine, true)
+    // Tracks use sample-accurate scheduled loop restarts anchored to the engine
+    // clock, unlike the library preview.
+    let voice = Voice::with_scheduled_loops(engine, true)
         .map_err(|e| format!("Failed to create sub-track: {}", e))?;
     voice.set_group_volume(mixer::track_group_volume(
         config.volume,
@@ -239,10 +239,10 @@ pub fn poll_track(
     missing_entries: &mut Vec<String>,
     found_entries: &mut Vec<String>,
 ) {
-    // Reap any parked sounds whose fade-out has completed. Done first so it runs
+    // Drop any held sounds whose fade-out has completed. Done first so it runs
     // every tick regardless of which transition branch returns early below.
     if let Some(track) = tracks.get_mut(track_id) {
-        track.voice.reap();
+        track.voice.drop_finished();
     }
 
     // Gather state for transition check

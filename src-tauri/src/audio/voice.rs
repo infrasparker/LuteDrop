@@ -68,7 +68,7 @@ pub struct Voice {
     /// the start of the crossfade window via `schedule_start_frame`. Tracks use
     /// this (engine-clock anchored); the library preview does not (matches the
     /// pre-refactor behavior of each path exactly).
-    anchor_loop_restart: bool,
+    scheduled_loops: bool,
     /// This Voice's sub-mix group. Declared LAST so it drops after all sounds.
     group: ffi::Group,
 }
@@ -77,18 +77,18 @@ impl Voice {
     /// Create a Voice with a fresh sub-mix group on `engine`. Loop restarts are
     /// NOT sample-accurately anchored (library-preview behavior).
     pub fn new(engine: &ffi::Engine) -> Result<Self, String> {
-        Self::with_anchor(engine, false)
+        Self::with_scheduled_loops(engine, false)
     }
 
     /// Like [`Voice::new`] but with sample-accurate loop-restart anchoring
     /// enabled (per-track seamless-mode behavior).
-    pub fn with_anchor(engine: &ffi::Engine, anchor_loop_restart: bool) -> Result<Self, String> {
+    pub fn with_scheduled_loops(engine: &ffi::Engine, scheduled_loops: bool) -> Result<Self, String> {
         let group = engine.create_group()?;
         Ok(Self {
             current: None,
             fading_out: Vec::new(),
             loop_restart: None,
-            anchor_loop_restart,
+            scheduled_loops,
             group,
         })
     }
@@ -110,8 +110,8 @@ impl Voice {
     ///
     /// The previously-playing sound (if any) is stopped abruptly (`stop_quick`),
     /// matching the old `start_clip` behavior; callers that need a click-free
-    /// hand-off (stop, loop crossfade, clip crossfade) park the outgoing sound
-    /// via `retire`/`park`/`begin_transition_handoff` BEFORE calling `play`.
+    /// hand-off (stop, loop crossfade, clip crossfade) hold the outgoing sound
+    /// via `fade_out_and_release`/`hold_until_silent`/`begin_transition_handoff` BEFORE calling `play`.
     ///
     /// If `params.loop_region` is `Some`, loop-restart info is captured so
     /// `poll_loop` can perform the seamless crossfade.
@@ -172,13 +172,13 @@ impl Voice {
         Ok(())
     }
 
-    /// Stop the current sound with a fade-out, parking it so the tail is audible
-    /// (de-click). `fade` is the fade-out duration in seconds; if `None`, the
-    /// sound's own `fade_out` is used, else a small de-click default.
+    /// Stop the current sound with a fade-out, holding it until silent so the
+    /// tail is audible (de-click). `fade` is the fade-out duration in seconds;
+    /// if `None`, the sound's own `fade_out` is used, else a small de-click default.
     pub fn stop(&mut self, fade: Option<f64>) {
         if let Some(snd) = self.current.take() {
             let f = fade.or(snd.fade_out).unwrap_or(0.02);
-            self.retire(snd, f);
+            self.fade_out_and_release(snd, f);
         }
         self.loop_restart = None;
     }
@@ -261,29 +261,29 @@ impl Voice {
 
     // --- Voice reaper (de-click) ---
 
-    /// Deferred destruction: request a fade-out on `snd`, then park it until the
+    /// Deferred destruction: request a fade-out on `snd`, then hold it until the
     /// ramp completes. The reaper drops it afterwards. Keeps the sound in the
     /// mixer for the whole ramp so the fade is actually audible (dropping it
     /// immediately runs `ma_sound_uninit` mid-fade → hard cut → click).
-    pub fn retire(&mut self, mut snd: SoundHandle, fade_secs: f64) {
+    pub fn fade_out_and_release(&mut self, mut snd: SoundHandle, fade_secs: f64) {
         let fade = fade_secs.max(0.01);
         sound::stop(&mut snd, Some(Duration::from_secs_f64(fade)));
         let deadline = Instant::now() + Duration::from_secs_f64(fade + 0.05);
         self.fading_out.push((snd, deadline));
     }
 
-    /// Park an already-stopped handle (its fade was requested elsewhere, e.g. the
+    /// Hold an already-fading handle (its fade was requested elsewhere, e.g. the
     /// seamless-loop crossfade or a clip-crossfade hand-off) so it isn't dropped
-    /// mid-fade. `fade_secs` is the in-flight fade duration used to size the reap
+    /// mid-fade. `fade_secs` is the in-flight fade duration used to size the
     /// deadline.
-    pub fn park(&mut self, snd: SoundHandle, fade_secs: f64) {
+    pub fn hold_until_silent(&mut self, snd: SoundHandle, fade_secs: f64) {
         let deadline = Instant::now() + Duration::from_secs_f64(fade_secs.max(0.01) + 0.05);
         self.fading_out.push((snd, deadline));
     }
 
-    /// Drop any parked sounds whose fade-out has completed. Must be called every
+    /// Drop any held sounds whose fade-out has completed. Must be called every
     /// poll tick so nothing leaks.
-    pub fn reap(&mut self) {
+    pub fn drop_finished(&mut self) {
         let now = Instant::now();
         self.fading_out.retain(|(_, deadline)| now < *deadline);
     }
@@ -359,7 +359,7 @@ impl Voice {
         // Compute the sample-accurate window-start anchor in ENGINE frames. Lead
         // is ~0 (clamped so we never schedule in the past) but computed explicitly
         // to stay robust to small poll-timing jitter. Only used when anchoring.
-        let start_frame = if self.anchor_loop_restart {
+        let start_frame = if self.scheduled_loops {
             let seconds_until_window_start = (le - LOOP_CROSSFADE_SECS - position).max(0.0);
             let lead = (seconds_until_window_start * engine.sample_rate() as f64) as u64;
             Some(engine.time_frames() + lead)
@@ -373,7 +373,7 @@ impl Voice {
         // see it — dropping/uniniting it mid-fade was the residual loop pop.
         if let Some(mut snd) = self.current.take() {
             sound::stop(&mut snd, Some(Duration::from_secs_f64(LOOP_CROSSFADE_SECS)));
-            self.park(snd, LOOP_CROSSFADE_SECS);
+            self.hold_until_silent(snd, LOOP_CROSSFADE_SECS);
         }
 
         let params = PlayParams {
