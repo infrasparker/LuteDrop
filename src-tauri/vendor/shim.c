@@ -183,38 +183,66 @@ ld_sound* ld_sound_create(ld_engine* e, ld_group* g, const wchar_t* path, int st
     return s;
 }
 
+// --- De-click ramp floors (milliseconds) -----------------------------------
+//
+// Starting or stopping playback abruptly at a non-zero sample produces a step
+// discontinuity in the waveform -> an audible click/pop. The old kira engine
+// avoided this because every start/stop/pause/resume ramped through zero with a
+// short tween. miniaudio does NOT ramp by default, so we enforce a minimum fade
+// on every transition here. These are FLOORS, not replacements: a longer
+// musical fade requested by the caller always wins (we take the max).
+#define LD_MIN_FADE_MS         10   // start / seek / stop
+#define LD_MIN_PAUSE_FADE_MS   30   // pause / resume (slightly longer feels smoother)
+
+static ma_uint64 ld_max_u64(ma_uint64 a, ma_uint64 b) { return a > b ? a : b; }
+
 int ld_sound_play(ld_sound* s, double start_secs, double fade_in_secs) {
     if (s == NULL) return 1;
     if (start_secs > 0.0) {
         // Seek in the data source's own time base (handles native vs device rate).
         ma_sound_seek_to_second(&s->sound, (float)start_secs);
     }
-    if (fade_in_secs > 0.0) {
-        // Fade from current (volumeBeg = -1) up to full over the given time.
-        ma_sound_set_fade_in_milliseconds(&s->sound, 0.0f, 1.0f,
-                                          (ma_uint64)(fade_in_secs * 1000.0));
-    }
+    // Always ramp in from silence so a sound that begins mid-waveform (e.g. a
+    // seek into the middle of a song, or a freshly recreated sound) does not cut
+    // in at a non-zero sample. Floor at LD_MIN_FADE_MS; a longer requested
+    // fade-in wins. volumeBeg=0, volumeEnd=1 are fader MULTIPLIERS of the
+    // sound's own volume (set via ma_sound_set_volume), so this fades 0 -> the
+    // sound's configured volume regardless of what that volume is.
+    ma_uint64 ms = ld_max_u64((ma_uint64)(fade_in_secs * 1000.0), LD_MIN_FADE_MS);
+    // Clear any stale scheduled stop / fade (harmless on a fresh sound) so a
+    // re-started sound is not killed by a previously scheduled faded stop, then
+    // apply our fade-in floor.
+    ma_sound_reset_stop_time_and_fade(&s->sound);
+    ma_sound_set_fade_in_milliseconds(&s->sound, 0.0f, 1.0f, ms);
     return (ma_sound_start(&s->sound) == MA_SUCCESS) ? 0 : 2;
 }
 
 void ld_sound_stop(ld_sound* s, double fade_out_secs) {
     if (s == NULL) return;
-    if (fade_out_secs > 0.0) {
-        ma_uint32 sr = ma_engine_get_sample_rate(&s->owner->engine);
-        ma_uint64 frames = (ma_uint64)(fade_out_secs * (double)sr);
-        ma_sound_stop_with_fade_in_pcm_frames(&s->sound, frames);
-    } else {
-        ma_sound_stop(&s->sound);
-    }
+    // Always fade out before stopping (floor LD_MIN_FADE_MS) so we ramp to zero
+    // instead of cutting off mid-waveform. A longer requested fade wins. This
+    // covers immediate/"quick" stops too: the Rust side may pass 0.0, but we
+    // never stop abruptly.
+    ma_uint64 ms = ld_max_u64((ma_uint64)(fade_out_secs * 1000.0), LD_MIN_FADE_MS);
+    ma_sound_stop_with_fade_in_milliseconds(&s->sound, ms);
 }
 
 void ld_sound_pause(ld_sound* s) {
     if (s == NULL) return;
-    ma_sound_stop(&s->sound);   // keeps cursor
+    // Pause = short fade-out then stop, preserving the cursor. ma_sound_stop()
+    // alone cuts abruptly -> click. stop_with_fade schedules the node stop after
+    // the fade window, so the cursor is retained for resume.
+    ma_sound_stop_with_fade_in_milliseconds(&s->sound, LD_MIN_PAUSE_FADE_MS);
 }
 
 void ld_sound_resume(ld_sound* s) {
     if (s == NULL) return;
+    // A faded pause left a scheduled stop time and a (-1 -> 0) fade on the
+    // sound. ma_sound_start does NOT clear those, so without this reset the
+    // resumed sound would re-trigger the scheduled stop / stay silent. Clear
+    // them, then ramp back in from 0 -> current volume over the pause floor.
+    ma_sound_reset_stop_time_and_fade(&s->sound);
+    ma_sound_set_fade_in_milliseconds(&s->sound, 0.0f, 1.0f, LD_MIN_PAUSE_FADE_MS);
     ma_sound_start(&s->sound);  // resumes from preserved cursor
 }
 
