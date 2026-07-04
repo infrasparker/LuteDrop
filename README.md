@@ -90,9 +90,11 @@ Tracks also support **fade in** and **fade out** toggles.
 LuteDrop runs a local web server so you can control playback from any device on your network (phone, tablet, another computer).
 
 1. The server starts automatically on **port 3333**.
-2. Open a browser on any device connected to the same network.
-3. Navigate to `http://<your-computer-ip>:3333`.
-4. You can find your computer's IP by running `ipconfig` in a terminal.
+2. In the desktop app, click the **Phone remote** icon at the bottom of the sidebar to
+   open a dialog with the pairing link, e.g. `http://<your-computer-ip>:3333/?token=<code>`.
+3. Open that link in a browser on any device connected to the same network.
+4. The link includes a pairing code required to connect; it's regenerated each time
+   LuteDrop starts, so reopen the dialog for a fresh link after a restart.
 
 The remote provides:
 - Group tabs and composition selection
