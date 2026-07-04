@@ -6,15 +6,18 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { useAppStore } from '../stores/appStore';
 import { useLibraryImport } from '../composables/useLibraryImport';
 import { useAudio } from '../composables/useAudio';
+import { useToast } from '../composables/useToast';
 import TagFilter from '../components/TagFilter.vue';
 import ImportDialog from '../components/ImportDialog.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import type { LibraryEntry, LibraryEntryUsage } from '@generated/index';
+import { AUDIO_EXTENSIONS } from '../constants';
 
 const store = useAppStore();
 const { libraryEntries, tags } = storeToRefs(store);
 const { pickFiles, pickFolder, runImport } = useLibraryImport();
 const audio = useAudio();
+const toast = useToast();
 
 const searchQuery = ref('');
 const selectedTags = ref<string[]>([]);
@@ -135,8 +138,10 @@ async function deleteEntry(entryId: string): Promise<void> {
   try {
     usage = await invoke<LibraryEntryUsage[]>('get_library_entry_usage', { entryId });
   } catch (e) {
-    usage = [];
-    console.error('Failed to fetch library entry usage', e);
+    // Do NOT fall through to the unconfirmed-delete branch on a failed
+    // usage check — we can't know the entry is safe to delete.
+    toast.showError(`Could not check whether "${entry?.name ?? entryId}" is in use: ${e}`);
+    return;
   }
 
   if (usage.length === 0) {
@@ -160,8 +165,6 @@ async function confirmDelete(): Promise<void> {
 }
 
 // --- Relocate flow ---
-
-const AUDIO_EXTENSIONS = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'wma'];
 
 async function relocateEntry(entryId: string): Promise<void> {
   const path = await open({
