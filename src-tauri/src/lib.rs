@@ -165,10 +165,7 @@ fn playback_polling_loop(app_handle: tauri::AppHandle, container: Arc<AppStateCo
         std::thread::sleep(Duration::from_millis(50));
 
         let (states, master_vol, newly_missing, newly_found) = {
-            let mut audio = match container.audio.lock() {
-                Ok(a) => a,
-                Err(_) => continue,
-            };
+            let mut audio = container.lock_audio();
             let (states, missing, found) = audio.poll();
             let vol = audio.get_master_volume();
             (states, vol, missing, found)

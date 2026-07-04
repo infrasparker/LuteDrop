@@ -202,7 +202,7 @@ fn build_snapshot(container: &AppStateContainer) -> Option<StateSnapshot> {
     };
     app_state.missing_entry_ids = container.missing_snapshot();
     let (playback_states, master_volume) = {
-        let audio = container.audio.lock().ok()?;
+        let audio = container.lock_audio();
         (audio.get_all_playback_states(), audio.get_master_volume())
     };
     Some(StateSnapshot {

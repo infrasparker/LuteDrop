@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
+use std::sync::MutexGuard;
 use rusqlite::Connection;
 use tauri::Emitter;
 use tokio::sync::broadcast;
@@ -51,6 +52,18 @@ impl AppStateContainer {
     pub fn release_import(&self) {
         use std::sync::atomic::Ordering;
         self.import_in_progress.store(false, Ordering::Release);
+    }
+
+    /// Locks the audio engine, recovering from mutex poisoning. A panic on
+    /// the poll thread must not permanently kill audio: engine state stays
+    /// structurally valid across a panic (single-field mutations only), so
+    /// recovering the guard is safe. The poison is logged so a crashing poll
+    /// tick is visible instead of silent.
+    pub fn lock_audio(&self) -> MutexGuard<'_, AudioEngine> {
+        self.audio.lock().unwrap_or_else(|poisoned| {
+            log::error!("Audio mutex poisoned (a thread panicked while holding it); recovering");
+            poisoned.into_inner()
+        })
     }
 
     /// Emits a Tauri event to the frontend if the app handle is set.

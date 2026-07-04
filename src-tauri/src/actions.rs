@@ -268,7 +268,7 @@ pub fn duplicate_configuration(container: &AppStateContainer, name: String) -> R
 pub fn load_configuration(container: &AppStateContainer, config_id: String) -> Result<AppState, String> {
     // Stop all audio before switching
     {
-        let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+        let mut audio = container.lock_audio();
         audio.stop_all();
     }
     with_db(container, |conn| {
@@ -745,7 +745,7 @@ fn update_clip_file_state(container: &AppStateContainer, track: &Track) {
 pub fn play_track_audio(container: &AppStateContainer, track_id: &str) -> Result<(), String> {
     let track_config = find_track_ref(container, track_id)?;
     update_clip_file_state(container, &track_config);
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     if !audio.has_track(track_id) {
         audio.setup_track(&track_config)?;
     } else {
@@ -757,7 +757,7 @@ pub fn play_track_audio(container: &AppStateContainer, track_id: &str) -> Result
 pub fn play_track_clip(container: &AppStateContainer, track_id: &str, clip_id: &str) -> Result<(), String> {
     let track_config = find_track_ref(container, track_id)?;
     update_clip_file_state(container, &track_config);
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     if !audio.has_track(track_id) {
         audio.setup_track(&track_config)?;
     } else {
@@ -769,7 +769,7 @@ pub fn play_track_clip(container: &AppStateContainer, track_id: &str, clip_id: &
 pub fn play_track_from_position(container: &AppStateContainer, track_id: &str, position: f64) -> Result<(), String> {
     let track_config = find_track_ref(container, track_id)?;
     update_clip_file_state(container, &track_config);
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     if !audio.has_track(track_id) {
         audio.setup_track(&track_config)?;
     } else {
@@ -779,18 +779,18 @@ pub fn play_track_from_position(container: &AppStateContainer, track_id: &str, p
 }
 
 pub fn pause_track_audio(container: &AppStateContainer, track_id: &str) -> Result<(), String> {
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     audio.pause_track(track_id)
 }
 
 pub fn stop_track_audio(container: &AppStateContainer, track_id: &str) -> Result<(), String> {
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     audio.stop_track(track_id)
 }
 
 pub fn set_master_volume_action(container: &AppStateContainer, volume: f64) -> Result<(), String> {
     let volume = sanitize_volume(volume)?;
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     audio.set_master_volume(volume);
     Ok(())
 }
@@ -803,7 +803,7 @@ pub fn set_track_volume_action(container: &AppStateContainer, track_id: &str, vo
         hierarchy::update_track_volume(&conn, track_id, volume)?;
     }
     // Update audio engine only if track is currently active
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     if audio.has_track(track_id) {
         audio.set_track_volume(track_id, volume)?;
     }
@@ -818,13 +818,13 @@ pub fn set_clip_volume_action(container: &AppStateContainer, clip_id: &str, volu
         hierarchy::update_clip_volume(&conn, clip_id, volume)?;
     }
     // Update audio engine — set_clip_volume is a no-op if clip isn't in any active track
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     audio.set_clip_volume(clip_id, volume)
 }
 
 pub fn set_library_volume_action(container: &AppStateContainer, volume: f64) -> Result<(), String> {
     let volume = sanitize_volume(volume)?;
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     audio.set_library_volume(volume);
     Ok(())
 }
@@ -834,7 +834,7 @@ pub fn activate_comp_audio(container: &AppStateContainer, comp_id: &str) -> Resu
     for track in &track_configs {
         update_clip_file_state(container, track);
     }
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     for track in &track_configs {
         if !audio.has_track(&track.id) {
             audio.setup_track(track)?;
@@ -848,7 +848,7 @@ pub fn activate_comp_audio(container: &AppStateContainer, comp_id: &str) -> Resu
 
 pub fn stop_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result<(), String> {
     let track_configs = find_comp_tracks(container, comp_id)?;
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     for track in &track_configs {
         if audio.has_track(&track.id) {
             audio.stop_track(&track.id)?;
@@ -859,7 +859,7 @@ pub fn stop_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result<(
 
 pub fn pause_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result<(), String> {
     let track_configs = find_comp_tracks(container, comp_id)?;
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     for track in &track_configs {
         if audio.has_track(&track.id) {
             audio.pause_track(&track.id)?;
@@ -870,7 +870,7 @@ pub fn pause_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result<
 
 pub fn resume_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result<(), String> {
     let track_configs = find_comp_tracks(container, comp_id)?;
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     for track in &track_configs {
         if audio.has_track(&track.id) {
             audio.resume_track(&track.id)?;
@@ -880,19 +880,19 @@ pub fn resume_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result
 }
 
 pub fn stop_all_audio(container: &AppStateContainer) -> Result<(), String> {
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     audio.stop_all();
     Ok(())
 }
 
 pub fn pause_all_audio(container: &AppStateContainer) -> Result<(), String> {
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     audio.pause_all();
     Ok(())
 }
 
 pub fn resume_all_audio(container: &AppStateContainer) -> Result<(), String> {
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     audio.resume_all();
     Ok(())
 }
@@ -915,7 +915,7 @@ pub fn play_library_sound(
     }
     // File exists — clear stale missing state if any
     container.mark_entry_found(entry_id);
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     // Volume is linear now; master is applied by the engine node automatically.
     let vol = volume.clamp(0.0, 1.0) as f32;
     let loop_region = match (loop_start, loop_end) {
@@ -936,7 +936,7 @@ pub fn play_library_sound(
 }
 
 pub fn stop_library_sound(container: &AppStateContainer) -> Result<(), String> {
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     audio.stop_library_sound();
     Ok(())
 }
@@ -944,17 +944,17 @@ pub fn stop_library_sound(container: &AppStateContainer) -> Result<(), String> {
 // --- Mute actions ---
 
 pub fn toggle_master_mute(container: &AppStateContainer) -> Result<bool, String> {
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     Ok(audio.toggle_master_mute())
 }
 
 pub fn toggle_track_mute(container: &AppStateContainer, track_id: &str) -> Result<bool, String> {
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     Ok(audio.toggle_track_mute(track_id))
 }
 
 pub fn toggle_clip_mute(container: &AppStateContainer, clip_id: &str) -> Result<bool, String> {
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     Ok(audio.toggle_clip_mute(clip_id))
 }
 
@@ -967,12 +967,12 @@ pub fn toggle_comp_mute(container: &AppStateContainer, comp_id: &str) -> Result<
             .map(|c| c.tracks.iter().map(|t| t.id.clone()).collect::<Vec<_>>())
             .ok_or_else(|| format!("Comp not found: {}", comp_id))?
     };
-    let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let mut audio = container.lock_audio();
     Ok(audio.toggle_comp_mute(&track_ids))
 }
 
 pub fn get_mute_state(container: &AppStateContainer) -> Result<serde_json::Value, String> {
-    let audio = container.audio.lock().map_err(|e| e.to_string())?;
+    let audio = container.lock_audio();
     let (master, tracks, clips) = audio.get_mute_snapshot();
     Ok(serde_json::json!({
         "master": master,
