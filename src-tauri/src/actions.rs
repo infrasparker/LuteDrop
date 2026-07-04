@@ -46,6 +46,16 @@ pub fn find_comp_tracks(container: &AppStateContainer, comp_id: &str) -> Result<
     Err(format!("Comp not found: {}", comp_id))
 }
 
+/// Volumes from any caller (IPC or remote) are clamped to [0, 1] before they
+/// reach the engine or the database. Non-finite values are rejected outright.
+fn sanitize_volume(volume: f64) -> Result<f64, String> {
+    if volume.is_finite() {
+        Ok(volume.clamp(0.0, 1.0))
+    } else {
+        Err("volume must be a finite number".into())
+    }
+}
+
 // --- Data mutation actions (return updated AppState) ---
 
 pub fn load_data(container: &AppStateContainer) -> Result<AppState, String> {
@@ -772,12 +782,14 @@ pub fn stop_track_audio(container: &AppStateContainer, track_id: &str) -> Result
 }
 
 pub fn set_master_volume_action(container: &AppStateContainer, volume: f64) -> Result<(), String> {
+    let volume = sanitize_volume(volume)?;
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
     audio.set_master_volume(volume);
     Ok(())
 }
 
 pub fn set_track_volume_action(container: &AppStateContainer, track_id: &str, volume: f64) -> Result<(), String> {
+    let volume = sanitize_volume(volume)?;
     // Persist to DB (cheap, no full state reload)
     {
         let conn = container.db.lock().map_err(|e| e.to_string())?;
@@ -792,6 +804,7 @@ pub fn set_track_volume_action(container: &AppStateContainer, track_id: &str, vo
 }
 
 pub fn set_clip_volume_action(container: &AppStateContainer, clip_id: &str, volume: f64) -> Result<(), String> {
+    let volume = sanitize_volume(volume)?;
     // Persist to DB (cheap, no full state reload)
     {
         let conn = container.db.lock().map_err(|e| e.to_string())?;
@@ -803,6 +816,7 @@ pub fn set_clip_volume_action(container: &AppStateContainer, clip_id: &str, volu
 }
 
 pub fn set_library_volume_action(container: &AppStateContainer, volume: f64) -> Result<(), String> {
+    let volume = sanitize_volume(volume)?;
     let mut audio = container.audio.lock().map_err(|e| e.to_string())?;
     audio.set_library_volume(volume);
     Ok(())
@@ -973,4 +987,18 @@ pub fn preload_peaks(container: &AppStateContainer) -> Result<usize, String> {
         }
     }
     Ok(loaded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_volume;
+
+    #[test]
+    fn sanitize_volume_clamps_and_rejects_non_finite() {
+        assert_eq!(sanitize_volume(0.5), Ok(0.5));
+        assert_eq!(sanitize_volume(-1e300), Ok(0.0));
+        assert_eq!(sanitize_volume(2.0), Ok(1.0));
+        assert!(sanitize_volume(f64::NAN).is_err());
+        assert!(sanitize_volume(f64::INFINITY).is_err());
+    }
 }
