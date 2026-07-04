@@ -89,12 +89,9 @@ impl TransitionManager {
                             TransitionAction::AdvanceClip { next_clip_index: idx }
                         }
                         TrackTransition::Gap { min, max } => {
-                            use rand::Rng;
-                            let mut rng = rand::thread_rng();
-                            let delay = rng.gen_range(min..=max);
                             TransitionAction::ScheduleGap {
                                 next_clip_index: idx,
-                                delay_seconds: delay,
+                                delay_seconds: gap_delay(min, max),
                             }
                         }
                         TrackTransition::Crossfade => {
@@ -237,5 +234,36 @@ pub fn pick_next_clip_index(
                 None
             }
         }
+    }
+}
+
+/// Random delay for a Gap transition. Tolerates inverted (min > max) and
+/// non-finite config: `gen_range` panics on an empty range, and a panic on
+/// the poll thread poisons the audio mutex.
+fn gap_delay(min: f64, max: f64) -> f64 {
+    use rand::Rng;
+    let (lo, hi) = if min <= max { (min, max) } else { (max, min) };
+    if lo.is_finite() && hi.is_finite() && lo <= hi {
+        rand::thread_rng().gen_range(lo..=hi)
+    } else {
+        0.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gap_delay_tolerates_inverted_range() {
+        let d = gap_delay(5.0, 2.0); // must not panic
+        assert!((2.0..=5.0).contains(&d));
+    }
+
+    #[test]
+    fn gap_delay_handles_degenerate_and_non_finite() {
+        assert_eq!(gap_delay(3.0, 3.0), 3.0);
+        assert_eq!(gap_delay(f64::NAN, 3.0), 0.0);
+        assert_eq!(gap_delay(1.0, f64::INFINITY), 0.0);
     }
 }

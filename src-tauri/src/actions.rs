@@ -191,6 +191,13 @@ pub fn update_track(container: &AppStateContainer, _comp_id: &str, track_id: &st
                 .and_then(|t| t.get("max"))
                 .and_then(|t| t.as_f64());
 
+            // Normalise inverted gap ranges — the engine tolerates them
+            // (transitions::gap_delay) but they shouldn't reach the DB.
+            let (gap_min, gap_max) = match (gap_min, gap_max) {
+                (Some(lo), Some(hi)) if lo > hi => (Some(hi), Some(lo)),
+                other => other,
+            };
+
             hierarchy::update_track_mode(
                 conn,
                 track_id,
