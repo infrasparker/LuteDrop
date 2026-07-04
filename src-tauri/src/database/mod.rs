@@ -12,6 +12,63 @@ use crate::models::{
     AppState, Clip, Comp, Configuration, EntryType, Group, LibraryEntry, Track, TrackMode, TrackTransition,
 };
 
+/// Current schema version. Bump when adding a migration below; fresh
+/// databases are stamped with this directly.
+pub const SCHEMA_VERSION: i64 = 3;
+
+/// A migration upgrades a database from version N to N+1.
+pub type Migration = fn(&Connection) -> SqlResult<()>;
+
+/// Ordered migrations: entry `(n, f)` upgrades version n → n+1.
+/// Empty today — the next schema change adds its step here.
+const MIGRATIONS: &[(i64, Migration)] = &[];
+
+fn read_schema_version(conn: &Connection) -> i64 {
+    conn.query_row(
+        "SELECT value FROM meta WHERE key = 'schema_version'",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|v| v.parse().ok())
+    .unwrap_or(0)
+}
+
+pub fn run_migrations(conn: &Connection) -> Result<(), String> {
+    run_migrations_with(conn, MIGRATIONS, SCHEMA_VERSION)
+}
+
+fn run_migrations_with(
+    conn: &Connection,
+    migrations: &[(i64, Migration)],
+    target: i64,
+) -> Result<(), String> {
+    let mut version = read_schema_version(conn);
+    if version > target {
+        return Err(format!(
+            "Database schema is v{version}, newer than this app supports (v{target}). \
+             Update LuteDrop before opening this library."
+        ));
+    }
+    for (from, migrate) in migrations {
+        if version == *from {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Migration v{from}: failed to open transaction: {e}"))?;
+            migrate(conn).map_err(|e| format!("Migration v{from} → v{} failed: {e}", from + 1))?;
+            conn.execute(
+                "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
+                params![(from + 1).to_string()],
+            )
+            .map_err(|e| format!("Migration v{from}: failed to bump version: {e}"))?;
+            tx.commit()
+                .map_err(|e| format!("Migration v{from}: commit failed: {e}"))?;
+            version = from + 1;
+        }
+    }
+    Ok(())
+}
+
 /// Opens (or creates) the SQLite database at `path`, enables WAL mode and
 /// foreign-key enforcement, then runs the schema initialiser.
 pub fn open_db(path: &Path) -> Result<Connection, String> {
@@ -21,7 +78,28 @@ pub fn open_db(path: &Path) -> Result<Connection, String> {
     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
         .map_err(|e| format!("Failed to set PRAGMAs: {e}"))?;
 
+    // A database without a `meta` table is fresh: init_schema creates the
+    // current schema, so stamp it SCHEMA_VERSION directly. An existing
+    // database keeps (or is backfilled to) its stored version and is walked
+    // forward by run_migrations. All pre-runner databases are v3.
+    let fresh: bool = !conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='meta'",
+            [],
+            |row| row.get::<_, i64>(0).map(|c| c > 0),
+        )
+        .map_err(|e| format!("Failed to inspect database: {e}"))?;
+
     init_schema(&conn).map_err(|e| format!("Failed to initialise schema: {e}"))?;
+
+    let stamp = if fresh { SCHEMA_VERSION } else { 3 };
+    conn.execute(
+        "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?1)",
+        params![stamp.to_string()],
+    )
+    .map_err(|e| format!("Failed to stamp schema version: {e}"))?;
+
+    run_migrations(&conn)?;
 
     Ok(conn)
 }
@@ -105,8 +183,6 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
             volume           REAL NOT NULL DEFAULT 1.0,
             sort_order       INTEGER NOT NULL
         );
-
-        INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '3');
     ")
 }
 
@@ -564,7 +640,11 @@ mod tests {
 
     #[test]
     fn schema_version_is_set() {
-        let conn = open_memory_db();
+        // The stamp now happens in open_db (fresh-database detection), not in
+        // init_schema's batch, so exercise open_db on a real temp-file DB.
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("lutedrop.db");
+        let conn = open_db(&db_path).expect("open_db should succeed on fresh db");
         let version: String = conn
             .query_row(
                 "SELECT value FROM meta WHERE key='schema_version'",
@@ -573,6 +653,37 @@ mod tests {
             )
             .expect("schema_version row should exist");
         assert_eq!(version, "3");
+    }
+
+    #[test]
+    fn migrations_step_version_and_apply_in_order() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        // init_schema no longer stamps a version (open_db does) — insert one.
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '1')", []).unwrap();
+
+        fn mig1(c: &Connection) -> rusqlite::Result<()> {
+            c.execute_batch("CREATE TABLE mig_one (id TEXT)")
+        }
+        fn mig2(c: &Connection) -> rusqlite::Result<()> {
+            c.execute_batch("CREATE TABLE mig_two (id TEXT)")
+        }
+        run_migrations_with(&conn, &[(1, mig1 as Migration), (2, mig2 as Migration)], 3).unwrap();
+
+        assert_eq!(read_schema_version(&conn), 3);
+        // Both tables exist:
+        conn.execute("INSERT INTO mig_one VALUES ('x')", []).unwrap();
+        conn.execute("INSERT INTO mig_two VALUES ('x')", []).unwrap();
+        // Idempotent: running again is a no-op.
+        run_migrations_with(&conn, &[(1, mig1 as Migration), (2, mig2 as Migration)], 3).unwrap();
+    }
+
+    #[test]
+    fn newer_database_than_app_is_rejected() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '99')", []).unwrap();
+        assert!(run_migrations_with(&conn, &[], 3).is_err());
     }
 
     #[test]
