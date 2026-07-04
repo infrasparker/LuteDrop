@@ -255,7 +255,9 @@ pub fn decode_file(path: &str) -> Result<Decoded, String> {
         (std::ptr::null_mut(), 0u64, 0u32, 0u32);
     let rc = unsafe { ld_decode_file(wide.as_ptr(), &mut out, &mut frames, &mut channels, &mut sr) };
     if rc != 0 || out.is_null() {
-        return Err(format!("decode failed for {path}"));
+        // Codes from shim.c ld_decode_file: 1 = open/init failed,
+        // 2/3 = out of memory, 4 = decode failed mid-stream (corrupt file).
+        return Err(format!("decode failed for {path} (code {rc})"));
     }
     let n = (frames as usize) * (channels as usize);
     let samples = unsafe { std::slice::from_raw_parts(out, n) }.to_vec();
@@ -316,6 +318,14 @@ mod tests {
         let d = result.expect("decode of non-ASCII path");
         assert!(d.frames > 0, "decoded zero frames from unicode path");
         assert_eq!(d.sample_rate, 48000);
+    }
+
+    #[test]
+    fn decode_garbage_file_errors_instead_of_silent_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("garbage.mp3");
+        std::fs::write(&path, [0xDEu8, 0xAD, 0xBE, 0xEF].repeat(1024)).unwrap();
+        assert!(decode_file(path.to_str().unwrap()).is_err());
     }
 
     #[test]
