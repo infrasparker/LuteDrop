@@ -59,6 +59,7 @@ pub async fn start_server(container: Arc<AppStateContainer>, remote_dist_path: S
 
     let addr = SocketAddr::from(([0, 0, 0, 0], REMOTE_PORT));
     log::info!("Remote server listening on http://0.0.0.0:{}", REMOTE_PORT);
+    log::info!("Remote pairing token: {}", container.remote_token);
 
     match tokio::net::TcpListener::bind(addr).await {
         Ok(listener) => {
@@ -74,9 +75,18 @@ pub async fn start_server(container: Arc<AppStateContainer>, remote_dist_path: S
 
 async fn ws_handler(
     ws: WebSocketUpgrade,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
     AxumState(state): AxumState<SharedState>,
-) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_ws(socket, state))
+) -> axum::response::Response {
+    let origin = headers.get("origin").and_then(|v| v.to_str().ok());
+    let host = headers.get("host").and_then(|v| v.to_str().ok());
+    let token = params.get("token").map(String::as_str);
+    if !ws_request_allowed(origin, host, token, &state.remote_token) {
+        log::warn!("Rejected remote WS connection (origin: {:?})", origin);
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
+    ws.on_upgrade(move |socket| handle_ws(socket, state)).into_response()
 }
 
 async fn handle_ws(mut socket: WebSocket, container: SharedState) {
@@ -228,6 +238,33 @@ pub fn get_local_ip() -> String {
     ip
 }
 
+/// Gate for `/ws` upgrades. The token is the primary check; the Origin check
+/// additionally blocks cross-site WebSocket hijacking from browser pages
+/// (WebSockets are exempt from CORS). Origin may be absent for non-browser
+/// clients — the token still protects those. When present, the Origin's host
+/// must equal the host the request was addressed to; the port is ignored so
+/// the vite dev remote (port 1421) can reach the server (port 3333).
+fn ws_request_allowed(
+    origin: Option<&str>,
+    request_host: Option<&str>,
+    token: Option<&str>,
+    expected_token: &str,
+) -> bool {
+    if token != Some(expected_token) {
+        return false;
+    }
+    let Some(origin) = origin else { return true };
+    let origin_host = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+        .map(|rest| rest.split(':').next().unwrap_or(rest))
+        .unwrap_or("");
+    let req_host = request_host
+        .map(|h| h.split(':').next().unwrap_or(h))
+        .unwrap_or("");
+    !origin_host.is_empty() && origin_host == req_host
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,5 +276,32 @@ mod tests {
         assert_eq!(a.len(), 32); // uuid v4 simple form: 32 hex chars
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn ws_rejects_bad_or_missing_token() {
+        assert!(!ws_request_allowed(None, Some("192.168.1.5:3333"), None, "tok"));
+        assert!(!ws_request_allowed(None, Some("192.168.1.5:3333"), Some("wrong"), "tok"));
+    }
+
+    #[test]
+    fn ws_accepts_valid_token_without_origin() {
+        assert!(ws_request_allowed(None, Some("192.168.1.5:3333"), Some("tok"), "tok"));
+    }
+
+    #[test]
+    fn ws_accepts_same_host_origin_any_port() {
+        // Production: remote page served by axum itself
+        assert!(ws_request_allowed(
+            Some("http://192.168.1.5:3333"), Some("192.168.1.5:3333"), Some("tok"), "tok"));
+        // Dev: vite remote server on 1421 connecting to 3333
+        assert!(ws_request_allowed(
+            Some("http://192.168.1.5:1421"), Some("192.168.1.5:3333"), Some("tok"), "tok"));
+    }
+
+    #[test]
+    fn ws_rejects_cross_site_origin_even_with_token() {
+        assert!(!ws_request_allowed(
+            Some("https://evil.example"), Some("192.168.1.5:3333"), Some("tok"), "tok"));
     }
 }
