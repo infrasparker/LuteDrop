@@ -125,6 +125,24 @@ async fn handle_ws(mut socket: WebSocket, container: SharedState) {
     }
 }
 
+/// Remote volumes must be present, finite, and in [0, 1]. A missing volume is
+/// an error — defaulting it (the old behavior was 1.0) can slam master volume
+/// to full mid-session on a malformed message.
+fn require_volume(v: Option<f64>) -> Result<f64, String> {
+    match v {
+        Some(x) if x.is_finite() => Ok(x.clamp(0.0, 1.0)),
+        Some(_) => Err("volume must be a finite number".into()),
+        None => Err("volume is required".into()),
+    }
+}
+
+fn require_id<'a>(v: &'a Option<String>, field: &str) -> Result<&'a str, String> {
+    match v.as_deref() {
+        Some(s) if !s.is_empty() => Ok(s),
+        _ => Err(format!("{field} is required")),
+    }
+}
+
 fn handle_remote_command(container: &AppStateContainer, text: &str) {
     let cmd: RemoteCommand = match serde_json::from_str(text) {
         Ok(c) => c,
@@ -135,53 +153,34 @@ fn handle_remote_command(container: &AppStateContainer, text: &str) {
     };
 
     let result = match cmd.command.as_str() {
-        "play_track" => {
-            let id = cmd.track_id.as_deref().unwrap_or("");
-            actions::play_track_audio(container, id)
-        }
-        "pause_track" => {
-            let id = cmd.track_id.as_deref().unwrap_or("");
-            actions::pause_track_audio(container, id)
-        }
-        "stop_track" => {
-            let id = cmd.track_id.as_deref().unwrap_or("");
-            actions::stop_track_audio(container, id)
-        }
-        "play_track_clip" => {
-            let track_id = cmd.track_id.as_deref().unwrap_or("");
-            let clip_id = cmd.clip_id.as_deref().unwrap_or("");
-            actions::play_track_clip(container, track_id, clip_id)
-        }
-        "set_master_volume" => {
-            let vol = cmd.volume.unwrap_or(1.0);
-            actions::set_master_volume_action(container, vol)
-        }
-        "set_track_volume" => {
-            let id = cmd.track_id.as_deref().unwrap_or("");
-            let vol = cmd.volume.unwrap_or(1.0);
-            actions::set_track_volume_action(container, id, vol)
-        }
-        "set_clip_volume" => {
-            let id = cmd.clip_id.as_deref().unwrap_or("");
-            let vol = cmd.volume.unwrap_or(1.0);
-            actions::set_clip_volume_action(container, id, vol)
-        }
-        "activate_comp" => {
-            let id = cmd.comp_id.as_deref().unwrap_or("");
-            actions::activate_comp_audio(container, id)
-        }
-        "stop_comp" => {
-            let id = cmd.comp_id.as_deref().unwrap_or("");
-            actions::stop_comp_audio(container, id)
-        }
-        "pause_comp" => {
-            let id = cmd.comp_id.as_deref().unwrap_or("");
-            actions::pause_comp_audio(container, id)
-        }
-        "resume_comp" => {
-            let id = cmd.comp_id.as_deref().unwrap_or("");
-            actions::resume_comp_audio(container, id)
-        }
+        "play_track" => require_id(&cmd.track_id, "trackId")
+            .and_then(|id| actions::play_track_audio(container, id)),
+        "pause_track" => require_id(&cmd.track_id, "trackId")
+            .and_then(|id| actions::pause_track_audio(container, id)),
+        "stop_track" => require_id(&cmd.track_id, "trackId")
+            .and_then(|id| actions::stop_track_audio(container, id)),
+        "play_track_clip" => require_id(&cmd.track_id, "trackId").and_then(|tid| {
+            require_id(&cmd.clip_id, "clipId")
+                .and_then(|cid| actions::play_track_clip(container, tid, cid))
+        }),
+        "set_master_volume" => require_volume(cmd.volume)
+            .and_then(|v| actions::set_master_volume_action(container, v)),
+        "set_track_volume" => require_id(&cmd.track_id, "trackId").and_then(|id| {
+            require_volume(cmd.volume)
+                .and_then(|v| actions::set_track_volume_action(container, id, v))
+        }),
+        "set_clip_volume" => require_id(&cmd.clip_id, "clipId").and_then(|id| {
+            require_volume(cmd.volume)
+                .and_then(|v| actions::set_clip_volume_action(container, id, v))
+        }),
+        "activate_comp" => require_id(&cmd.comp_id, "compId")
+            .and_then(|id| actions::activate_comp_audio(container, id)),
+        "stop_comp" => require_id(&cmd.comp_id, "compId")
+            .and_then(|id| actions::stop_comp_audio(container, id)),
+        "pause_comp" => require_id(&cmd.comp_id, "compId")
+            .and_then(|id| actions::pause_comp_audio(container, id)),
+        "resume_comp" => require_id(&cmd.comp_id, "compId")
+            .and_then(|id| actions::resume_comp_audio(container, id)),
         "stop_all" => actions::stop_all_audio(container),
         "pause_all" => actions::pause_all_audio(container),
         "resume_all" => actions::resume_all_audio(container),
@@ -339,5 +338,21 @@ mod tests {
             Some("http://[2001:db8::1"),
             Some("[2001:db8::1]:3333"),
             Some("tok"), "tok"));
+    }
+
+    #[test]
+    fn require_volume_clamps_and_rejects() {
+        assert_eq!(require_volume(Some(0.5)), Ok(0.5));
+        assert_eq!(require_volume(Some(-3.0)), Ok(0.0));
+        assert_eq!(require_volume(Some(9.9)), Ok(1.0));
+        assert!(require_volume(Some(f64::NAN)).is_err());
+        assert!(require_volume(None).is_err()); // must NOT default to 1.0
+    }
+
+    #[test]
+    fn require_id_rejects_missing_and_empty() {
+        assert!(require_id(&None, "trackId").is_err());
+        assert!(require_id(&Some(String::new()), "trackId").is_err());
+        assert_eq!(require_id(&Some("t1".into()), "trackId"), Ok("t1"));
     }
 }
