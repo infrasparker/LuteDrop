@@ -59,7 +59,9 @@ pub async fn start_server(container: Arc<AppStateContainer>, remote_dist_path: S
 
     let addr = SocketAddr::from(([0, 0, 0, 0], REMOTE_PORT));
     log::info!("Remote server listening on http://0.0.0.0:{}", REMOTE_PORT);
-    log::info!("Remote pairing token: {}", container.remote_token);
+    if cfg!(debug_assertions) {
+        log::info!("Remote pairing token: {}", container.remote_token);
+    }
 
     match tokio::net::TcpListener::bind(addr).await {
         Ok(listener) => {
