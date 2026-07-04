@@ -238,6 +238,20 @@ pub fn get_local_ip() -> String {
     ip
 }
 
+/// Extracts the host portion of an authority string ("host", "host:port",
+/// "[v6::literal]:port"). IPv6 brackets are kept so two distinct IPv6
+/// literals never collapse to the same prefix fragment.
+fn host_of(authority: &str) -> &str {
+    if authority.starts_with('[') {
+        match authority.find(']') {
+            Some(end) => &authority[..end + 1], // include both brackets
+            None => "", // malformed bracketed literal → rejected by caller
+        }
+    } else {
+        authority.split(':').next().unwrap_or(authority)
+    }
+}
+
 /// Gate for `/ws` upgrades. The token is the primary check; the Origin check
 /// additionally blocks cross-site WebSocket hijacking from browser pages
 /// (WebSockets are exempt from CORS). Origin may be absent for non-browser
@@ -257,11 +271,9 @@ fn ws_request_allowed(
     let origin_host = origin
         .strip_prefix("http://")
         .or_else(|| origin.strip_prefix("https://"))
-        .map(|rest| rest.split(':').next().unwrap_or(rest))
+        .map(host_of)
         .unwrap_or("");
-    let req_host = request_host
-        .map(|h| h.split(':').next().unwrap_or(h))
-        .unwrap_or("");
+    let req_host = request_host.map(host_of).unwrap_or("");
     !origin_host.is_empty() && origin_host == req_host
 }
 
@@ -303,5 +315,29 @@ mod tests {
     fn ws_rejects_cross_site_origin_even_with_token() {
         assert!(!ws_request_allowed(
             Some("https://evil.example"), Some("192.168.1.5:3333"), Some("tok"), "tok"));
+    }
+
+    #[test]
+    fn ws_rejects_different_ipv6_origin_host() {
+        assert!(!ws_request_allowed(
+            Some("http://[2001:db8:1234:5678::abcd]:1421"),
+            Some("[2001:db8:1234:5678::ef01]:3333"),
+            Some("tok"), "tok"));
+    }
+
+    #[test]
+    fn ws_accepts_same_ipv6_origin_host_any_port() {
+        assert!(ws_request_allowed(
+            Some("http://[2001:db8::1]:1421"),
+            Some("[2001:db8::1]:3333"),
+            Some("tok"), "tok"));
+    }
+
+    #[test]
+    fn ws_rejects_malformed_bracketed_origin() {
+        assert!(!ws_request_allowed(
+            Some("http://[2001:db8::1"),
+            Some("[2001:db8::1]:3333"),
+            Some("tok"), "tok"));
     }
 }
