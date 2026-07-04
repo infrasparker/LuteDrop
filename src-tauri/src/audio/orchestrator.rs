@@ -8,17 +8,20 @@ use super::transitions::{TransitionManager, TransitionAction};
 use super::voice::Voice;
 
 pub struct ManagedTrack {
+    /// Holds the *outgoing* crossfade sound (`OutgoingFade.handle`), which
+    /// lives in `voice`'s group. Declared before `voice` so it drops first:
+    /// sounds must be uninitialized before their group (see ffi.rs drop-order
+    /// contract). Reordering these fields reintroduces mid-crossfade UB.
+    pub transitions: TransitionManager,
     /// Single-sound playback for this track: owns the sub-mix group, the current
     /// clip's sound, the de-click fade-out reaper, and the seamless-loop
     /// crossfade. The multi-clip sequencing (which/when) lives in this module +
     /// `TransitionManager`; the actual play/stop/loop/reap is delegated to the
-    /// Voice. Declared before any field that must outlive it (none here; the
-    /// engine lives in `AudioEngine`).
+    /// Voice. Must outlive `transitions` (drops after it).
     pub voice: Voice,
     pub config: Track,
     pub current_clip_index: Option<usize>,
     pub is_paused: bool,
-    pub transitions: TransitionManager,
 }
 
 pub fn setup_track(
@@ -42,11 +45,11 @@ pub fn setup_track(
     ));
 
     tracks.insert(config.id.clone(), ManagedTrack {
+        transitions: TransitionManager::new(),
         voice,
         config: config.clone(),
         current_clip_index: None,
         is_paused: false,
-        transitions: TransitionManager::new(),
     });
 
     Ok(())
