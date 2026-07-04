@@ -48,6 +48,7 @@ impl TransitionManager {
         mode: &TrackMode,
         current_clip_index: Option<usize>,
         clip_count: usize,
+        clips_played: usize,
         is_paused: bool,
         sound_playing: bool,
         sound_stopped: bool,
@@ -75,7 +76,7 @@ impl TransitionManager {
 
         // Check for sound finished naturally
         if sound_stopped && !is_paused {
-            let next = pick_next_clip_index(mode, current_clip_index, clip_count);
+            let next = pick_next_clip_index(mode, current_clip_index, clip_count, clips_played);
             return match next {
                 Some(idx) => {
                     // Determine transition type
@@ -130,7 +131,7 @@ impl TransitionManager {
                 };
 
                 if position >= clip_dur - effective_xfade {
-                    let next = pick_next_clip_index(mode, current_clip_index, clip_count);
+                    let next = pick_next_clip_index(mode, current_clip_index, clip_count, clips_played);
                     if let Some(idx) = next {
                         return TransitionAction::StartCrossfade {
                             next_clip_index: idx,
@@ -190,15 +191,17 @@ impl TransitionManager {
 }
 
 /// Determine the next clip index given the current playback mode.
-/// Moved from engine.rs.
 ///
 /// - Sequence: advance to next; wrap to 0 if repeat, else None.
-/// - Shuffle: random index, avoids repeating the same clip when count > 1.
-/// - Seamless: always None (the orchestrator loops the single clip itself).
+/// - Shuffle: random index avoiding an immediate repeat. Without `repeat`,
+///   stops after `clip_count` plays (counted by the orchestrator) — clips may
+///   repeat/skip within those plays; exact-once shuffle is a future feature.
+/// - Seamless: always None (the Voice loops the single clip itself).
 pub fn pick_next_clip_index(
     mode: &TrackMode,
     current_index: Option<usize>,
     clip_count: usize,
+    clips_played: usize,
 ) -> Option<usize> {
     if clip_count == 0 {
         return None;
@@ -217,21 +220,22 @@ pub fn pick_next_clip_index(
             }
         }
         TrackMode::Shuffle { repeat, .. } => {
-            if *repeat || clip_count > 1 {
-                use rand::Rng;
-                let mut rng = rand::thread_rng();
-                if clip_count > 1 {
-                    loop {
-                        let idx = rng.gen_range(0..clip_count);
-                        if Some(idx) != current_index {
-                            return Some(idx);
-                        }
-                    }
-                } else {
-                    Some(0)
+            if !*repeat && clips_played >= clip_count {
+                return None;
+            }
+            if clip_count == 1 {
+                return Some(0);
+            }
+            use rand::Rng;
+            let mut rng = rand::thread_rng();
+            // Uniform over the clip_count-1 indices != current (bounded; the
+            // old unbounded reroll loop could in principle spin).
+            match current_index {
+                Some(cur) if cur < clip_count => {
+                    let idx = rng.gen_range(0..clip_count - 1);
+                    Some(if idx >= cur { idx + 1 } else { idx })
                 }
-            } else {
-                None
+                _ => Some(rng.gen_range(0..clip_count)),
             }
         }
     }
@@ -265,5 +269,42 @@ mod tests {
         assert_eq!(gap_delay(3.0, 3.0), 3.0);
         assert_eq!(gap_delay(f64::NAN, 3.0), 0.0);
         assert_eq!(gap_delay(1.0, f64::INFINITY), 0.0);
+    }
+
+    fn shuffle(repeat: bool) -> TrackMode {
+        TrackMode::Shuffle { repeat, transition: TrackTransition::Gapless }
+    }
+
+    #[test]
+    fn shuffle_without_repeat_stops_after_clip_count_plays() {
+        assert!(pick_next_clip_index(&shuffle(false), Some(1), 3, 3).is_none());
+        assert!(pick_next_clip_index(&shuffle(false), Some(1), 3, 2).is_some());
+    }
+
+    #[test]
+    fn shuffle_with_repeat_never_stops() {
+        assert!(pick_next_clip_index(&shuffle(true), Some(0), 3, 300).is_some());
+        assert_eq!(pick_next_clip_index(&shuffle(true), Some(0), 1, 5), Some(0));
+    }
+
+    #[test]
+    fn shuffle_single_clip_no_repeat_plays_once() {
+        assert!(pick_next_clip_index(&shuffle(false), Some(0), 1, 1).is_none());
+    }
+
+    #[test]
+    fn shuffle_avoids_immediate_repeat() {
+        for _ in 0..50 {
+            let next = pick_next_clip_index(&shuffle(true), Some(2), 4, 1);
+            assert_ne!(next, Some(2));
+        }
+    }
+
+    #[test]
+    fn sequence_semantics_unchanged() {
+        let seq = |repeat| TrackMode::Sequence { repeat, transition: TrackTransition::Gapless };
+        assert_eq!(pick_next_clip_index(&seq(false), Some(0), 3, 1), Some(1));
+        assert!(pick_next_clip_index(&seq(false), Some(2), 3, 3).is_none());
+        assert_eq!(pick_next_clip_index(&seq(true), Some(2), 3, 3), Some(0));
     }
 }
