@@ -41,6 +41,15 @@ struct RemoteCommand {
 
 type SharedState = Arc<AppStateContainer>;
 
+/// Port for the phone-remote HTTP/WebSocket server. Also reported by the
+/// `get_server_info` command — keep the two in sync via this constant.
+pub const REMOTE_PORT: u16 = 3333;
+
+/// Random per-session pairing token required on every `/ws` upgrade.
+pub fn generate_remote_token() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
 /// Start the axum server. Call this from lib.rs setup.
 pub async fn start_server(container: Arc<AppStateContainer>, remote_dist_path: String) {
     let app = Router::new()
@@ -48,8 +57,8 @@ pub async fn start_server(container: Arc<AppStateContainer>, remote_dist_path: S
         .fallback_service(ServeDir::new(&remote_dist_path))
         .with_state(container.clone());
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], 3333));
-    log::info!("Remote server listening on http://0.0.0.0:3333");
+    let addr = SocketAddr::from(([0, 0, 0, 0], REMOTE_PORT));
+    log::info!("Remote server listening on http://0.0.0.0:{}", REMOTE_PORT);
 
     match tokio::net::TcpListener::bind(addr).await {
         Ok(listener) => {
@@ -217,4 +226,18 @@ pub fn get_local_ip() -> String {
         .map(|addr| addr.ip().to_string())
         .unwrap_or_else(|| "localhost".to_string());
     ip
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_tokens_are_random_and_nonempty() {
+        let a = generate_remote_token();
+        let b = generate_remote_token();
+        assert_eq!(a.len(), 32); // uuid v4 simple form: 32 hex chars
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
+    }
 }

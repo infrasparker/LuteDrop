@@ -214,7 +214,7 @@ pub fn get_server_info() -> Result<serde_json::Value, String> {
     let ip = crate::server::get_local_ip();
     Ok(serde_json::json!({
         "ip": ip,
-        "port": 3333
+        "port": crate::server::REMOTE_PORT
     }))
 }
 
