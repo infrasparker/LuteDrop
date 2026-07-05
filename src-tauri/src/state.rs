@@ -107,6 +107,7 @@ impl AppStateContainer {
         };
         if newly_added {
             self.emit_missing_changed(id);
+            self.mark_state_dirty();
         }
         newly_added
     }
@@ -121,6 +122,7 @@ impl AppStateContainer {
         };
         if was_removed {
             self.emit_found(id);
+            self.mark_state_dirty();
         }
         was_removed
     }

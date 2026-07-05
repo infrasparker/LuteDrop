@@ -630,6 +630,9 @@ fn run_bulk_import(container: Arc<AppStateContainer>, paths: Vec<String>, tags: 
                         let _ = library::update_library_entry_duration(&conn, &id, dur, None);
                     }
                 }
+                // Per-file dirty mark: connected remotes see the library grow
+                // as the import proceeds rather than only at the end.
+                container.mark_state_dirty();
             }
             Ok(None) => {
                 skipped += 1;
@@ -647,6 +650,9 @@ fn run_bulk_import(container: Arc<AppStateContainer>, paths: Vec<String>, tags: 
         "library-import-complete",
         BulkImportProgress { processed: total, imported, skipped, total },
     );
+    // Belt-and-braces: ensure remotes get a final structural snapshot after
+    // the import finishes (cheap atomic store; redundant marks are harmless).
+    container.mark_state_dirty();
     container.release_import();
 }
 
