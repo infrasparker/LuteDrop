@@ -44,8 +44,6 @@ use super::sound::{self, PlayParams, SoundHandle};
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PreloadKind {
     LoopInstance,
-    // Constructed by Task 4 (next-clip transition preloads); unused until then.
-    #[allow(dead_code)]
     NextClip,
 }
 
@@ -74,8 +72,6 @@ pub struct PreloadTarget {
     pub seq: u64,
     pub kind: PreloadKind,
     /// The clip index this preload is for (NextClip only; None for LoopInstance).
-    // Read by Task 4 (transition consume); unused until then.
-    #[allow(dead_code)]
     pub clip_index: Option<usize>,
     /// The params the sound was opened with — needed to rebuild loop-restart /
     /// know the intended volume at handoff.

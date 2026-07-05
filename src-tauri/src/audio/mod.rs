@@ -79,6 +79,7 @@ impl AudioEngine {
     }
 
     pub fn update_track_config(&mut self, config: &Track) {
+        self.invalidate_preload(&config.id);
         orchestrator::update_track_config(&mut self.tracks, config);
     }
 
@@ -87,16 +88,19 @@ impl AudioEngine {
     }
 
     pub fn play_track(&mut self, track_id: &str) -> Result<(), String> {
+        self.invalidate_preload(track_id);
         self.stop_library_sound();
         orchestrator::play_track(&mut self.tracks, &self.engine, track_id, &self.mute_state)
     }
 
     pub fn play_track_clip(&mut self, track_id: &str, clip_id: &str) -> Result<(), String> {
+        self.invalidate_preload(track_id);
         self.stop_library_sound();
         orchestrator::play_track_clip(&mut self.tracks, &self.engine, track_id, clip_id, &self.mute_state)
     }
 
     pub fn play_track_from(&mut self, track_id: &str, position: f64) -> Result<(), String> {
+        self.invalidate_preload(track_id);
         orchestrator::play_track_from(&mut self.tracks, &self.engine, track_id, position, &self.mute_state)
     }
 
@@ -109,10 +113,15 @@ impl AudioEngine {
     }
 
     pub fn stop_track(&mut self, track_id: &str) -> Result<(), String> {
+        self.invalidate_preload(track_id);
         orchestrator::stop_track(&mut self.tracks, track_id)
     }
 
     pub fn stop_all(&mut self) {
+        let ids: Vec<String> = self.tracks.keys().cloned().collect();
+        for id in ids {
+            self.invalidate_preload(&id);
+        }
         orchestrator::stop_all(&mut self.tracks);
         self.stop_library_sound();
     }
@@ -227,6 +236,7 @@ impl AudioEngine {
     }
 
     pub fn stop_library_sound(&mut self) {
+        self.invalidate_preload(LIBRARY_TRACK_ID);
         // Use the sound's own fade_out if it has one, else a small de-click
         // default. The Voice parks the outgoing sound until the fade finishes.
         self.library.stop(None);
@@ -271,7 +281,15 @@ impl AudioEngine {
             .collect();
 
         for id in &track_ids {
-            orchestrator::poll_track(&mut self.tracks, &self.engine, id, &self.mute_state, &mut missing_entries, &mut found_entries);
+            orchestrator::poll_track(
+                &mut self.tracks,
+                &self.engine,
+                id,
+                &self.mute_state,
+                &mut self.pending,
+                &mut missing_entries,
+                &mut found_entries,
+            );
         }
 
         let mut states: Vec<TrackPlaybackState> = self.tracks.values()
@@ -288,6 +306,9 @@ impl AudioEngine {
         // Ask each looping Voice for its next loop instance (D6); the loader
         // opens it off-lock and a later tick's drain hands it back.
         self.request_loop_preloads();
+
+        // Queue an off-lock preload of each track's pre-picked next clip (D7).
+        self.request_next_clip_preloads();
 
         // Always emit library sound state so frontend can detect when it stops.
         let lib_state = if self.library.has_current() {
@@ -353,12 +374,41 @@ impl AudioEngine {
         }
     }
 
+    /// Queue an off-lock preload of each track's pre-picked next clip (D7), if
+    /// not already pending/ready for that exact index.
+    fn request_next_clip_preloads(&mut self) {
+        let ids: Vec<String> = self.tracks.keys().cloned().collect();
+        for id in ids {
+            let want = {
+                let track = match self.tracks.get(&id) { Some(t) => t, None => continue };
+                // Only preload for a track that is actually playing something:
+                // a stopped/idle track (no current sound) must not keep opening
+                // files. (A gap-transition wait has no current sound either —
+                // its pending clip was already picked and, if preloaded before
+                // the gap began, sits ready; do not re-request during the gap.)
+                if !track.voice.has_current() {
+                    continue;
+                }
+                let already = self
+                    .pending
+                    .get(&id)
+                    .map(|p| p.clip_index == track.next_clip_index)
+                    .unwrap_or(false);
+                match track.next_clip_index {
+                    Some(idx) if !already => orchestrator::preload_params_for(track, idx, &self.mute_state).map(|p| (idx, p)),
+                    _ => None,
+                }
+            };
+            if let Some((idx, params)) = want {
+                self.request_preload(id, PreloadKind::NextClip, Some(idx), params);
+            }
+        }
+    }
+
     /// Discard any pending/ready preload for `target` (D7 invalidation).
     /// Dropping the entry forgets its seq; the next request gets a fresh
     /// monotonic seq, so an in-flight completion for the old seq routes as
     /// stale. The ready handle (if any) drops here.
-    // Called by Task 4 (next-clip invalidation); unused until then.
-    #[allow(dead_code)]
     fn invalidate_preload(&mut self, target: &str) {
         self.pending.remove(target);
     }

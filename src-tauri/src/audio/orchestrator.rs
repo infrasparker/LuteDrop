@@ -23,6 +23,13 @@ pub struct ManagedTrack {
     pub current_clip_index: Option<usize>,
     pub clips_played: usize,
     pub is_paused: bool,
+    /// The next clip index, picked when THIS clip started (D7) so it can be
+    /// preloaded ahead of the transition. `None` means the track ends after this
+    /// clip. Shuffle commits its random choice here (one clip early).
+    pub next_clip_index: Option<usize>,
+    /// When the last clip start failed (D8); transition retries are suppressed
+    /// for `START_RETRY_BACKOFF` after it.
+    pub last_start_failure: Option<std::time::Instant>,
 }
 
 pub fn setup_track(
@@ -52,6 +59,8 @@ pub fn setup_track(
         current_clip_index: None,
         clips_played: 0,
         is_paused: false,
+        next_clip_index: None,
+        last_start_failure: None,
     });
 
     Ok(())
@@ -60,6 +69,11 @@ pub fn setup_track(
 pub fn update_track_config(tracks: &mut HashMap<String, ManagedTrack>, config: &Track) {
     if let Some(track) = tracks.get_mut(&config.id) {
         track.config = config.clone();
+        // The pre-picked next index was computed against the OLD clip list; a
+        // shrunk list must not leave an out-of-range stored index (and a
+        // changed list makes the pick stale anyway). Re-picked from the live
+        // config at the next transition via start_clip.
+        track.next_clip_index = None;
     }
 }
 
@@ -84,7 +98,7 @@ pub fn play_track(
 
     let clip_index = pick_first_clip(tracks, track_id)?;
     match clip_index {
-        Some(idx) => start_clip(tracks, engine, track_id, idx, None, true, mute_state),
+        Some(idx) => start_clip(tracks, engine, track_id, idx, None, true, mute_state, None),
         None => Err(format!("Track {} has no clips", track_id)),
     }
 }
@@ -104,7 +118,7 @@ pub fn play_track_clip(
     if let Some(track) = tracks.get_mut(track_id) {
         track.clips_played = 0;
     }
-    start_clip(tracks, engine, track_id, clip_index, None, true, mute_state)
+    start_clip(tracks, engine, track_id, clip_index, None, true, mute_state, None)
 }
 
 pub fn play_track_from(
@@ -119,7 +133,7 @@ pub fn play_track_from(
     }
     let clip_index = pick_first_clip(tracks, track_id)?;
     match clip_index {
-        Some(idx) => start_clip(tracks, engine, track_id, idx, Some(position), true, mute_state),
+        Some(idx) => start_clip(tracks, engine, track_id, idx, Some(position), true, mute_state, None),
         None => Err(format!("Track {} has no clips", track_id)),
     }
 }
@@ -150,6 +164,9 @@ pub fn stop_track(tracks: &mut HashMap<String, ManagedTrack>, track_id: &str) ->
     track.is_paused = false;
     track.current_clip_index = None;
     track.clips_played = 0;
+    // A stopped track has no next clip; leaving it set would make
+    // `request_next_clip_preloads` keep re-opening files for a silent track.
+    track.next_clip_index = None;
     track.transitions.reset();
     // Deferred destruction: fade the sound out and park it until the ramp
     // completes, instead of dropping it immediately (which would uninit it
@@ -252,6 +269,7 @@ pub fn poll_track(
     engine: &ffi::Engine,
     track_id: &str,
     mute_state: &MuteState,
+    pending: &mut HashMap<String, super::loader::PreloadTarget>,
     missing_entries: &mut Vec<String>,
     found_entries: &mut Vec<String>,
 ) {
@@ -308,16 +326,36 @@ pub fn poll_track(
         }
     }
 
-    let action = {
+    let (action, next_idx, suppressed) = {
         let track = match tracks.get(track_id) {
             Some(t) => t,
             None => return,
         };
-        track.transitions.update(
+        let next_idx = track.next_clip_index;
+        let suppressed = super::transitions::retry_suppressed(track.last_start_failure, std::time::Instant::now());
+        let action = track.transitions.update(
             position, clip_duration, clip_start, &mode,
             current_clip_index, clip_count, clips_played, is_paused, sound_playing, sound_stopped,
-        )
+            next_idx,
+        );
+        (action, next_idx, suppressed)
     };
+    let _ = next_idx;
+
+    // D8: after a failed start, suppress the transition actions that would
+    // re-open a clip for START_RETRY_BACKOFF. CleanupOutgoing / None are not
+    // opens, so they still run.
+    if suppressed
+        && matches!(
+            action,
+            TransitionAction::StartCrossfade { .. }
+                | TransitionAction::AdvanceClip { .. }
+                | TransitionAction::ScheduleGap { .. }
+                | TransitionAction::StartPendingClip { .. }
+        )
+    {
+        return;
+    }
 
     match action {
         TransitionAction::StartCrossfade { next_clip_index, duration } => {
@@ -329,7 +367,7 @@ pub fn poll_track(
                     track.transitions.begin_crossfade(old, duration);
                 }
             }
-            match start_clip(tracks, engine, track_id, next_clip_index, None, false, mute_state) {
+            match start_clip(tracks, engine, track_id, next_clip_index, None, false, mute_state, Some(pending)) {
                 Ok(_) => {
                     if let Some(track) = tracks.get(track_id) {
                         if let Some(clip) = track.config.clips.get(next_clip_index) {
@@ -349,7 +387,7 @@ pub fn poll_track(
             }
         }
         TransitionAction::AdvanceClip { next_clip_index } => {
-            match start_clip(tracks, engine, track_id, next_clip_index, None, false, mute_state) {
+            match start_clip(tracks, engine, track_id, next_clip_index, None, false, mute_state, Some(pending)) {
                 Ok(_) => {
                     if let Some(track) = tracks.get(track_id) {
                         if let Some(clip) = track.config.clips.get(next_clip_index) {
@@ -375,7 +413,7 @@ pub fn poll_track(
             }
         }
         TransitionAction::StartPendingClip { clip_index } => {
-            match start_clip(tracks, engine, track_id, clip_index, None, false, mute_state) {
+            match start_clip(tracks, engine, track_id, clip_index, None, false, mute_state, Some(pending)) {
                 Ok(_) => {
                     if let Some(track) = tracks.get(track_id) {
                         if let Some(clip) = track.config.clips.get(clip_index) {
@@ -439,6 +477,9 @@ fn start_clip(
     start_position: Option<f64>,
     apply_track_fade: bool,
     mute_state: &MuteState,
+    // Some(pending) for poll-driven transitions (may consume a ready preload);
+    // None for user-initiated immediate plays (always synchronous, per D9).
+    pending: Option<&mut HashMap<String, super::loader::PreloadTarget>>,
 ) -> Result<(), String> {
     let track = tracks.get_mut(track_id).ok_or_else(|| format!("Track not found: {}", track_id))?;
     let clip = track.config.clips.get(clip_index)
@@ -497,17 +538,91 @@ fn start_clip(
             | TrackMode::Shuffle { transition: TrackTransition::Crossfade, .. }
     );
 
-    if uses_crossfade {
-        track.voice.play(engine, params)?;
-    } else {
-        track.voice.play_with_trim_stop(engine, params)?;
+    // D7: consume a ready-and-matching preload if one exists; else open now.
+    let preloaded = pending.and_then(|pend| {
+        let matches = pend
+            .get(track_id)
+            .map(|p| p.clip_index == Some(clip_index) && p.ready.is_some())
+            .unwrap_or(false);
+        if matches {
+            pend.remove(track_id).and_then(|mut p| p.ready.take())
+        } else {
+            None
+        }
+    });
+
+    let result = match preloaded {
+        Some(handle) => {
+            // Preloaded off-lock; attach + start here. Crossfade clips skip the
+            // trim-stop (same rule as the synchronous path below).
+            track
+                .voice
+                .start_preloaded(handle, &params, params.volume, fade_in, !uses_crossfade)
+        }
+        None => {
+            if uses_crossfade {
+                track.voice.play(engine, params)
+            } else {
+                track.voice.play_with_trim_stop(engine, params)
+            }
+        }
+    };
+
+    if let Err(e) = result {
+        track.last_start_failure = Some(std::time::Instant::now());
+        return Err(e);
     }
+
     track.current_clip_index = Some(clip_index);
     track.clips_played += 1;
     track.transitions.clip_started();
     track.is_paused = false;
+    track.last_start_failure = None;
+    // Pre-pick the NEXT clip now, so the poll can preload it (D7). Uses the same
+    // pick logic that TransitionManager::update used to call.
+    track.next_clip_index = super::transitions::pick_next_clip_index(
+        &track.config.mode,
+        Some(clip_index),
+        track.config.clips.len(),
+        track.clips_played,
+    );
 
     Ok(())
+}
+
+/// Build the `PlayParams` for `clip_index` on `track` WITHOUT playing — used to
+/// request an off-lock preload of the pre-picked next clip (D7). Returns None if
+/// the index is out of range. Mirrors the param building in `start_clip`.
+pub fn preload_params_for(
+    track: &ManagedTrack,
+    clip_index: usize,
+    mute_state: &MuteState,
+) -> Option<PlayParams> {
+    let clip = track.config.clips.get(clip_index)?.clone();
+    let volume = levels::clip_sound_volume(clip.volume, clip.library_volume, mute_state.clip_muted(&clip.id));
+    let effective_start = clip.trim_start.unwrap_or(0.0);
+    let loop_region = match &track.config.mode {
+        TrackMode::Seamless { loop_start, loop_end } => {
+            let ls = clip.trim_start.map(|ts| (*loop_start).max(ts)).unwrap_or(*loop_start);
+            let raw_le = if *loop_end > 0.0 { *loop_end } else { clip.trim_end.unwrap_or(f64::MAX) };
+            let le = clip.trim_end.map(|te| raw_le.min(te)).unwrap_or(raw_le);
+            if le < f64::MAX && le > ls { Some((ls, le)) } else { None }
+        }
+        _ => None,
+    };
+    // Transitions never apply the track fade-in to a mid-sequence clip
+    // (apply_track_fade = false in the poll path), so the preloaded next clip
+    // carries no fade_in; the crossfade / advance supplies any fade itself.
+    Some(PlayParams {
+        file_path: clip.file_path.clone(),
+        start_position: effective_start,
+        volume,
+        trim_start: clip.trim_start,
+        trim_end: clip.trim_end,
+        loop_region,
+        fade_in: None,
+        fade_out: if track.config.fade_out > 0.0 { Some(track.config.fade_out) } else { None },
+    })
 }
 
 fn pick_first_clip(tracks: &HashMap<String, ManagedTrack>, track_id: &str) -> Result<Option<usize>, String> {

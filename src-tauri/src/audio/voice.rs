@@ -588,8 +588,6 @@ impl Voice {
     /// de-clicked trim-end stop (non-looping clips — same rule as
     /// `play_with_trim_stop`). Does NOT stop/park `current`; the caller owns
     /// the outgoing handoff.
-    // Consumed by Task 4 (next-clip transition handoff); unused until then.
-    #[allow(dead_code)]
     pub fn start_preloaded(
         &mut self,
         handle: SoundHandle,
