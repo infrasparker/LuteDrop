@@ -346,11 +346,31 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to collect library_entries: {e}"))?;
 
+    // All entry→tag associations in one query, grouped in memory.
+    let mut tag_map: HashMap<String, Vec<String>> = HashMap::new();
+    {
+        let mut tstmt = conn
+            .prepare(
+                "SELECT let.library_entry_id, t.name
+                 FROM library_entry_tags let
+                 JOIN tags t ON t.id = let.tag_id
+                 ORDER BY t.name ASC",
+            )
+            .map_err(|e| format!("Failed to prepare tag map query: {e}"))?;
+        let pairs = tstmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|e| format!("Failed to query tag map: {e}"))?;
+        for pair in pairs {
+            let (entry_id, name) = pair.map_err(|e| format!("Failed to read tag row: {e}"))?;
+            tag_map.entry(entry_id).or_default().push(name);
+        }
+    }
+
     let mut entries = Vec::with_capacity(rows.len());
     for (id, file_path, content_hash, name, duration, sample_rate, file_size,
          volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type) in rows
     {
-        let tags = library::get_tags_for_entry(conn, &id)?;
+        let tags = tag_map.remove(&id).unwrap_or_default();
         entries.push(LibraryEntry {
             id,
             file_path,
@@ -373,176 +393,144 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
     Ok(entries)
 }
 
-/// Queries all groups for the given configuration_id ordered by sort_order and loads comps for each.
+/// Queries all groups/comps/tracks/clips for the given configuration_id in
+/// four flat queries (one per level) instead of a per-parent N+1 cascade,
+/// then assembles the nested hierarchy in memory.
 fn load_groups(
     conn: &Connection,
     configuration_id: &str,
     entry_map: &HashMap<String, &LibraryEntry>,
 ) -> Result<Vec<Group>, String> {
-    let mut stmt = conn
-        .prepare("SELECT id, name FROM groups WHERE configuration_id = ?1 ORDER BY sort_order ASC")
-        .map_err(|e| format!("Failed to prepare load_groups: {e}"))?;
+    // One query per level, each scoped to the configuration and globally
+    // ordered by sort_order — pushing rows into per-parent vecs in query
+    // order preserves the per-parent ordering.
+    let group_rows: Vec<(String, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, name FROM groups WHERE configuration_id = ?1 ORDER BY sort_order ASC")
+            .map_err(|e| format!("Failed to prepare groups query: {e}"))?;
+        let rows = stmt
+            .query_map(params![configuration_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|e| format!("Failed to query groups: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to collect groups: {e}"))?;
+        rows
+    };
 
-    let rows = stmt
-        .query_map(params![configuration_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|e| format!("Failed to query groups: {e}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Failed to collect groups: {e}"))?;
-
-    let mut groups = Vec::with_capacity(rows.len());
-    for (id, name) in rows {
-        let comps = load_comps(conn, &id, entry_map)?;
-        groups.push(Group { id, name, comps });
-    }
-
-    Ok(groups)
-}
-
-/// Queries comps for a given group_id ordered by sort_order and loads tracks for each.
-fn load_comps(
-    conn: &Connection,
-    group_id: &str,
-    entry_map: &HashMap<String, &LibraryEntry>,
-) -> Result<Vec<Comp>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, name FROM comps WHERE group_id = ?1 ORDER BY sort_order ASC",
-        )
-        .map_err(|e| format!("Failed to prepare load_comps: {e}"))?;
-
-    let rows = stmt
-        .query_map(params![group_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|e| format!("Failed to query comps: {e}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Failed to collect comps: {e}"))?;
-
-    let mut comps = Vec::with_capacity(rows.len());
-    for (id, name) in rows {
-        let tracks = load_tracks(conn, &id, entry_map)?;
-        comps.push(Comp { id, name, tracks });
-    }
-
-    Ok(comps)
-}
-
-/// Queries tracks for a given comp_id ordered by sort_order and builds each Track.
-fn load_tracks(
-    conn: &Connection,
-    comp_id: &str,
-    entry_map: &HashMap<String, &LibraryEntry>,
-) -> Result<Vec<Track>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, name, volume, mode_type, repeat, transition_type,
-                    transition_gap_min, transition_gap_max, fade_in, fade_out
-             FROM tracks
-             WHERE comp_id = ?1
-             ORDER BY sort_order ASC",
-        )
-        .map_err(|e| format!("Failed to prepare load_tracks: {e}"))?;
-
-    let rows = stmt
-        .query_map(params![comp_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,           // id
-                row.get::<_, String>(1)?,           // name
-                row.get::<_, f64>(2)?,              // volume
-                row.get::<_, String>(3)?,           // mode_type
-                row.get::<_, Option<i64>>(4)?,      // repeat (stored as INTEGER)
-                row.get::<_, Option<String>>(5)?,   // transition_type
-                row.get::<_, Option<f64>>(6)?,      // gap_min
-                row.get::<_, Option<f64>>(7)?,      // gap_max
-                row.get::<_, f64>(8)?,              // fade_in
-                row.get::<_, f64>(9)?,              // fade_out
-            ))
-        })
-        .map_err(|e| format!("Failed to query tracks: {e}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Failed to collect tracks: {e}"))?;
-
-    let mut tracks = Vec::with_capacity(rows.len());
-    for (id, name, volume, mode_type, repeat_int, transition_type, gap_min, gap_max,
-         fade_in, fade_out) in rows
+    // comps grouped by group_id
+    let mut comps_by_group: HashMap<String, Vec<(String, String)>> = HashMap::new();
     {
-        let clips = load_clips(conn, &id, entry_map)?;
-        let repeat = repeat_int.map(|v| v != 0).unwrap_or(false);
-        let transition_type_str = transition_type.as_deref().unwrap_or("gapless");
-        let mode = build_track_mode(
-            &mode_type,
-            repeat,
-            transition_type_str,
-            gap_min.unwrap_or(0.0),
-            gap_max.unwrap_or(0.0),
-            &clips,
-            entry_map,
-        );
-        tracks.push(Track {
-            id,
-            name,
-            clips,
-            volume,
-            mode,
-            fade_in,
-            fade_out,
-        });
+        let mut stmt = conn
+            .prepare(
+                "SELECT c.id, c.group_id, c.name
+                 FROM comps c
+                 JOIN groups g ON g.id = c.group_id
+                 WHERE g.configuration_id = ?1
+                 ORDER BY c.sort_order ASC",
+            )
+            .map_err(|e| format!("Failed to prepare comps query: {e}"))?;
+        let rows = stmt
+            .query_map(params![configuration_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            })
+            .map_err(|e| format!("Failed to query comps: {e}"))?;
+        for row in rows {
+            let (id, group_id, name) = row.map_err(|e| format!("Failed to read comp row: {e}"))?;
+            comps_by_group.entry(group_id).or_default().push((id, name));
+        }
     }
 
-    Ok(tracks)
-}
+    // tracks grouped by comp_id (same tuple shape the old load_tracks used)
+    type TrackRow = (String, String, f64, String, Option<i64>, Option<String>, Option<f64>, Option<f64>, f64, f64);
+    let mut tracks_by_comp: HashMap<String, Vec<TrackRow>> = HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT t.id, t.comp_id, t.name, t.volume, t.mode_type, t.repeat, t.transition_type,
+                        t.transition_gap_min, t.transition_gap_max, t.fade_in, t.fade_out
+                 FROM tracks t
+                 JOIN comps c ON c.id = t.comp_id
+                 JOIN groups g ON g.id = c.group_id
+                 WHERE g.configuration_id = ?1
+                 ORDER BY t.sort_order ASC",
+            )
+            .map_err(|e| format!("Failed to prepare tracks query: {e}"))?;
+        let rows = stmt
+            .query_map(params![configuration_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?,
+                    row.get::<_, f64>(3)?, row.get::<_, String>(4)?, row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<String>>(6)?, row.get::<_, Option<f64>>(7)?,
+                    row.get::<_, Option<f64>>(8)?, row.get::<_, f64>(9)?, row.get::<_, f64>(10)?,
+                ))
+            })
+            .map_err(|e| format!("Failed to query tracks: {e}"))?;
+        for row in rows {
+            let (id, comp_id, name, volume, mode_type, repeat, ttype, gmin, gmax, fin, fout) =
+                row.map_err(|e| format!("Failed to read track row: {e}"))?;
+            tracks_by_comp
+                .entry(comp_id)
+                .or_default()
+                .push((id, name, volume, mode_type, repeat, ttype, gmin, gmax, fin, fout));
+        }
+    }
 
-/// Queries clips for a given track_id ordered by sort_order.
-/// Resolves name, file_path, and library_volume from entry_map.
-fn load_clips(
-    conn: &Connection,
-    track_id: &str,
-    entry_map: &HashMap<String, &LibraryEntry>,
-) -> Result<Vec<Clip>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, library_entry_id, volume
-             FROM clips
-             WHERE track_id = ?1
-             ORDER BY sort_order ASC",
-        )
-        .map_err(|e| format!("Failed to prepare load_clips: {e}"))?;
+    // clips grouped by track_id
+    let mut clips_by_track: HashMap<String, Vec<(String, String, f64)>> = HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT cl.id, cl.track_id, cl.library_entry_id, cl.volume
+                 FROM clips cl
+                 JOIN tracks t ON t.id = cl.track_id
+                 JOIN comps c ON c.id = t.comp_id
+                 JOIN groups g ON g.id = c.group_id
+                 WHERE g.configuration_id = ?1
+                 ORDER BY cl.sort_order ASC",
+            )
+            .map_err(|e| format!("Failed to prepare clips query: {e}"))?;
+        let rows = stmt
+            .query_map(params![configuration_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, f64>(3)?))
+            })
+            .map_err(|e| format!("Failed to query clips: {e}"))?;
+        for row in rows {
+            let (id, track_id, library_entry_id, volume) =
+                row.map_err(|e| format!("Failed to read clip row: {e}"))?;
+            clips_by_track.entry(track_id).or_default().push((id, library_entry_id, volume));
+        }
+    }
 
-    let rows = stmt
-        .query_map(params![track_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,   // id
-                row.get::<_, String>(1)?,   // library_entry_id
-                row.get::<_, f64>(2)?,      // volume
-            ))
-        })
-        .map_err(|e| format!("Failed to query clips: {e}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Failed to collect clips: {e}"))?;
-
-    let clips = rows
-        .into_iter()
-        .map(|(id, library_entry_id, volume)| {
-            let (name, file_path, library_volume, trim_start, trim_end) = match entry_map.get(&library_entry_id) {
-                Some(entry) => (entry.name.clone(), entry.file_path.clone(), entry.volume, entry.trim_start, entry.trim_end),
-                None => ("[missing]".to_string(), String::new(), 1.0, None, None),
-            };
-            Clip {
-                id,
-                name,
-                file_path,
-                volume,
-                library_entry_id,
-                library_volume,
-                trim_start,
-                trim_end,
+    // Assemble, resolving clip fields from entry_map exactly as before.
+    let mut groups = Vec::with_capacity(group_rows.len());
+    for (group_id, group_name) in group_rows {
+        let comp_rows = comps_by_group.remove(&group_id).unwrap_or_default();
+        let mut comps = Vec::with_capacity(comp_rows.len());
+        for (comp_id, comp_name) in comp_rows {
+            let track_rows = tracks_by_comp.remove(&comp_id).unwrap_or_default();
+            let mut tracks = Vec::with_capacity(track_rows.len());
+            for (track_id, name, volume, mode_type, repeat_int, ttype, gmin, gmax, fade_in, fade_out) in track_rows {
+                let clip_rows = clips_by_track.remove(&track_id).unwrap_or_default();
+                let clips: Vec<Clip> = clip_rows
+                    .into_iter()
+                    .map(|(id, library_entry_id, volume)| {
+                        let (name, file_path, library_volume, trim_start, trim_end) =
+                            match entry_map.get(&library_entry_id) {
+                                Some(entry) => (entry.name.clone(), entry.file_path.clone(), entry.volume, entry.trim_start, entry.trim_end),
+                                None => ("[missing]".to_string(), String::new(), 1.0, None, None),
+                            };
+                        Clip { id, name, file_path, volume, library_entry_id, library_volume, trim_start, trim_end }
+                    })
+                    .collect();
+                let repeat = repeat_int.map(|v| v != 0).unwrap_or(false);
+                let ttype_str = ttype.as_deref().unwrap_or("gapless");
+                let mode = build_track_mode(&mode_type, repeat, ttype_str, gmin.unwrap_or(0.0), gmax.unwrap_or(0.0), &clips, entry_map);
+                tracks.push(Track { id: track_id, name, clips, volume, mode, fade_in, fade_out });
             }
-        })
-        .collect();
-
-    Ok(clips)
+            comps.push(Comp { id: comp_id, name: comp_name, tracks });
+        }
+        groups.push(Group { id: group_id, name: group_name, comps });
+    }
+    Ok(groups)
 }
 
 /// Builds a TrackMode from the raw DB columns plus the already-loaded clips.
