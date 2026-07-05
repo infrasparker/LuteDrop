@@ -299,6 +299,27 @@ void ld_sound_schedule_stop_secs(ld_sound* s, double secs_from_now, double fade_
     ma_sound_set_stop_time_with_fade_in_pcm_frames(&s->sound, stop_frame, fade_frames);
 }
 
+void ld_sound_attach_to_group(ld_sound* s, ld_group* g) {
+    if (s == NULL || s->owner == NULL) return;
+    // g == NULL routes back to the engine endpoint (the group-less default a
+    // preloaded sound was created with); the normal handoff always passes a group.
+    ma_node* target = (g != NULL)
+        ? (ma_node*)&g->group
+        : ma_engine_get_endpoint(&s->owner->engine);
+    // Re-parents output bus 0; ma_node_attach_output_bus detaches any prior
+    // attachment first, so no explicit detach is needed (miniaudio.h 7.1).
+    ma_node_attach_output_bus((ma_node*)&s->sound, 0, target, 0);
+}
+
+void ld_sound_seek_secs(ld_sound* s, double secs) {
+    if (s == NULL) return;
+    if (secs < 0.0) secs = 0.0;
+    // Same time base as ld_sound_play's internal seek (ld_sound_play seeks only
+    // when start_secs > 0, so a preloaded sound started with start_secs == 0
+    // begins from THIS cursor without re-seeking).
+    ma_sound_seek_to_second(&s->sound, (float)secs);
+}
+
 void ld_sound_destroy(ld_sound* s) {
     if (s == NULL) return;
     ma_sound_uninit(&s->sound);

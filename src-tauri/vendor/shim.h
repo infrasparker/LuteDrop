@@ -66,6 +66,16 @@ void       ld_sound_schedule_start_frame(ld_sound*, uint64_t engine_frame);
 // with a trim_end stops exactly there without overshoot or a hard-cut click.
 // Floored at LD_MIN_FADE_MS and clamped so the fade never starts in the past.
 void       ld_sound_schedule_stop_secs(ld_sound*, double secs_from_now, double fade_secs);
+// Re-parent an already-created sound to `g` (or to the engine endpoint if g is
+// NULL). Wraps ma_node_attach_output_bus (the sound node's output bus 0 -> the
+// group's input bus 0), which is spinlock-synchronized against the audio thread
+// (miniaudio.h 7.2). Used at preload handoff to attach a group-less preloaded
+// sound to its target Voice's group, under the audio mutex.
+void       ld_sound_attach_to_group(ld_sound*, ld_group* g);
+// Seek to `secs` in the data source's own time base WITHOUT starting playback.
+// Streaming seeks can do file I/O (decode-skip for opus/mp3), so this runs on
+// the loader thread before handoff, never under the audio mutex.
+void       ld_sound_seek_secs(ld_sound*, double secs);
 void       ld_sound_destroy(ld_sound*);
 
 #endif
