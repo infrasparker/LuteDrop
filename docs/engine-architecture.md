@@ -307,12 +307,12 @@ loop {
    - `voice.drop_finished()` — **the reaper**: drop any parked fade-out sounds
      that have gone silent (run first, so it happens every tick regardless of
      which branch returns early below).
-   - `voice.poll_loop(engine, playing && !paused, stop_at_end=false)` — drive the
+   - `voice.poll_loop(engine, playing && !paused, StopAtEnd::No)` — drive the
      seamless-loop crossfade (tracks never stop a non-looping sound here; the
      transition state machine detects a natural end instead).
    - `transitions.update(...)` → execute the returned `TransitionAction`.
 2. Collect a `TrackPlaybackState` per track.
-3. `library.drop_finished()` then `library.poll_loop(engine, true, stop_at_end=true)`
+3. `library.drop_finished()` then `library.poll_loop(engine, true, StopAtEnd::Yes)`
    — the preview *does* stop a non-looping sound at its `trim_end` here.
 4. Always push a `__library` state (a stopped one if nothing plays) so the
    frontend can tell when the preview ends.
