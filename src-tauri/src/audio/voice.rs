@@ -333,6 +333,16 @@ impl Voice {
         if let Some(ref mut r) = self.loop_restart {
             r.volume = linear;
         }
+        // The staged next loop instance is already attached (and, for
+        // EngineClock, scheduled live) with its node volume set at accept —
+        // keep it and its restart snapshot in step so the post-swap instance
+        // doesn't come in at the stale level.
+        if let Some(ref mut staged) = self.next_loop {
+            sound::set_volume(staged, linear);
+        }
+        if let Some(ref mut r) = self.loop_incoming_restart {
+            r.volume = linear;
+        }
     }
 
     // --- Voice reaper (de-click) ---
@@ -401,17 +411,20 @@ impl Voice {
             None => return PollResult::Idle,
         };
 
-        if !matches!(st, PlaybackState::Playing) || !should_run {
-            return PollResult::Idle;
-        }
-
-        let loop_region = self.current.as_ref().and_then(|s| s.loop_region);
-
-        if let Some((_ls, le)) = loop_region {
-            // A staged incoming instance exists: EngineClock swaps when the
-            // engine clock has crossed the loop point; Immediate starts it when
-            // the window arrives.
-            if self.next_loop.is_some() {
+        // Staged-swap detection runs BEFORE the Playing/should_run gate: the
+        // EngineClock swap trigger's disjuncts (`!is_playing() || at_end()`)
+        // are the logical complement of that gate, so behind it they are
+        // unreachable — the outgoing's SCHEDULED stop at loop_end makes it
+        // report Stopped, and the very tick that sees it stopped must reach
+        // `perform_loop_swap` so poll_track returns Looped before the
+        // transition machine mistakes the scheduled stop for a natural end
+        // and kills the track. Pause safety holds because `pause()` discards
+        // staging, so `next_loop` is None whenever this Voice is paused.
+        if self.next_loop.is_some() {
+            if let Some((_ls, le)) = self.current.as_ref().and_then(|s| s.loop_region) {
+                // A staged incoming instance exists: EngineClock swaps when the
+                // engine clock has crossed the loop point; Immediate starts it
+                // when the window arrives.
                 let swap_now = match self.anchor {
                     // EngineClock: both sides already scheduled. The outgoing was
                     // told to stop, faded, at loop_end; once it is no longer
@@ -430,8 +443,17 @@ impl Voice {
                 }
                 return PollResult::Idle;
             }
+        }
 
-            // No staged incoming. If we have reached the crossfade window and the
+        if !matches!(st, PlaybackState::Playing) || !should_run {
+            return PollResult::Idle;
+        }
+
+        let loop_region = self.current.as_ref().and_then(|s| s.loop_region);
+
+        if let Some((_ls, le)) = loop_region {
+            // No staged incoming (a staged one was handled above). If we have
+            // reached the crossfade window and the
             // preload still isn't ready (slow drive), fall back to the old
             // synchronous restart so the loop never silently stops.
             if pos >= le - LOOP_CROSSFADE_SECS {
