@@ -17,6 +17,13 @@ pub const LOOP_CROSSFADE_SECS: f64 = 0.12;
 /// the shim's `LD_MIN_FADE_MS` floor; the shim re-floors anyway.
 const TRIM_STOP_FADE_SECS: f64 = 0.005;
 
+/// Wall-clock grace beyond a parked sound's fade deadline before it is
+/// force-dropped even if the device still reports it playing. Leak backstop
+/// only — normal reaping is driven by the sound's own state (see
+/// `drop_finished`); a device stalled longer than this gets a hard cut,
+/// which beats leaking sounds forever.
+const REAP_BACKSTOP: Duration = Duration::from_secs(2);
+
 /// Everything needed to restart a sound at the start of its loop region for the
 /// seamless crossfade. Captured at `play` time from the same `PlayParams` used
 /// to start the sound, so the restart is byte-for-byte the same source/trim.
@@ -286,9 +293,19 @@ impl Voice {
 
     /// Drop any held sounds whose fade-out has completed. Must be called every
     /// poll tick so nothing leaks.
+    ///
+    /// Reaps on the sound's own state (engine-clock truth): once the fade ran
+    /// to completion miniaudio reports the sound stopped, and it can be
+    /// dropped immediately. The wall-clock deadline (+`REAP_BACKSTOP` grace)
+    /// is only a leak backstop for a stalled device — previously it was the
+    /// SOLE criterion, so a stall could let the deadline pass mid-fade and
+    /// the drop's `ma_sound_uninit` hard-cut a still-audible sound.
     pub fn drop_finished(&mut self) {
         let now = Instant::now();
-        self.fading_out.retain(|(_, deadline)| now < *deadline);
+        self.fading_out.retain(|(snd, deadline)| {
+            let still_audible = snd.sound.is_playing() && !snd.sound.at_end();
+            still_audible && now < *deadline + REAP_BACKSTOP
+        });
     }
 
     // --- Seamless loop crossfade ---
