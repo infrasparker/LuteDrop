@@ -122,8 +122,9 @@ impl TransitionManager {
                 let start = clip_start.unwrap_or(0.0);
                 let playable = clip_dur - start;
                 // Short-clip fix: if the clip is shorter than the full crossfade window,
-                // use half the playable duration (minimum 0.1s) to avoid triggering
-                // crossfade immediately at clip start (the All's Well bug).
+                // use half the playable duration (minimum 0.1s) to avoid triggering the
+                // crossfade immediately at clip start when the clip is shorter than the
+                // window.
                 let effective_xfade = if playable > crossfade_duration {
                     crossfade_duration
                 } else {

@@ -11,7 +11,7 @@
 
 // ---- Streaming decode ---------------------------------------------------
 // Chunked decode for peak generation: open a decoder, pull interleaved f32
-// frames a chunk at a time, close. Replaces the old whole-file ld_decode_file
+// frames a chunk at a time, close. Replaces the old whole-file decode API
 // (which materialized the entire file in RAM).
 typedef struct ld_decoder ld_decoder;
 
@@ -29,7 +29,7 @@ void ld_decoder_close(ld_decoder*);
 // (e.g. a streamed source with no reported length).
 double ld_file_duration_secs(const wchar_t* path);
 
-// ---- Playback layer (Task 2) ------------------------------------------------
+// ---- Playback layer ---------------------------------------------------------
 // Opaque handles. The shim owns the underlying miniaudio structs.
 typedef struct ld_engine ld_engine;
 typedef struct ld_group  ld_group;

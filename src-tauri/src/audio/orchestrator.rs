@@ -482,14 +482,14 @@ fn start_clip(
         fade_out: if track.config.fade_out > 0.0 { Some(track.config.fade_out) } else { None },
     };
 
-    // Schedule a de-clicked faded stop at trim_end (Fix 1) EXCEPT for crossfade
-    // transitions: there the transition machine starts the next clip before
-    // trim_end and hands the outgoing off (`take_current` + `begin_crossfade`)
-    // for its own fade, so a scheduled trim-end stop would short-cut the
-    // crossfade. Looping (Seamless) clips also skip it, but `play_scheduled`
-    // already no-ops when `loop_region` is set, so we only special-case
-    // crossfade here. Gapless / Gap advance off the resulting Stopped state,
-    // which the scheduled stop still produces.
+    // Scheduled de-clicked stop at trim_end — replaces the old late poll-check
+    // hard cut — EXCEPT for crossfade transitions: there the transition
+    // machine starts the next clip before trim_end and hands the outgoing off
+    // (`take_current` + `begin_crossfade`) for its own fade, so a scheduled
+    // trim-end stop would short-cut the crossfade. Looping (Seamless) clips
+    // also skip it, but `play_scheduled` already no-ops when `loop_region` is
+    // set, so we only special-case crossfade here. Gapless / Gap advance off
+    // the resulting Stopped state, which the scheduled stop still produces.
     let uses_crossfade = matches!(
         &track.config.mode,
         TrackMode::Sequence { transition: TrackTransition::Crossfade, .. }

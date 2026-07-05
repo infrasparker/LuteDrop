@@ -56,7 +56,8 @@ fn build_audio_shim() {
     let include = vcpkg_installed.join("include");
     let lib = vcpkg_installed.join("lib");
 
-    // Compile the C shim: miniaudio impl + ma_libopus backend + ld_decode_file.
+    // Compile the C shim: miniaudio impl + ma_libopus backend + the ld_* shim
+    // API (decoder + playback).
     cc::Build::new()
         .file("vendor/shim.c")
         .include("vendor") // miniaudio.h, miniaudio_libopus.h/.c, shim.h

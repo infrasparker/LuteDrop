@@ -400,7 +400,7 @@ sound's own engine-clock state (silent → drop now); the wall-clock
    `orchestrator`/`mixer` helpers.
 2. Add a `pub fn` in `actions.rs` that locks the engine and calls it.
 3. Add a `#[tauri::command]` in `commands.rs` and register it in the
-   `invoke_handler![...]` list in `lib.rs`.
+   `generate_handler![...]` list in `lib.rs` (passed to `.invoke_handler(...)`).
 4. Add an `invoke(...)` wrapper in `src/composables/useAudio.ts`.
 5. If remotes should trigger it, add a case in `handle_remote_command`
    (`server.rs`) and a sender in `src/remote/composables/useRemote.ts`.

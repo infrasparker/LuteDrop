@@ -108,8 +108,9 @@ impl Voice {
         self.group.set_volume(linear);
     }
 
-    /// Stop the current sound abruptly (no fade) WITHOUT parking it. Used as the
-    /// pre-replace stop inside `play`, mirroring the old `start_clip`.
+    /// Stop the current sound with a minimal de-click fade (~4 ms floor in the
+    /// shim) WITHOUT parking it. Used as the pre-replace stop inside `play`,
+    /// mirroring the old `start_clip`.
     fn stop_current_quick(&mut self) {
         if let Some(ref mut snd) = self.current {
             sound::stop_quick(snd);
@@ -121,16 +122,18 @@ impl Voice {
     /// The previously-playing sound (if any) is stopped abruptly (`stop_quick`),
     /// matching the old `start_clip` behavior; callers that need a click-free
     /// hand-off (stop, loop crossfade, clip crossfade) hold the outgoing sound
-    /// via `fade_out_and_release`/`hold_until_silent`/`begin_transition_handoff` BEFORE calling `play`.
+    /// via `fade_out_and_release`/`hold_until_silent`/`take_current` +
+    /// `TransitionManager::begin_crossfade` BEFORE calling `play`.
     ///
     /// If `params.loop_region` is `Some`, loop-restart info is captured so
     /// `poll_loop` can perform the seamless crossfade.
     ///
-    /// `schedule_trim_stop` requests a sample-accurate, de-clicked stop scheduled
-    /// at the clip's `trim_end` (see [`Voice::play_scheduled`] / Fix 1). It is
-    /// honored ONLY for a non-looping clip that has a `trim_end`; looping clips
-    /// (whose restart is driven by `poll_loop`) and clips that will be handed to
-    /// a clip-crossfade (whose own fade governs the outgoing tail) must pass
+    /// `schedule_trim_stop` requests a sample-accurate, de-clicked stop at the
+    /// clip's `trim_end` (see [`Voice::play_scheduled`]) — replacing the old
+    /// late poll-check hard cut. It is honored ONLY for a non-looping clip
+    /// that has a `trim_end`; looping clips (whose restart is driven by
+    /// `poll_loop`) and clips that will be handed to a clip-crossfade (whose
+    /// own fade governs the outgoing tail) must pass
     /// `false` so the scheduled stop doesn't kill the loop or short-cut the
     /// crossfade.
     pub fn play(&mut self, engine: &ffi::Engine, params: PlayParams) -> Result<(), String> {
@@ -140,7 +143,7 @@ impl Voice {
     /// Like [`Voice::play`] but schedules a de-clicked faded stop at the clip's
     /// `trim_end` (non-looping clips only). Used by the library preview and by
     /// non-crossfade track clips so the trim-end stop ramps to silence exactly at
-    /// the trim point instead of being hard-cut by a late poll check (Fix 1).
+    /// the trim point instead of being hard-cut by a late poll check.
     pub fn play_scheduled(&mut self, engine: &ffi::Engine, params: PlayParams) -> Result<(), String> {
         self.play_inner(engine, params, true)
     }
@@ -193,8 +196,8 @@ impl Voice {
         self.loop_restart = None;
     }
 
-    /// Stop the current sound abruptly (no fade, no park). Cursor is discarded.
-    /// Caller is responsible for any de-click need.
+    /// Stop the current sound with a minimal de-click fade (~4 ms floor in the
+    /// shim), without parking it. Cursor is discarded.
     pub fn stop_quick(&mut self) {
         self.stop_current_quick();
         self.current = None;
@@ -204,6 +207,10 @@ impl Voice {
     /// Take the current sound out without stopping it (used when the orchestrator
     /// hands the outgoing sound to a clip-crossfade transition). Loop-restart
     /// info is cleared. Does NOT touch the parked-sound reaper.
+    // INVARIANT: the escaped `SoundHandle` is still bound to the mutex contract
+    // documented in `ffi.rs` — it is only safe to call further methods on it
+    // while holding the same `AudioEngine` lock this `Voice` is called under.
+    // Escaping the Voice does not grant it independent thread-safety.
     pub fn take_current(&mut self) -> Option<SoundHandle> {
         self.loop_restart = None;
         self.current.take()
@@ -311,8 +318,9 @@ impl Voice {
     // --- Seamless loop crossfade ---
 
     /// Drive the seamless-loop crossfade and end-of-clip stop for the current
-    /// sound. Call once per poll tick (after `reap`, before higher-level
-    /// transition logic). Returns what happened so the caller can react.
+    /// sound. Call once per poll tick (after `drop_finished`, before
+    /// higher-level transition logic). Returns what happened so the caller can
+    /// react.
     ///
     /// - If the current sound is looping and within `LOOP_CROSSFADE_SECS` of its
     ///   loop_end, start the next loop instance anchored to the START of the

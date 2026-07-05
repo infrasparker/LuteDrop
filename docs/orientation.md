@@ -307,9 +307,10 @@ is concentrated.
 - **Sub-mix group** — a miniaudio node that several sounds route through, so you
   can set one volume for the whole group. Each track and the library preview owns
   one (a `Voice`'s `group`); it's the "track" level of the volume model.
-- **Sample-accurate scheduling** — starting/stopping a sound at an exact PCM frame
-  on miniaudio's own clock (`schedule_start_frame`), rather than "whenever the
-  poll thread next runs." Used so a loop restart lines up precisely.
+- **Sample-accurate scheduling** — pinning a sound's start or stop to an exact
+  PCM frame on miniaudio's own clock, rather than "whenever the poll thread
+  next runs": starts via `schedule_start_frame`, stops via
+  `schedule_stop_secs`. Used so a loop restart lines up precisely.
 - **WAL** — Write-Ahead Logging, a SQLite mode (`PRAGMA journal_mode=WAL` in
   `database/mod.rs`) that lets a reader (e.g. the backup thread) run while the app
   writes, instead of blocking each other.

@@ -192,10 +192,11 @@ impl AudioEngine {
         // (below) keeps the outgoing sound mixing through its fade so the
         // replacement doesn't click.
         self.stop_library_sound();
-        // Schedule a de-clicked faded stop at trim_end (Fix 1): the library
-        // preview never crossfades and `poll_loop(stop_at_end=true)` still
-        // detects the resulting Stopped state to finish. For a looping preview
-        // `play_scheduled` no-ops the schedule (loop_region is Some).
+        // Scheduled de-clicked stop at trim_end — replaces the old late
+        // poll-check hard cut. The library preview never crossfades and
+        // `poll_loop(stop_at_end=true)` still detects the resulting Stopped
+        // state to finish. For a looping preview `play_scheduled` no-ops the
+        // schedule (loop_region is Some).
         self.library.play_scheduled(&self.engine, params)
     }
 
