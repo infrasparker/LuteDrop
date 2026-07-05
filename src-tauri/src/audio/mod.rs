@@ -1,5 +1,5 @@
 pub mod ffi;
-pub mod mixer;
+pub mod levels;
 pub mod orchestrator;
 pub mod sound;
 pub mod transitions;
@@ -7,14 +7,22 @@ pub mod util;
 pub mod voice;
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use crate::models::{Track, TrackPlaybackState};
-use mixer::MuteState;
+use levels::MuteState;
 use orchestrator::ManagedTrack;
 use sound::{PlayParams, PlaybackState};
-use voice::Voice;
+use voice::{StopAtEnd, Voice};
 
 const LIBRARY_TRACK_ID: &str = "__library";
+
+/// Interval between audio-engine poll ticks: drives the transition state
+/// machine (`transitions.rs` assumes this cadence when sizing its cleanup
+/// grace) and the seamless-loop crossfade window (`voice.rs`'s
+/// `LOOP_CROSSFADE_SECS` is sized against this). Also the sleep in `lib.rs`'s
+/// `playback_polling_loop`.
+pub const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 pub struct AudioEngine {
     // Fields are declared so playing sounds / groups drop before the engine.
@@ -194,10 +202,10 @@ impl AudioEngine {
         self.stop_library_sound();
         // Scheduled de-clicked stop at trim_end — replaces the old late
         // poll-check hard cut. The library preview never crossfades and
-        // `poll_loop(stop_at_end=true)` still detects the resulting Stopped
-        // state to finish. For a looping preview `play_scheduled` no-ops the
-        // schedule (loop_region is Some).
-        self.library.play_scheduled(&self.engine, params)
+        // `poll_loop(stop_at_end=StopAtEnd::Yes)` still detects the resulting
+        // Stopped state to finish. For a looping preview `play_with_trim_stop`
+        // no-ops the schedule (loop_region is Some).
+        self.library.play_with_trim_stop(&self.engine, params)
     }
 
     pub fn stop_library_sound(&mut self) {
@@ -253,7 +261,7 @@ impl AudioEngine {
         // crossfade / stop-at-trim-end. The Voice holds the outgoing loop
         // instance so it keeps mixing through its fade (no mid-fade drop / pop).
         self.library.drop_finished();
-        self.library.poll_loop(&self.engine, true, true);
+        self.library.poll_loop(&self.engine, true, StopAtEnd::Yes);
 
         // Always emit library sound state so frontend can detect when it stops.
         let lib_state = if self.library.has_current() {

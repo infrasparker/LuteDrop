@@ -72,7 +72,7 @@ You click the play button on a `TrackControl`. Here is the whole path:
 5. **Engine** — `src-tauri/src/audio/mod.rs` `AudioEngine::play_track` →
    `orchestrator::play_track` → `start_clip`: builds a `PlayParams` for the first
    clip and calls the track's `Voice`.
-6. **Voice → sound → shim** — `voice.rs` `Voice::play_scheduled` →
+6. **Voice → sound → shim** — `voice.rs` `Voice::play_with_trim_stop` →
    `sound::play` (`sound.rs`) → `engine.create_sound(...)` + `sound.play(...)`
    (`ffi.rs`) → `ld_sound_create` / `ld_sound_play` in `vendor/shim.c` → miniaudio
    starts streaming the file on its audio thread. Sound comes out.

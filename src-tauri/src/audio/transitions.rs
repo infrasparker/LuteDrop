@@ -3,6 +3,19 @@ use crate::models::{TrackMode, TrackTransition};
 use super::sound::SoundHandle;
 use super::util::CROSSFADE_OVERLAP;
 
+/// Extra time beyond an outgoing crossfade's own duration before its handle is
+/// cleaned up. Absorbs poll-tick jitter so cleanup never races a fade that's
+/// still legitimately ramping.
+const OUTGOING_CLEANUP_GRACE_SECS: f64 = 0.5;
+
+/// Fraction of a short clip's playable duration used as its crossfade window,
+/// when the clip is too short for the full `CROSSFADE_OVERLAP` window.
+const SHORT_CLIP_XFADE_FRACTION: f64 = 0.5;
+
+/// Floor on the short-clip crossfade window so a very short clip doesn't
+/// trigger the crossfade immediately at clip start.
+const MIN_EFFECTIVE_XFADE_SECS: f64 = 0.1;
+
 pub enum TransitionAction {
     None,
     StartCrossfade { next_clip_index: usize, duration: f64 },
@@ -38,7 +51,7 @@ impl TransitionManager {
         }
     }
 
-    /// Main polling tick. Called every 50ms.
+    /// Main polling tick. Called every `audio::POLL_INTERVAL`.
     /// Returns the action the orchestrator should take.
     pub fn update(
         &self,
@@ -68,7 +81,7 @@ impl TransitionManager {
         // Check for outgoing fade cleanup
         if let Some(ref outgoing) = self.outgoing {
             let should_cleanup = outgoing.started.elapsed()
-                >= Duration::from_secs_f64(outgoing.duration + 0.5);
+                >= Duration::from_secs_f64(outgoing.duration + OUTGOING_CLEANUP_GRACE_SECS);
             if should_cleanup {
                 return TransitionAction::CleanupOutgoing;
             }
@@ -128,7 +141,7 @@ impl TransitionManager {
                 let effective_xfade = if playable > crossfade_duration {
                     crossfade_duration
                 } else {
-                    (playable * 0.5).max(0.1)
+                    (playable * SHORT_CLIP_XFADE_FRACTION).max(MIN_EFFECTIVE_XFADE_SECS)
                 };
 
                 if position >= clip_dur - effective_xfade {

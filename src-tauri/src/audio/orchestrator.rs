@@ -3,9 +3,9 @@ use rand::Rng;
 use crate::models::{Track, TrackMode, TrackPlaybackState, TrackTransition};
 use super::ffi;
 use super::sound::{PlayParams, PlaybackState};
-use super::mixer::{self, MuteState};
+use super::levels::{self, MuteState};
 use super::transitions::{TransitionManager, TransitionAction};
-use super::voice::Voice;
+use super::voice::{LoopAnchor, StopAtEnd, Voice};
 
 pub struct ManagedTrack {
     /// Holds the *outgoing* crossfade sound (`OutgoingFade.handle`), which
@@ -38,9 +38,9 @@ pub fn setup_track(
 
     // Tracks use sample-accurate scheduled loop restarts anchored to the engine
     // clock, unlike the library preview.
-    let voice = Voice::with_scheduled_loops(engine, true)
+    let voice = Voice::with_loop_anchor(engine, LoopAnchor::EngineClock)
         .map_err(|e| format!("Failed to create sub-track: {}", e))?;
-    voice.set_group_volume(mixer::track_group_volume(
+    voice.set_group_volume(levels::track_group_volume(
         config.volume,
         mute_state.track_muted(&config.id),
     ));
@@ -154,7 +154,7 @@ pub fn stop_track(tracks: &mut HashMap<String, ManagedTrack>, track_id: &str) ->
     // Deferred destruction: fade the sound out and park it until the ramp
     // completes, instead of dropping it immediately (which would uninit it
     // mid-fade → click). The Voice's reaper (in `poll_track`) drops it after.
-    let fade = if track.config.fade_out > 0.0 { Some(track.config.fade_out) } else { Some(0.02) };
+    let fade = if track.config.fade_out > 0.0 { Some(track.config.fade_out) } else { Some(super::voice::DEFAULT_STOP_FADE_SECS) };
     track.voice.stop(fade);
     Ok(())
 }
@@ -203,7 +203,7 @@ pub fn set_track_volume(
 ) {
     if let Some(track) = tracks.get_mut(track_id) {
         track.config.volume = volume.clamp(0.0, 1.0);
-        track.voice.set_group_volume(mixer::track_group_volume(
+        track.voice.set_group_volume(levels::track_group_volume(
             track.config.volume,
             mute_state.track_muted(track_id),
         ));
@@ -218,7 +218,7 @@ pub fn refresh_track_group_volume(
     mute_state: &MuteState,
 ) {
     if let Some(track) = tracks.get(track_id) {
-        let vol = mixer::track_group_volume(track.config.volume, mute_state.track_muted(track_id));
+        let vol = levels::track_group_volume(track.config.volume, mute_state.track_muted(track_id));
         track.voice.set_group_volume(vol);
     }
 }
@@ -288,7 +288,7 @@ pub fn poll_track(
         let looped = {
             let track = match tracks.get_mut(track_id) { Some(t) => t, None => return };
             matches!(
-                track.voice.poll_loop(engine, sound_playing && !is_paused, false),
+                track.voice.poll_loop(engine, sound_playing && !is_paused, StopAtEnd::No),
                 super::voice::PollResult::Looped
             )
         };
@@ -445,7 +445,7 @@ fn start_clip(
         .ok_or_else(|| format!("Clip index {} out of range", clip_index))?.clone();
 
     // Clip-level (sound node) volume. Track/master gain come from group/engine nodes.
-    let volume = mixer::clip_sound_volume(clip.volume, clip.library_volume, mute_state.clip_muted(&clip.id));
+    let volume = levels::clip_sound_volume(clip.volume, clip.library_volume, mute_state.clip_muted(&clip.id));
 
     // Build play params
     let effective_start = start_position.or(clip.trim_start).unwrap_or(0.0);
@@ -487,9 +487,10 @@ fn start_clip(
     // machine starts the next clip before trim_end and hands the outgoing off
     // (`take_current` + `begin_crossfade`) for its own fade, so a scheduled
     // trim-end stop would short-cut the crossfade. Looping (Seamless) clips
-    // also skip it, but `play_scheduled` already no-ops when `loop_region` is
-    // set, so we only special-case crossfade here. Gapless / Gap advance off
-    // the resulting Stopped state, which the scheduled stop still produces.
+    // also skip it, but `play_with_trim_stop` already no-ops when
+    // `loop_region` is set, so we only special-case crossfade here. Gapless /
+    // Gap advance off the resulting Stopped state, which the scheduled stop
+    // still produces.
     let uses_crossfade = matches!(
         &track.config.mode,
         TrackMode::Sequence { transition: TrackTransition::Crossfade, .. }
@@ -499,7 +500,7 @@ fn start_clip(
     if uses_crossfade {
         track.voice.play(engine, params)?;
     } else {
-        track.voice.play_scheduled(engine, params)?;
+        track.voice.play_with_trim_stop(engine, params)?;
     }
     track.current_clip_index = Some(clip_index);
     track.clips_played += 1;
@@ -534,7 +535,7 @@ fn refresh_current_sound_volume(
             .map(|c| (c.volume, c.library_volume, c.id.clone()))
             .unwrap_or((1.0, 1.0, String::new()));
 
-        let vol = mixer::clip_sound_volume(clip_vol, lib_vol, mute_state.clip_muted(&clip_id));
+        let vol = levels::clip_sound_volume(clip_vol, lib_vol, mute_state.clip_muted(&clip_id));
         track.voice.set_volume(vol);
     }
 }

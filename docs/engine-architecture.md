@@ -86,7 +86,7 @@ One sentence per layer:
 - **Tauri commands (`commands.rs`)** — the `#[tauri::command]` functions the Vue
   frontend can `invoke`, plus the remote's WebSocket dispatch in `server.rs`.
 
-`mixer.rs` and `util.rs` sit to the side: `mixer.rs` computes the linear volume
+`levels.rs` and `util.rs` sit to the side: `levels.rs` computes the linear volume
 for each node and tracks mute intent; `util.rs` holds constants
 (`CROSSFADE_OVERLAP`, `AUDIO_EXTENSIONS`) and offline helpers (`probe_duration`,
 `is_audio_path`).
@@ -111,11 +111,11 @@ together**. Each level is set on its own node and miniaudio combines them on the
 audio thread. This is why the old `compute_volume` / dB conversion is gone: there
 is nothing to recompute per tick.
 
-`mixer.rs` provides the two small linear helpers that feed the group and sound
+`levels.rs` provides the two small linear helpers that feed the group and sound
 nodes:
 
-- `mixer::track_group_volume(track_vol, muted)` → group node (`0.0` if muted).
-- `mixer::clip_sound_volume(clip_vol, library_vol, muted)` → sound node
+- `levels::track_group_volume(track_vol, muted)` → group node (`0.0` if muted).
+- `levels::clip_sound_volume(clip_vol, library_vol, muted)` → sound node
   (`clip × library`, clamped to `0..=1`, or `0.0` if muted).
 
 **Mute = zero the relevant node.** There is no separate "silence" state:
@@ -124,7 +124,7 @@ nodes:
 - track mute → `refresh_track_group_volume` sets the group node to 0
 - clip mute → `set_clip_volume` re-applies the sound node at 0
 
-`mixer::MuteState` (`master: bool`, `tracks`/`clips: HashMap<String, bool>`) only
+`levels::MuteState` (`master: bool`, `tracks`/`clips: HashMap<String, bool>`) only
 records **intent** — which things the user muted — so it can restore the
 intended level on unmute and report a snapshot to remotes. It never stores actual
 volumes.
@@ -174,9 +174,9 @@ click-free stop, seamless-loop crossfade, the reaper. What they do *not* share i
 the orchestrator — the preview is one sound with no clip sequencing, so
 `AudioEngine.library` is a bare `Voice` that `play_library_sound` /
 `stop_library_sound` drive directly. It also gets a **scheduled trim-end stop**
-(`Voice::play_scheduled`, see below), and its loop restart is *not*
-sample-accurately anchored (`Voice::new`, `scheduled_loops = false`), matching
-the pre-refactor preview behavior exactly.
+(`Voice::play_with_trim_stop`, see below), and its loop restart is *not*
+sample-accurately anchored (`Voice::new`, `anchor = LoopAnchor::Immediate`),
+matching the pre-refactor preview behavior exactly.
 
 ---
 
@@ -197,9 +197,9 @@ pub struct ManagedTrack {
 
 `orchestrator::start_clip` builds the `PlayParams` for a clip (resolving trim,
 volume, loop region, and fades) and plays it on the track's `Voice`. Whether it
-uses `voice.play` or `voice.play_scheduled` depends on the transition (crossfade
-clips must NOT get a scheduled trim-end stop — see the comment block in
-`start_clip`).
+uses `voice.play` or `voice.play_with_trim_stop` depends on the transition
+(crossfade clips must NOT get a scheduled trim-end stop — see the comment block
+in `start_clip`).
 
 Sequencing decisions live in `TransitionManager::update`, which is called once
 per tick and returns a `TransitionAction` telling `poll_track` what to do:
@@ -271,13 +271,13 @@ can land up to ~50 ms late. The window is sized to at least **two poll periods**
 (2.4 × 50 ms) so even a late tick still catches the window before `loop_end` is
 overshot and the loop audibly jumps.
 
-**Engine-clock anchoring (tracks only).** For tracks, `scheduled_loops = true`
-(`Voice::with_scheduled_loops`), so the incoming instance is scheduled to start
+**Engine-clock anchoring (tracks only).** For tracks, `anchor = LoopAnchor::EngineClock`
+(`Voice::with_loop_anchor`), so the incoming instance is scheduled to start
 at an absolute engine frame — `engine.time_frames() + lead` — via
 `Sound::schedule_start_frame`. "Sample-accurate" means the start is pinned to an
 exact PCM frame on miniaudio's own clock rather than to whenever the poll thread
 happened to run, so the overlap lines up precisely. The library preview passes
-`false` and does not anchor (matching its historical behavior).
+`LoopAnchor::Immediate` and does not anchor (matching its historical behavior).
 
 **The `LoopRestart` capture.** Because the restart is built from a snapshot taken
 at play time (`file_path`, `volume`, `trim_start`/`trim_end`, `loop_region`,
@@ -397,7 +397,7 @@ sound's own engine-clock state (silent → drop now); the wall-clock
 ### A new engine-level operation (e.g. solo)
 
 1. Add the method to `AudioEngine` (`audio/mod.rs`), delegating to
-   `orchestrator`/`mixer` helpers.
+   `orchestrator`/`levels` helpers.
 2. Add a `pub fn` in `actions.rs` that locks the engine and calls it.
 3. Add a `#[tauri::command]` in `commands.rs` and register it in the
    `generate_handler![...]` list in `lib.rs` (passed to `.invoke_handler(...)`).

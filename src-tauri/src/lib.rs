@@ -33,7 +33,6 @@ mod state;
 mod waveform;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use tauri::Emitter;
 use tauri::Manager;
@@ -188,7 +187,7 @@ pub fn run() {
 /// Runs on its own thread every 50ms.
 fn playback_polling_loop(app_handle: tauri::AppHandle, container: Arc<AppStateContainer>) {
     loop {
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(audio::POLL_INTERVAL);
 
         let (states, master_vol, newly_missing, newly_found) = {
             let mut audio = container.lock_audio();

@@ -4,8 +4,9 @@ use super::ffi;
 use super::sound::{self, PlayParams, PlaybackState, SoundHandle};
 
 /// How far before loop_end (in seconds) to trigger the crossfade restart.
-/// Sized to at least TWO poll periods (2.4 × 50 ms) so a single delayed tick
-/// can't land the check past loop_end and audibly overshoot the loop point.
+/// Sized to at least TWO poll periods (2.4 × `POLL_INTERVAL`) so a single
+/// delayed tick can't land the check past loop_end and audibly overshoot the
+/// loop point.
 /// Shared by the library preview loop and seamless-mode tracks.
 /// (Engine-clock loop scheduling — removing the poll dependency entirely —
 /// is Plan 3C, alongside the loop-instance preload.)
@@ -24,6 +25,16 @@ const TRIM_STOP_FADE_SECS: f64 = 0.005;
 /// which beats leaking sounds forever.
 const REAP_BACKSTOP: Duration = Duration::from_secs(2);
 
+/// Fallback de-click fade when neither the caller nor the sound's own
+/// `fade_out` supplies one. Used by `Voice::stop` and (with the same value)
+/// `orchestrator::stop_track`'s fallback.
+pub const DEFAULT_STOP_FADE_SECS: f64 = 0.02;
+
+/// Wall-clock grace added on top of an in-flight fade's own duration before
+/// its deadline, absorbing scheduling jitter so `drop_finished`'s backstop
+/// doesn't race a fade that's still legitimately ramping.
+const FADE_DEADLINE_SLACK_SECS: f64 = 0.05;
+
 /// Everything needed to restart a sound at the start of its loop region for the
 /// seamless crossfade. Captured at `play` time from the same `PlayParams` used
 /// to start the sound, so the restart is byte-for-byte the same source/trim.
@@ -36,6 +47,24 @@ struct LoopRestart {
     loop_region: Option<(f64, f64)>,
     /// Position to restart at: the start of the loop region.
     loop_start_position: f64,
+}
+
+/// Whether `poll_loop` should stop a non-looping sound that passed its
+/// trim_end (library preview: yes; tracks: no — their transition machine
+/// handles it).
+#[derive(Clone, Copy, PartialEq)]
+pub enum StopAtEnd {
+    Yes,
+    No,
+}
+
+/// Whether seamless-loop restarts are sample-accurately anchored to the
+/// engine clock (tracks) or started immediately on detection (library
+/// preview).
+#[derive(Clone, Copy, PartialEq)]
+pub enum LoopAnchor {
+    EngineClock,
+    Immediate,
 }
 
 /// What `poll_loop` did this tick, so the caller can react (e.g. re-emit state,
@@ -76,9 +105,9 @@ pub struct Voice {
     loop_restart: Option<LoopRestart>,
     /// Whether the seamless-loop restart should be sample-accurately anchored to
     /// the start of the crossfade window via `schedule_start_frame`. Tracks use
-    /// this (engine-clock anchored); the library preview does not (matches the
+    /// `EngineClock`; the library preview uses `Immediate` (matches the
     /// pre-refactor behavior of each path exactly).
-    scheduled_loops: bool,
+    anchor: LoopAnchor,
     /// This Voice's sub-mix group. Declared LAST so it drops after all sounds.
     group: ffi::Group,
 }
@@ -87,18 +116,18 @@ impl Voice {
     /// Create a Voice with a fresh sub-mix group on `engine`. Loop restarts are
     /// NOT sample-accurately anchored (library-preview behavior).
     pub fn new(engine: &ffi::Engine) -> Result<Self, String> {
-        Self::with_scheduled_loops(engine, false)
+        Self::with_loop_anchor(engine, LoopAnchor::Immediate)
     }
 
     /// Like [`Voice::new`] but with sample-accurate loop-restart anchoring
     /// enabled (per-track seamless-mode behavior).
-    pub fn with_scheduled_loops(engine: &ffi::Engine, scheduled_loops: bool) -> Result<Self, String> {
+    pub fn with_loop_anchor(engine: &ffi::Engine, anchor: LoopAnchor) -> Result<Self, String> {
         let group = engine.create_group()?;
         Ok(Self {
             current: None,
             fading_out: Vec::new(),
             loop_restart: None,
-            scheduled_loops,
+            anchor,
             group,
         })
     }
@@ -129,8 +158,8 @@ impl Voice {
     /// `poll_loop` can perform the seamless crossfade.
     ///
     /// `schedule_trim_stop` requests a sample-accurate, de-clicked stop at the
-    /// clip's `trim_end` (see [`Voice::play_scheduled`]) — replacing the old
-    /// late poll-check hard cut. It is honored ONLY for a non-looping clip
+    /// clip's `trim_end` (see [`Voice::play_with_trim_stop`]) — replacing the
+    /// old late poll-check hard cut. It is honored ONLY for a non-looping clip
     /// that has a `trim_end`; looping clips (whose restart is driven by
     /// `poll_loop`) and clips that will be handed to a clip-crossfade (whose
     /// own fade governs the outgoing tail) must pass
@@ -144,7 +173,7 @@ impl Voice {
     /// `trim_end` (non-looping clips only). Used by the library preview and by
     /// non-crossfade track clips so the trim-end stop ramps to silence exactly at
     /// the trim point instead of being hard-cut by a late poll check.
-    pub fn play_scheduled(&mut self, engine: &ffi::Engine, params: PlayParams) -> Result<(), String> {
+    pub fn play_with_trim_stop(&mut self, engine: &ffi::Engine, params: PlayParams) -> Result<(), String> {
         self.play_inner(engine, params, true)
     }
 
@@ -190,7 +219,7 @@ impl Voice {
     /// if `None`, the sound's own `fade_out` is used, else a small de-click default.
     pub fn stop(&mut self, fade: Option<f64>) {
         if let Some(snd) = self.current.take() {
-            let f = fade.or(snd.fade_out).unwrap_or(0.02);
+            let f = fade.or(snd.fade_out).unwrap_or(DEFAULT_STOP_FADE_SECS);
             self.fade_out_and_release(snd, f);
         }
         self.loop_restart = None;
@@ -279,13 +308,14 @@ impl Voice {
     // --- Voice reaper (de-click) ---
 
     /// Deferred destruction: request a fade-out on `snd`, then hold it until the
-    /// ramp completes. The reaper drops it afterwards. Keeps the sound in the
-    /// mixer for the whole ramp so the fade is actually audible (dropping it
-    /// immediately runs `ma_sound_uninit` mid-fade → hard cut → click).
+    /// ramp completes. The reaper drops it afterwards. Keeps the sound mixing
+    /// (in miniaudio's node graph) for the whole ramp so the fade is actually
+    /// audible (dropping it immediately runs `ma_sound_uninit` mid-fade → hard
+    /// cut → click).
     pub fn fade_out_and_release(&mut self, mut snd: SoundHandle, fade_secs: f64) {
         let fade = fade_secs.max(0.01);
         sound::stop(&mut snd, Some(Duration::from_secs_f64(fade)));
-        let deadline = Instant::now() + Duration::from_secs_f64(fade + 0.05);
+        let deadline = Instant::now() + Duration::from_secs_f64(fade + FADE_DEADLINE_SLACK_SECS);
         self.fading_out.push((snd, deadline));
     }
 
@@ -294,7 +324,7 @@ impl Voice {
     /// mid-fade. `fade_secs` is the in-flight fade duration used to size the
     /// deadline.
     pub fn hold_until_silent(&mut self, snd: SoundHandle, fade_secs: f64) {
-        let deadline = Instant::now() + Duration::from_secs_f64(fade_secs.max(0.01) + 0.05);
+        let deadline = Instant::now() + Duration::from_secs_f64(fade_secs.max(0.01) + FADE_DEADLINE_SLACK_SECS);
         self.fading_out.push((snd, deadline));
     }
 
@@ -331,11 +361,11 @@ impl Voice {
     ///
     /// `should_run` gates the whole tick (e.g. tracks skip it while paused).
     /// `stop_at_end` controls whether a NON-looping sound past its trim_end is
-    /// stopped here: the library preview wants this (`true`); tracks do NOT
-    /// (`false`) because their natural end is detected by the orchestrator's
-    /// transition state machine instead — matching the pre-refactor behavior of
-    /// each path exactly.
-    pub fn poll_loop(&mut self, engine: &ffi::Engine, should_run: bool, stop_at_end: bool) -> PollResult {
+    /// stopped here: the library preview wants this (`StopAtEnd::Yes`); tracks
+    /// do NOT (`StopAtEnd::No`) because their natural end is detected by the
+    /// orchestrator's transition state machine instead — matching the
+    /// pre-refactor behavior of each path exactly.
+    pub fn poll_loop(&mut self, engine: &ffi::Engine, should_run: bool, stop_at_end: StopAtEnd) -> PollResult {
         let (st, pos) = match &self.current {
             Some(snd) => (sound::state(snd), sound::position(snd)),
             None => return PollResult::Idle,
@@ -353,7 +383,7 @@ impl Voice {
                 return PollResult::Looped;
             }
             PollResult::Idle
-        } else if stop_at_end {
+        } else if stop_at_end == StopAtEnd::Yes {
             let end = self.current.as_ref().and_then(|s| s.duration);
             if let Some(end) = end {
                 if pos >= end {
@@ -370,9 +400,9 @@ impl Voice {
     /// Perform the seamless-loop crossfade: fade the outgoing instance out over
     /// the crossfade window and park it, then start a fresh instance at the loop
     /// start with a matching fade-in. The incoming instance is anchored to the
-    /// START of the crossfade window (when `anchor_loop_restart` is set) so the
-    /// two overlap across the whole window and sum smoothly through the loop
-    /// point (no butt-join seam / pop).
+    /// START of the crossfade window (when `anchor` is `LoopAnchor::EngineClock`)
+    /// so the two overlap across the whole window and sum smoothly through the
+    /// loop point (no butt-join seam / pop).
     fn do_loop_crossfade(&mut self, engine: &ffi::Engine, position: f64, le: f64) {
         let restart = match self.loop_restart.clone() {
             Some(r) => r,
@@ -387,7 +417,7 @@ impl Voice {
         // Compute the sample-accurate window-start anchor in ENGINE frames. Lead
         // is ~0 (clamped so we never schedule in the past) but computed explicitly
         // to stay robust to small poll-timing jitter. Only used when anchoring.
-        let start_frame = if self.scheduled_loops {
+        let start_frame = if self.anchor == LoopAnchor::EngineClock {
             let seconds_until_window_start = (le - LOOP_CROSSFADE_SECS - position).max(0.0);
             let lead = (seconds_until_window_start * engine.sample_rate() as f64) as u64;
             Some(engine.time_frames() + lead)
