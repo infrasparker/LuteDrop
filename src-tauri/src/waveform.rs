@@ -544,4 +544,19 @@ mod tests {
 
         assert!(read_cache(&audio, dir.path()).is_none());
     }
+
+    #[test]
+    fn opus_fixture_peaks_snapshot() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.opus");
+        let dir = tempfile::tempdir().unwrap();
+        let cached = generate_cache(&fixture, dir.path()).unwrap();
+        // Values pinned from the pre-streaming (whole-file) decoder — the
+        // streaming rewrite must reproduce them exactly.
+        assert_eq!(cached.sample_rate, 48000 /* PIN */);
+        assert_eq!(cached.total_samples, 5760648 /* PIN */);
+        assert_eq!(cached.peaks.len(), 22503 /* PIN */);
+        let sum: f32 = cached.peaks.iter().sum();
+        assert!((sum - 8246.38 /* PIN */).abs() < 0.01, "peak sum {sum}");
+        assert_eq!(cached.samples_per_peak, SAMPLES_PER_PEAK);
+    }
 }
