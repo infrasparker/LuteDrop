@@ -1,3 +1,28 @@
+//! LuteDrop backend: Tauri app for Lua-based audio composition.
+//!
+//! ## Architecture: Three Layers
+//! - **Commands**: Tauri-invoked handlers translating frontend requests.
+//! - **Actions**: Business logic orchestrating state mutations and notifications.
+//! - **Persistence & Audio**: SQLite database and audio engine.
+//!
+//! ## Background Threads Spawned in Setup (4)
+//! 1. **Peak preload**: Precomputes waveform peaks for the library on startup.
+//! 2. **Backup loop**: Automatic database snapshots every 30 minutes.
+//! 3. **WebSocket server**: Axum HTTP + WS for remote control (with tokio runtime).
+//! 4. **50ms poll loop**: Drives audio engine, emits playback updates.
+//!
+//! ## Tauri Events Emitted to Frontend
+//! - `playback-state-update`: Per-track playback position and state (every 50ms).
+//! - `master-volume-update`: Master gain changes (every 50ms).
+//! - `missing-entries-changed`: Audio file moved or deleted.
+//! - `missing-entry-found`: Audio file relocated or found.
+//! - `library-import-progress`: Bulk import progress.
+//! - `library-import-complete`: Bulk import finished.
+//!
+//! ## WebSocket Message Types to Remote Clients
+//! - `"state"`: Full structural snapshot (app state, library, all playback).
+//! - `"playback"`: Lightweight tick (positions + master volume).
+
 mod actions;
 mod audio;
 mod commands;
