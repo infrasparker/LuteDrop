@@ -12,12 +12,12 @@
 //! 4. **50ms poll loop**: Drives audio engine, emits playback updates.
 //!
 //! ## Tauri Events Emitted to Frontend
-//! - `playback-state-update`: Per-track playback position and state (every 50ms).
-//! - `master-volume-update`: Master gain changes (every 50ms).
-//! - `missing-entries-changed`: Audio file moved or deleted.
-//! - `missing-entry-found`: Audio file relocated or found.
-//! - `library-import-progress`: Bulk import progress.
-//! - `library-import-complete`: Bulk import finished.
+//! - `playback-state-update`: Per-track playback position and state (every 50ms; listened: useAudio.ts).
+//! - `master-volume-update`: Master gain changes (every 50ms; listened: useAudio.ts).
+//! - `missing-entries-changed`: Audio file moved or deleted (listened: useAudio.ts).
+//! - `missing-entry-found`: Audio file relocated or found (listened: useAudio.ts).
+//! - `library-import-progress`: Bulk import progress (listened: useLibraryImport.ts).
+//! - `library-import-complete`: Bulk import finished (listened: useLibraryImport.ts).
 //!
 //! ## WebSocket Message Types to Remote Clients
 //! - `"state"`: Full structural snapshot (app state, library, all playback).
