@@ -61,7 +61,7 @@ double ld_file_duration_secs(const wchar_t* path) {
     return (double)total / (double)sr;
 }
 
-// ---- Playback layer (Task 2) ------------------------------------------------
+// ---- Playback layer ---------------------------------------------------------
 
 struct ld_engine {
     ma_engine engine;
@@ -172,9 +172,10 @@ ld_sound* ld_sound_create(ld_engine* e, ld_group* g, const wchar_t* path, int st
 //
 // Starting or stopping playback abruptly at a non-zero sample produces a step
 // discontinuity in the waveform -> an audible click/pop. The old kira engine
-// avoided this because every start/stop/pause/resume ramped through zero with a
-// short tween. miniaudio does NOT ramp by default, so we enforce a minimum fade
-// on every transition here. These are FLOORS, not replacements: a longer
+// (the audio library this engine replaced) avoided this because every
+// start/stop/pause/resume ramped through zero with a short tween. miniaudio
+// does NOT ramp by default, so we enforce a minimum fade on every transition
+// here. These are FLOORS, not replacements: a longer
 // musical fade requested by the caller always wins (we take the max).
 #define LD_MIN_FADE_MS         4    // start / seek / stop (de-click floor; ~190 samples @48k)
 #define LD_MIN_PAUSE_FADE_MS   30   // pause / resume (slightly longer feels smoother)

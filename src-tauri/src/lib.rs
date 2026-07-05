@@ -1,3 +1,28 @@
+//! LuteDrop backend: Tauri app for Lua-based audio composition.
+//!
+//! ## Architecture: Three Layers
+//! - **Commands**: Tauri-invoked handlers translating frontend requests.
+//! - **Actions**: Business logic orchestrating state mutations and notifications.
+//! - **Persistence & Audio**: SQLite database and audio engine.
+//!
+//! ## Background Threads Spawned in Setup (4)
+//! 1. **Peak preload**: Precomputes waveform peaks for the library on startup.
+//! 2. **Backup loop**: Automatic database snapshots every 30 minutes.
+//! 3. **WebSocket server**: Axum HTTP + WS for remote control (with tokio runtime).
+//! 4. **50ms poll loop**: Drives audio engine, emits playback updates.
+//!
+//! ## Tauri Events Emitted to Frontend
+//! - `playback-state-update`: Per-track playback position and state (every 50ms; listened: useAudio.ts).
+//! - `master-volume-update`: Master gain changes (every 50ms; listened: useAudio.ts).
+//! - `missing-entries-changed`: Audio file moved or deleted (listened: useAudio.ts).
+//! - `missing-entry-found`: Audio file relocated or found (listened: useAudio.ts).
+//! - `library-import-progress`: Bulk import progress (listened: useLibraryImport.ts).
+//! - `library-import-complete`: Bulk import finished (listened: useLibraryImport.ts).
+//!
+//! ## WebSocket Message Types to Remote Clients
+//! - `"state"`: Full structural snapshot (app state, library, all playback).
+//! - `"playback"`: Lightweight tick (positions + master volume).
+
 mod actions;
 mod audio;
 mod commands;
@@ -8,7 +33,6 @@ mod state;
 mod waveform;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use tauri::Emitter;
 use tauri::Manager;
@@ -163,7 +187,7 @@ pub fn run() {
 /// Runs on its own thread every 50ms.
 fn playback_polling_loop(app_handle: tauri::AppHandle, container: Arc<AppStateContainer>) {
     loop {
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(audio::POLL_INTERVAL);
 
         let (states, master_vol, newly_missing, newly_found) = {
             let mut audio = container.lock_audio();

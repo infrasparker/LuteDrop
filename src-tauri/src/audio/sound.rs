@@ -1,8 +1,9 @@
 use std::time::Duration;
 use super::ffi;
 
-/// Playback state of a single sound. Replaces kira's `PlaybackState`; the audio
-/// module (`mod.rs`, `orchestrator.rs`) matches on these variants.
+/// Playback state of a single sound. Replaces kira's (the audio library this
+/// engine replaced) `PlaybackState`; the audio module (`mod.rs`,
+/// `orchestrator.rs`) matches on these variants.
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum PlaybackState {
     Playing,
@@ -89,6 +90,8 @@ pub fn stop(sound: &mut SoundHandle, fade_override: Option<Duration>) {
     sound.paused = false;
 }
 
+/// Stop with a minimal de-click fade (~4 ms floor in the shim); cursor is
+/// discarded and the sound is not parked for the reaper.
 pub fn stop_quick(sound: &mut SoundHandle) {
     sound.sound.stop(0.0);
     sound.paused = false;

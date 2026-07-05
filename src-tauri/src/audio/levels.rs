@@ -1,3 +1,6 @@
+//! Volume-level computation and mute intent — the actual mixing is
+//! miniaudio's node graph.
+
 use std::collections::HashMap;
 
 /// Mute intent, tracked separately from the actual node volumes. Each mute level

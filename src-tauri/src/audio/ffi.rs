@@ -1,3 +1,38 @@
+//! # FFI contract with the C shim (`vendor/shim.c`)
+//!
+//! This module is the sole Rust boundary to the vendored miniaudio shim. Four
+//! conventions govern every call across it:
+//!
+//! **Ownership.** Every `ld_*_create`/`ld_decoder_open` call is paired with
+//! exactly one `ld_*_destroy`/`ld_decoder_close` call, and each pairing is
+//! wrapped in a `Drop` impl in this module (`Engine`, `Group`, `Sound`,
+//! `StreamingDecoder`). Rust code elsewhere never calls the raw `ld_*_destroy`
+//! functions directly.
+//!
+//! **Drop order.** The shim requires sounds to be destroyed before their
+//! group, and groups before their engine (miniaudio sounds/groups hold a raw
+//! pointer back to the engine; destroying it first is undefined behavior).
+//! This is enforced by FIELD DECLARATION ORDER — Rust drops struct fields
+//! top-to-bottom — in `Voice` (`current`/`fading_out` before `group`),
+//! `AudioEngine` (`mod.rs`: `tracks`/`library` before `engine`), and
+//! `ManagedTrack` (`orchestrator.rs`: `transitions` before `voice`).
+//! Reordering any of those fields silently reintroduces the UB; there is no
+//! compile-time check.
+//!
+//! **Threading.** Every `ld_engine_*`/`ld_group_*`/`ld_sound_*` call happens
+//! while the caller holds `AppStateContainer.audio: Mutex<AudioEngine>` —
+//! that serialization is the entire basis for the `unsafe impl Send` below on
+//! `Engine`/`Group`/`Sound` (miniaudio's objects are not internally
+//! thread-safe). `ld_decoder_*` (`StreamingDecoder`) is an unrelated handle
+//! that never touches the engine or that mutex, and is safe on any single
+//! thread as long as one `StreamingDecoder` isn't shared across threads.
+//!
+//! **Error conventions.** `ld_*_create`/`ld_decoder_open` return NULL on
+//! failure. `ld_sound_play` returns a non-zero `c_int` on failure (see
+//! `Sound::play`). `ld_decoder_read` returns frames read (`>0`), `0` for
+//! end-of-stream, or `-1` for a hard mid-stream decode error — `0` is NOT an
+//! error and must not be treated as one.
+
 use std::os::raw::{c_float, c_int};
 use std::os::windows::ffi::OsStrExt;
 
@@ -187,7 +222,7 @@ impl Sound {
         unsafe { ld_sound_stop(self.ptr, fade_out_secs) }
     }
 
-    /// Pause (= stop without fade; cursor preserved).
+    /// Pause with a short (~30 ms) de-click fade; cursor preserved (see shim.c).
     pub fn pause(&self) {
         unsafe { ld_sound_pause(self.ptr) }
     }

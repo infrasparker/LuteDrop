@@ -9,6 +9,10 @@ use tokio::sync::broadcast;
 use crate::audio::AudioEngine;
 use crate::waveform::PeakCache;
 
+/// LOCK ORDERING: code that needs both locks takes `db` first, releases it,
+/// then takes `audio` — never nested, never the other way. Every existing
+/// call site follows this (see actions.rs, server.rs build_snapshot); a
+/// future function nesting them in the opposite order deadlocks against them.
 pub struct AppStateContainer {
     pub db: Mutex<Connection>,
     pub audio: Mutex<AudioEngine>,

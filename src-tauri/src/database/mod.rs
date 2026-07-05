@@ -544,6 +544,10 @@ fn build_track_mode(
     entry_map: &HashMap<String, &LibraryEntry>,
 ) -> TrackMode {
     match mode_type {
+        // Loop points are SNAPSHOTTED from the first clip's library entry at
+        // load time — editing the entry's markers changes track behavior only
+        // after the next state reload (deliberate; the engine never re-reads
+        // the DB mid-playback).
         "seamless" => {
             let (loop_start, loop_end) = clips
                 .first()
@@ -654,6 +658,10 @@ fn assemble_track(
     let repeat = repeat_int.map(|v| v != 0).unwrap_or(false);
     let ttype_str = ttype.as_deref().unwrap_or("gapless");
     let mode = match mode_type.as_str() {
+        // Loop points are SNAPSHOTTED from the first clip's library entry at
+        // load time — editing the entry's markers changes track behavior only
+        // after the next state reload (deliberate; the engine never re-reads
+        // the DB mid-playback).
         "seamless" => {
             let (loop_start, loop_end) = match first_loops {
                 Some((Some(ls), Some(le))) => (ls, le),
