@@ -1,212 +1,418 @@
 # Engine Architecture
 
-LuteDrop's audio engine lives in `src-tauri/src/audio/`. It is a multi-module Rust library that wraps [Kira](https://github.com/tesselode/kira) for real-time audio playback.
+> New to this codebase, or the Rust reads as "total greek"? Start with
+> [`docs/orientation.md`](./orientation.md) — a plain-language tour with a
+> Rust-for-TypeScript primer. This document is the precise reference; that one
+> is the on-ramp.
+
+## Summary
+
+LuteDrop's real-time audio is owned by **miniaudio**, a single-header C library
+vendored under `src-tauri/vendor/` (`miniaudio.h` + the `miniaudio_libopus`
+backend for `.opus`). miniaudio runs its own high-priority audio thread and does
+all the sample-by-sample work: decoding, mixing, fading, and pushing PCM
+(raw audio samples) to the sound card. The Rust side never touches a sample.
+
+Instead, Rust is a **20 Hz control plane**: a polling loop wakes every 50 ms
+(so ~20 times a second), looks at where each sound is, and tells miniaudio what
+to do next — start this clip, fade that one out, schedule a loop restart. It
+talks to miniaudio through a tiny C shim (`vendor/shim.c` / `shim.h`) exposing a
+flat `ld_*` function API, wrapped in safe Rust in `audio/ffi.rs`.
+
+**None of this is [Kira](https://github.com/tesselode/kira) anymore.** The old
+engine doc described a Kira-based design (`compute_volume`, `Decibels`,
+`StreamingSoundHandle`, a `mixer` that computed dB) — all deleted. If you see
+those names anywhere, they are stale. The volume model is now linear and
+multiplied natively by miniaudio's node graph; there is no dB math and no
+per-tick volume recompute.
 
 ---
 
-## Overview
+## The layers
 
-The engine manages two independent playback contexts:
-
-1. **Track playback** — one or more clips assigned to a track, played through an orchestrator that handles sequencing, looping, shuffling, and transitions between clips.
-2. **Library playback** — a single sound played directly from a library entry for preview or auditioning purposes, with no orchestrator involvement.
-
-The public surface is `AudioEngine` (`audio/mod.rs`). All Tauri commands go through `actions.rs`, which calls into `AudioEngine` methods. A 50 ms polling loop in `lib.rs` drives transitions and emits playback state events to the frontend.
-
----
-
-## Module Structure
+Each layer only knows about the one below it. Top to bottom:
 
 ```
-audio/
-  mod.rs          — AudioEngine struct; public API; owns all state
-  sound.rs        — SoundPlayer: wraps Kira streaming handles (PlayParams, SoundHandle)
-  orchestrator.rs — Track lifecycle: setup, play, pause, stop, poll, volume
-  transitions.rs  — TransitionManager: crossfade, gap, gapless logic
-  mixer.rs        — Volume computation and mute state
-  util.rs         — probe_duration, amplitude_to_decibels, CROSSFADE_OVERLAP,
-                    AUDIO_EXTENSIONS, is_audio_path
+Vue UI  ──invoke──▶  Tauri command (commands.rs)
+                          │
+                          ▼
+                     actions.rs          ← locks state, talks to DB + engine
+                          │
+                          ▼
+                  AudioEngine (audio/mod.rs)   ← the public engine API
+                    │                    │
+                    ▼                    ▼
+          orchestrator.rs         (library preview)
+          + transitions.rs         uses a Voice directly
+                    │
+                    ▼
+                 voice.rs          ← plays ONE sound at a time, click-free
+                    │
+                    ▼
+                 sound.rs          ← one clip = one ma_sound (PlayParams)
+                    │
+                    ▼
+                  ffi.rs           ← safe Rust wrappers (Engine/Group/Sound)
+                    │
+                    ▼
+             shim.c / shim.h       ← flat C API over miniaudio
+                    │
+                    ▼
+              miniaudio (C)        ← the actual audio thread
 ```
 
-Dependency direction (no cycles):
+One sentence per layer:
 
-```
-mod.rs
-  └── orchestrator.rs
-        ├── sound.rs
-        ├── mixer.rs
-        └── transitions.rs
-              └── sound.rs (stop_quick)
-  └── sound.rs  (library path)
-  └── mixer.rs  (library volume)
-  └── util.rs
-```
+- **`shim.c` / `shim.h`** — a flat C API (`ld_engine_*`, `ld_group_*`,
+  `ld_sound_*`, `ld_decoder_*`) that owns the miniaudio objects and hands Rust
+  back opaque pointers; also opens files via the wide (UTF-16) `_w` APIs so
+  non-ASCII paths work on Windows.
+- **`ffi.rs`** — safe Rust wrappers (`Engine`, `Group`, `Sound`,
+  `StreamingDecoder`) around those pointers; the only file with `unsafe` blocks,
+  and the place the drop-order contract is written down.
+- **`sound.rs`** — turns a `PlayParams` into one running `ma_sound`
+  (`SoundHandle`); thin verbs like `play`, `stop`, `pause`, `position`, `state`.
+- **`voice.rs`** — the `Voice`: plays exactly ONE sound at a time inside its own
+  sub-mix group, with click-free stops (the fade-out reaper) and seamless-loop
+  crossfading. Both the library preview and every track embed a `Voice`.
+- **`orchestrator.rs`** (+ **`transitions.rs`**) — multi-clip sequencing on top
+  of a `Voice`: which clip plays next, when to crossfade, gap timing, shuffle.
+  `ManagedTrack` is one track's state; `TransitionManager` is its state machine.
+- **`AudioEngine` (`mod.rs`)** — the public surface: owns all tracks, the
+  library `Voice`, master volume, and mute state; every method the rest of the
+  app calls lives here.
+- **`actions.rs`** — the glue: locks the engine mutex, reads/writes the DB,
+  converts command arguments into engine calls.
+- **Tauri commands (`commands.rs`)** — the `#[tauri::command]` functions the Vue
+  frontend can `invoke`, plus the remote's WebSocket dispatch in `server.rs`.
+
+`mixer.rs` and `util.rs` sit to the side: `mixer.rs` computes the linear volume
+for each node and tracks mute intent; `util.rs` holds constants
+(`CROSSFADE_OVERLAP`, `AUDIO_EXTENSIONS`) and offline helpers (`probe_duration`,
+`is_audio_path`).
 
 ---
 
-## How a Sound Gets Played
+## The volume model
 
-Entry point: `AudioEngine::play_library_sound` (`audio/mod.rs`) or `orchestrator::start_clip` (`audio/orchestrator.rs`).
+miniaudio arranges sounds in a **node graph** — a tree where each node has its
+own volume and a node's output is multiplied by its parent's on the way to the
+speakers. LuteDrop uses exactly three levels, and lets miniaudio do the
+multiplication natively:
 
-1. Caller constructs a `PlayParams` (`audio/sound.rs:PlayParams`):
-   - `file_path`, `start_position`, `volume` (as `Decibels`)
-   - Optional `trim_start`, `trim_end`, `loop_region`, `fade_in`, `fade_out`
+| Level  | miniaudio node        | Set via                                    | Stored on            |
+|--------|-----------------------|--------------------------------------------|----------------------|
+| master | engine node           | `Engine::set_master_volume`                | `AudioEngine.master_volume` |
+| track  | sub-mix group node    | `Group::set_volume` (via `Voice::set_group_volume`) | `Track.volume`       |
+| clip   | individual sound node | `Sound::set_volume` (via `Voice::set_volume`) | `Clip.volume` × `Clip.library_volume` |
 
-2. `sound::play` (`audio/sound.rs:play`) opens a `StreamingSoundData` from disk, applies start position, loop region, fade-in tween, and volume, then calls `track_handle.play(sound_data)`.
+Final loudness = `master × track × clip` — but **no Rust code multiplies those
+together**. Each level is set on its own node and miniaudio combines them on the
+audio thread. This is why the old `compute_volume` / dB conversion is gone: there
+is nothing to recompute per tick.
 
-3. Kira returns a `StreamingSoundHandle`, which is wrapped in `SoundHandle` along with cached `fade_out`, `duration`, and `start_position` for later transition calculations.
+`mixer.rs` provides the two small linear helpers that feed the group and sound
+nodes:
 
-4. The caller stores the `SoundHandle` (either in `ManagedTrack.current_sound` for track playback or `AudioEngine.library_sound` for library playback).
+- `mixer::track_group_volume(track_vol, muted)` → group node (`0.0` if muted).
+- `mixer::clip_sound_volume(clip_vol, library_vol, muted)` → sound node
+  (`clip × library`, clamped to `0..=1`, or `0.0` if muted).
 
----
+**Mute = zero the relevant node.** There is no separate "silence" state:
 
-## How Tracks Work
+- master mute → `engine.set_master_volume(0.0)` (`AudioEngine::toggle_master_mute`)
+- track mute → `refresh_track_group_volume` sets the group node to 0
+- clip mute → `set_clip_volume` re-applies the sound node at 0
 
-### Setup (`audio/orchestrator.rs:setup_track`)
-
-`AudioEngine::setup_track` is called from `actions::ensure_track_setup` before any playback command. It creates a Kira sub-track (`TrackHandle`) for the track and inserts a `ManagedTrack` into `AudioEngine.tracks`. If the track already exists, config is updated in-place.
-
-### Play (`audio/orchestrator.rs:play_track`, `start_clip`)
-
-`play_track` picks the first clip (or a random one in shuffle mode) and calls `start_clip`. `start_clip`:
-1. Stops any currently playing sound on the track (`sound::stop_quick`).
-2. Computes final volume via `mixer::compute_volume`.
-3. Builds `PlayParams` (including seamless loop region if mode is `Seamless`).
-4. Calls `sound::play` and stores the handle.
-5. Calls `track.transitions.clip_started()` to reset transition state.
-
-### Poll Loop (`lib.rs:playback_polling_loop`, `audio/orchestrator.rs:poll_track`)
-
-`lib.rs` spawns a thread that calls `audio.poll()` every 50 ms. `AudioEngine::poll` iterates all tracks and calls `orchestrator::poll_track` for each.
-
-`poll_track` does the following each tick:
-1. Reads the current sound's position and playback state.
-2. Calls `TransitionManager::update` to decide if any transition action is needed.
-3. Executes the returned `TransitionAction`.
-
-### Transitions (`audio/orchestrator.rs:poll_track`, `audio/transitions.rs`)
-
-`TransitionManager::update` (`transitions.rs:update`) inspects the current playback position against the clip duration and the configured transition type, returning a `TransitionAction` variant:
-
-| Variant | Trigger | Effect |
-|---|---|---|
-| `AdvanceClip` | Sound stopped naturally (gapless) | Immediately start next clip |
-| `StartCrossfade` | Position reaches `clip_dur - CROSSFADE_OVERLAP` | Take outgoing sound, start next clip overlapping |
-| `ScheduleGap` | Sound stopped (gap transition) | Record delayed start time |
-| `StartPendingClip` | Delayed start time reached | Start the queued clip |
-| `CleanupOutgoing` | Crossfade duration + 0.5 s elapsed | Stop and drop the outgoing handle |
-| `None` | Nothing to do | If sound stopped and no next clip, track stops |
-
-Clip advancement wraps or stops based on the mode's `repeat` flag. Shuffle picks a random index that avoids repeating the previous clip (`transitions.rs:pick_next_clip_index`).
-
-### Advance
-
-When the last clip in a non-repeating sequence ends and no next clip is available, `poll_track` calls `stop_track`, which resets `current_clip_index`, clears the transition state, and drops the sound handle.
+`mixer::MuteState` (`master: bool`, `tracks`/`clips: HashMap<String, bool>`) only
+records **intent** — which things the user muted — so it can restore the
+intended level on unmute and report a snapshot to remotes. It never stores actual
+volumes.
 
 ---
 
-## How Library Playback Works
+## How a sound plays
 
-Library playback bypasses the orchestrator entirely.
+Everything that makes noise starts as a `PlayParams` (`sound.rs`) and ends as a
+running `ma_sound`:
 
-- `AudioEngine::play_library_sound` (`mod.rs`) stops any existing `library_sound`, builds `PlayParams` from the command arguments, and calls `sound::play` targeting `AudioEngine.library_track_handle` (a dedicated Kira sub-track).
-- `AudioEngine::stop_library_sound` calls `sound::stop` with the stored handle's fade-out duration.
-- The 50 ms poll loop **always** emits a `TrackPlaybackState` for `track_id = "__library"` — either the current sound's state or a stopped state (`is_playing: false, is_paused: false`). This ensures the frontend properly detects when library playback ends.
-- The poll loop also checks if the library sound's position has passed its `trim_end` (stored in `SoundHandle.duration`). If so, it stops the sound. This enforces trim_end for non-looping library playback, since Kira has no native "stop at position X" feature.
-
----
-
-## Volume Chain
-
-All volume computation goes through `mixer::compute_volume` (`audio/mixer.rs:compute_volume`):
-
-```
-final_dB = amplitude_to_decibels(master × track × clip × library)
-```
-
-- **master**: global slider, stored in `AudioEngine.master_volume` (0.0–1.0).
-- **track**: per-track slider, stored in `Track.volume`.
-- **clip**: per-clip slider, stored in `Clip.volume`.
-- **library**: the `LibraryEntry.volume` gain baked into the clip at assignment time (`Clip.library_volume`).
-
-If `MuteState::is_muted` returns `true` for the `(track_id, clip_id)` pair, the result is `Decibels::SILENCE` regardless of volume levels.
-
-`amplitude_to_decibels` (`util.rs`) uses `20 * log10(amp)` and clamps values below 0.0001 to `Decibels::SILENCE`.
-
----
-
-## Transition Lifecycle
-
-`TransitionManager` (`transitions.rs`) is owned by each `ManagedTrack`. Key state fields:
-
-- `outgoing: Option<OutgoingFade>` — sound handle fading out during a crossfade, with its start time and duration.
-- `crossfade_started: bool` — prevents re-triggering once a crossfade is in progress.
-- `pending_start: Option<PendingStart>` — clip index and wall-clock start time for gap transitions.
-
-Lifecycle for a crossfade:
-1. `update` detects `position >= clip_dur - effective_xfade` → returns `StartCrossfade`.
-2. `poll_track` takes the current sound out of `ManagedTrack.current_sound`, calls `transitions.begin_crossfade(old_sound, duration)`, then starts the next clip.
-3. On subsequent ticks, `update` returns `CleanupOutgoing` once the fade duration has elapsed.
-4. `poll_track` calls `transitions.cleanup_outgoing()`, which calls `sound::stop_quick` on the outgoing handle and drops it.
-
-Lifecycle for a gap transition:
-1. Sound stops → `update` returns `ScheduleGap { next_clip_index, delay_seconds }`.
-2. `poll_track` sets `current_sound = None` and calls `transitions.schedule_gap(index, delay)`.
-3. On subsequent ticks, `update` checks `Instant::now() >= pending_start.start_at` and returns `StartPendingClip`.
-
----
-
-## How the Polling Loop Works
-
-`lib.rs:playback_polling_loop` runs on a dedicated thread:
-
-```
-loop {
-    sleep(50ms)
-    audio.poll()       → drives transitions, collects TrackPlaybackState vec
-    emit playback-state-update for each state
-    emit master-volume-update
-    server::broadcast_state  → push snapshot to WebSocket remotes
+```rust
+pub struct PlayParams {
+    pub file_path: String,
+    pub start_position: f64,
+    pub volume: f32,            // linear 0..=1 (the clip/sound node)
+    pub trim_start: Option<f64>,
+    pub trim_end: Option<f64>,
+    pub loop_region: Option<(f64, f64)>,
+    pub fade_in: Option<f64>,
+    pub fade_out: Option<f64>,
 }
 ```
 
-`AudioEngine::poll` (`mod.rs:poll`):
-1. Collects all track IDs (excluding `__library`).
-2. Calls `orchestrator::poll_track` for each.
-3. Collects `TrackPlaybackState` from all tracks via `orchestrator::get_playback_state`.
-4. Appends library sound state if `library_sound` is `Some`.
-5. Returns the full state vec.
+`sound::play(engine, group, params)`:
 
-The frontend listens to `playback-state-update` events and stores them in `appStore.playbackStates` (a `Map<string, TrackPlaybackState>`).
+1. `engine.create_sound(Some(group), path, stream=true)` → a **streaming**
+   `ma_sound` (decoded on the fly as it plays, so a long ambience track doesn't
+   sit in RAM). Every format, including `.opus`, streams natively now — there is
+   no decode-to-WAV cache and no `decode_file`.
+2. `sound.set_volume(params.volume)` sets the sound (clip) node.
+3. `sound.play(start_position, fade_in)` seeks and starts.
+4. Wraps it in a `SoundHandle` caching `fade_out`, effective `duration`
+   (explicit `trim_end`, else the file length from `length_secs`),
+   `start_position`, and `loop_region` for later transition math.
+
+Note step 1's `loop_region` is **stored on the handle, not applied to the
+`ma_sound`**. Looping is done by LuteDrop's own crossfade in the poll loop (see
+Seamless loops), not by miniaudio's built-in loop flag — a built-in loop would
+butt-join the end to the start and click.
+
+### The library preview shares `Voice`, not the orchestrator
+
+The library preview (auditioning one entry in the waveform editor) and a track
+both play through a **`Voice`**, so they share all the single-sound machinery:
+click-free stop, seamless-loop crossfade, the reaper. What they do *not* share is
+the orchestrator — the preview is one sound with no clip sequencing, so
+`AudioEngine.library` is a bare `Voice` that `play_library_sound` /
+`stop_library_sound` drive directly. It also gets a **scheduled trim-end stop**
+(`Voice::play_scheduled`, see below), and its loop restart is *not*
+sample-accurately anchored (`Voice::new`, `scheduled_loops = false`), matching
+the pre-refactor preview behavior exactly.
 
 ---
 
-## How to Add a New Transition Type
+## How tracks sequence
 
-1. Add a variant to `TrackTransition` in `src-tauri/src/models.rs` and update the TypeScript bindings.
-2. Add a new `TransitionAction` variant in `transitions.rs` if the new transition requires a new kind of orchestrator action.
-3. Extend `TransitionManager::update` (`transitions.rs:update`) with a new branch that returns the new action when its trigger condition is met.
-4. Handle the new `TransitionAction` variant in `orchestrator::poll_track` (`orchestrator.rs:poll_track`).
-5. Update the UI track settings panel to expose the new option.
+A `ManagedTrack` (`orchestrator.rs`) holds one track's live state:
+
+```rust
+pub struct ManagedTrack {
+    pub transitions: TransitionManager,   // declared BEFORE voice — see Invariants
+    pub voice: Voice,
+    pub config: Track,
+    pub current_clip_index: Option<usize>,
+    pub clips_played: usize,
+    pub is_paused: bool,
+}
+```
+
+`orchestrator::start_clip` builds the `PlayParams` for a clip (resolving trim,
+volume, loop region, and fades) and plays it on the track's `Voice`. Whether it
+uses `voice.play` or `voice.play_scheduled` depends on the transition (crossfade
+clips must NOT get a scheduled trim-end stop — see the comment block in
+`start_clip`).
+
+Sequencing decisions live in `TransitionManager::update`, which is called once
+per tick and returns a `TransitionAction` telling `poll_track` what to do:
+
+| `TransitionAction` variant | When it fires | Effect in `poll_track` |
+|---|---|---|
+| `AdvanceClip { next_clip_index }` | current sound stopped, gapless / (crossfade fallback) | start next clip immediately |
+| `StartCrossfade { next_clip_index, duration }` | position reached `clip_dur − effective_xfade` (crossfade mode) | `take_current` the outgoing sound, hand it to `begin_crossfade`, start next clip overlapping |
+| `ScheduleGap { next_clip_index, delay_seconds }` | current sound stopped, gap mode | `clear_current`, record a wall-clock start time |
+| `StartPendingClip { clip_index }` | a scheduled gap's start time arrived | start the queued clip |
+| `CleanupOutgoing` | `outgoing.duration + 0.5 s` elapsed | `stop_quick` + drop the outgoing crossfade handle |
+| `None` | nothing to do | if the sound stopped and there's no next clip, `stop_track` |
+
+**Terminating and choosing the next clip** — `pick_next_clip_index`
+(`transitions.rs`):
+
+- `Sequence { repeat, .. }`: advance to `index+1`; wrap to 0 if `repeat`, else
+  `None` (track ends).
+- `Shuffle { repeat, .. }`: a random index that avoids an immediate repeat.
+  Without `repeat`, stops once `clips_played >= clip_count` (the orchestrator
+  counts plays in `ManagedTrack.clips_played`; clips may repeat within that
+  budget — exact-once shuffle is a future feature).
+- `Seamless { .. }`: always `None` — the single clip loops itself via the Voice,
+  so there is never a "next clip".
+
+**Gap / gapless / crossfade** are the three `TrackTransition` values:
+
+- **Gapless** — start the next clip the instant the current one stops (no
+  silence). If it broke you'd hear a gap.
+- **Gap { min, max }** — insert a random silence of `min..=max` seconds between
+  clips (`gap_delay`, which tolerates inverted/non-finite config so a bad value
+  can't panic the poll thread and poison the mutex).
+- **Crossfade** — overlap the outgoing and incoming clips by `CROSSFADE_OVERLAP`
+  (4.0 s) so one fades out as the next fades in. The outgoing sound is handed to
+  `TransitionManager` (via `OutgoingFade`) so it keeps mixing through its fade;
+  short clips shrink the window to half their playable length (min 0.1 s) to
+  avoid triggering a crossfade at clip start.
 
 ---
 
-## How to Add a New Playback Feature
+## Seamless loops
 
-**New per-track behaviour** (e.g., a new mode type):
-1. Add the mode variant to `TrackMode` in `models.rs`.
-2. Handle it in `orchestrator::start_clip` for clip setup (e.g., loop region computation).
-3. Handle it in `transitions.rs:pick_next_clip_index` for clip advancement logic.
-4. Update the track settings UI.
+A seamless-mode track (or a looping library preview) plays one clip forever with
+no audible seam at the loop point. A naive loop — jump the cursor from `loop_end`
+back to `loop_start` — produces a **step discontinuity** (the waveform teleports)
+that you hear as a click or pop. LuteDrop avoids that with a **crossfade window**:
+a short overlap (the last `LOOP_CROSSFADE_SECS` before `loop_end`) where the
+outgoing instance fades out while a fresh instance, started at `loop_start`, fades
+in — so the two sum smoothly across the loop point.
 
-**New engine-level operation** (e.g., solo):
-1. Add the method to `AudioEngine` in `mod.rs`, delegating to orchestrator or mixer helpers.
-2. Add a Tauri command in `commands.rs` and an action function in `actions.rs`.
-3. Register the command in the `invoke_handler!` list in `lib.rs`.
-4. Add an `invoke` call in `src/composables/useAudio.ts` and expose it from the composable.
+The mechanism (`Voice::poll_loop` → `Voice::do_loop_crossfade`, run each tick):
 
-**New library/preview feature** (e.g., pitch shifting):
-1. Extend `PlayParams` in `sound.rs` with the new parameter.
-2. Apply it inside `sound::play` before calling `track_handle.play`.
-3. Pass the parameter through from `AudioEngine::play_library_sound` (and `start_clip` for track playback if applicable).
-4. Extend the Tauri command `play_library_sound` and the frontend `playLibrarySound` call.
+1. When the current sound's position reaches `loop_end − LOOP_CROSSFADE_SECS`,
+   `poll_loop` returns `PollResult::Looped` and triggers `do_loop_crossfade`.
+2. The outgoing instance is `stop`-ped with a `LOOP_CROSSFADE_SECS` fade-out,
+   taken out of the `current` slot, and **parked** in the reaper
+   (`hold_until_silent`) so it keeps mixing through the fade instead of being
+   dropped mid-fade (a mid-fade `ma_sound_uninit` is a hard cut → pop).
+3. A fresh instance is started at `loop_start` with a matching
+   `LOOP_CROSSFADE_SECS` fade-in, rebuilt from a `LoopRestart` snapshot captured
+   at play time.
+
+```rust
+pub const LOOP_CROSSFADE_SECS: f64 = 0.12;   // voice.rs
+```
+
+**Why 0.12 s?** The check runs on the 50 ms poll tick, so a single delayed tick
+can land up to ~50 ms late. The window is sized to at least **two poll periods**
+(2.4 × 50 ms) so even a late tick still catches the window before `loop_end` is
+overshot and the loop audibly jumps.
+
+**Engine-clock anchoring (tracks only).** For tracks, `scheduled_loops = true`
+(`Voice::with_scheduled_loops`), so the incoming instance is scheduled to start
+at an absolute engine frame — `engine.time_frames() + lead` — via
+`Sound::schedule_start_frame`. "Sample-accurate" means the start is pinned to an
+exact PCM frame on miniaudio's own clock rather than to whenever the poll thread
+happened to run, so the overlap lines up precisely. The library preview passes
+`false` and does not anchor (matching its historical behavior).
+
+**The `LoopRestart` capture.** Because the restart is built from a snapshot taken
+at play time (`file_path`, `volume`, `trim_start`/`trim_end`, `loop_region`,
+`loop_start_position`), every loop iteration is byte-for-byte the same source and
+trim. `Voice::set_volume` also updates the stored `LoopRestart.volume` so a
+volume change mid-loop carries into the next iteration.
+
+---
+
+## The poll loop
+
+`playback_polling_loop` (`lib.rs`) runs on its own thread:
+
+```rust
+loop {
+    sleep(50 ms);
+    let (states, missing, found) = audio.poll();   // under lock_audio()
+    // emit "playback-state-update" per state; emit "master-volume-update"
+    // mark newly missing/found library entries
+    server::broadcast_tick(&container);
+}
+```
+
+`AudioEngine::poll` (`mod.rs`), each tick:
+
+1. For every real track, `orchestrator::poll_track`, which:
+   - `voice.drop_finished()` — **the reaper**: drop any parked fade-out sounds
+     that have gone silent (run first, so it happens every tick regardless of
+     which branch returns early below).
+   - `voice.poll_loop(engine, playing && !paused, stop_at_end=false)` — drive the
+     seamless-loop crossfade (tracks never stop a non-looping sound here; the
+     transition state machine detects a natural end instead).
+   - `transitions.update(...)` → execute the returned `TransitionAction`.
+2. Collect a `TrackPlaybackState` per track.
+3. `library.drop_finished()` then `library.poll_loop(engine, true, stop_at_end=true)`
+   — the preview *does* stop a non-looping sound at its `trim_end` here.
+4. Always push a `__library` state (a stopped one if nothing plays) so the
+   frontend can tell when the preview ends.
+
+**What it emits.** Two channels:
+
+- **Tauri events** to the desktop webview: `playback-state-update` (one per
+  track, incl. `__library`) and `master-volume-update`.
+- **`broadcast_tick`** (`server.rs`) to phone remotes over WebSocket. This is
+  split in two: a cheap `"playback"` message (positions + master volume) every
+  tick, and a full `"state"` structural snapshot **only when the dirty flag is
+  set** — `AppStateContainer.take_state_dirty()`. Mutations call
+  `mark_state_dirty()`; the tick consumes it. With zero connected remotes,
+  `broadcast_tick` returns immediately (no locks, no serialization).
+
+---
+
+## Invariants (read this before touching the audio module)
+
+These are the rules that keep the C object graph and the shared engine state
+sound. Breaking one is usually silent — no compile error, a crash or click at
+runtime.
+
+**1. Drop order: Sounds → Groups → Engine.** miniaudio sounds and groups
+reference the engine; destroying the engine (or a group) while its children are
+alive is undefined behavior. Rust drops struct fields **in declaration order**,
+so field order *is* teardown order:
+
+- `AudioEngine` (`mod.rs`) declares `tracks` and `library` **before** `engine`.
+- `Voice` (`voice.rs`) declares `current` / `fading_out` **before** `group`.
+- `ManagedTrack` (`orchestrator.rs`) declares `transitions` **before** `voice` —
+  because `transitions` holds the outgoing crossfade sound (`OutgoingFade.handle`),
+  which lives in `voice`'s group and must be uninitialized before that group.
+  Reordering these fields reintroduces mid-crossfade UB. `ffi.rs` documents the
+  contract on the `Engine` type.
+
+**2. Everything runs under the audio mutex, with poison recovery.** The engine
+lives in `AppStateContainer.audio: Mutex<AudioEngine>`. All access goes through
+`container.lock_audio()`, which recovers from a poisoned mutex (a panic while the
+lock was held) instead of propagating the panic — engine state stays structurally
+valid across a panic (single-field mutations only), and permanently killing audio
+because one poll tick panicked would be worse. The poison is logged. This is also
+why the raw pointers can be `unsafe impl Send` (see `ffi.rs`): access is
+serialized to one thread at a time by this mutex.
+
+**3. DB lock before audio lock.** Actions that touch both take the DB lock first,
+then the audio lock (e.g. `set_track_volume_action` persists to the DB, then
+updates the engine). Keep this order everywhere to avoid a lock-ordering deadlock.
+
+**4. Loop points are snapshotted at track-load time.** The `loop_region` a
+seamless track uses is computed in `start_clip` from the clip's config when it
+starts, and captured into `LoopRestart` at play time. **Editing an entry's
+loop/trim markers changes playback only after the track is reloaded** (next
+`setup_track` / `update_track_config` + replay), not live for an already-playing
+loop.
+
+**5. The reaper contract: call `drop_finished` every tick.** Parked fade-out
+sounds are only freed by `Voice::drop_finished`. `poll_track` and
+`AudioEngine::poll` both call it first thing every tick. Skip it and stopped
+sounds leak (they stay alive in miniaudio's mixer forever). It reaps on the
+sound's own engine-clock state (silent → drop now); the wall-clock
+`REAP_BACKSTOP` (2 s) grace is only a leak backstop for a stalled device.
+
+---
+
+## How to add X
+
+### A new transition type
+
+1. Add a variant to `TrackTransition` in `src-tauri/src/models.rs` (it derives
+   `TS`, so `ts-rs` regenerates the TypeScript twin under `generated/` on build).
+2. If it needs a new orchestrator action, add a variant to `TransitionAction`
+   (`transitions.rs`).
+3. Add a branch in `TransitionManager::update` (`transitions.rs`) that returns
+   the action when its trigger condition is met.
+4. Handle that action in `orchestrator::poll_track` (`orchestrator.rs`).
+5. If it changes how the outgoing sound is retired, mirror the existing
+   `begin_crossfade` / `cleanup_outgoing` handoff so the sound isn't dropped
+   mid-fade.
+6. Expose the option in the track settings UI (`src/components/TrackSettings.vue`).
+
+### A new engine-level operation (e.g. solo)
+
+1. Add the method to `AudioEngine` (`audio/mod.rs`), delegating to
+   `orchestrator`/`mixer` helpers.
+2. Add a `pub fn` in `actions.rs` that locks the engine and calls it.
+3. Add a `#[tauri::command]` in `commands.rs` and register it in the
+   `invoke_handler![...]` list in `lib.rs`.
+4. Add an `invoke(...)` wrapper in `src/composables/useAudio.ts`.
+5. If remotes should trigger it, add a case in `handle_remote_command`
+   (`server.rs`) and a sender in `src/remote/composables/useRemote.ts`.
+
+### A new preview / playback parameter (e.g. pitch)
+
+1. Add the field to `PlayParams` (`sound.rs`) and apply it in `sound::play`
+   before `sound.play(...)` (you may also need a new `ld_sound_*` shim function
+   in `vendor/shim.c` + `shim.h` and a `Sound` wrapper method in `ffi.rs`).
+2. Thread it through `Voice::play` / `play_inner` if the Voice must remember it
+   (e.g. for the `LoopRestart` snapshot).
+3. Pass it from `AudioEngine::play_library_sound` and/or
+   `orchestrator::start_clip`.
+4. Extend the `play_library_sound` command (`commands.rs` / `actions.rs`) and the
+   `playLibrarySound` call in `src/composables/useAudio.ts`.
