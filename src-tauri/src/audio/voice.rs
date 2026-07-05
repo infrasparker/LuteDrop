@@ -4,9 +4,12 @@ use super::ffi;
 use super::sound::{self, PlayParams, PlaybackState, SoundHandle};
 
 /// How far before loop_end (in seconds) to trigger the crossfade restart.
-/// Must be larger than the poll interval (50ms) to reliably catch it.
+/// Sized to at least TWO poll periods (2.4 × 50 ms) so a single delayed tick
+/// can't land the check past loop_end and audibly overshoot the loop point.
 /// Shared by the library preview loop and seamless-mode tracks.
-pub const LOOP_CROSSFADE_SECS: f64 = 0.06;
+/// (Engine-clock loop scheduling — removing the poll dependency entirely —
+/// is Plan 3C, alongside the loop-instance preload.)
+pub const LOOP_CROSSFADE_SECS: f64 = 0.12;
 
 /// De-click ramp applied to a scheduled trim-end stop. Short enough to be
 /// inaudible as a fade (the clip is supposed to end here) but long enough to
@@ -395,7 +398,14 @@ impl Voice {
                 self.current = Some(new_snd);
                 self.loop_restart = Some(restart);
             }
-            Err(_) => {
+            Err(e) => {
+                // A silent stop here is the "my ambience just stopped and I
+                // don't know why" bug — most likely a network-drive hiccup
+                // reopening the file. Say so.
+                log::warn!(
+                    "Seamless loop restart failed for '{}': {} — stopping loop",
+                    restart.file_path, e
+                );
                 self.current = None;
                 self.loop_restart = None;
             }
