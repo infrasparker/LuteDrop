@@ -52,6 +52,12 @@ pub fn set_active_configuration(conn: &Connection, id: &str) -> Result<(), Strin
 }
 
 pub fn duplicate_configuration(conn: &Connection, source_id: &str, new_name: &str) -> Result<String, String> {
+    // Statements below keep running on `conn`; they participate in this
+    // connection-scoped transaction — same pattern as `run_migrations_with`.
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin duplicate transaction: {e}"))?;
+
     let new_config_id = insert_configuration(conn, new_name)?;
 
     // Load source groups
@@ -154,6 +160,7 @@ pub fn duplicate_configuration(conn: &Connection, source_id: &str, new_name: &st
         }
     }
 
+    tx.commit().map_err(|e| format!("Failed to commit duplicate: {e}"))?;
     Ok(new_config_id)
 }
 
