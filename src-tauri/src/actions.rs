@@ -25,25 +25,11 @@ fn load_state(container: &AppStateContainer) -> Result<AppState, String> {
 }
 
 pub fn find_track_ref(container: &AppStateContainer, track_id: &str) -> Result<Track, String> {
-    let state = with_db(container, |conn| database::load_full_state(conn))?;
-    for group in &state.groups {
-        for comp in &group.comps {
-            if let Some(track) = comp.tracks.iter().find(|t| t.id == track_id) {
-                return Ok(track.clone());
-            }
-        }
-    }
-    Err(format!("Track not found: {}", track_id))
+    with_db(container, |conn| database::load_track_by_id(conn, track_id))
 }
 
 pub fn find_comp_tracks(container: &AppStateContainer, comp_id: &str) -> Result<Vec<Track>, String> {
-    let state = with_db(container, |conn| database::load_full_state(conn))?;
-    for group in &state.groups {
-        if let Some(comp) = group.comps.iter().find(|c| c.id == comp_id) {
-            return Ok(comp.tracks.clone());
-        }
-    }
-    Err(format!("Comp not found: {}", comp_id))
+    with_db(container, |conn| database::load_tracks_for_comp(conn, comp_id))
 }
 
 /// Volumes from any caller (IPC or remote) are clamped to [0, 1] before they

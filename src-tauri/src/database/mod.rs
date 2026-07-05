@@ -578,6 +578,167 @@ fn build_transition(transition_type: &str, gap_min: f64, gap_max: f64) -> TrackT
     }
 }
 
+// ─── Targeted Play-Path Lookups ───────────────────────────────────────────────
+
+/// Row shape shared by the two targeted loaders: a Clip plus the referenced
+/// entry's loop markers (needed only for Seamless mode's first clip).
+type ClipWithLoops = (Clip, Option<f64>, Option<f64>);
+
+/// `where_sql` is a `&'static str` chosen from exactly two hardcoded literals
+/// at the only two call sites below — no user data reaches `format!`.
+fn load_clips_resolved(
+    conn: &Connection,
+    where_sql: &'static str, // "cl.track_id = ?1" | "cl.track_id IN (SELECT id FROM tracks WHERE comp_id = ?1)"
+    param: &str,
+) -> Result<Vec<(String, ClipWithLoops)>, String> {
+    let sql = format!(
+        "SELECT cl.id, cl.track_id, cl.library_entry_id, cl.volume,
+                le.name, le.file_path, le.volume, le.trim_start, le.trim_end,
+                le.loop_start, le.loop_end
+         FROM clips cl
+         LEFT JOIN library_entries le ON le.id = cl.library_entry_id
+         WHERE {where_sql}
+         ORDER BY cl.sort_order ASC"
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("Failed to prepare resolved clips query: {e}"))?;
+    let rows = stmt
+        .query_map(params![param], |row| {
+            Ok((
+                row.get::<_, String>(0)?,          // clip id
+                row.get::<_, String>(1)?,          // track_id
+                row.get::<_, String>(2)?,          // library_entry_id
+                row.get::<_, f64>(3)?,             // clip volume
+                row.get::<_, Option<String>>(4)?,  // entry name (None when entry missing)
+                row.get::<_, Option<String>>(5)?,  // file_path
+                row.get::<_, Option<f64>>(6)?,     // library volume
+                row.get::<_, Option<f64>>(7)?,     // trim_start
+                row.get::<_, Option<f64>>(8)?,     // trim_end
+                row.get::<_, Option<f64>>(9)?,     // loop_start
+                row.get::<_, Option<f64>>(10)?,    // loop_end
+            ))
+        })
+        .map_err(|e| format!("Failed to query resolved clips: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to collect resolved clips: {e}"))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(id, track_id, library_entry_id, volume, name, file_path, lib_vol, ts, te, ls, le)| {
+            let clip = Clip {
+                id,
+                name: name.unwrap_or_else(|| "[missing]".to_string()),
+                file_path: file_path.unwrap_or_default(),
+                volume,
+                library_entry_id,
+                library_volume: lib_vol.unwrap_or(1.0),
+                trim_start: ts,
+                trim_end: te,
+            };
+            (track_id, (clip, ls, le))
+        })
+        .collect())
+}
+
+/// Builds a Track from a raw track row plus its resolved clips.
+/// Mirrors `build_track_mode`, but takes the first clip's loop markers
+/// directly (already joined) instead of an entry_map.
+fn assemble_track(
+    row: (String, String, f64, String, Option<i64>, Option<String>, Option<f64>, Option<f64>, f64, f64),
+    clips_with_loops: Vec<ClipWithLoops>,
+) -> Track {
+    let (id, name, volume, mode_type, repeat_int, ttype, gmin, gmax, fade_in, fade_out) = row;
+    let first_loops = clips_with_loops.first().map(|(_, ls, le)| (*ls, *le));
+    let clips: Vec<Clip> = clips_with_loops.into_iter().map(|(c, _, _)| c).collect();
+    let repeat = repeat_int.map(|v| v != 0).unwrap_or(false);
+    let ttype_str = ttype.as_deref().unwrap_or("gapless");
+    let mode = match mode_type.as_str() {
+        "seamless" => {
+            let (loop_start, loop_end) = match first_loops {
+                Some((Some(ls), Some(le))) => (ls, le),
+                _ => (0.0, 0.0),
+            };
+            TrackMode::Seamless { loop_start, loop_end }
+        }
+        "shuffle" => TrackMode::Shuffle { repeat, transition: build_transition(ttype_str, gmin.unwrap_or(0.0), gmax.unwrap_or(0.0)) },
+        _ => TrackMode::Sequence { repeat, transition: build_transition(ttype_str, gmin.unwrap_or(0.0), gmax.unwrap_or(0.0)) },
+    };
+    Track { id, name, clips, volume, mode, fade_in, fade_out }
+}
+
+const TRACK_COLUMNS: &str =
+    "id, name, volume, mode_type, repeat, transition_type, transition_gap_min, transition_gap_max, fade_in, fade_out";
+
+/// Loads a single track by id with its clips, without loading the rest of
+/// the app state. Used on the play/pause/stop path.
+pub fn load_track_by_id(conn: &Connection, track_id: &str) -> Result<Track, String> {
+    use rusqlite::OptionalExtension;
+    let sql = format!("SELECT {TRACK_COLUMNS} FROM tracks WHERE id = ?1");
+    let row = conn
+        .query_row(&sql, params![track_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, f64>(2)?,
+                row.get::<_, String>(3)?, row.get::<_, Option<i64>>(4)?, row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<f64>>(6)?, row.get::<_, Option<f64>>(7)?,
+                row.get::<_, f64>(8)?, row.get::<_, f64>(9)?,
+            ))
+        })
+        .optional()
+        .map_err(|e| format!("Failed to query track: {e}"))?
+        .ok_or_else(|| format!("Track not found: {}", track_id))?;
+    let clips = load_clips_resolved(conn, "cl.track_id = ?1", track_id)?
+        .into_iter()
+        .map(|(_, cwl)| cwl)
+        .collect();
+    Ok(assemble_track(row, clips))
+}
+
+/// Loads all tracks for a comp with their clips, without loading the rest of
+/// the app state. Used on the play/pause/stop path.
+pub fn load_tracks_for_comp(conn: &Connection, comp_id: &str) -> Result<Vec<Track>, String> {
+    use rusqlite::OptionalExtension;
+    let exists: Option<String> = conn
+        .query_row("SELECT id FROM comps WHERE id = ?1", params![comp_id], |r| r.get(0))
+        .optional()
+        .map_err(|e| format!("Failed to check comp existence: {e}"))?;
+    if exists.is_none() {
+        return Err(format!("Comp not found: {}", comp_id));
+    }
+
+    let sql = format!("SELECT {TRACK_COLUMNS} FROM tracks WHERE comp_id = ?1 ORDER BY sort_order ASC");
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("Failed to prepare comp tracks query: {e}"))?;
+    let rows = stmt
+        .query_map(params![comp_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, f64>(2)?,
+                row.get::<_, String>(3)?, row.get::<_, Option<i64>>(4)?, row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<f64>>(6)?, row.get::<_, Option<f64>>(7)?,
+                row.get::<_, f64>(8)?, row.get::<_, f64>(9)?,
+            ))
+        })
+        .map_err(|e| format!("Failed to query comp tracks: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to collect comp tracks: {e}"))?;
+
+    let mut clips_by_track: HashMap<String, Vec<ClipWithLoops>> = HashMap::new();
+    for (track_id, cwl) in load_clips_resolved(
+        conn,
+        "cl.track_id IN (SELECT id FROM tracks WHERE comp_id = ?1)",
+        comp_id,
+    )? {
+        clips_by_track.entry(track_id).or_default().push(cwl);
+    }
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let clips = clips_by_track.remove(&row.0).unwrap_or_default();
+            assemble_track(row, clips)
+        })
+        .collect())
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Opens an in-memory SQLite database with the full schema applied.
@@ -902,6 +1063,34 @@ mod tests {
         assert!(state.groups[0].comps[1].tracks.is_empty());
         assert!(state.groups[1].comps.is_empty());
         let _ = (t2, c2, g2);
+    }
+
+    #[test]
+    fn targeted_track_lookup_matches_full_state() {
+        let conn = open_memory_db();
+        let config_id = ensure_test_config(&conn);
+        let e1 = library::insert_library_entry(&conn, "/x.mp3", None, "X", None, None, None, "music").unwrap();
+        let g = hierarchy::insert_group(&conn, "G", &config_id).unwrap();
+        let c = hierarchy::insert_comp(&conn, &g, "C").unwrap();
+        let t1 = hierarchy::insert_track(&conn, &c, "T1").unwrap();
+        let t2 = hierarchy::insert_track(&conn, &c, "T2").unwrap();
+        hierarchy::insert_clip(&conn, &t1, &e1).unwrap();
+
+        let state = load_full_state(&conn).unwrap();
+        let full_t1 = state.groups[0].comps[0].tracks[0].clone();
+
+        let direct = load_track_by_id(&conn, &t1).unwrap();
+        assert_eq!(serde_json::to_value(&direct).unwrap(), serde_json::to_value(&full_t1).unwrap());
+
+        let comp_tracks = load_tracks_for_comp(&conn, &c).unwrap();
+        assert_eq!(comp_tracks.len(), 2);
+        assert_eq!(comp_tracks[0].id, t1);
+        assert_eq!(comp_tracks[1].id, t2);
+        assert_eq!(comp_tracks[0].clips.len(), 1);
+        assert_eq!(comp_tracks[0].clips[0].file_path, "/x.mp3");
+
+        assert!(load_track_by_id(&conn, "nope").unwrap_err().contains("Track not found"));
+        assert!(load_tracks_for_comp(&conn, "nope").unwrap_err().contains("Comp not found"));
     }
 
 }
