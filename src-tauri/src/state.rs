@@ -21,7 +21,7 @@ pub struct AppStateContainer {
     /// True while a background library import is running. Used to block
     /// overlapping imports. Set via `try_claim_import` / `release_import`.
     pub import_in_progress: AtomicBool,
-    /// Set by any action that changes persisted app state; the broadcast tick
+    /// Set by any action that changes persisted app state or the missing-entries snapshot; the broadcast tick
     /// consumes it to decide when remotes need a fresh structural snapshot.
     pub state_dirty: AtomicBool,
     app_handle: Mutex<Option<tauri::AppHandle>>,

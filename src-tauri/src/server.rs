@@ -103,10 +103,13 @@ async fn ws_handler(
 async fn handle_ws(mut socket: WebSocket, container: SharedState) {
     // Send initial state snapshot
     let snap_container = container.clone();
-    let snapshot = tokio::task::spawn_blocking(move || build_snapshot(&snap_container))
-        .await
-        .ok()
-        .flatten();
+    let snapshot = match tokio::task::spawn_blocking(move || build_snapshot(&snap_container)).await {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("Initial snapshot task failed: {e}");
+            None
+        }
+    };
     if let Some(snapshot) = snapshot {
         let json = serde_json::to_string(&snapshot).unwrap_or_default();
         let _ = socket.send(Message::Text(json.into())).await;
@@ -123,10 +126,13 @@ async fn handle_ws(mut socket: WebSocket, container: SharedState) {
                     Some(Ok(Message::Text(text))) => {
                         let c = container.clone();
                         let text = text.to_string();
-                        let _ = tokio::task::spawn_blocking(move || {
+                        if let Err(e) = tokio::task::spawn_blocking(move || {
                             handle_remote_command(&c, &text);
                         })
-                        .await;
+                        .await
+                        {
+                            log::warn!("Remote command task failed: {e}");
+                        }
                         // Mutation marked the dirty flag; the next poll tick
                         // broadcasts the structural snapshot (≤50 ms latency).
                     }
