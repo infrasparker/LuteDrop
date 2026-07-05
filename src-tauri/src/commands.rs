@@ -69,6 +69,11 @@ pub fn add_clip(state: State<'_, Arc<AppStateContainer>>, track_id: String, libr
 }
 
 #[tauri::command]
+pub fn add_clips(state: State<'_, Arc<AppStateContainer>>, track_id: String, library_entry_ids: Vec<String>) -> Result<AppState, String> {
+    actions::add_clips(&state, &track_id, &library_entry_ids)
+}
+
+#[tauri::command]
 pub fn delete_clip(state: State<'_, Arc<AppStateContainer>>, track_id: String, clip_id: String) -> Result<AppState, String> {
     actions::delete_clip(&state, &track_id, &clip_id)
 }

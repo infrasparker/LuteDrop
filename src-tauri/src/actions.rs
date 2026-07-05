@@ -230,6 +230,20 @@ pub fn add_clip(container: &AppStateContainer, track_id: &str, library_entry_id:
     load_state(container)
 }
 
+pub fn add_clips(container: &AppStateContainer, track_id: &str, library_entry_ids: &[String]) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("Failed to begin add_clips transaction: {e}"))?;
+        for entry_id in library_entry_ids {
+            hierarchy::insert_clip(conn, track_id, entry_id)?;
+        }
+        tx.commit().map_err(|e| format!("Failed to commit add_clips: {e}"))?;
+        Ok(())
+    })?;
+    load_state(container)
+}
+
 pub fn delete_clip(container: &AppStateContainer, _track_id: &str, clip_id: &str) -> Result<AppState, String> {
     with_db(container, |conn| {
         hierarchy::delete_clip(conn, clip_id)?;

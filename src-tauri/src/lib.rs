@@ -111,6 +111,7 @@ pub fn run() {
             commands::delete_track,
             commands::update_track,
             commands::add_clip,
+            commands::add_clips,
             commands::delete_clip,
             commands::play_track,
             commands::play_track_from,

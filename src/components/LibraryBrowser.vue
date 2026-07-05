@@ -61,9 +61,10 @@ function close(): void {
 }
 
 async function addClips(): Promise<void> {
-  for (const libraryEntryId of selectedIds.value) {
-    await store.command('add_clip', { trackId: props.trackId, libraryEntryId });
-  }
+  await store.command('add_clips', {
+    trackId: props.trackId,
+    libraryEntryIds: [...selectedIds.value],
+  });
   close();
 }
 </script>

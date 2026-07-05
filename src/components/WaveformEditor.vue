@@ -53,6 +53,11 @@ watch(() => props.trimEnd, (v) => { if (!dragging.value) localTrimEnd.value = v;
 
 let rafId: number | null = null;
 
+// CSS width of the canvas, maintained by the ResizeObserver so the 60 fps
+// draw loop never forces layout (getBoundingClientRect) itself.
+let cssWidth = 0;
+let resizeObserver: ResizeObserver | null = null;
+
 /// Returns the playback state for this editor's audio, or undefined if nothing is playing here.
 /// Intentionally a plain function (not a computed) — called every RAF frame, needs fresh reads
 /// without Vue's computed caching which can serve stale values during mount lifecycle.
@@ -216,11 +221,19 @@ function drawWaveform(): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
-  const displayWidth = canvas.getBoundingClientRect().width;
+  const displayWidth = cssWidth || canvas.getBoundingClientRect().width;
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = Math.round(displayWidth * dpr);
-  canvas.height = Math.round(CANVAS_HEIGHT * dpr);
-  ctx.scale(dpr, dpr);
+  const targetW = Math.round(displayWidth * dpr);
+  const targetH = Math.round(CANVAS_HEIGHT * dpr);
+  // Reassigning canvas.width reallocates + clears the GPU backing store —
+  // only do it when the size actually changed.
+  if (canvas.width !== targetW || canvas.height !== targetH) {
+    canvas.width = targetW;
+    canvas.height = targetH;
+  }
+  // setTransform (not scale) so repeated draws don't accumulate scaling.
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, displayWidth, CANVAS_HEIGHT);
 
   const cssW = displayWidth;
   const cssH = CANVAS_HEIGHT;
@@ -706,7 +719,13 @@ onMounted(() => {
   data.loadBasePeaks();
   window.addEventListener('mousemove', onMouseMove);
   window.addEventListener('mouseup', onMouseUp);
-  window.addEventListener('resize', drawWaveform);
+  if (canvasRef.value) {
+    resizeObserver = new ResizeObserver((entries) => {
+      cssWidth = entries[0]?.contentRect.width ?? cssWidth;
+      drawWaveform();
+    });
+    resizeObserver.observe(canvasRef.value);
+  }
 });
 
 onUnmounted(() => {
@@ -714,7 +733,8 @@ onUnmounted(() => {
   stopPlayheadLoop();
   window.removeEventListener('mousemove', onMouseMove);
   window.removeEventListener('mouseup', onMouseUp);
-  window.removeEventListener('resize', drawWaveform);
+  resizeObserver?.disconnect();
+  resizeObserver = null;
 });
 </script>
 
