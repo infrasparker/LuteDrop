@@ -260,29 +260,31 @@ fn read_cache(audio_path: &Path, cache_dir: &Path) -> Option<CachedPeaks> {
 /// Decode the entire audio file and generate the peak cache.
 /// Writes the .peaks file to cache_dir and returns the CachedPeaks.
 fn generate_cache(audio_path: &Path, cache_dir: &Path) -> Result<CachedPeaks, String> {
-    // Decode the whole file (any miniaudio-supported format incl. .opus) to
-    // interleaved f32 via the shim. The .peaks cache stays keyed by the original path.
+    // Stream-decode in ~32 KB chunks (any miniaudio format incl. .opus); the
+    // old whole-file decode held a 2-hour stereo file as ~2.7 GB of f32 —
+    // twice, counting the C→Rust copy — to produce a few hundred KB of peaks.
     let path_str = audio_path
         .to_str()
         .ok_or_else(|| format!("Non-UTF8 path: {}", audio_path.display()))?;
-    let decoded = crate::audio::ffi::decode_file(path_str)?;
+    let mut dec = crate::audio::ffi::StreamingDecoder::open(path_str)?;
 
-    let channels = decoded.channels.max(1) as usize;
-    let sample_rate = decoded.sample_rate;
+    let channels = dec.channels.max(1) as usize;
+    let sample_rate = dec.sample_rate;
 
     let mut acc = PeakAccumulator::new();
-
-    // Mix each frame to mono: average the per-channel samples.
-    for frame in decoded.samples.chunks_exact(channels) {
-        let mono_sum: f32 = frame.iter().sum();
-        acc.push(mono_sum / channels as f32);
+    while let Some(chunk) = dec.read_chunk()? {
+        // Mix each frame to mono: average the per-channel samples.
+        for frame in chunk.chunks_exact(channels) {
+            let mono_sum: f32 = frame.iter().sum();
+            acc.push(mono_sum / channels as f32);
+        }
     }
 
-    let (peaks, _acc_total) = acc.finish();
+    let (peaks, total_samples) = acc.finish();
     let cached = CachedPeaks {
         sample_rate,
         samples_per_peak: SAMPLES_PER_PEAK,
-        total_samples: decoded.frames,
+        total_samples,
         peaks,
     };
 

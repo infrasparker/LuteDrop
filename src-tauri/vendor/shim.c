@@ -24,51 +24,31 @@ static ma_result ld_make_decoder(const wchar_t* path, ma_decoder* dec) {
     return ma_decoder_init_file_w(path, &cfg, dec);
 }
 
-int ld_decode_file(const wchar_t* path, float** out, uint64_t* out_frames,
-                   uint32_t* out_channels, uint32_t* out_sample_rate) {
-    ma_decoder dec;
-    if (ld_make_decoder(path, &dec) != MA_SUCCESS) return 1;
-    *out_channels = dec.outputChannels;
-    *out_sample_rate = dec.outputSampleRate;
+typedef struct ld_decoder { ma_decoder dec; } ld_decoder;
 
-    ma_uint64 total = 0;
-    // Best-effort: may be 0/unknown for some streamed sources; we grow the
-    // buffer dynamically below regardless.
-    ma_decoder_get_length_in_pcm_frames(&dec, &total);
-
-    size_t cap_frames = total ? (size_t)total : 48000;
-    size_t cap = cap_frames * dec.outputChannels;
-    if (cap == 0) cap = 4096;
-    float* buf = (float*)malloc(cap * sizeof(float));
-    if (buf == NULL) { ma_decoder_uninit(&dec); return 2; }
-
-    ma_uint64 framesRead = 0, totalRead = 0;
-    ma_result r = MA_SUCCESS;
-    for (;;) {
-        // Ensure room for at least one more 4096-frame chunk.
-        if ((totalRead + 4096) * dec.outputChannels > cap) {
-            cap *= 2;
-            float* grown = (float*)realloc(buf, cap * sizeof(float));
-            if (grown == NULL) { free(buf); ma_decoder_uninit(&dec); return 3; }
-            buf = grown;
-        }
-        framesRead = 0;
-        r = ma_decoder_read_pcm_frames(
-            &dec, buf + totalRead * dec.outputChannels, 4096, &framesRead);
-        totalRead += framesRead;
-        if (r != MA_SUCCESS || framesRead == 0) break;
-    }
-
-    ma_decoder_uninit(&dec);
-    // A hard mid-stream decode error must not masquerade as success with
-    // silently truncated data (MA_AT_END is the normal termination).
-    if (r != MA_SUCCESS && r != MA_AT_END) { free(buf); return 4; }
-    *out = buf;
-    *out_frames = totalRead;
-    return 0;
+ld_decoder* ld_decoder_open(const wchar_t* path, uint32_t* out_channels, uint32_t* out_sample_rate) {
+    ld_decoder* d = (ld_decoder*)malloc(sizeof(ld_decoder));
+    if (d == NULL) return NULL;
+    if (ld_make_decoder(path, &d->dec) != MA_SUCCESS) { free(d); return NULL; }
+    *out_channels = d->dec.outputChannels;
+    *out_sample_rate = d->dec.outputSampleRate;
+    return d;
 }
 
-void ld_free_decoded(float* p) { free(p); }
+int64_t ld_decoder_read(ld_decoder* d, float* out, uint64_t max_frames) {
+    ma_uint64 framesRead = 0;
+    ma_result r = ma_decoder_read_pcm_frames(&d->dec, out, max_frames, &framesRead);
+    // MA_AT_END with a final partial chunk still returns those frames; the
+    // NEXT call returns 0. A hard mid-stream error must not masquerade as EOF.
+    if (r != MA_SUCCESS && r != MA_AT_END) return -1;
+    return (int64_t)framesRead;
+}
+
+void ld_decoder_close(ld_decoder* d) {
+    if (d == NULL) return;
+    ma_decoder_uninit(&d->dec);
+    free(d);
+}
 
 double ld_file_duration_secs(const wchar_t* path) {
     ma_decoder dec;

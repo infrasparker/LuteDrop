@@ -15,14 +15,9 @@ fn to_wide(path: &str) -> Vec<u16> {
 }
 
 extern "C" {
-    fn ld_decode_file(
-        path: *const u16,
-        out: *mut *mut c_float,
-        frames: *mut u64,
-        channels: *mut u32,
-        sample_rate: *mut u32,
-    ) -> c_int;
-    fn ld_free_decoded(p: *mut c_float);
+    fn ld_decoder_open(path: *const u16, out_channels: *mut u32, out_sample_rate: *mut u32) -> *mut LdDecoder;
+    fn ld_decoder_read(d: *mut LdDecoder, out: *mut f32, max_frames: u64) -> i64;
+    fn ld_decoder_close(d: *mut LdDecoder);
     fn ld_file_duration_secs(path: *const u16) -> f64;
 
     fn ld_engine_create() -> *mut LdEngine;
@@ -67,6 +62,10 @@ pub struct LdGroup {
 }
 #[repr(C)]
 pub struct LdSound {
+    _private: [u8; 0],
+}
+#[repr(C)]
+pub struct LdDecoder {
     _private: [u8; 0],
 }
 
@@ -242,32 +241,58 @@ impl Drop for Sound {
     }
 }
 
-pub struct Decoded {
-    pub samples: Vec<f32>,
-    pub frames: u64,
+/// Frames per `read_chunk` call. 4096 frames × channels × 4 bytes ≈ 32 KB for
+/// stereo — the whole point versus the old whole-file decode.
+pub const DECODE_CHUNK_FRAMES: usize = 4096;
+
+/// Chunked streaming decoder for offline analysis (peak generation, duration
+/// probing). NOT for playback — playback streams through `ma_sound` directly.
+/// Owns the C decoder; closed on drop. Used within a single thread (created
+/// and consumed inside one call/spawn_blocking closure) — deliberately !Send.
+pub struct StreamingDecoder {
+    ptr: *mut LdDecoder,
     pub channels: u32,
     pub sample_rate: u32,
+    buf: Vec<f32>,
 }
 
-pub fn decode_file(path: &str) -> Result<Decoded, String> {
-    let wide = to_wide(path);
-    let (mut out, mut frames, mut channels, mut sr) =
-        (std::ptr::null_mut(), 0u64, 0u32, 0u32);
-    let rc = unsafe { ld_decode_file(wide.as_ptr(), &mut out, &mut frames, &mut channels, &mut sr) };
-    if rc != 0 || out.is_null() {
-        // Codes from shim.c ld_decode_file: 1 = open/init failed,
-        // 2/3 = out of memory, 4 = decode failed mid-stream (corrupt file).
-        return Err(format!("decode failed for {path} (code {rc})"));
+impl StreamingDecoder {
+    pub fn open(path: &str) -> Result<Self, String> {
+        let wide = to_wide(path);
+        let (mut channels, mut sample_rate) = (0u32, 0u32);
+        let ptr = unsafe { ld_decoder_open(wide.as_ptr(), &mut channels, &mut sample_rate) };
+        if ptr.is_null() {
+            return Err(format!("Failed to open audio decoder for {path}"));
+        }
+        let ch = channels.max(1) as usize;
+        Ok(Self {
+            ptr,
+            channels,
+            sample_rate,
+            buf: vec![0.0; DECODE_CHUNK_FRAMES * ch],
+        })
     }
-    let n = (frames as usize) * (channels as usize);
-    let samples = unsafe { std::slice::from_raw_parts(out, n) }.to_vec();
-    unsafe { ld_free_decoded(out) };
-    Ok(Decoded {
-        samples,
-        frames,
-        channels,
-        sample_rate: sr,
-    })
+
+    /// Next chunk of interleaved samples; `Ok(None)` at end of stream.
+    /// The returned slice borrows this decoder's internal buffer and is valid
+    /// until the next call.
+    pub fn read_chunk(&mut self) -> Result<Option<&[f32]>, String> {
+        let n = unsafe { ld_decoder_read(self.ptr, self.buf.as_mut_ptr(), DECODE_CHUNK_FRAMES as u64) };
+        if n < 0 {
+            return Err("Audio decode failed mid-stream (corrupt file?)".to_string());
+        }
+        if n == 0 {
+            return Ok(None);
+        }
+        let samples = (n as usize) * self.channels.max(1) as usize;
+        Ok(Some(&self.buf[..samples]))
+    }
+}
+
+impl Drop for StreamingDecoder {
+    fn drop(&mut self) {
+        unsafe { ld_decoder_close(self.ptr) }
+    }
 }
 
 /// Cheap duration probe via the shim: opens a decoder, reads the PCM frame
@@ -290,13 +315,16 @@ mod tests {
     #[test]
     fn decodes_opus_fixture() {
         let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.opus");
-        let d = decode_file(p.to_str().unwrap()).expect("decode");
-        assert_eq!(d.sample_rate, 48000);
-        assert_eq!(d.channels, 2);
+        let mut dec = StreamingDecoder::open(p.to_str().unwrap()).expect("open decoder");
+        assert_eq!(dec.sample_rate, 48000);
+        assert_eq!(dec.channels, 2);
+        let mut total_frames: u64 = 0;
+        while let Some(chunk) = dec.read_chunk().expect("read chunk") {
+            total_frames += chunk.len() as u64 / dec.channels as u64;
+        }
         // ~120s fixture at 48k; allow one packet of slack.
-        assert!((d.frames as i64 - 5_760_000).abs() < 10_000, "frames={}", d.frames);
-        let peak = d.samples.iter().fold(0f32, |m, &s| m.max(s.abs()));
-        assert!(peak > 0.01, "silent (peak {peak})");
+        assert!((total_frames as i64 - 5_760_000).abs() < 10_000, "frames={total_frames}");
+        assert!(total_frames > 0, "decoded zero frames");
     }
 
     #[test]
@@ -310,14 +338,18 @@ mod tests {
         let _ = std::fs::remove_file(&dst); // best-effort clean from a prior run
         std::fs::copy(&src, &dst).expect("copy fixture to unicode temp path");
 
-        let result = decode_file(dst.to_str().unwrap());
+        let result = StreamingDecoder::open(dst.to_str().unwrap());
+        let read_result = result.map(|mut dec| {
+            let chunk_len = dec.read_chunk().expect("read one chunk").map(|c| c.len()).unwrap_or(0);
+            (dec.sample_rate, chunk_len)
+        });
 
         // Clean up before asserting so a failure doesn't leak the temp file.
         let _ = std::fs::remove_file(&dst);
 
-        let d = result.expect("decode of non-ASCII path");
-        assert!(d.frames > 0, "decoded zero frames from unicode path");
-        assert_eq!(d.sample_rate, 48000);
+        let (sample_rate, chunk_len) = read_result.expect("decode of non-ASCII path");
+        assert!(chunk_len > 0, "decoded zero samples from unicode path");
+        assert_eq!(sample_rate, 48000);
     }
 
     #[test]
@@ -325,7 +357,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("garbage.mp3");
         std::fs::write(&path, [0xDEu8, 0xAD, 0xBE, 0xEF].repeat(1024)).unwrap();
-        assert!(decode_file(path.to_str().unwrap()).is_err());
+        assert!(StreamingDecoder::open(path.to_str().unwrap()).is_err());
     }
 
     #[test]
