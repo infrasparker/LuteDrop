@@ -90,10 +90,7 @@ extern "C" {
     fn ld_sound_at_end(s: *mut LdSound) -> c_int;
     fn ld_sound_schedule_start_frame(s: *mut LdSound, engine_frame: u64);
     fn ld_sound_schedule_stop_secs(s: *mut LdSound, secs_from_now: f64, fade_secs: f64);
-    // Consumed by Task 2 (loader thread); unused until then.
-    #[allow(dead_code)]
     fn ld_sound_attach_to_group(s: *mut LdSound, g: *mut LdGroup);
-    #[allow(dead_code)]
     fn ld_sound_seek_secs(s: *mut LdSound, secs: f64);
     fn ld_sound_destroy(s: *mut LdSound);
 }
@@ -181,8 +178,6 @@ unsafe impl Send for Sound {}
 //     clock method. A preloaded `Sound` is group-less and never started on the
 //     loader thread; it only becomes audible after the poll tick attaches it to
 //     a live group and starts it — under the mutex.
-// Consumed by Task 2 (loader thread); unused until then.
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub struct EngineRef(*mut LdEngine);
 
@@ -192,7 +187,6 @@ unsafe impl Sync for EngineRef {}
 impl Engine {
     /// A sound-creation-only handle to this engine, safe to move to the loader
     /// thread (see [`EngineRef`]).
-    #[allow(dead_code)]
     pub fn engine_ref(&self) -> EngineRef {
         EngineRef(self.0)
     }
@@ -202,7 +196,6 @@ impl EngineRef {
     /// Create a **group-less** streaming sound routed to the engine endpoint,
     /// without starting it. Runs on the loader thread. The poll tick re-parents
     /// it to a live group (`Sound::attach_to_group`) and starts it under the mutex.
-    #[allow(dead_code)]
     pub fn create_sound_unattached(&self, path: &str) -> Result<Sound, String> {
         let wide = to_wide(path);
         // group = NULL -> engine endpoint (shim `ld_sound_create` accepts NULL).
@@ -296,6 +289,17 @@ impl Sound {
         Ok(())
     }
 
+    /// Start from the current cursor WITHOUT seeking (the cursor was pre-set by
+    /// `seek_secs` on the loader thread), applying `fade_in_secs`. Relies on
+    /// `ld_sound_play` skipping its internal seek when `start_secs <= 0`.
+    pub fn play_no_seek(&self, fade_in_secs: f64) -> Result<(), String> {
+        let rc = unsafe { ld_sound_play(self.ptr, 0.0, fade_in_secs) };
+        if rc != 0 {
+            return Err(format!("failed to start preloaded sound (code {rc})"));
+        }
+        Ok(())
+    }
+
     /// Stop playback. With `fade_out_secs > 0`, fades out first. Cursor is kept.
     pub fn stop(&self, fade_out_secs: f64) {
         unsafe { ld_sound_stop(self.ptr, fade_out_secs) }
@@ -351,15 +355,12 @@ impl Sound {
     /// Re-parent this sound to `group`'s sub-mix (from the engine endpoint a
     /// preloaded sound was created against). Must be called under the audio
     /// mutex, with `group` provably alive (see the loader handoff in mod.rs).
-    // Consumed by Task 2 (loader thread); unused until then.
-    #[allow(dead_code)]
     pub fn attach_to_group(&self, group: &Group) {
         unsafe { ld_sound_attach_to_group(self.ptr, group.ptr) }
     }
 
     /// Seek to `secs` without starting. Called on the LOADER thread only (may do
     /// file I/O); never under the audio mutex.
-    #[allow(dead_code)]
     pub fn seek_secs(&self, secs: f64) {
         unsafe { ld_sound_seek_secs(self.ptr, secs) }
     }
