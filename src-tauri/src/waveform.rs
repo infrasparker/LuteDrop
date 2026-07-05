@@ -5,12 +5,17 @@ use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 /// How many raw audio samples are condensed into one peak value.
 /// 256 is the Audacity/DAW standard — good balance of resolution vs file size.
 const SAMPLES_PER_PEAK: u32 = 256;
+
+/// Cap on files held in the in-memory peak cache. Peaks are a few hundred KB
+/// per file, so this bounds the cache at ~10-20 MB while keeping every
+/// recently-viewed waveform instant.
+const MAX_CACHED_FILES: usize = 32;
 
 /// Magic bytes at the start of every .peaks file.
 const MAGIC: &[u8; 4] = b"LDPK";
@@ -74,10 +79,22 @@ impl CachedPeaks {
     }
 }
 
-/// In-memory cache so we don't re-read .peaks files from disk on every zoom/pan.
-/// Also owns the `cache_dir` where .peaks files are stored on disk.
+struct LruEntry {
+    peaks: CachedPeaks,
+    last_used: u64,
+}
+
+/// In-memory cache so we don't re-read .peaks files from disk on every
+/// zoom/pan — LRU-capped at MAX_CACHED_FILES. Also owns the `cache_dir`
+/// where .peaks files are stored on disk, and the per-path generation locks
+/// that serialize concurrent decodes of the same uncached file.
 pub struct PeakCache {
-    entries: RwLock<HashMap<PathBuf, CachedPeaks>>,
+    /// (entries, monotonic use counter for LRU ordering)
+    entries: Mutex<(HashMap<PathBuf, LruEntry>, u64)>,
+    /// Per-path locks handed to extract_peaks' miss path. Entries are tiny
+    /// (an Arc<Mutex<()>>) and bounded by distinct files ever generated, so
+    /// no eviction is needed here.
+    generating: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
     cache_dir: PathBuf,
 }
 
@@ -85,28 +102,56 @@ impl PeakCache {
     pub fn new(cache_dir: PathBuf) -> Self {
         fs::create_dir_all(&cache_dir).ok();
         Self {
-            entries: RwLock::new(HashMap::new()),
+            entries: Mutex::new((HashMap::new(), 0)),
+            generating: Mutex::new(HashMap::new()),
             cache_dir,
         }
     }
 
     pub fn get(&self, path: &Path) -> Option<CachedPeaks> {
-        self.entries.read().ok()?.get(path).cloned()
+        let mut guard = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        let (map, counter) = &mut *guard;
+        *counter += 1;
+        let entry = map.get_mut(path)?;
+        entry.last_used = *counter;
+        Some(entry.peaks.clone())
     }
 
     pub fn insert(&self, path: PathBuf, peaks: CachedPeaks) {
-        if let Ok(mut map) = self.entries.write() {
-            map.insert(path, peaks);
+        let mut guard = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+        let (map, counter) = &mut *guard;
+        *counter += 1;
+        if map.len() >= MAX_CACHED_FILES && !map.contains_key(&path) {
+            // Evict the least-recently-used entry to stay at the cap.
+            if let Some(lru_key) = map
+                .iter()
+                .min_by_key(|(_, e)| e.last_used)
+                .map(|(k, _)| k.clone())
+            {
+                map.remove(&lru_key);
+            }
         }
+        map.insert(path, LruEntry { peaks, last_used: *counter });
     }
 
     /// Evict a path from the in-memory cache and delete its .peaks file from disk.
     pub fn evict(&self, path: &Path) {
-        if let Ok(mut map) = self.entries.write() {
-            map.remove(path);
+        {
+            let mut guard = self.entries.lock().unwrap_or_else(|p| p.into_inner());
+            guard.0.remove(path);
         }
         let disk_path = cache_path(path, &self.cache_dir);
         let _ = fs::remove_file(disk_path);
+    }
+
+    /// Per-path generation lock: extract_peaks holds this across its disk-read
+    /// + decode miss path so two concurrent requests for the same uncached
+    /// file don't both run a full decode.
+    fn generation_lock(&self, path: &Path) -> Arc<Mutex<()>> {
+        let mut map = self.generating.lock().unwrap_or_else(|p| p.into_inner());
+        map.entry(path.to_path_buf())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     /// Deletes any on-disk .peaks file not referenced by a current source path.
@@ -260,29 +305,31 @@ fn read_cache(audio_path: &Path, cache_dir: &Path) -> Option<CachedPeaks> {
 /// Decode the entire audio file and generate the peak cache.
 /// Writes the .peaks file to cache_dir and returns the CachedPeaks.
 fn generate_cache(audio_path: &Path, cache_dir: &Path) -> Result<CachedPeaks, String> {
-    // Decode the whole file (any miniaudio-supported format incl. .opus) to
-    // interleaved f32 via the shim. The .peaks cache stays keyed by the original path.
+    // Stream-decode in ~32 KB chunks (any miniaudio format incl. .opus); the
+    // old whole-file decode held a 2-hour stereo file as ~2.7 GB of f32 —
+    // twice, counting the C→Rust copy — to produce a few hundred KB of peaks.
     let path_str = audio_path
         .to_str()
         .ok_or_else(|| format!("Non-UTF8 path: {}", audio_path.display()))?;
-    let decoded = crate::audio::ffi::decode_file(path_str)?;
+    let mut dec = crate::audio::ffi::StreamingDecoder::open(path_str)?;
 
-    let channels = decoded.channels.max(1) as usize;
-    let sample_rate = decoded.sample_rate;
+    let channels = dec.channels.max(1) as usize;
+    let sample_rate = dec.sample_rate;
 
     let mut acc = PeakAccumulator::new();
-
-    // Mix each frame to mono: average the per-channel samples.
-    for frame in decoded.samples.chunks_exact(channels) {
-        let mono_sum: f32 = frame.iter().sum();
-        acc.push(mono_sum / channels as f32);
+    while let Some(chunk) = dec.read_chunk()? {
+        // Mix each frame to mono: average the per-channel samples.
+        for frame in chunk.chunks_exact(channels) {
+            let mono_sum: f32 = frame.iter().sum();
+            acc.push(mono_sum / channels as f32);
+        }
     }
 
-    let (peaks, _acc_total) = acc.finish();
+    let (peaks, total_samples) = acc.finish();
     let cached = CachedPeaks {
         sample_rate,
         samples_per_peak: SAMPLES_PER_PEAK,
-        total_samples: decoded.frames,
+        total_samples,
         peaks,
     };
 
@@ -366,6 +413,16 @@ pub fn extract_peaks(
     let audio_path = Path::new(file_path);
 
     // Tier 1: in-memory cache
+    if let Some(cached) = peak_cache.get(audio_path) {
+        return Ok(downsample_peaks(&cached, width, start, end));
+    }
+
+    // Tiers 2/3 are expensive; serialize per-path so concurrent requests for
+    // the same uncached file don't both hit disk / run a full decode.
+    let gen_lock = peak_cache.generation_lock(audio_path);
+    let _guard = gen_lock.lock().unwrap_or_else(|p| p.into_inner());
+
+    // Re-check Tier 1: another thread may have populated it while we waited.
     if let Some(cached) = peak_cache.get(audio_path) {
         return Ok(downsample_peaks(&cached, width, start, end));
     }
@@ -543,5 +600,47 @@ mod tests {
         std::fs::write(&cp, &data).unwrap();
 
         assert!(read_cache(&audio, dir.path()).is_none());
+    }
+
+    #[test]
+    fn opus_fixture_peaks_snapshot() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.opus");
+        let dir = tempfile::tempdir().unwrap();
+        let cached = generate_cache(&fixture, dir.path()).unwrap();
+        // Values pinned from the pre-streaming (whole-file) decoder — the
+        // streaming rewrite must reproduce them exactly.
+        assert_eq!(cached.sample_rate, 48000 /* PIN */);
+        assert_eq!(cached.total_samples, 5760648 /* PIN */);
+        assert_eq!(cached.peaks.len(), 22503 /* PIN */);
+        let sum: f32 = cached.peaks.iter().sum();
+        assert!((sum - 8246.38 /* PIN */).abs() < 0.01, "peak sum {sum}");
+        assert_eq!(cached.samples_per_peak, SAMPLES_PER_PEAK);
+    }
+
+    #[test]
+    fn peak_cache_evicts_least_recently_used_beyond_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = PeakCache::new(dir.path().to_path_buf());
+        for i in 0..MAX_CACHED_FILES {
+            cache.insert(PathBuf::from(format!("/f{i}.mp3")), make_test_peaks(vec![0.5]));
+        }
+        // Touch /f0 so it becomes most-recently-used…
+        assert!(cache.get(Path::new("/f0.mp3")).is_some());
+        // …then push past the cap: /f1 (now the LRU) must be evicted, /f0 kept.
+        cache.insert(PathBuf::from("/overflow.mp3"), make_test_peaks(vec![0.5]));
+        assert!(cache.get(Path::new("/f0.mp3")).is_some());
+        assert!(cache.get(Path::new("/f1.mp3")).is_none());
+        assert!(cache.get(Path::new("/overflow.mp3")).is_some());
+    }
+
+    #[test]
+    fn generation_lock_is_shared_per_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = PeakCache::new(dir.path().to_path_buf());
+        let a1 = cache.generation_lock(Path::new("/same.mp3"));
+        let a2 = cache.generation_lock(Path::new("/same.mp3"));
+        let b = cache.generation_lock(Path::new("/other.mp3"));
+        assert!(std::sync::Arc::ptr_eq(&a1, &a2));
+        assert!(!std::sync::Arc::ptr_eq(&a1, &b));
     }
 }

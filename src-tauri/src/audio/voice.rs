@@ -4,15 +4,25 @@ use super::ffi;
 use super::sound::{self, PlayParams, PlaybackState, SoundHandle};
 
 /// How far before loop_end (in seconds) to trigger the crossfade restart.
-/// Must be larger than the poll interval (50ms) to reliably catch it.
+/// Sized to at least TWO poll periods (2.4 × 50 ms) so a single delayed tick
+/// can't land the check past loop_end and audibly overshoot the loop point.
 /// Shared by the library preview loop and seamless-mode tracks.
-pub const LOOP_CROSSFADE_SECS: f64 = 0.06;
+/// (Engine-clock loop scheduling — removing the poll dependency entirely —
+/// is Plan 3C, alongside the loop-instance preload.)
+pub const LOOP_CROSSFADE_SECS: f64 = 0.12;
 
 /// De-click ramp applied to a scheduled trim-end stop. Short enough to be
 /// inaudible as a fade (the clip is supposed to end here) but long enough to
 /// kill the step-discontinuity click of cutting at a non-zero sample. Mirrors
 /// the shim's `LD_MIN_FADE_MS` floor; the shim re-floors anyway.
 const TRIM_STOP_FADE_SECS: f64 = 0.005;
+
+/// Wall-clock grace beyond a parked sound's fade deadline before it is
+/// force-dropped even if the device still reports it playing. Leak backstop
+/// only — normal reaping is driven by the sound's own state (see
+/// `drop_finished`); a device stalled longer than this gets a hard cut,
+/// which beats leaking sounds forever.
+const REAP_BACKSTOP: Duration = Duration::from_secs(2);
 
 /// Everything needed to restart a sound at the start of its loop region for the
 /// seamless crossfade. Captured at `play` time from the same `PlayParams` used
@@ -283,9 +293,19 @@ impl Voice {
 
     /// Drop any held sounds whose fade-out has completed. Must be called every
     /// poll tick so nothing leaks.
+    ///
+    /// Reaps on the sound's own state (engine-clock truth): once the fade ran
+    /// to completion miniaudio reports the sound stopped, and it can be
+    /// dropped immediately. The wall-clock deadline (+`REAP_BACKSTOP` grace)
+    /// is only a leak backstop for a stalled device — previously it was the
+    /// SOLE criterion, so a stall could let the deadline pass mid-fade and
+    /// the drop's `ma_sound_uninit` hard-cut a still-audible sound.
     pub fn drop_finished(&mut self) {
         let now = Instant::now();
-        self.fading_out.retain(|(_, deadline)| now < *deadline);
+        self.fading_out.retain(|(snd, deadline)| {
+            let still_audible = snd.sound.is_playing() && !snd.sound.at_end();
+            still_audible && now < *deadline + REAP_BACKSTOP
+        });
     }
 
     // --- Seamless loop crossfade ---
@@ -395,7 +415,14 @@ impl Voice {
                 self.current = Some(new_snd);
                 self.loop_restart = Some(restart);
             }
-            Err(_) => {
+            Err(e) => {
+                // A silent stop here is the "my ambience just stopped and I
+                // don't know why" bug — most likely a network-drive hiccup
+                // reopening the file. Say so.
+                log::warn!(
+                    "Seamless loop restart failed for '{}': {} — stopping loop",
+                    restart.file_path, e
+                );
                 self.current = None;
                 self.loop_restart = None;
             }
