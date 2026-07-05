@@ -868,4 +868,52 @@ mod tests {
         assert_eq!(state.configurations.len(), 2, "should see all configurations");
     }
 
+    #[test]
+    fn load_full_state_returns_ordered_nested_hierarchy_with_tags() {
+        let conn = open_memory_db();
+        let config_id = ensure_test_config(&conn);
+
+        let e1 = library::insert_library_entry(&conn, "/a.mp3", Some("h1"), "Alpha", None, None, None, "music").unwrap();
+        let e2 = library::insert_library_entry(&conn, "/b.mp3", Some("h2"), "Beta", None, None, None, "ambiance").unwrap();
+        library::add_tag_to_entry(&conn, &e1, "battle").unwrap();
+        library::add_tag_to_entry(&conn, &e1, "ambient").unwrap();
+        library::add_tag_to_entry(&conn, &e2, "battle").unwrap();
+
+        let g1 = hierarchy::insert_group(&conn, "G1", &config_id).unwrap();
+        let g2 = hierarchy::insert_group(&conn, "G2", &config_id).unwrap();
+        let c1 = hierarchy::insert_comp(&conn, &g1, "C1").unwrap();
+        let c2 = hierarchy::insert_comp(&conn, &g1, "C2").unwrap();
+        let t1 = hierarchy::insert_track(&conn, &c1, "T1").unwrap();
+        let t2 = hierarchy::insert_track(&conn, &c1, "T2").unwrap();
+        hierarchy::insert_clip(&conn, &t1, &e1).unwrap();
+        hierarchy::insert_clip(&conn, &t1, &e2).unwrap();
+
+        let state = load_full_state(&conn).unwrap();
+
+        assert_eq!(state.groups.len(), 2);
+        assert_eq!(state.groups[0].name, "G1");
+        assert_eq!(state.groups[1].name, "G2");
+        assert_eq!(state.groups[0].comps.len(), 2);
+        assert_eq!(state.groups[0].comps[0].name, "C1");
+        assert_eq!(state.groups[0].comps[1].name, "C2");
+        let tracks = &state.groups[0].comps[0].tracks;
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].name, "T1");
+        assert_eq!(tracks[1].name, "T2");
+        assert_eq!(tracks[0].clips.len(), 2);
+        assert_eq!(tracks[0].clips[0].name, "Alpha");
+        assert_eq!(tracks[0].clips[1].name, "Beta");
+        // Clip resolves entry fields:
+        assert_eq!(tracks[0].clips[0].file_path, "/a.mp3");
+        // Entries are name-ordered with sorted tags:
+        assert_eq!(state.library_entries[0].name, "Alpha");
+        assert_eq!(state.library_entries[0].tags, vec!["ambient", "battle"]);
+        assert_eq!(state.library_entries[1].tags, vec!["battle"]);
+        assert_eq!(state.tags, vec!["ambient", "battle"]);
+        // Second comp/track/group are empty but present:
+        assert!(state.groups[0].comps[1].tracks.is_empty());
+        assert!(state.groups[1].comps.is_empty());
+        let _ = (t2, c2, g2);
+    }
+
 }
