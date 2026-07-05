@@ -14,14 +14,31 @@ use crate::models::{
 
 /// Current schema version. Bump when adding a migration below; fresh
 /// databases are stamped with this directly.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
+
+/// Index DDL shared by init_schema (fresh DBs) and the v3→v4 migration
+/// (existing DBs). IF NOT EXISTS makes running both harmless.
+const INDEX_DDL: &str = "
+    CREATE INDEX IF NOT EXISTS idx_groups_configuration_id     ON groups(configuration_id);
+    CREATE INDEX IF NOT EXISTS idx_comps_group_id              ON comps(group_id);
+    CREATE INDEX IF NOT EXISTS idx_tracks_comp_id              ON tracks(comp_id);
+    CREATE INDEX IF NOT EXISTS idx_clips_track_id              ON clips(track_id);
+    CREATE INDEX IF NOT EXISTS idx_clips_library_entry_id      ON clips(library_entry_id);
+    CREATE INDEX IF NOT EXISTS idx_library_entry_tags_tag_id   ON library_entry_tags(tag_id);
+    CREATE INDEX IF NOT EXISTS idx_library_entries_content_hash ON library_entries(content_hash);
+";
 
 /// A migration upgrades a database from version N to N+1.
 pub type Migration = fn(&Connection) -> SqlResult<()>;
 
+fn migrate_v3_to_v4(conn: &Connection) -> SqlResult<()> {
+    conn.execute_batch(INDEX_DDL)
+}
+
 /// Ordered migrations: entry `(n, f)` upgrades version n → n+1.
-/// Empty today — the next schema change adds its step here.
-const MIGRATIONS: &[(i64, Migration)] = &[];
+const MIGRATIONS: &[(i64, Migration)] = &[
+    (3, migrate_v3_to_v4),
+];
 
 fn read_schema_version(conn: &Connection) -> i64 {
     conn.query_row(
@@ -183,7 +200,8 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
             volume           REAL NOT NULL DEFAULT 1.0,
             sort_order       INTEGER NOT NULL
         );
-    ")
+    ")?;
+    conn.execute_batch(INDEX_DDL)
 }
 
 /// Ensures at least one configuration exists and active_configuration_id is set.
@@ -603,6 +621,45 @@ pub fn ensure_test_config(conn: &Connection) -> String {
 mod tests {
     use super::*;
 
+    fn index_names(conn: &Connection) -> Vec<String> {
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%' ORDER BY name")
+            .unwrap();
+        stmt.query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap()
+    }
+
+    const EXPECTED_INDEXES: [&str; 7] = [
+        "idx_clips_library_entry_id",
+        "idx_clips_track_id",
+        "idx_comps_group_id",
+        "idx_groups_configuration_id",
+        "idx_library_entries_content_hash",
+        "idx_library_entry_tags_tag_id",
+        "idx_tracks_comp_id",
+    ];
+
+    #[test]
+    fn fresh_database_has_indexes_and_v4_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_db(&dir.path().join("fresh.db")).unwrap();
+        assert_eq!(index_names(&conn), EXPECTED_INDEXES);
+        assert_eq!(read_schema_version(&conn), 4);
+    }
+
+    #[test]
+    fn v3_database_gains_indexes_via_migration() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        // Simulate a genuine pre-index v3 database.
+        for name in EXPECTED_INDEXES {
+            conn.execute_batch(&format!("DROP INDEX IF EXISTS {name}")).unwrap();
+        }
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '3')", []).unwrap();
+        run_migrations(&conn).unwrap();
+        assert_eq!(index_names(&conn), EXPECTED_INDEXES);
+        assert_eq!(read_schema_version(&conn), 4);
+    }
+
     #[test]
     fn schema_creates_all_tables() {
         let conn = open_memory_db();
@@ -652,7 +709,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("schema_version row should exist");
-        assert_eq!(version, "3");
+        assert_eq!(version, "4");
     }
 
     #[test]
