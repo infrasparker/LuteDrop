@@ -33,6 +33,18 @@ export const useAppStore = defineStore('app', () => {
     configurations.value = state.configurations;
     activeConfigurationId.value = state.activeConfigurationId;
     missingEntryIds.value = new Set(state.missingEntryIds);
+
+    // Prune playback states for tracks that no longer exist (deleted
+    // tracks/comps/configs previously leaked entries forever).
+    const validIds = new Set<string>(['__library']);
+    for (const g of state.groups) {
+      for (const c of g.comps) {
+        for (const t of c.tracks) validIds.add(t.id);
+      }
+    }
+    for (const key of [...playbackStates.value.keys()]) {
+      if (!validIds.has(key)) playbackStates.value.delete(key);
+    }
   }
 
   // --- Command helper: invoke a Rust command and hydrate ---

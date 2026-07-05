@@ -69,6 +69,11 @@ pub fn add_clip(state: State<'_, Arc<AppStateContainer>>, track_id: String, libr
 }
 
 #[tauri::command]
+pub fn add_clips(state: State<'_, Arc<AppStateContainer>>, track_id: String, library_entry_ids: Vec<String>) -> Result<AppState, String> {
+    actions::add_clips(&state, &track_id, &library_entry_ids)
+}
+
+#[tauri::command]
 pub fn delete_clip(state: State<'_, Arc<AppStateContainer>>, track_id: String, clip_id: String) -> Result<AppState, String> {
     actions::delete_clip(&state, &track_id, &clip_id)
 }
@@ -224,7 +229,7 @@ pub fn get_server_info(state: State<'_, Arc<AppStateContainer>>) -> Result<serde
 // --- Library commands ---
 
 #[tauri::command]
-pub fn import_library_entry(
+pub async fn import_library_entry(
     state: State<'_, Arc<AppStateContainer>>,
     file_path: String,
     content_hash: Option<String>,
@@ -234,7 +239,12 @@ pub fn import_library_entry(
     file_size: Option<i64>,
     entry_type: String,
 ) -> Result<AppState, String> {
-    actions::import_library_entry(&state, file_path, content_hash, name, duration, sample_rate, file_size, entry_type)
+    let container = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        actions::import_library_entry(&container, file_path, content_hash, name, duration, sample_rate, file_size, entry_type)
+    })
+    .await
+    .map_err(|e| format!("Import task failed: {e}"))?
 }
 
 #[tauri::command]

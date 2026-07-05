@@ -21,6 +21,9 @@ pub struct AppStateContainer {
     /// True while a background library import is running. Used to block
     /// overlapping imports. Set via `try_claim_import` / `release_import`.
     pub import_in_progress: AtomicBool,
+    /// Set by any action that changes persisted app state or the missing-entries snapshot; the broadcast tick
+    /// consumes it to decide when remotes need a fresh structural snapshot.
+    pub state_dirty: AtomicBool,
     app_handle: Mutex<Option<tauri::AppHandle>>,
 }
 
@@ -36,6 +39,7 @@ impl AppStateContainer {
             remote_token: crate::server::generate_remote_token(),
             missing_entry_ids: Mutex::new(HashSet::new()),
             import_in_progress: AtomicBool::new(false),
+            state_dirty: AtomicBool::new(false),
             app_handle: Mutex::new(None),
         }
     }
@@ -52,6 +56,17 @@ impl AppStateContainer {
     pub fn release_import(&self) {
         use std::sync::atomic::Ordering;
         self.import_in_progress.store(false, Ordering::Release);
+    }
+
+    pub fn mark_state_dirty(&self) {
+        use std::sync::atomic::Ordering;
+        self.state_dirty.store(true, Ordering::Release);
+    }
+
+    /// Returns true at most once per mark — the broadcast tick's consume side.
+    pub fn take_state_dirty(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        self.state_dirty.swap(false, Ordering::AcqRel)
     }
 
     /// Locks the audio engine, recovering from mutex poisoning. A panic on
@@ -92,6 +107,7 @@ impl AppStateContainer {
         };
         if newly_added {
             self.emit_missing_changed(id);
+            self.mark_state_dirty();
         }
         newly_added
     }
@@ -106,6 +122,7 @@ impl AppStateContainer {
         };
         if was_removed {
             self.emit_found(id);
+            self.mark_state_dirty();
         }
         was_removed
     }

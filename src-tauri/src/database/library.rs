@@ -351,6 +351,7 @@ pub fn add_tag_to_entry(
 /// Removes the association between a tag and a library entry.
 /// Does nothing if the association doesn't exist.
 /// Cleans up the tag row itself if no entries reference it anymore.
+#[allow(dead_code)]
 pub fn remove_tag_from_entry(
     conn: &Connection,
     entry_id: &str,
@@ -376,7 +377,36 @@ pub fn remove_tag_from_entry(
     Ok(())
 }
 
+/// Atomically replaces the full tag set for an entry: one delete, one insert
+/// per tag, one orphan sweep — all in a single transaction (the previous
+/// remove-then-re-add loop could leave a partial tag set on mid-way failure).
+pub fn set_entry_tags(conn: &Connection, entry_id: &str, tags: &[String]) -> Result<(), String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin tag transaction: {e}"))?;
+
+    conn.execute(
+        "DELETE FROM library_entry_tags WHERE library_entry_id = ?1",
+        params![entry_id],
+    )
+    .map_err(|e| format!("Failed to clear entry tags: {e}"))?;
+
+    for tag_name in tags {
+        add_tag_to_entry(conn, entry_id, tag_name)?;
+    }
+
+    conn.execute(
+        "DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM library_entry_tags)",
+        [],
+    )
+    .map_err(|e| format!("Failed to sweep orphaned tags: {e}"))?;
+
+    tx.commit().map_err(|e| format!("Failed to commit tag transaction: {e}"))?;
+    Ok(())
+}
+
 /// Returns all tag names associated with the given library entry, sorted.
+#[allow(dead_code)]
 pub fn get_tags_for_entry(
     conn: &Connection,
     entry_id: &str,
@@ -768,5 +798,24 @@ mod tests {
         let id = insert_library_entry(&conn, "/e.mp3", Some("e"), "E", None, None, None, "music").unwrap();
         let result = update_library_entry_loop(&conn, &id, Some(50.0), Some(10.0));
         assert!(result.is_err());
+    }
+
+    // ── 12. set_entry_tags_replaces_atomically_and_cleans_orphans ────────────
+
+    #[test]
+    fn set_entry_tags_replaces_atomically_and_cleans_orphans() {
+        let conn = open_memory_db();
+        let e = insert_library_entry(&conn, "/t.mp3", None, "T", None, None, None, "music").unwrap();
+        add_tag_to_entry(&conn, &e, "old-only").unwrap();
+        add_tag_to_entry(&conn, &e, "kept").unwrap();
+
+        set_entry_tags(&conn, &e, &["kept".to_string(), "new".to_string()]).unwrap();
+
+        assert_eq!(get_tags_for_entry(&conn, &e).unwrap(), vec!["kept", "new"]);
+        // "old-only" is orphaned and must be gone from tags entirely:
+        let orphan: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tags WHERE name = 'old-only'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(orphan, 0);
     }
 }

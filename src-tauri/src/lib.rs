@@ -111,6 +111,7 @@ pub fn run() {
             commands::delete_track,
             commands::update_track,
             commands::add_clip,
+            commands::add_clips,
             commands::delete_clip,
             commands::play_track,
             commands::play_track_from,
@@ -184,6 +185,6 @@ fn playback_polling_loop(app_handle: tauri::AppHandle, container: Arc<AppStateCo
             container.mark_entry_found(entry_id);
         }
 
-        server::broadcast_state(&container);
+        server::broadcast_tick(&container);
     }
 }

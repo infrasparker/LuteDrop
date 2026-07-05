@@ -342,6 +342,7 @@ pub fn update_clip_volume(conn: &Connection, id: &str, volume: f64) -> Result<()
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn reorder_clip(
     conn: &Connection,
     track_id: &str,
@@ -349,6 +350,24 @@ pub fn reorder_clip(
     new_index: usize,
 ) -> Result<(), String> {
     reorder_item(conn, "clips", Some("track_id"), Some(track_id), clip_id, new_index)
+}
+
+/// Writes a complete clip ordering for a track in one transaction:
+/// `ordered_ids[i]` gets sort_order (i+1)*SORT_GAP. Replaces the O(n²)
+/// per-clip reorder loop for drag-and-drop.
+pub fn set_clip_order(conn: &Connection, track_id: &str, ordered_ids: &[String]) -> Result<(), String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin clip-order transaction: {e}"))?;
+    for (i, clip_id) in ordered_ids.iter().enumerate() {
+        conn.execute(
+            "UPDATE clips SET sort_order = ?1 WHERE id = ?2 AND track_id = ?3",
+            params![(i as i64 + 1) * SORT_GAP, clip_id, track_id],
+        )
+        .map_err(|e| format!("Failed to renumber clip: {e}"))?;
+    }
+    tx.commit().map_err(|e| format!("Failed to commit clip order: {e}"))?;
+    Ok(())
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -566,5 +585,32 @@ mod tests {
 
         // Verify we're not leaking rows.
         let _ = (clip1, clip2);
+    }
+
+    // ── 6. set_clip_order_applies_full_order_in_one_pass ──────────────────────
+
+    #[test]
+    fn set_clip_order_applies_full_order_in_one_pass() {
+        let conn = open_memory_db();
+        let config_id = setup_test_config(&conn);
+        let e1 = insert_library_entry(&conn, "/o1.mp3", None, "O1", None, None, None, "music").unwrap();
+        let e2 = insert_library_entry(&conn, "/o2.mp3", None, "O2", None, None, None, "music").unwrap();
+        let e3 = insert_library_entry(&conn, "/o3.mp3", None, "O3", None, None, None, "music").unwrap();
+        let g = insert_group(&conn, "G", &config_id).unwrap();
+        let c = insert_comp(&conn, &g, "C").unwrap();
+        let t = insert_track(&conn, &c, "T").unwrap();
+        let c1 = insert_clip(&conn, &t, &e1).unwrap();
+        let c2 = insert_clip(&conn, &t, &e2).unwrap();
+        let c3 = insert_clip(&conn, &t, &e3).unwrap();
+
+        set_clip_order(&conn, &t, &[c3.clone(), c1.clone(), c2.clone()]).unwrap();
+
+        let ordered: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT id FROM clips WHERE track_id = ?1 ORDER BY sort_order ASC")
+                .unwrap();
+            stmt.query_map(params![t], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap()
+        };
+        assert_eq!(ordered, vec![c3, c1, c2]);
     }
 }

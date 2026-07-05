@@ -21,29 +21,16 @@ where
 fn load_state(container: &AppStateContainer) -> Result<AppState, String> {
     let mut state = with_db(container, |conn| database::load_full_state(conn))?;
     state.missing_entry_ids = container.missing_snapshot();
+    container.mark_state_dirty();
     Ok(state)
 }
 
 pub fn find_track_ref(container: &AppStateContainer, track_id: &str) -> Result<Track, String> {
-    let state = with_db(container, |conn| database::load_full_state(conn))?;
-    for group in &state.groups {
-        for comp in &group.comps {
-            if let Some(track) = comp.tracks.iter().find(|t| t.id == track_id) {
-                return Ok(track.clone());
-            }
-        }
-    }
-    Err(format!("Track not found: {}", track_id))
+    with_db(container, |conn| database::load_track_by_id(conn, track_id))
 }
 
 pub fn find_comp_tracks(container: &AppStateContainer, comp_id: &str) -> Result<Vec<Track>, String> {
-    let state = with_db(container, |conn| database::load_full_state(conn))?;
-    for group in &state.groups {
-        if let Some(comp) = group.comps.iter().find(|c| c.id == comp_id) {
-            return Ok(comp.tracks.clone());
-        }
-    }
-    Err(format!("Comp not found: {}", comp_id))
+    with_db(container, |conn| database::load_tracks_for_comp(conn, comp_id))
 }
 
 /// Volumes from any caller (IPC or remote) are clamped to [0, 1] before they
@@ -129,6 +116,12 @@ pub fn delete_track(container: &AppStateContainer, _comp_id: &str, track_id: &st
 
 pub fn update_track(container: &AppStateContainer, _comp_id: &str, track_id: &str, updates: serde_json::Value) -> Result<AppState, String> {
     with_db(container, |conn| {
+        // NOTE: no outer transaction here — `hierarchy::set_clip_order` below
+        // opens its own `unchecked_transaction` on `conn`, and SQLite rejects
+        // a nested BEGIN. The other updates in this closure are independent
+        // single-statement UPDATEs, so the atomicity this plan originally
+        // wanted around the clip loop is now provided by `set_clip_order`
+        // itself; nothing here needs a wrapping transaction of its own.
         let obj = updates.as_object()
             .ok_or_else(|| "updates must be a JSON object".to_string())?;
 
@@ -212,15 +205,16 @@ pub fn update_track(container: &AppStateContainer, _comp_id: &str, track_id: &st
         if let Some(v) = obj.get("clips") {
             let clips_arr = v.as_array()
                 .ok_or_else(|| "clips must be an array".to_string())?;
-
-            // Reorder clips based on the array order
-            for (index, clip_val) in clips_arr.iter().enumerate() {
-                let clip_id = clip_val.get("id")
-                    .and_then(|id| id.as_str())
-                    .ok_or_else(|| "each clip must have an 'id' string field".to_string())?;
-
-                hierarchy::reorder_clip(conn, track_id, clip_id, index)?;
-            }
+            let ordered_ids: Vec<String> = clips_arr
+                .iter()
+                .map(|clip_val| {
+                    clip_val.get("id")
+                        .and_then(|id| id.as_str())
+                        .map(str::to_string)
+                        .ok_or_else(|| "each clip must have an 'id' string field".to_string())
+                })
+                .collect::<Result<_, _>>()?;
+            hierarchy::set_clip_order(conn, track_id, &ordered_ids)?;
         }
 
         Ok(())
@@ -231,6 +225,20 @@ pub fn update_track(container: &AppStateContainer, _comp_id: &str, track_id: &st
 pub fn add_clip(container: &AppStateContainer, track_id: &str, library_entry_id: &str) -> Result<AppState, String> {
     with_db(container, |conn| {
         hierarchy::insert_clip(conn, track_id, library_entry_id)?;
+        Ok(())
+    })?;
+    load_state(container)
+}
+
+pub fn add_clips(container: &AppStateContainer, track_id: &str, library_entry_ids: &[String]) -> Result<AppState, String> {
+    with_db(container, |conn| {
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("Failed to begin add_clips transaction: {e}"))?;
+        for entry_id in library_entry_ids {
+            hierarchy::insert_clip(conn, track_id, entry_id)?;
+        }
+        tx.commit().map_err(|e| format!("Failed to commit add_clips: {e}"))?;
         Ok(())
     })?;
     load_state(container)
@@ -382,20 +390,7 @@ pub fn update_library_entry_tags(
     entry_id: &str,
     tags: Vec<String>,
 ) -> Result<AppState, String> {
-    with_db(container, |conn| {
-        // Remove all existing tags for this entry
-        let existing_tags = library::get_tags_for_entry(conn, entry_id)?;
-        for tag_name in &existing_tags {
-            library::remove_tag_from_entry(conn, entry_id, tag_name)?;
-        }
-
-        // Add new tags
-        for tag_name in &tags {
-            library::add_tag_to_entry(conn, entry_id, tag_name)?;
-        }
-
-        Ok(())
-    })?;
+    with_db(container, |conn| library::set_entry_tags(conn, entry_id, &tags))?;
     load_state(container)
 }
 
@@ -649,6 +644,9 @@ fn run_bulk_import(container: Arc<AppStateContainer>, paths: Vec<String>, tags: 
                         let _ = library::update_library_entry_duration(&conn, &id, dur, None);
                     }
                 }
+                // Per-file dirty mark: connected remotes see the library grow
+                // as the import proceeds rather than only at the end.
+                container.mark_state_dirty();
             }
             Ok(None) => {
                 skipped += 1;
@@ -666,6 +664,9 @@ fn run_bulk_import(container: Arc<AppStateContainer>, paths: Vec<String>, tags: 
         "library-import-complete",
         BulkImportProgress { processed: total, imported, skipped, total },
     );
+    // Belt-and-braces: ensure remotes get a final structural snapshot after
+    // the import finishes (cheap atomic store; redundant marks are harmless).
+    container.mark_state_dirty();
     container.release_import();
 }
 
@@ -802,6 +803,7 @@ pub fn set_track_volume_action(container: &AppStateContainer, track_id: &str, vo
         let conn = container.db.lock().map_err(|e| e.to_string())?;
         hierarchy::update_track_volume(&conn, track_id, volume)?;
     }
+    container.mark_state_dirty();
     // Update audio engine only if track is currently active
     let mut audio = container.lock_audio();
     if audio.has_track(track_id) {
@@ -817,6 +819,7 @@ pub fn set_clip_volume_action(container: &AppStateContainer, clip_id: &str, volu
         let conn = container.db.lock().map_err(|e| e.to_string())?;
         hierarchy::update_clip_volume(&conn, clip_id, volume)?;
     }
+    container.mark_state_dirty();
     // Update audio engine — set_clip_volume is a no-op if clip isn't in any active track
     let mut audio = container.lock_audio();
     audio.set_clip_volume(clip_id, volume)
