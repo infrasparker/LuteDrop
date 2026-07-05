@@ -24,6 +24,15 @@ struct StateSnapshot {
     master_volume: f64,
 }
 
+/// Lightweight per-tick message: playback positions + master volume only.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlaybackSnapshot {
+    r#type: String,
+    playback_states: Vec<TrackPlaybackState>,
+    master_volume: f64,
+}
+
 /// A command received from a remote client.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -108,8 +117,8 @@ async fn handle_ws(mut socket: WebSocket, container: SharedState) {
                 match msg {
                     Some(Ok(Message::Text(text))) => {
                         handle_remote_command(&container, &text);
-                        // Broadcast updated state after command
-                        broadcast_state(&container);
+                        // Mutation marked the dirty flag; the next poll tick
+                        // broadcasts the structural snapshot (≤50 ms latency).
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     _ => {}
@@ -215,11 +224,33 @@ fn build_snapshot(container: &AppStateContainer) -> Option<StateSnapshot> {
     })
 }
 
-/// Build and broadcast the current state to all connected remotes.
-pub fn broadcast_state(container: &AppStateContainer) {
-    if let Some(snapshot) = build_snapshot(container) {
-        if let Ok(json) = serde_json::to_string(&snapshot) {
-            let _ = container.broadcast_tx.send(json);
+/// Per-tick broadcast, called from the 50 ms poll loop.
+/// Zero connected remotes → nothing happens (no locks, no serialization).
+/// Otherwise: always push the cheap playback message; push a full structural
+/// snapshot only when a mutation marked the state dirty since the last tick.
+pub fn broadcast_tick(container: &AppStateContainer) {
+    if container.broadcast_tx.receiver_count() == 0 {
+        return;
+    }
+
+    let (playback_states, master_volume) = {
+        let audio = container.lock_audio();
+        (audio.get_all_playback_states(), audio.get_master_volume())
+    };
+    let playback = PlaybackSnapshot {
+        r#type: "playback".to_string(),
+        playback_states,
+        master_volume,
+    };
+    if let Ok(json) = serde_json::to_string(&playback) {
+        let _ = container.broadcast_tx.send(json);
+    }
+
+    if container.take_state_dirty() {
+        if let Some(snapshot) = build_snapshot(container) {
+            if let Ok(json) = serde_json::to_string(&snapshot) {
+                let _ = container.broadcast_tx.send(json);
+            }
         }
     }
 }
@@ -356,5 +387,18 @@ mod tests {
         assert!(require_id(&None, "trackId").is_err());
         assert!(require_id(&Some(String::new()), "trackId").is_err());
         assert_eq!(require_id(&Some("t1".into()), "trackId"), Ok("t1"));
+    }
+
+    #[test]
+    fn playback_snapshot_serializes_with_type_tag_and_camel_case() {
+        let snap = PlaybackSnapshot {
+            r#type: "playback".to_string(),
+            playback_states: vec![],
+            master_volume: 0.5,
+        };
+        let json = serde_json::to_value(&snap).unwrap();
+        assert_eq!(json["type"], "playback");
+        assert_eq!(json["masterVolume"], 0.5);
+        assert!(json["playbackStates"].is_array());
     }
 }

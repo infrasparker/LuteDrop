@@ -184,6 +184,6 @@ fn playback_polling_loop(app_handle: tauri::AppHandle, container: Arc<AppStateCo
             container.mark_entry_found(entry_id);
         }
 
-        server::broadcast_state(&container);
+        server::broadcast_tick(&container);
     }
 }

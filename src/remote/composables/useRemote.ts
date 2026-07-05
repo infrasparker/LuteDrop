@@ -8,6 +8,12 @@ interface StateSnapshot {
   masterVolume: number;
 }
 
+interface PlaybackSnapshot {
+  type: string;
+  playbackStates: TrackPlaybackState[];
+  masterVolume: number;
+}
+
 const groups = ref<AppState['groups']>([]);
 const missingEntryIds = ref<Set<string>>(new Set());
 const playbackStates = reactive(new Map<string, TrackPlaybackState>());
@@ -29,6 +35,20 @@ function getWsUrl(): string {
   return `${protocol}//${host}/ws?token=${encodeURIComponent(token)}`;
 }
 
+function applyPlaybackStates(states: TrackPlaybackState[], volume: number | undefined): void {
+  const seen = new Set<string>();
+  for (const ps of states) {
+    playbackStates.set(ps.trackId, ps);
+    seen.add(ps.trackId);
+  }
+  for (const key of [...playbackStates.keys()]) {
+    if (!seen.has(key)) playbackStates.delete(key);
+  }
+  if (volume !== undefined) {
+    masterVolume.value = volume;
+  }
+}
+
 function connect(): void {
   if (ws) return;
 
@@ -40,17 +60,15 @@ function connect(): void {
 
   ws.onmessage = (event) => {
     try {
-      const data: StateSnapshot = JSON.parse(event.data);
+      const data: StateSnapshot | PlaybackSnapshot = JSON.parse(event.data);
       if (data.type === 'state') {
-        groups.value = data.appState.groups;
-        missingEntryIds.value = new Set(data.appState.missingEntryIds);
-        playbackStates.clear();
-        for (const ps of data.playbackStates) {
-          playbackStates.set(ps.trackId, ps);
-        }
-        if (data.masterVolume !== undefined) {
-          masterVolume.value = data.masterVolume;
-        }
+        const s = data as StateSnapshot;
+        groups.value = s.appState.groups;
+        missingEntryIds.value = new Set(s.appState.missingEntryIds);
+        applyPlaybackStates(s.playbackStates, s.masterVolume);
+      } else if (data.type === 'playback') {
+        const p = data as PlaybackSnapshot;
+        applyPlaybackStates(p.playbackStates, p.masterVolume);
       }
     } catch (e) {
       console.warn('Failed to parse state update:', e);

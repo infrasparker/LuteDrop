@@ -21,6 +21,7 @@ where
 fn load_state(container: &AppStateContainer) -> Result<AppState, String> {
     let mut state = with_db(container, |conn| database::load_full_state(conn))?;
     state.missing_entry_ids = container.missing_snapshot();
+    container.mark_state_dirty();
     Ok(state)
 }
 
@@ -782,6 +783,7 @@ pub fn set_track_volume_action(container: &AppStateContainer, track_id: &str, vo
         let conn = container.db.lock().map_err(|e| e.to_string())?;
         hierarchy::update_track_volume(&conn, track_id, volume)?;
     }
+    container.mark_state_dirty();
     // Update audio engine only if track is currently active
     let mut audio = container.lock_audio();
     if audio.has_track(track_id) {
@@ -797,6 +799,7 @@ pub fn set_clip_volume_action(container: &AppStateContainer, clip_id: &str, volu
         let conn = container.db.lock().map_err(|e| e.to_string())?;
         hierarchy::update_clip_volume(&conn, clip_id, volume)?;
     }
+    container.mark_state_dirty();
     // Update audio engine — set_clip_volume is a no-op if clip isn't in any active track
     let mut audio = container.lock_audio();
     audio.set_clip_volume(clip_id, volume)
