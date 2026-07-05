@@ -1,9 +1,8 @@
 # Orientation: a guided tour of LuteDrop
 
-This is the "I know TypeScript, the Rust reads as greek, where do I even start"
-document. It explains the shape of the app in plain language, traces a couple of
-real flows end to end, and has a Rust primer written **against the TypeScript you
-already know**, using snippets from this actual codebase.
+Orientation guide for this codebase: application structure, two end-to-end flows,
+and a Rust primer with TypeScript comparisons drawn from this repository. Assumes
+TypeScript familiarity; assumes no Rust.
 
 For the precise reference (every function, the invariants, the volume model), see
 [`docs/engine-architecture.md`](./engine-architecture.md). Read this first.
@@ -109,8 +108,8 @@ enough to feel instant and slow enough to be cheap.
 
 ## Rust for TypeScript readers (keyed to this repo)
 
-Not a general tutorial — just the constructs you'll actually hit in these files,
-each next to its TS equivalent.
+Covers the constructs used in these files, each next to its TS equivalent, rather
+than a general Rust tutorial.
 
 ### `Result<T, E>` and `?` — errors as values, not exceptions
 
@@ -236,9 +235,9 @@ Because `models.rs` derives `TS` (`#[ts(export, ...)]`), the build step writes a
 matching TypeScript type into `generated/`, so the frontend's `TrackMode` and the
 Rust `TrackMode` can't drift apart.
 
-### Closures and iterators — the `map`/`filter` you know
+### Closures and iterators — analogous to `map`/`filter`
 
-Rust iterators feel like array methods, just lazy (nothing runs until you
+Rust iterators work like array methods, but lazily (nothing runs until you
 `.collect()` or loop). Closures use `|args|` instead of `(args) =>`:
 
 ```rust
@@ -275,8 +274,7 @@ of the codebase is safe Rust; `unsafe` is quarantined to this boundary file.
 
 ## Where things get hard, and why
 
-If these zones feel impenetrable, that's the material, not you. Each is genuinely
-subtle:
+The densest code in the repository, and the technical reason each area is dense:
 
 - **`voice.rs` timing** — click-free audio is all about *when* a sound is stopped
   vs. *when* it's freed. A sound dropped mid-fade hard-cuts and pops, so stopped

@@ -1,9 +1,8 @@
 # Engine Architecture
 
-> New to this codebase, or the Rust reads as "total greek"? Start with
-> [`docs/orientation.md`](./orientation.md) — a plain-language tour with a
-> Rust-for-TypeScript primer. This document is the precise reference; that one
-> is the on-ramp.
+> For a plain-language tour of the codebase with a Rust-for-TypeScript primer,
+> see [`docs/orientation.md`](./orientation.md). This document is the precise
+> reference; that one is the on-ramp.
 
 ## Summary
 
