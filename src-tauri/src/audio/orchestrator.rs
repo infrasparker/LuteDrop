@@ -8,17 +8,21 @@ use super::transitions::{TransitionManager, TransitionAction};
 use super::voice::Voice;
 
 pub struct ManagedTrack {
+    /// Holds the *outgoing* crossfade sound (`OutgoingFade.handle`), which
+    /// lives in `voice`'s group. Declared before `voice` so it drops first:
+    /// sounds must be uninitialized before their group (see ffi.rs drop-order
+    /// contract). Reordering these fields reintroduces mid-crossfade UB.
+    pub transitions: TransitionManager,
     /// Single-sound playback for this track: owns the sub-mix group, the current
     /// clip's sound, the de-click fade-out reaper, and the seamless-loop
     /// crossfade. The multi-clip sequencing (which/when) lives in this module +
     /// `TransitionManager`; the actual play/stop/loop/reap is delegated to the
-    /// Voice. Declared before any field that must outlive it (none here; the
-    /// engine lives in `AudioEngine`).
+    /// Voice. Must outlive `transitions` (drops after it).
     pub voice: Voice,
     pub config: Track,
     pub current_clip_index: Option<usize>,
+    pub clips_played: usize,
     pub is_paused: bool,
-    pub transitions: TransitionManager,
 }
 
 pub fn setup_track(
@@ -42,11 +46,12 @@ pub fn setup_track(
     ));
 
     tracks.insert(config.id.clone(), ManagedTrack {
+        transitions: TransitionManager::new(),
         voice,
         config: config.clone(),
         current_clip_index: None,
+        clips_played: 0,
         is_paused: false,
-        transitions: TransitionManager::new(),
     });
 
     Ok(())
@@ -73,6 +78,10 @@ pub fn play_track(
         return resume_track(tracks, track_id);
     }
 
+    if let Some(track) = tracks.get_mut(track_id) {
+        track.clips_played = 0;
+    }
+
     let clip_index = pick_first_clip(tracks, track_id)?;
     match clip_index {
         Some(idx) => start_clip(tracks, engine, track_id, idx, None, true, mute_state),
@@ -92,6 +101,9 @@ pub fn play_track_clip(
         track.config.clips.iter().position(|c| c.id == clip_id)
             .ok_or_else(|| format!("Clip not found: {}", clip_id))?
     };
+    if let Some(track) = tracks.get_mut(track_id) {
+        track.clips_played = 0;
+    }
     start_clip(tracks, engine, track_id, clip_index, None, true, mute_state)
 }
 
@@ -102,6 +114,9 @@ pub fn play_track_from(
     position: f64,
     mute_state: &MuteState,
 ) -> Result<(), String> {
+    if let Some(track) = tracks.get_mut(track_id) {
+        track.clips_played = 0;
+    }
     let clip_index = pick_first_clip(tracks, track_id)?;
     match clip_index {
         Some(idx) => start_clip(tracks, engine, track_id, idx, Some(position), true, mute_state),
@@ -134,6 +149,7 @@ pub fn stop_track(tracks: &mut HashMap<String, ManagedTrack>, track_id: &str) ->
     };
     track.is_paused = false;
     track.current_clip_index = None;
+    track.clips_played = 0;
     track.transitions.reset();
     // Deferred destruction: fade the sound out and park it until the ramp
     // completes, instead of dropping it immediately (which would uninit it
@@ -246,7 +262,7 @@ pub fn poll_track(
     }
 
     // Gather state for transition check
-    let (position, clip_duration, clip_start, mode, current_clip_index, clip_count, is_paused, sound_playing, sound_stopped) = {
+    let (position, clip_duration, clip_start, mode, current_clip_index, clip_count, clips_played, is_paused, sound_playing, sound_stopped) = {
         let track = match tracks.get(track_id) {
             Some(t) => t,
             None => return,
@@ -261,7 +277,7 @@ pub fn poll_track(
         };
         let dur = track.voice.duration();
         let start = track.voice.start_position();
-        (pos, dur, start, track.config.mode.clone(), track.current_clip_index, track.config.clips.len(), track.is_paused, playing, stopped)
+        (pos, dur, start, track.config.mode.clone(), track.current_clip_index, track.config.clips.len(), track.clips_played, track.is_paused, playing, stopped)
     };
 
     // Handle the seamless loop crossfade before checking transitions. The Voice
@@ -299,7 +315,7 @@ pub fn poll_track(
         };
         track.transitions.update(
             position, clip_duration, clip_start, &mode,
-            current_clip_index, clip_count, is_paused, sound_playing, sound_stopped,
+            current_clip_index, clip_count, clips_played, is_paused, sound_playing, sound_stopped,
         )
     };
 
@@ -486,6 +502,7 @@ fn start_clip(
         track.voice.play_scheduled(engine, params)?;
     }
     track.current_clip_index = Some(clip_index);
+    track.clips_played += 1;
     track.transitions.clip_started();
     track.is_paused = false;
 

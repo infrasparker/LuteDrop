@@ -42,7 +42,8 @@ int ld_decode_file(const wchar_t* path, float** out, uint64_t* out_frames,
     float* buf = (float*)malloc(cap * sizeof(float));
     if (buf == NULL) { ma_decoder_uninit(&dec); return 2; }
 
-    ma_uint64 framesRead, totalRead = 0;
+    ma_uint64 framesRead = 0, totalRead = 0;
+    ma_result r = MA_SUCCESS;
     for (;;) {
         // Ensure room for at least one more 4096-frame chunk.
         if ((totalRead + 4096) * dec.outputChannels > cap) {
@@ -51,13 +52,17 @@ int ld_decode_file(const wchar_t* path, float** out, uint64_t* out_frames,
             if (grown == NULL) { free(buf); ma_decoder_uninit(&dec); return 3; }
             buf = grown;
         }
-        ma_result r = ma_decoder_read_pcm_frames(
+        framesRead = 0;
+        r = ma_decoder_read_pcm_frames(
             &dec, buf + totalRead * dec.outputChannels, 4096, &framesRead);
         totalRead += framesRead;
-        if ((r != MA_SUCCESS && r != MA_AT_END) || framesRead == 0) break;
+        if (r != MA_SUCCESS || framesRead == 0) break;
     }
 
     ma_decoder_uninit(&dec);
+    // A hard mid-stream decode error must not masquerade as success with
+    // silently truncated data (MA_AT_END is the normal termination).
+    if (r != MA_SUCCESS && r != MA_AT_END) { free(buf); return 4; }
     *out = buf;
     *out_frames = totalRead;
     return 0;

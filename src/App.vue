@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from './stores/appStore';
 import { useAudio } from './composables/useAudio';
@@ -8,9 +8,11 @@ import { useRouter } from 'vue-router';
 import type { AppState } from '@generated/index';
 import TransportBar from './components/TransportBar.vue';
 import WaveformEditorDialog from './components/WaveformEditorDialog.vue';
+import RemoteInfoDialog from './components/RemoteInfoDialog.vue';
 
 const store = useAppStore();
 const toast = useToast();
+const showRemoteInfo = ref(false);
 
 // Initialize audio early to register event listeners
 const audio = useAudio();
@@ -64,6 +66,17 @@ onMounted(async () => {
           color="primary"
         />
       </VList>
+
+      <template #append>
+        <VList nav density="compact">
+          <VListItem
+            prepend-icon="mdi-cellphone-link"
+            title="Phone remote"
+            aria-label="Phone remote"
+            @click="showRemoteInfo = true"
+          />
+        </VList>
+      </template>
     </VNavigationDrawer>
 
     <VAppBar flat color="surface" density="compact">
@@ -81,6 +94,8 @@ onMounted(async () => {
       v-model="showEditorDialog"
       :entry-id="store.editEntryId!"
     />
+
+    <RemoteInfoDialog v-model="showRemoteInfo" />
 
     <VSnackbar v-model="toast.visible.value" :color="toast.color.value" :timeout="3000">
       {{ toast.message.value }}

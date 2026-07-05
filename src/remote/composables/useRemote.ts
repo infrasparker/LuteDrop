@@ -18,12 +18,15 @@ let ws: WebSocket | null = null;
 let initialized = false;
 
 function getWsUrl(): string {
-  // In dev mode (Vite on port 1421), connect to the Rust server on port 3333
-  // In production (served by axum), use the same host
+  // In dev mode (Vite on port 1421), connect to the Rust server on port 3333.
+  // In production (served by axum), use the same host. The pairing token
+  // arrives as ?token= on the page URL (from the link shown in the desktop
+  // app) and must be forwarded on the upgrade request.
   const isDev = location.port === '1421';
   const host = isDev ? `${location.hostname}:3333` : location.host;
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${host}/ws`;
+  const token = new URLSearchParams(location.search).get('token') ?? '';
+  return `${protocol}//${host}/ws?token=${encodeURIComponent(token)}`;
 }
 
 function connect(): void {

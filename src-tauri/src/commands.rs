@@ -210,11 +210,14 @@ pub async fn get_waveform_data(
 }
 
 #[tauri::command]
-pub fn get_server_info() -> Result<serde_json::Value, String> {
+pub fn get_server_info(state: State<'_, Arc<AppStateContainer>>) -> Result<serde_json::Value, String> {
     let ip = crate::server::get_local_ip();
+    let port = crate::server::REMOTE_PORT;
     Ok(serde_json::json!({
         "ip": ip,
-        "port": 3333
+        "port": port,
+        "token": state.remote_token,
+        "url": format!("http://{}:{}/?token={}", ip, port, state.remote_token),
     }))
 }
 

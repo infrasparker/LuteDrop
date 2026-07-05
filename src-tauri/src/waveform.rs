@@ -230,12 +230,24 @@ fn read_cache(audio_path: &Path, cache_dir: &Path) -> Option<CachedPeaks> {
         return None;
     }
 
-    // Read peak data
-    let mut peaks = Vec::with_capacity(total_peaks);
-    for _ in 0..total_peaks {
-        file.read_exact(&mut buf4).ok()?;
-        peaks.push(f32::from_le_bytes(buf4));
+    // Validate the claimed peak count against the actual file size before
+    // allocating — a corrupt count could otherwise request gigabytes.
+    // Header layout: magic(4) + version(1) + samples_per_peak(4) +
+    // sample_rate(4) + total_samples(8) + total_peaks(4) + src_size(8) +
+    // src_mtime(8) = 41 bytes, then 4 bytes per peak.
+    const HEADER_LEN: u64 = 41;
+    let file_len = file.metadata().ok()?.len();
+    if HEADER_LEN + (total_peaks as u64) * 4 != file_len {
+        return None;
     }
+
+    // Read peak data in one bulk read (the old loop was one syscall per peak).
+    let mut data = vec![0u8; total_peaks * 4];
+    file.read_exact(&mut data).ok()?;
+    let peaks: Vec<f32> = data
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
 
     Some(CachedPeaks {
         sample_rate,
@@ -508,5 +520,28 @@ mod tests {
 
         // Clean up
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_cache_rejects_peak_count_inconsistent_with_file_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("a.mp3");
+        std::fs::write(&audio, b"not really audio, just needs size/mtime").unwrap();
+        let (src_size, src_mtime) = source_file_meta(&audio).unwrap();
+
+        // Hand-craft a header claiming u32::MAX peaks but containing none.
+        let cp = cache_path(&audio, dir.path());
+        let mut data = Vec::new();
+        data.extend_from_slice(MAGIC);
+        data.push(FORMAT_VERSION);
+        data.extend_from_slice(&512u32.to_le_bytes());          // samples_per_peak
+        data.extend_from_slice(&48000u32.to_le_bytes());        // sample_rate
+        data.extend_from_slice(&1_000_000u64.to_le_bytes());    // total_samples
+        data.extend_from_slice(&u32::MAX.to_le_bytes());        // total_peaks (lie)
+        data.extend_from_slice(&src_size.to_le_bytes());
+        data.extend_from_slice(&src_mtime.to_le_bytes());
+        std::fs::write(&cp, &data).unwrap();
+
+        assert!(read_cache(&audio, dir.path()).is_none());
     }
 }

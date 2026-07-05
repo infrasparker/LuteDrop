@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
+use std::sync::MutexGuard;
 use rusqlite::Connection;
 use tauri::Emitter;
 use tokio::sync::broadcast;
@@ -14,6 +15,8 @@ pub struct AppStateContainer {
     pub broadcast_tx: broadcast::Sender<String>,
     pub peak_cache: PeakCache,
     pub db_path: PathBuf,
+    /// Random per-session pairing token for the phone remote (see server.rs).
+    pub remote_token: String,
     pub missing_entry_ids: Mutex<HashSet<String>>,
     /// True while a background library import is running. Used to block
     /// overlapping imports. Set via `try_claim_import` / `release_import`.
@@ -30,6 +33,7 @@ impl AppStateContainer {
             broadcast_tx,
             peak_cache: PeakCache::new(peak_cache_dir),
             db_path,
+            remote_token: crate::server::generate_remote_token(),
             missing_entry_ids: Mutex::new(HashSet::new()),
             import_in_progress: AtomicBool::new(false),
             app_handle: Mutex::new(None),
@@ -48,6 +52,18 @@ impl AppStateContainer {
     pub fn release_import(&self) {
         use std::sync::atomic::Ordering;
         self.import_in_progress.store(false, Ordering::Release);
+    }
+
+    /// Locks the audio engine, recovering from mutex poisoning. A panic on
+    /// the poll thread must not permanently kill audio: engine state stays
+    /// structurally valid across a panic (single-field mutations only), so
+    /// recovering the guard is safe. The poison is logged so a crashing poll
+    /// tick is visible instead of silent.
+    pub fn lock_audio(&self) -> MutexGuard<'_, AudioEngine> {
+        self.audio.lock().unwrap_or_else(|poisoned| {
+            log::error!("Audio mutex poisoned (a thread panicked while holding it); recovering");
+            poisoned.into_inner()
+        })
     }
 
     /// Emits a Tauri event to the frontend if the app handle is set.

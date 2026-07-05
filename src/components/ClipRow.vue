@@ -4,6 +4,7 @@ import type { Clip } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
 import { open } from '@tauri-apps/plugin-dialog';
+import { AUDIO_EXTENSIONS } from '../constants';
 
 const props = defineProps<{
   clip: Clip;
@@ -40,8 +41,6 @@ function editLibraryEntry(): void {
 }
 
 const isMissing = computed(() => store.isEntryMissing(props.clip.libraryEntryId));
-
-const AUDIO_EXTENSIONS = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'wma'];
 
 async function relocateMissing(): Promise<void> {
   const path = await open({

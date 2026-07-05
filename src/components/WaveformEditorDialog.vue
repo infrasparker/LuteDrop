@@ -4,6 +4,7 @@ import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
 import WaveformEditor from './WaveformEditor.vue';
 import { open } from '@tauri-apps/plugin-dialog';
+import { AUDIO_EXTENSIONS } from '../constants';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -150,8 +151,11 @@ async function onWaveformCommit(values: {
     entryId: props.entryId,
     trimStart: values.trimStart,
     trimEnd: values.trimEnd,
-    loopStart: values.loopStart || null,
-    loopEnd: values.loopEnd || null,
+    // The editor uses 0 as its "no loop" sentinel on loopEnd; the DB uses
+    // null. A loop exists only when loopEnd is set — loopStart may
+    // legitimately be 0.0 (the old `loopStart || null` erased that case).
+    loopStart: values.loopEnd === 0 ? null : values.loopStart,
+    loopEnd: values.loopEnd === 0 ? null : values.loopEnd,
   });
 }
 
@@ -187,7 +191,6 @@ function close(): void {
   emit('update:modelValue', false);
 }
 
-const AUDIO_EXTENSIONS = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'wma'];
 const isMissing = computed(() => store.isEntryMissing(props.entryId));
 
 async function relocateFile(): Promise<void> {

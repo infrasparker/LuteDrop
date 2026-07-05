@@ -4,8 +4,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import type { AppState, BulkImportProgress } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useToast } from './useToast';
-
-const AUDIO_EXTENSIONS = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'wma', 'opus'];
+import { AUDIO_EXTENSIONS } from '../constants';
 
 // Event listeners are registered once at module scope: they mutate the shared
 // Pinia store so the bottom-bar indicator and Import menu stay in sync no
