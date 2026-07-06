@@ -3,6 +3,7 @@
 
 import type { Track, TrackMode, TrackTransition } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
+import { hasTransition } from '../shared/trackMode';
 
 export function useTrackUpdates(trackId: () => string) {
   const store = useAppStore();
@@ -17,15 +18,11 @@ export function useTrackUpdates(trackId: () => string) {
   async function updateMode(type: string): Promise<void> {
     const track = store.findTrack(trackId());
     if (!track) return;
-
     let mode: TrackMode;
     if (type === 'seamless') {
       mode = { type: 'seamless', loopStart: 0, loopEnd: 0 };
     } else {
-      const hasTransition = track.mode.type !== 'seamless';
-      const transition = hasTransition
-        ? (track.mode as { transition: TrackTransition }).transition
-        : { type: 'gapless' as const };
+      const transition = hasTransition(track.mode) ? track.mode.transition : { type: 'gapless' as const };
       mode = { type: type as 'sequence' | 'shuffle', repeat: true, transition };
     }
     await updateField({ mode });
@@ -33,37 +30,36 @@ export function useTrackUpdates(trackId: () => string) {
 
   async function updateTransition(type: string): Promise<void> {
     const track = store.findTrack(trackId());
-    if (!track) return;
-
+    if (!track || !hasTransition(track.mode)) return;
     let transition: TrackTransition;
     switch (type) {
       case 'gap': transition = { type: 'gap', min: 0, max: 5 }; break;
       case 'crossfade': transition = { type: 'crossfade' }; break;
       default: transition = { type: 'gapless' }; break;
     }
-    const mode = track.mode as { type: 'sequence' | 'shuffle'; repeat: boolean; transition: TrackTransition };
-    await updateField({ mode: { ...mode, transition } });
+    await updateField({ mode: { ...track.mode, transition } });
   }
 
-  async function updateRepeat(v: boolean): Promise<void> {
+  async function updateRepeat(v: boolean | null): Promise<void> {
     const track = store.findTrack(trackId());
-    if (!track) return;
-    const mode = track.mode as any;
-    await updateField({ mode: { ...mode, repeat: v } });
+    if (!track || !hasTransition(track.mode)) return;
+    await updateField({ mode: { ...track.mode, repeat: !!v } });
   }
 
   async function updateGapMin(v: string): Promise<void> {
     const track = store.findTrack(trackId());
-    if (!track) return;
-    const mode = track.mode as any;
-    await updateField({ mode: { ...mode, transition: { type: 'gap', min: Number(v), max: mode.transition.max } } });
+    if (!track || !hasTransition(track.mode)) return;
+    const t = track.mode.transition;
+    const max = t.type === 'gap' ? t.max : 5;
+    await updateField({ mode: { ...track.mode, transition: { type: 'gap', min: Number(v), max } } });
   }
 
   async function updateGapMax(v: string): Promise<void> {
     const track = store.findTrack(trackId());
-    if (!track) return;
-    const mode = track.mode as any;
-    await updateField({ mode: { ...mode, transition: { type: 'gap', min: mode.transition.min, max: Number(v) } } });
+    if (!track || !hasTransition(track.mode)) return;
+    const t = track.mode.transition;
+    const min = t.type === 'gap' ? t.min : 0;
+    await updateField({ mode: { ...track.mode, transition: { type: 'gap', min, max: Number(v) } } });
   }
 
   async function toggleFadeIn(v: boolean | null): Promise<void> {

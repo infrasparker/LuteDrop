@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { computed } from 'vue';
 import type { Track } from '@generated/index';
 import { useRemote } from '../composables/useRemote';
+import { useLocalVolume } from '../../shared/useLocalVolume';
 import RemoteClipRow from './RemoteClipRow.vue';
 
 const props = defineProps<{
@@ -13,13 +14,7 @@ const playbackState = computed(() => remote.playbackStates.get(props.track.id));
 const isPlaying = computed(() => playbackState.value?.isPlaying ?? false);
 const isActive = computed(() => isPlaying.value || (playbackState.value?.isPaused ?? false));
 
-const localVolume = ref(props.track.volume);
-watch(() => props.track.volume, (v) => { localVolume.value = v; });
-
-function setVolume(v: number): void {
-  localVolume.value = v;
-  remote.setTrackVolume(props.track.id, v);
-}
+const { local: localVolume, set: setVolume } = useLocalVolume(() => props.track.volume, (v) => remote.setTrackVolume(props.track.id, v));
 
 const currentClipName = computed(() => {
   const clipId = playbackState.value?.currentClipId;

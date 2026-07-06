@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue';
+import { computed } from 'vue';
 import type { LibraryEntry } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
+import { formatDuration } from '../shared/format';
+import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
 
 const props = defineProps<{
   entry: LibraryEntry;
@@ -16,14 +18,8 @@ const emit = defineEmits<{
 const store = useAppStore();
 const audio = useAudio();
 
-const previewState = computed(() => store.playbackStates.get('__library'));
+const previewState = computed(() => store.playbackStates.get(LIBRARY_PLAYBACK_ID));
 const isPreviewPlaying = computed(() => store.libraryPlayingEntryId === props.entry.id && previewState.value?.isPlaying);
-
-watch(previewState, (state) => {
-  if (!state?.isPlaying && store.libraryPlayingEntryId === props.entry.id) {
-    store.libraryPlayingEntryId = null;
-  }
-});
 
 function togglePreview(): void {
   if (isPreviewPlaying.value) {
@@ -38,13 +34,6 @@ function togglePreview(): void {
       props.entry.loopStart, props.entry.loopEnd,
     );
   }
-}
-
-function formatDuration(seconds: number | null): string {
-  if (seconds === null) return '--:--';
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
 async function removeTag(tag: string): Promise<void> {

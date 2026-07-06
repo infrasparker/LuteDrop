@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed } from 'vue';
 import type { Track } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
@@ -7,6 +7,7 @@ import { useTrackUpdates } from '../composables/useTrackUpdates';
 import { useContextMenuState } from '../composables/useContextMenu';
 import TrackSettings from './TrackSettings.vue';
 import TrackClipList from './TrackClipList.vue';
+import { useLocalVolume } from '../shared/useLocalVolume';
 
 const props = defineProps<{
   track: Track;
@@ -81,13 +82,7 @@ function stopTrack(): void {
 }
 
 // Local ref for smooth slider dragging — audio engine persists to DB directly
-const localVolume = ref(props.track.volume);
-watch(() => props.track.volume, (v) => { localVolume.value = v; });
-
-function setVolume(v: number): void {
-  localVolume.value = v;
-  audio.setTrackVolume(props.track.id, v);
-}
+const { local: localVolume, set: setVolume } = useLocalVolume(() => props.track.volume, (v) => audio.setTrackVolume(props.track.id, v));
 
 const isMuted = computed(() => store.isTrackMuted(props.track.id));
 

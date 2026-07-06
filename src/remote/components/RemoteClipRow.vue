@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { computed } from 'vue';
 import type { Clip } from '@generated/index';
 import { useRemote } from '../composables/useRemote';
+import { useLocalVolume } from '../../shared/useLocalVolume';
 
 const props = defineProps<{
   clip: Clip;
@@ -15,13 +16,7 @@ const isCurrentClip = computed(() => playbackState.value?.currentClipId === prop
 const isPlaying = computed(() => isCurrentClip.value && playbackState.value?.isPlaying);
 const isMissing = computed(() => remote.isEntryMissing(props.clip.libraryEntryId));
 
-const localVolume = ref(props.clip.volume);
-watch(() => props.clip.volume, (v) => { localVolume.value = v; });
-
-function setVolume(v: number): void {
-  localVolume.value = v;
-  remote.setClipVolume(props.clip.id, v);
-}
+const { local: localVolume, set: setVolume } = useLocalVolume(() => props.clip.volume, (v) => remote.setClipVolume(props.clip.id, v));
 </script>
 
 <template>

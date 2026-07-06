@@ -4,6 +4,7 @@ import { storeToRefs } from 'pinia';
 import { useAppStore } from '../stores/appStore';
 import { useContextMenuState } from '../composables/useContextMenu';
 import type { Group } from '@generated/index';
+import { isGroupActive } from '../shared/playback';
 import GroupTab from '../components/GroupTab.vue';
 import ConfigurationPicker from '../components/ConfigurationPicker.vue';
 
@@ -36,15 +37,6 @@ const showDeleteConfirm = ref(false);
 const showNewCompDialog = ref(false);
 const newCompName = ref('');
 const newCompGroupId = ref('');
-
-function isGroupActive(group: Group): boolean {
-  return group.comps.some((comp) =>
-    comp.tracks.some((track) => {
-      const s = store.playbackStates.get(track.id);
-      return s?.isPlaying || s?.isPaused;
-    })
-  );
-}
 
 function openContextMenu(event: MouseEvent, group: Group): void {
   contextGroupId.value = group.id;
@@ -115,7 +107,7 @@ async function createComp(): Promise<void> {
           :key="group.id"
           :value="i"
           @contextmenu.prevent="openContextMenu($event, group)"
-          :class="{ 'tab-active': isGroupActive(group) }"
+          :class="{ 'tab-active': isGroupActive(group, store.playbackStates) }"
           size="small"
         >
           {{ group.name }}
