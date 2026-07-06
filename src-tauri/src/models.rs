@@ -231,7 +231,15 @@ mod tests {
             "fadeIn": 1.0,
             "mode": { "type": "sequence", "repeat": true,
                       "transition": { "type": "gap", "min": 2.0, "max": 5.0 } },
-            "clips": [{ "id": "c1" }, { "id": "c2" }]
+            // First clip mirrors the real reorder payload: TrackClipList.vue
+            // sends FULL Clip objects, so ClipRef must tolerate the extra
+            // fields (locks out a future `deny_unknown_fields` regression).
+            "clips": [
+                { "id": "c1", "name": "Rain", "filePath": "/z/rain.ogg", "volume": 0.8,
+                  "libraryEntryId": "le1", "libraryVolume": 1.0,
+                  "trimStart": null, "trimEnd": null },
+                { "id": "c2" }
+            ]
         });
         let u: TrackUpdates = serde_json::from_value(json).unwrap();
         assert_eq!(u.name.as_deref(), Some("New"));
