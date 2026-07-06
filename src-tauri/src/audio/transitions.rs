@@ -36,18 +36,30 @@ struct PendingStart {
     start_at: Instant,
 }
 
+/// The transition phase for the current clip. Replaces the previously separate
+/// `crossfade_started: bool` + `pending_start: Option<PendingStart>` pair (which
+/// were mutually exclusive in practice). `outgoing` stays a separate field: a
+/// crossfade's outgoing sound keeps fading past `clip_started()`, so its
+/// lifecycle outlives this phase.
+enum TransitionState {
+    /// No transition armed for the current clip.
+    Idle,
+    /// A crossfade to the next clip has been started for the current clip.
+    Crossfading,
+    /// A gap-delayed next-clip start is pending.
+    Gap(PendingStart),
+}
+
 pub struct TransitionManager {
     outgoing: Option<OutgoingFade>,
-    crossfade_started: bool,
-    pending_start: Option<PendingStart>,
+    state: TransitionState,
 }
 
 impl TransitionManager {
     pub fn new() -> Self {
         Self {
             outgoing: None,
-            crossfade_started: false,
-            pending_start: None,
+            state: TransitionState::Idle,
         }
     }
 
@@ -75,7 +87,7 @@ impl TransitionManager {
         }
 
         // Check for pending gap start
-        if let Some(ref pending) = self.pending_start {
+        if let TransitionState::Gap(ref pending) = self.state {
             if Instant::now() >= pending.start_at {
                 return TransitionAction::StartPendingClip { clip_index: pending.clip_index };
             }
@@ -122,7 +134,7 @@ impl TransitionManager {
         }
 
         // Check for crossfade trigger
-        if !self.crossfade_started && sound_playing {
+        if !matches!(self.state, TransitionState::Crossfading) && sound_playing {
             let crossfade_duration = match mode {
                 TrackMode::Sequence {
                     transition: TrackTransition::Crossfade,
@@ -169,12 +181,12 @@ impl TransitionManager {
             started: Instant::now(),
             duration,
         });
-        self.crossfade_started = true;
+        self.state = TransitionState::Crossfading;
     }
 
     /// Schedule a delayed clip start after a gap transition.
     pub fn schedule_gap(&mut self, clip_index: usize, delay: f64) {
-        self.pending_start = Some(PendingStart {
+        self.state = TransitionState::Gap(PendingStart {
             clip_index,
             start_at: Instant::now() + Duration::from_secs_f64(delay),
         });
@@ -182,8 +194,7 @@ impl TransitionManager {
 
     /// Reset crossfade and pending state after a new clip has started.
     pub fn clip_started(&mut self) {
-        self.crossfade_started = false;
-        self.pending_start = None;
+        self.state = TransitionState::Idle;
     }
 
     /// Stop and drop the outgoing fading sound.
@@ -197,13 +208,12 @@ impl TransitionManager {
     /// Clear all transition state (called on track stop/reset).
     pub fn reset(&mut self) {
         self.cleanup_outgoing();
-        self.crossfade_started = false;
-        self.pending_start = None;
+        self.state = TransitionState::Idle;
     }
 
     /// Returns true if there is a gap-delayed clip start pending.
     pub fn has_pending(&self) -> bool {
-        self.pending_start.is_some()
+        matches!(self.state, TransitionState::Gap(_))
     }
 }
 
