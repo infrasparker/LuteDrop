@@ -343,7 +343,7 @@ pub fn add_tag_to_entry(
 /// Removes the association between a tag and a library entry.
 /// Does nothing if the association doesn't exist.
 /// Cleans up the tag row itself if no entries reference it anymore.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn remove_tag_from_entry(
     conn: &Connection,
     entry_id: &str,
@@ -398,7 +398,7 @@ pub fn set_entry_tags(conn: &Connection, entry_id: &str, tags: &[String]) -> Res
 }
 
 /// Returns all tag names associated with the given library entry, sorted.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn get_tags_for_entry(
     conn: &Connection,
     entry_id: &str,

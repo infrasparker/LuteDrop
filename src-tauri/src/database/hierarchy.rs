@@ -342,7 +342,7 @@ pub fn update_clip_volume(conn: &Connection, id: &str, volume: f64) -> Result<()
     Ok(())
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn reorder_clip(
     conn: &Connection,
     track_id: &str,

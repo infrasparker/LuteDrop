@@ -163,6 +163,7 @@ fn require_volume(v: Option<f64>) -> Result<f64, String> {
     }
 }
 
+/// Extracts a required, non-empty id field from an optional remote-command field, erroring with "<field> is required" when absent or empty.
 fn require_id<'a>(v: &'a Option<String>, field: &str) -> Result<&'a str, String> {
     match v.as_deref() {
         Some(s) if !s.is_empty() => Ok(s),

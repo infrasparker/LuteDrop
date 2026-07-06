@@ -73,6 +73,9 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
     run_migrations_with(conn, MIGRATIONS, SCHEMA_VERSION)
 }
 
+/// Each migration runs on a connection-scoped `unchecked_transaction`: the
+/// migrate fn and the version bump execute on `conn` and commit together, so
+/// a failed migration rolls back its version stamp.
 fn run_migrations_with(
     conn: &Connection,
     migrations: &[(i64, Migration)],
@@ -127,6 +130,9 @@ pub fn open_db(path: &Path) -> Result<Connection, String> {
 
     init_schema(&conn).map_err(|e| format!("Failed to initialise schema: {e}"))?;
 
+    // A pre-runner database has no schema_version row; it is backfilled to 3
+    // (the last pre-migration schema) so run_migrations walks it forward. A
+    // fresh DB is stamped SCHEMA_VERSION directly.
     let stamp = if fresh { SCHEMA_VERSION } else { 3 };
     conn.execute(
         "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?1)",
@@ -561,33 +567,39 @@ fn build_track_mode(
     clips: &[Clip],
     entry_map: &HashMap<String, &LibraryEntry>,
 ) -> TrackMode {
+    // Loop points are SNAPSHOTTED from the first clip's library entry at load
+    // time — editing the entry's markers changes track behavior only after
+    // the next state reload (deliberate; the engine never re-reads the DB
+    // mid-playback).
+    let seamless_loops = clips
+        .first()
+        .and_then(|clip| entry_map.get(&clip.library_entry_id))
+        .and_then(|entry| {
+            if let (Some(ls), Some(le)) = (entry.loop_start, entry.loop_end) {
+                Some((ls, le))
+            } else {
+                None
+            }
+        })
+        .unwrap_or((0.0, 0.0));
+    track_mode_from_parts(mode_type, repeat, transition_type, gap_min, gap_max, seamless_loops)
+}
+
+/// Builds the non-Seamless arms (Sequence/Shuffle) shared by both loaders, and
+/// the Seamless arm from already-resolved `(loop_start, loop_end)`. Callers
+/// differ only in how they source the seamless loop points.
+fn track_mode_from_parts(
+    mode_type: &str,
+    repeat: bool,
+    transition_type: &str,
+    gap_min: f64,
+    gap_max: f64,
+    seamless_loops: (f64, f64),
+) -> TrackMode {
     match mode_type {
-        // Loop points are SNAPSHOTTED from the first clip's library entry at
-        // load time — editing the entry's markers changes track behavior only
-        // after the next state reload (deliberate; the engine never re-reads
-        // the DB mid-playback).
-        "seamless" => {
-            let (loop_start, loop_end) = clips
-                .first()
-                .and_then(|clip| entry_map.get(&clip.library_entry_id))
-                .and_then(|entry| {
-                    if let (Some(ls), Some(le)) = (entry.loop_start, entry.loop_end) {
-                        Some((ls, le))
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or((0.0, 0.0));
-            TrackMode::Seamless { loop_start, loop_end }
-        }
-        "shuffle" => TrackMode::Shuffle {
-            repeat,
-            transition: build_transition(transition_type, gap_min, gap_max),
-        },
-        _ => TrackMode::Sequence {
-            repeat,
-            transition: build_transition(transition_type, gap_min, gap_max),
-        },
+        "seamless" => TrackMode::Seamless { loop_start: seamless_loops.0, loop_end: seamless_loops.1 },
+        "shuffle" => TrackMode::Shuffle { repeat, transition: build_transition(transition_type, gap_min, gap_max) },
+        _ => TrackMode::Sequence { repeat, transition: build_transition(transition_type, gap_min, gap_max) },
     }
 }
 
@@ -675,21 +687,14 @@ fn assemble_track(
     let clips: Vec<Clip> = clips_with_loops.into_iter().map(|(c, _, _)| c).collect();
     let repeat = repeat_int.map(|v| v != 0).unwrap_or(false);
     let ttype_str = ttype.as_deref().unwrap_or("gapless");
-    let mode = match mode_type.as_str() {
-        // Loop points are SNAPSHOTTED from the first clip's library entry at
-        // load time — editing the entry's markers changes track behavior only
-        // after the next state reload (deliberate; the engine never re-reads
-        // the DB mid-playback).
-        "seamless" => {
-            let (loop_start, loop_end) = match first_loops {
-                Some((Some(ls), Some(le))) => (ls, le),
-                _ => (0.0, 0.0),
-            };
-            TrackMode::Seamless { loop_start, loop_end }
-        }
-        "shuffle" => TrackMode::Shuffle { repeat, transition: build_transition(ttype_str, gmin.unwrap_or(0.0), gmax.unwrap_or(0.0)) },
-        _ => TrackMode::Sequence { repeat, transition: build_transition(ttype_str, gmin.unwrap_or(0.0), gmax.unwrap_or(0.0)) },
+    // See build_track_mode's note on the seamless loop points being a
+    // load-time snapshot; here they arrive already joined instead of via an
+    // entry_map lookup.
+    let seamless_loops = match first_loops {
+        Some((Some(ls), Some(le))) => (ls, le),
+        _ => (0.0, 0.0),
     };
+    let mode = track_mode_from_parts(&mode_type, repeat, ttype_str, gmin.unwrap_or(0.0), gmax.unwrap_or(0.0), seamless_loops);
     Track { id, name, clips, volume, mode, fade_in, fade_out }
 }
 

@@ -10,6 +10,7 @@ const error = ref('');
 watch(model, async (open) => {
   if (!open) return;
   error.value = '';
+  url.value = '';
   try {
     const info = await invoke<{ url: string }>('get_server_info');
     url.value = info.url;
