@@ -1,7 +1,10 @@
 pub mod backup;
 pub mod configurations;
+pub mod error;
 pub mod hierarchy;
 pub mod library;
+
+pub use error::DbError;
 
 use rusqlite::{params, Connection, Result as SqlResult};
 use std::collections::HashMap;

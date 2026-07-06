@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::audio::util::is_audio_path;
 use crate::database;
-use crate::database::{configurations, hierarchy, library};
+use crate::database::{configurations, hierarchy, library, DbError};
 use crate::models::{AppState, BulkImportProgress, LibraryEntryUsage, Track};
 use crate::state::AppStateContainer;
 use rusqlite::params;
@@ -371,7 +371,8 @@ pub fn import_library_entry(
             sample_rate,
             file_size,
             &entry_type,
-        )?;
+        )
+        .map_err(String::from)?;
 
         // Probe duration from the audio file if not already provided
         if duration.is_none() {
@@ -608,22 +609,11 @@ fn run_bulk_import(container: Arc<AppStateContainer>, paths: Vec<String>, tags: 
                 .to_string();
 
             let id = match library::insert_library_entry(
-                &conn,
-                file_path,
-                Some(&hash),
-                &derived_name,
-                None,
-                None,
-                None,
-                &entry_type,
+                &conn, file_path, Some(&hash), &derived_name, None, None, None, &entry_type,
             ) {
                 Ok(id) => id,
-                Err(e) => {
-                    if e.contains("UNIQUE constraint") {
-                        return Ok(None); // file_path collision = skip
-                    }
-                    return Err(e);
-                }
+                Err(DbError::Constraint) => return Ok(None), // file_path collision = skip
+                Err(e) => return Err(e.to_string()),
             };
 
             for tag_name in &tags {
