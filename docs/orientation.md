@@ -279,14 +279,17 @@ The densest code in the repository, and the technical reason each area is dense:
 - **`voice.rs` timing** — click-free audio is all about *when* a sound is stopped
   vs. *when* it's freed. A sound dropped mid-fade hard-cuts and pops, so stopped
   sounds are parked and reaped a tick later. Following it means holding "audio
-  thread time" and "poll thread time" in your head at once.
+  thread time," "poll thread time," and, for seamless loops, "engine clock time"
+  (the ping-pong swap is scheduled on miniaudio's own clock, not the poll tick)
+  in your head at once.
 - **The `ffi.rs` / `shim.c` boundary** — two languages, manual memory, and the
   drop-order contract. A mistake here doesn't fail to compile; it corrupts memory
   or crashes at shutdown.
 - **`transitions.rs` state** — a small state machine (crossfade started? gap
   pending? outgoing fading?) driven by a polling loop that can tick late. The
-  edge cases (short clips, a delayed tick landing past the loop point) are where
-  the bugs live, and they're timing-dependent so they're hard to reproduce.
+  edge cases (short clips, a delayed tick landing past the loop point on the
+  slow-drive fallback path) are where the bugs live, and they're timing-dependent
+  so they're hard to reproduce.
 
 Everything else in the app — the DB layer, the Vue components, the command
 plumbing — is ordinary code. The audio module is where the intrinsic difficulty
