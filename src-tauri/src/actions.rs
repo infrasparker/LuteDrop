@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::audio::util::is_audio_path;
 use crate::database;
 use crate::database::{configurations, hierarchy, library, DbError};
-use crate::models::{AppState, BulkImportProgress, LibraryEntryUsage, Track};
+use crate::models::{AppState, BulkImportProgress, LibraryEntryUsage, Track, TrackUpdates};
 use crate::state::AppStateContainer;
 use rusqlite::params;
 
@@ -114,109 +114,49 @@ pub fn delete_track(container: &AppStateContainer, _comp_id: &str, track_id: &st
     load_state(container)
 }
 
-pub fn update_track(container: &AppStateContainer, _comp_id: &str, track_id: &str, updates: serde_json::Value) -> Result<AppState, String> {
+pub fn update_track(container: &AppStateContainer, track_id: &str, updates: TrackUpdates) -> Result<AppState, String> {
     with_db(container, |conn| {
         // NOTE: no outer transaction here — `hierarchy::set_clip_order` below
-        // opens its own `unchecked_transaction` on `conn`, and SQLite rejects
-        // a nested BEGIN. The other updates in this closure are independent
-        // single-statement UPDATEs, so the atomicity this plan originally
-        // wanted around the clip loop is now provided by `set_clip_order`
-        // itself; nothing here needs a wrapping transaction of its own.
-        let obj = updates.as_object()
-            .ok_or_else(|| "updates must be a JSON object".to_string())?;
-
-        if let Some(v) = obj.get("name") {
-            let name = v.as_str()
-                .ok_or_else(|| "name must be a string".to_string())?;
+        // opens its own `unchecked_transaction` on `conn`, and SQLite rejects a
+        // nested BEGIN. The other updates are independent single-statement
+        // UPDATEs; the clip loop's atomicity is provided by `set_clip_order`.
+        if let Some(name) = &updates.name {
             hierarchy::rename_track(conn, track_id, name)?;
         }
-
-        if let Some(v) = obj.get("volume") {
-            let volume = v.as_f64()
-                .ok_or_else(|| "volume must be a number".to_string())?;
+        if let Some(volume) = updates.volume {
             hierarchy::update_track_volume(conn, track_id, volume)?;
         }
-
-        // Handle fadeIn/fadeOut — need to read current values since update_track_fades takes both
-        if obj.contains_key("fadeIn") || obj.contains_key("fadeOut") {
-            // Read current fade values from DB
-            let (current_fade_in, current_fade_out): (f64, f64) = conn
+        if updates.fade_in.is_some() || updates.fade_out.is_some() {
+            // update_track_fades takes both; read current values for the absent one.
+            let (cur_in, cur_out): (f64, f64) = conn
                 .query_row(
                     "SELECT fade_in, fade_out FROM tracks WHERE id = ?1",
                     params![track_id],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .map_err(|e| format!("Failed to read current fades: {e}"))?;
-
-            let fade_in = if let Some(v) = obj.get("fadeIn") {
-                v.as_f64().ok_or_else(|| "fadeIn must be a number".to_string())?
-            } else {
-                current_fade_in
-            };
-
-            let fade_out = if let Some(v) = obj.get("fadeOut") {
-                v.as_f64().ok_or_else(|| "fadeOut must be a number".to_string())?
-            } else {
-                current_fade_out
-            };
-
+            let fade_in = updates.fade_in.unwrap_or(cur_in);
+            let fade_out = updates.fade_out.unwrap_or(cur_out);
             hierarchy::update_track_fades(conn, track_id, fade_in, fade_out)?;
         }
-
-        if let Some(v) = obj.get("mode") {
-            let mode_obj = v.as_object()
-                .ok_or_else(|| "mode must be a JSON object".to_string())?;
-
-            let mode_type = mode_obj.get("type")
-                .and_then(|t| t.as_str())
-                .ok_or_else(|| "mode.type must be a string".to_string())?;
-
-            let repeat = mode_obj.get("repeat").and_then(|r| r.as_bool());
-
-            let transition = mode_obj.get("transition");
-            let transition_type = transition
-                .and_then(|t| t.get("type"))
-                .and_then(|t| t.as_str());
-            let gap_min = transition
-                .and_then(|t| t.get("min"))
-                .and_then(|t| t.as_f64());
-            let gap_max = transition
-                .and_then(|t| t.get("max"))
-                .and_then(|t| t.as_f64());
-
+        if let Some(mode) = &updates.mode {
+            let transition_type = mode.transition.as_ref().and_then(|t| t.r#type.as_deref());
+            let gap_min = mode.transition.as_ref().and_then(|t| t.min);
+            let gap_max = mode.transition.as_ref().and_then(|t| t.max);
             // Normalise inverted gap ranges — the engine tolerates them
             // (transitions::gap_delay) but they shouldn't reach the DB.
             let (gap_min, gap_max) = match (gap_min, gap_max) {
                 (Some(lo), Some(hi)) if lo > hi => (Some(hi), Some(lo)),
                 other => other,
             };
-
             hierarchy::update_track_mode(
-                conn,
-                track_id,
-                mode_type,
-                repeat,
-                transition_type,
-                gap_min,
-                gap_max,
+                conn, track_id, &mode.r#type, mode.repeat, transition_type, gap_min, gap_max,
             )?;
         }
-
-        if let Some(v) = obj.get("clips") {
-            let clips_arr = v.as_array()
-                .ok_or_else(|| "clips must be an array".to_string())?;
-            let ordered_ids: Vec<String> = clips_arr
-                .iter()
-                .map(|clip_val| {
-                    clip_val.get("id")
-                        .and_then(|id| id.as_str())
-                        .map(str::to_string)
-                        .ok_or_else(|| "each clip must have an 'id' string field".to_string())
-                })
-                .collect::<Result<_, _>>()?;
+        if let Some(clips) = &updates.clips {
+            let ordered_ids: Vec<String> = clips.iter().map(|c| c.id.clone()).collect();
             hierarchy::set_clip_order(conn, track_id, &ordered_ids)?;
         }
-
         Ok(())
     })?;
     load_state(container)

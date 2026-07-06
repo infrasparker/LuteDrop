@@ -2,7 +2,7 @@ use serde::Serialize;
 use tauri::State;
 use std::sync::Arc;
 use crate::actions;
-use crate::models::{AppState, LibraryEntryUsage};
+use crate::models::{AppState, LibraryEntryUsage, TrackUpdates};
 use crate::state::AppStateContainer;
 use crate::waveform;
 
@@ -59,8 +59,12 @@ pub fn delete_track(state: State<'_, Arc<AppStateContainer>>, comp_id: String, t
 }
 
 #[tauri::command]
-pub fn update_track(state: State<'_, Arc<AppStateContainer>>, comp_id: String, track_id: String, updates: serde_json::Value) -> Result<AppState, String> {
-    actions::update_track(&state, &comp_id, &track_id, updates)
+pub fn update_track(state: State<'_, Arc<AppStateContainer>>, comp_id: String, track_id: String, updates: TrackUpdates) -> Result<AppState, String> {
+    // comp_id is accepted for IPC-shape compatibility with the frontend's
+    // `{ compId, trackId, updates }` payload but is unused here; Task 3 drops
+    // it from the frontend call and this signature together.
+    let _ = comp_id;
+    actions::update_track(&state, &track_id, updates)
 }
 
 #[tauri::command]

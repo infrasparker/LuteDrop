@@ -179,3 +179,72 @@ pub struct BulkImportProgress {
     pub skipped: u32,
     pub total: u32,
 }
+
+/// Partial-update payload for `update_track`. Every field is optional; only the
+/// present ones are applied. Deserialized directly from the frontend's
+/// `updates` object (camelCase), replacing hand-parsed `serde_json::Value`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackUpdates {
+    pub name: Option<String>,
+    pub volume: Option<f64>,
+    pub fade_in: Option<f64>,
+    pub fade_out: Option<f64>,
+    pub mode: Option<TrackModeUpdate>,
+    pub clips: Option<Vec<ClipRef>>,
+}
+
+/// Mode sub-object of `TrackUpdates`. `type` + optional repeat/transition.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackModeUpdate {
+    pub r#type: String,
+    #[serde(default)]
+    pub repeat: Option<bool>,
+    #[serde(default)]
+    pub transition: Option<TransitionUpdate>,
+}
+
+/// Transition sub-object: `type` plus optional gap bounds.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransitionUpdate {
+    pub r#type: Option<String>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+}
+
+/// A clip reference in a reorder payload — only the id is used.
+#[derive(Debug, Deserialize)]
+pub struct ClipRef {
+    pub id: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn track_updates_deserializes_camel_case_and_defaults_absent() {
+        let json = serde_json::json!({
+            "name": "New",
+            "fadeIn": 1.0,
+            "mode": { "type": "sequence", "repeat": true,
+                      "transition": { "type": "gap", "min": 2.0, "max": 5.0 } },
+            "clips": [{ "id": "c1" }, { "id": "c2" }]
+        });
+        let u: TrackUpdates = serde_json::from_value(json).unwrap();
+        assert_eq!(u.name.as_deref(), Some("New"));
+        assert_eq!(u.fade_in, Some(1.0));
+        assert!(u.volume.is_none() && u.fade_out.is_none());
+        let m = u.mode.unwrap();
+        assert_eq!(m.r#type, "sequence");
+        assert_eq!(m.repeat, Some(true));
+        assert_eq!(m.transition.unwrap().min, Some(2.0));
+        assert_eq!(u.clips.unwrap().iter().map(|c| c.id.clone()).collect::<Vec<_>>(), ["c1", "c2"]);
+
+        // A bare empty object is a valid no-op update.
+        let empty: TrackUpdates = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(empty.name.is_none() && empty.mode.is_none() && empty.clips.is_none());
+    }
+}
