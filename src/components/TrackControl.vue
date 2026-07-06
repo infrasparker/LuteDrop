@@ -10,7 +10,6 @@ import TrackClipList from './TrackClipList.vue';
 
 const props = defineProps<{
   track: Track;
-  compId: string;
 }>();
 
 const emit = defineEmits<{
@@ -19,7 +18,7 @@ const emit = defineEmits<{
 
 const store = useAppStore();
 const audio = useAudio();
-const { updateField } = useTrackUpdates(() => props.track.id, () => props.compId);
+const { updateField } = useTrackUpdates(() => props.track.id);
 const { menuVisible, menuX, menuY, openMenu } = useContextMenuState();
 
 const playbackState = computed(() => store.playbackStates.get(props.track.id));
@@ -66,7 +65,7 @@ function confirmOrDeleteTrack(): void {
 async function deleteTrack(): Promise<void> {
   showDeleteConfirm.value = false;
   await audio.stopTrack(props.track.id);
-  await store.command('delete_track', { compId: props.compId, trackId: props.track.id });
+  await store.command('delete_track', { trackId: props.track.id });
 }
 
 function playTrack(): void {
@@ -165,8 +164,8 @@ function toggleMute(): void {
 
         <template #text>
           <div class="pt-2">
-            <TrackSettings :track="track" :comp-id="compId" />
-            <TrackClipList :track="track" :comp-id="compId" :is-seamless="isSeamless" @open-library-browser="(id) => emit('open-library-browser', id)" />
+            <TrackSettings :track="track" />
+            <TrackClipList :track="track" :is-seamless="isSeamless" @open-library-browser="(id) => emit('open-library-browser', id)" />
           </div>
         </template>
       </VExpansionPanel>

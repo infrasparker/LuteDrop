@@ -9,7 +9,6 @@ import { AUDIO_EXTENSIONS } from '../constants';
 const props = defineProps<{
   clip: Clip;
   trackId: string;
-  compId: string;
 }>();
 
 const store = useAppStore();

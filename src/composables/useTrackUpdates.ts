@@ -4,12 +4,11 @@
 import type { Track, TrackMode, TrackTransition } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 
-export function useTrackUpdates(trackId: () => string, compId: () => string) {
+export function useTrackUpdates(trackId: () => string) {
   const store = useAppStore();
 
   async function updateField(updates: Partial<Track>): Promise<void> {
     await store.command('update_track', {
-      compId: compId(),
       trackId: trackId(),
       updates,
     });

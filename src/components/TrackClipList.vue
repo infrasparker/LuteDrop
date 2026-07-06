@@ -7,7 +7,6 @@ import ClipRow from './ClipRow.vue';
 
 const props = defineProps<{
   track: Track;
-  compId: string;
   isSeamless: boolean;
 }>();
 
@@ -53,7 +52,6 @@ function initSortable(): void {
       const [moved] = clips.splice(event.oldIndex, 1);
       clips.splice(event.newIndex, 0, moved);
       await store.command('update_track', {
-        compId: props.compId,
         trackId: props.track.id,
         updates: { clips },
       });
@@ -91,7 +89,7 @@ onUnmounted(() => {
       </VBtn>
     </div>
     <div v-if="hasClips">
-      <ClipRow :clip="seamlessClip!" :track-id="track.id" :comp-id="compId" />
+      <ClipRow :clip="seamlessClip!" :track-id="track.id" />
     </div>
     <div v-else class="text-caption text-medium-emphasis">
       No clip yet. Seamless mode uses a single clip.
@@ -114,7 +112,6 @@ onUnmounted(() => {
         :key="clip.id"
         :clip="clip"
         :track-id="track.id"
-        :comp-id="compId"
       />
     </div>
 

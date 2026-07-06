@@ -58,7 +58,7 @@ function confirmOrDeleteComp(): void {
 async function deleteComp(): Promise<void> {
   showDeleteConfirm.value = false;
   await audio.stopComp(props.comp.id);
-  await store.command('delete_comp', { groupId: props.groupId, compId: props.comp.id });
+  await store.command('delete_comp', { compId: props.comp.id });
 }
 
 function toggleComp(): void {

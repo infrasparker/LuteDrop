@@ -5,7 +5,6 @@ import { useTrackUpdates } from '../composables/useTrackUpdates';
 
 const props = defineProps<{
   track: Track;
-  compId: string;
 }>();
 
 const {
@@ -16,7 +15,7 @@ const {
   updateGapMax,
   toggleFadeIn,
   toggleFadeOut,
-} = useTrackUpdates(() => props.track.id, () => props.compId);
+} = useTrackUpdates(() => props.track.id);
 
 const modeOptions = [
   { title: 'Seamless', value: 'seamless' },

@@ -1,7 +1,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
-const SORT_GAP: i64 = 1000;
+use crate::database::SORT_GAP;
 
 // ─── Parent-existence helpers ────────────────────────────────────────────────
 

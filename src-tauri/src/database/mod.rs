@@ -19,6 +19,21 @@ use crate::models::{
 /// databases are stamped with this directly.
 pub const SCHEMA_VERSION: i64 = 4;
 
+/// Spacing between sibling `sort_order` values, leaving room for insertions
+/// between neighbours without renumbering. Shared by hierarchy + configurations.
+pub(crate) const SORT_GAP: i64 = 1000;
+
+/// Current time as milliseconds since the Unix epoch, as a string. Shared
+/// timestamp source for library entries and configurations.
+pub(crate) fn now_millis() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before epoch")
+        .as_millis()
+        .to_string()
+}
+
 /// Index DDL shared by init_schema (fresh DBs) and the v3→v4 migration
 /// (existing DBs). IF NOT EXISTS makes running both harmless.
 const INDEX_DDL: &str = "

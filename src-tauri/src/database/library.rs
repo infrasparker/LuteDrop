@@ -1,20 +1,9 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
+use crate::database::now_millis;
 use crate::database::DbError;
 use crate::models::LibraryEntryUsage;
-
-// ─── Helper ───────────────────────────────────────────────────────────────────
-
-/// Returns the current time as milliseconds since the Unix epoch, as a string.
-fn chrono_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time before epoch")
-        .as_millis();
-    ms.to_string()
-}
 
 // ─── Library Entry CRUD ───────────────────────────────────────────────────────
 
@@ -32,7 +21,7 @@ pub fn insert_library_entry(
     entry_type: &str,
 ) -> Result<String, DbError> {
     let id = Uuid::new_v4().to_string();
-    let created_at = chrono_now();
+    let created_at = now_millis();
 
     conn.execute(
         "INSERT INTO library_entries

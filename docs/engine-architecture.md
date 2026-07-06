@@ -415,7 +415,7 @@ starts them — under the mutex (`Voice::start_preloaded` / `accept_loop_incomin
 A group-less, never-started preloaded `Sound` may be dropped on any thread.
 
 **3. DB lock before audio lock.** Actions that touch both take the DB lock first,
-then the audio lock (e.g. `set_track_volume_action` persists to the DB, then
+then the audio lock (e.g. `set_track_volume` persists to the DB, then
 updates the engine). Keep this order everywhere to avoid a lock-ordering deadlock.
 
 **4. Loop points are snapshotted at track-load time.** The `loop_region` a

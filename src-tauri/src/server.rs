@@ -191,14 +191,14 @@ fn handle_remote_command(container: &AppStateContainer, text: &str) {
                 .and_then(|cid| actions::play_track_clip(container, tid, cid))
         }),
         "set_master_volume" => require_volume(cmd.volume)
-            .and_then(|v| actions::set_master_volume_action(container, v)),
+            .and_then(|v| actions::set_master_volume(container, v)),
         "set_track_volume" => require_id(&cmd.track_id, "trackId").and_then(|id| {
             require_volume(cmd.volume)
-                .and_then(|v| actions::set_track_volume_action(container, id, v))
+                .and_then(|v| actions::set_track_volume(container, id, v))
         }),
         "set_clip_volume" => require_id(&cmd.clip_id, "clipId").and_then(|id| {
             require_volume(cmd.volume)
-                .and_then(|v| actions::set_clip_volume_action(container, id, v))
+                .and_then(|v| actions::set_clip_volume(container, id, v))
         }),
         "activate_comp" => require_id(&cmd.comp_id, "compId")
             .and_then(|id| actions::activate_comp_audio(container, id)),

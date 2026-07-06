@@ -25,6 +25,17 @@ fn load_state(container: &AppStateContainer) -> Result<AppState, String> {
     Ok(state)
 }
 
+/// The dominant action shape: run one DB mutation closure, then reload and
+/// return the full state. Collapses ~25 identical `with_db(...)?; load_state(...)`
+/// pairs.
+fn mutate_and_reload<F>(container: &AppStateContainer, f: F) -> Result<AppState, String>
+where
+    F: FnOnce(&rusqlite::Connection) -> Result<(), String>,
+{
+    with_db(container, f)?;
+    load_state(container)
+}
+
 pub fn find_track_ref(container: &AppStateContainer, track_id: &str) -> Result<Track, String> {
     with_db(container, |conn| database::load_track_by_id(conn, track_id))
 }
@@ -50,72 +61,64 @@ pub fn load_data(container: &AppStateContainer) -> Result<AppState, String> {
 }
 
 pub fn add_group(container: &AppStateContainer, name: String) -> Result<AppState, String> {
-    with_db(container, |conn| {
+    mutate_and_reload(container, |conn| {
         let config_id = database::get_active_configuration_id(conn)?;
         hierarchy::insert_group(conn, &name, &config_id)?;
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
 pub fn delete_group(container: &AppStateContainer, group_id: &str) -> Result<AppState, String> {
-    with_db(container, |conn| {
+    mutate_and_reload(container, |conn| {
         hierarchy::delete_group(conn, group_id)?;
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
 pub fn rename_group(container: &AppStateContainer, group_id: &str, name: String) -> Result<AppState, String> {
-    with_db(container, |conn| {
+    mutate_and_reload(container, |conn| {
         hierarchy::rename_group(conn, group_id, &name)?;
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
 pub fn add_comp(container: &AppStateContainer, group_id: &str, name: String) -> Result<AppState, String> {
-    with_db(container, |conn| {
+    mutate_and_reload(container, |conn| {
         hierarchy::insert_comp(conn, group_id, &name)?;
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
-pub fn delete_comp(container: &AppStateContainer, _group_id: &str, comp_id: &str) -> Result<AppState, String> {
-    with_db(container, |conn| {
+pub fn delete_comp(container: &AppStateContainer, comp_id: &str) -> Result<AppState, String> {
+    mutate_and_reload(container, |conn| {
         hierarchy::delete_comp(conn, comp_id)?;
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
 pub fn rename_comp(container: &AppStateContainer, comp_id: &str, name: String) -> Result<AppState, String> {
-    with_db(container, |conn| {
+    mutate_and_reload(container, |conn| {
         hierarchy::rename_comp(conn, comp_id, &name)?;
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
 pub fn add_track(container: &AppStateContainer, comp_id: &str, name: String) -> Result<AppState, String> {
-    with_db(container, |conn| {
+    mutate_and_reload(container, |conn| {
         hierarchy::insert_track(conn, comp_id, &name)?;
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
-pub fn delete_track(container: &AppStateContainer, _comp_id: &str, track_id: &str) -> Result<AppState, String> {
-    with_db(container, |conn| {
+pub fn delete_track(container: &AppStateContainer, track_id: &str) -> Result<AppState, String> {
+    mutate_and_reload(container, |conn| {
         hierarchy::delete_track(conn, track_id)?;
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
 pub fn update_track(container: &AppStateContainer, track_id: &str, updates: TrackUpdates) -> Result<AppState, String> {
-    with_db(container, |conn| {
+    mutate_and_reload(container, |conn| {
         // NOTE: no outer transaction here — `hierarchy::set_clip_order` below
         // opens its own `unchecked_transaction` on `conn`, and SQLite rejects a
         // nested BEGIN. The other updates are independent single-statement
@@ -158,20 +161,18 @@ pub fn update_track(container: &AppStateContainer, track_id: &str, updates: Trac
             hierarchy::set_clip_order(conn, track_id, &ordered_ids)?;
         }
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
 pub fn add_clip(container: &AppStateContainer, track_id: &str, library_entry_id: &str) -> Result<AppState, String> {
-    with_db(container, |conn| {
+    mutate_and_reload(container, |conn| {
         hierarchy::insert_clip(conn, track_id, library_entry_id)?;
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
 pub fn add_clips(container: &AppStateContainer, track_id: &str, library_entry_ids: &[String]) -> Result<AppState, String> {
-    with_db(container, |conn| {
+    mutate_and_reload(container, |conn| {
         let tx = conn
             .unchecked_transaction()
             .map_err(|e| format!("Failed to begin add_clips transaction: {e}"))?;
@@ -180,37 +181,33 @@ pub fn add_clips(container: &AppStateContainer, track_id: &str, library_entry_id
         }
         tx.commit().map_err(|e| format!("Failed to commit add_clips: {e}"))?;
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
 pub fn delete_clip(container: &AppStateContainer, _track_id: &str, clip_id: &str) -> Result<AppState, String> {
-    with_db(container, |conn| {
+    mutate_and_reload(container, |conn| {
         hierarchy::delete_clip(conn, clip_id)?;
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
 // --- Configuration actions (return updated AppState) ---
 
 pub fn create_configuration(container: &AppStateContainer, name: String) -> Result<AppState, String> {
-    with_db(container, |conn| {
+    mutate_and_reload(container, |conn| {
         let id = configurations::insert_configuration(conn, &name)?;
         configurations::set_active_configuration(conn, &id)?;
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
 pub fn duplicate_configuration(container: &AppStateContainer, name: String) -> Result<AppState, String> {
-    with_db(container, |conn| {
+    mutate_and_reload(container, |conn| {
         let active_id = database::get_active_configuration_id(conn)?;
         let new_id = configurations::duplicate_configuration(conn, &active_id, &name)?;
         configurations::set_active_configuration(conn, &new_id)?;
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
 pub fn load_configuration(container: &AppStateContainer, config_id: String) -> Result<AppState, String> {
@@ -227,7 +224,7 @@ pub fn load_configuration(container: &AppStateContainer, config_id: String) -> R
 }
 
 pub fn delete_configuration(container: &AppStateContainer, config_id: String) -> Result<AppState, String> {
-    with_db(container, |conn| {
+    mutate_and_reload(container, |conn| {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM configurations", [], |row| row.get(0))
             .map_err(|e| format!("Failed to count configurations: {e}"))?;
@@ -249,19 +246,35 @@ pub fn delete_configuration(container: &AppStateContainer, config_id: String) ->
 
         configurations::delete_configuration(conn, &config_id)?;
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
 pub fn rename_configuration(container: &AppStateContainer, config_id: String, name: String) -> Result<AppState, String> {
-    with_db(container, |conn| {
+    mutate_and_reload(container, |conn| {
         configurations::rename_configuration(conn, &config_id, &name)?;
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
 // --- Library actions (return updated AppState) ---
+
+/// Streams a file through SHA-256, returning the lowercase hex digest.
+/// Shared by single import (hash-if-absent) and bulk import (always hash).
+fn hash_file(path: &str) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).map_err(|e| format!("Failed to open file for hashing: {e}"))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 65536];
+    loop {
+        match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(e) => return Err(format!("Failed to read file for hashing: {e}")),
+        }
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
 
 pub fn import_library_entry(
     container: &AppStateContainer,
@@ -273,28 +286,13 @@ pub fn import_library_entry(
     file_size: Option<i64>,
     entry_type: String,
 ) -> Result<AppState, String> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
-
     // Compute SHA-256 hash if not provided
-    let hash = if let Some(h) = content_hash {
-        Some(h)
-    } else {
-        let mut file = std::fs::File::open(&file_path)
-            .map_err(|e| format!("Failed to open file for hashing: {e}"))?;
-        let mut hasher = Sha256::new();
-        let mut buf = [0u8; 65536];
-        loop {
-            match file.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => hasher.update(&buf[..n]),
-                Err(e) => return Err(format!("Failed to read file for hashing: {e}")),
-            }
-        }
-        Some(format!("{:x}", hasher.finalize()))
+    let hash = match content_hash {
+        Some(h) => Some(h),
+        None => Some(hash_file(&file_path)?),
     };
 
-    with_db(container, |conn| {
+    mutate_and_reload(container, |conn| {
         // Check for duplicate by hash
         if let Some(ref h) = hash {
             if let Some((_id, existing_name)) = library::get_library_entry_by_hash(conn, h)? {
@@ -322,8 +320,7 @@ pub fn import_library_entry(
         }
 
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
 pub fn update_library_entry_tags(
@@ -331,23 +328,21 @@ pub fn update_library_entry_tags(
     entry_id: &str,
     tags: Vec<String>,
 ) -> Result<AppState, String> {
-    with_db(container, |conn| library::set_entry_tags(conn, entry_id, &tags))?;
-    load_state(container)
+    mutate_and_reload(container, |conn| library::set_entry_tags(conn, entry_id, &tags))
 }
 
-pub fn update_library_entry_type_action(
+pub fn update_library_entry_type(
     container: &AppStateContainer,
     entry_id: &str,
     entry_type: &str,
 ) -> Result<AppState, String> {
-    with_db(container, |conn| {
+    mutate_and_reload(container, |conn| {
         library::update_library_entry_type(conn, entry_id, entry_type)?;
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
-pub fn update_library_entry_markers_action(
+pub fn update_library_entry_markers(
     container: &AppStateContainer,
     entry_id: &str,
     trim_start: Option<f64>,
@@ -355,38 +350,35 @@ pub fn update_library_entry_markers_action(
     loop_start: Option<f64>,
     loop_end: Option<f64>,
 ) -> Result<AppState, String> {
-    with_db(container, |conn| {
+    mutate_and_reload(container, |conn| {
         library::update_library_entry_markers(conn, entry_id, trim_start, trim_end, loop_start, loop_end)?;
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
-pub fn update_library_entry_volume_action(
+pub fn update_library_entry_volume(
     container: &AppStateContainer,
     entry_id: &str,
     volume: f64,
 ) -> Result<AppState, String> {
-    with_db(container, |conn| {
+    mutate_and_reload(container, |conn| {
         library::update_library_entry_volume(conn, entry_id, volume)?;
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
-pub fn rename_library_entry_action(
+pub fn rename_library_entry(
     container: &AppStateContainer,
     entry_id: &str,
     name: String,
 ) -> Result<AppState, String> {
-    with_db(container, |conn| {
+    mutate_and_reload(container, |conn| {
         library::update_library_entry_name(conn, entry_id, &name)?;
         Ok(())
-    })?;
-    load_state(container)
+    })
 }
 
-pub fn delete_library_entry_action(
+pub fn delete_library_entry(
     container: &AppStateContainer,
     entry_id: &str,
 ) -> Result<AppState, String> {
@@ -421,7 +413,7 @@ pub fn gc_caches(container: &AppStateContainer) {
     container.peak_cache.gc(&paths);
 }
 
-pub fn get_library_entry_usage_action(
+pub fn get_library_entry_usage(
     container: &AppStateContainer,
     entry_id: &str,
 ) -> Result<Vec<LibraryEntryUsage>, String> {
@@ -431,7 +423,7 @@ pub fn get_library_entry_usage_action(
 /// Recursively walks `folder_path` and returns every audio file found inside,
 /// filtered by `AUDIO_EXTENSIONS`. Unreadable sub-entries are skipped silently;
 /// an unreadable root surfaces as an error.
-pub fn scan_folder_for_audio_action(folder_path: &str) -> Result<Vec<String>, String> {
+pub fn scan_folder_for_audio(folder_path: &str) -> Result<Vec<String>, String> {
     let root = std::path::Path::new(folder_path);
     if !root.exists() {
         return Err(format!("Folder does not exist: {folder_path}"));
@@ -460,7 +452,7 @@ pub fn scan_folder_for_audio_action(folder_path: &str) -> Result<Vec<String>, St
 ///
 /// Per-file transactions (vs. one batch transaction) mean a bad file in
 /// position 47 doesn't roll back the first 46 successful imports.
-pub fn start_bulk_import_library_entries_action(
+pub fn start_bulk_import_library_entries(
     container: &Arc<AppStateContainer>,
     paths: Vec<String>,
     tags: Vec<String>,
@@ -479,9 +471,6 @@ pub fn start_bulk_import_library_entries_action(
 }
 
 fn run_bulk_import(container: Arc<AppStateContainer>, paths: Vec<String>, tags: Vec<String>, entry_type: String) {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
-
     let total = paths.len() as u32;
     let mut imported: u32 = 0;
     let mut skipped: u32 = 0;
@@ -496,31 +485,10 @@ fn run_bulk_import(container: Arc<AppStateContainer>, paths: Vec<String>, tags: 
         let processed = (i as u32) + 1;
 
         // Hash the file outside the DB lock.
-        let hash = match std::fs::File::open(file_path) {
-            Ok(mut file) => {
-                let mut hasher = Sha256::new();
-                let mut buf = [0u8; 65536];
-                let mut read_err: Option<String> = None;
-                loop {
-                    match file.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => hasher.update(&buf[..n]),
-                        Err(e) => {
-                            read_err = Some(e.to_string());
-                            break;
-                        }
-                    }
-                }
-                if let Some(e) = read_err {
-                    log::warn!("Skipping {file_path} (read error: {e})");
-                    skipped += 1;
-                    emit_progress(&container, processed, imported, skipped, total);
-                    continue;
-                }
-                format!("{:x}", hasher.finalize())
-            }
+        let hash = match hash_file(file_path) {
+            Ok(h) => h,
             Err(e) => {
-                log::warn!("Skipping {file_path} (open error: {e})");
+                log::warn!("Skipping {file_path}: {e}");
                 skipped += 1;
                 emit_progress(&container, processed, imported, skipped, total);
                 continue;
@@ -673,15 +641,22 @@ fn update_clip_file_state(container: &AppStateContainer, track: &Track) {
     }
 }
 
+/// Setup the track in the engine if absent, else push its latest config.
+/// Shared preamble of the play actions.
+fn ensure_track_ready(audio: &mut crate::audio::AudioEngine, track: &Track) -> Result<(), String> {
+    if !audio.has_track(&track.id) {
+        audio.setup_track(track)?;
+    } else {
+        audio.update_track_config(track);
+    }
+    Ok(())
+}
+
 pub fn play_track_audio(container: &AppStateContainer, track_id: &str) -> Result<(), String> {
     let track_config = find_track_ref(container, track_id)?;
     update_clip_file_state(container, &track_config);
     let mut audio = container.lock_audio();
-    if !audio.has_track(track_id) {
-        audio.setup_track(&track_config)?;
-    } else {
-        audio.update_track_config(&track_config);
-    }
+    ensure_track_ready(&mut audio, &track_config)?;
     audio.play_track(track_id)
 }
 
@@ -689,11 +664,7 @@ pub fn play_track_clip(container: &AppStateContainer, track_id: &str, clip_id: &
     let track_config = find_track_ref(container, track_id)?;
     update_clip_file_state(container, &track_config);
     let mut audio = container.lock_audio();
-    if !audio.has_track(track_id) {
-        audio.setup_track(&track_config)?;
-    } else {
-        audio.update_track_config(&track_config);
-    }
+    ensure_track_ready(&mut audio, &track_config)?;
     audio.play_track_clip(track_id, clip_id)
 }
 
@@ -701,11 +672,7 @@ pub fn play_track_from_position(container: &AppStateContainer, track_id: &str, p
     let track_config = find_track_ref(container, track_id)?;
     update_clip_file_state(container, &track_config);
     let mut audio = container.lock_audio();
-    if !audio.has_track(track_id) {
-        audio.setup_track(&track_config)?;
-    } else {
-        audio.update_track_config(&track_config);
-    }
+    ensure_track_ready(&mut audio, &track_config)?;
     audio.play_track_from(track_id, position)
 }
 
@@ -719,14 +686,14 @@ pub fn stop_track_audio(container: &AppStateContainer, track_id: &str) -> Result
     audio.stop_track(track_id)
 }
 
-pub fn set_master_volume_action(container: &AppStateContainer, volume: f64) -> Result<(), String> {
+pub fn set_master_volume(container: &AppStateContainer, volume: f64) -> Result<(), String> {
     let volume = sanitize_volume(volume)?;
     let mut audio = container.lock_audio();
     audio.set_master_volume(volume);
     Ok(())
 }
 
-pub fn set_track_volume_action(container: &AppStateContainer, track_id: &str, volume: f64) -> Result<(), String> {
+pub fn set_track_volume(container: &AppStateContainer, track_id: &str, volume: f64) -> Result<(), String> {
     let volume = sanitize_volume(volume)?;
     // Persist to DB (cheap, no full state reload)
     {
@@ -742,7 +709,7 @@ pub fn set_track_volume_action(container: &AppStateContainer, track_id: &str, vo
     Ok(())
 }
 
-pub fn set_clip_volume_action(container: &AppStateContainer, clip_id: &str, volume: f64) -> Result<(), String> {
+pub fn set_clip_volume(container: &AppStateContainer, clip_id: &str, volume: f64) -> Result<(), String> {
     let volume = sanitize_volume(volume)?;
     // Persist to DB (cheap, no full state reload)
     {
@@ -755,7 +722,7 @@ pub fn set_clip_volume_action(container: &AppStateContainer, clip_id: &str, volu
     audio.set_clip_volume(clip_id, volume)
 }
 
-pub fn set_library_volume_action(container: &AppStateContainer, volume: f64) -> Result<(), String> {
+pub fn set_library_volume(container: &AppStateContainer, volume: f64) -> Result<(), String> {
     let volume = sanitize_volume(volume)?;
     let mut audio = container.lock_audio();
     audio.set_library_volume(volume);
@@ -769,11 +736,7 @@ pub fn activate_comp_audio(container: &AppStateContainer, comp_id: &str) -> Resu
     }
     let mut audio = container.lock_audio();
     for track in &track_configs {
-        if !audio.has_track(&track.id) {
-            audio.setup_track(track)?;
-        } else {
-            audio.update_track_config(track);
-        }
+        ensure_track_ready(&mut audio, track)?;
         audio.play_track(&track.id)?;
     }
     Ok(())
@@ -931,7 +894,7 @@ pub fn preload_peaks(container: &AppStateContainer) -> Result<usize, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_volume;
+    use super::{hash_file, sanitize_volume};
 
     #[test]
     fn sanitize_volume_clamps_and_rejects_non_finite() {
@@ -940,5 +903,29 @@ mod tests {
         assert_eq!(sanitize_volume(2.0), Ok(1.0));
         assert!(sanitize_volume(f64::NAN).is_err());
         assert!(sanitize_volume(f64::INFINITY).is_err());
+    }
+
+    #[test]
+    fn hash_file_matches_known_sha256_vector() {
+        // NIST test vector: SHA-256("abc")
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("lutedrop_hash_file_test_{}.txt", std::process::id()));
+        std::fs::write(&path, b"abc").expect("write temp file");
+
+        let result = hash_file(path.to_str().unwrap());
+
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(
+            result,
+            Ok("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".to_string())
+        );
+    }
+
+    #[test]
+    fn hash_file_missing_path_errs() {
+        let result = hash_file("Z:\\this\\path\\does\\not\\exist\\lutedrop_missing.bin");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Failed to open file for hashing"));
     }
 }
