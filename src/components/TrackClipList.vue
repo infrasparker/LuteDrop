@@ -18,7 +18,6 @@ const store = useAppStore();
 
 const hasClips = computed(() => props.track.clips.length > 0);
 const seamlessClip = computed(() => props.track.clips[0] ?? null);
-const canAddClips = computed(() => !props.isSeamless || !hasClips.value);
 
 function addClips(): void {
   emit('open-library-browser', props.track.id);

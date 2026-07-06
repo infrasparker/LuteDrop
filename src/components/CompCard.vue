@@ -9,7 +9,6 @@ import PromptDialog from './PromptDialog.vue';
 
 const props = defineProps<{
   comp: Comp;
-  groupId: string;
   selected: boolean;
 }>();
 

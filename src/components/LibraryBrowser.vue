@@ -102,7 +102,7 @@ async function addClips(): Promise<void> {
 
         <!-- Tag filter -->
         <div class="mb-3">
-          <TagFilter v-model:selectedTags="selectedTags" v-model:untagged="untagged" />
+          <TagFilter v-model:selected-tags="selectedTags" v-model:untagged="untagged" />
         </div>
 
         <!-- Entry count -->

@@ -215,7 +215,7 @@ async function relocateEntry(entryId: string): Promise<void> {
 
     <div class="d-flex align-end mb-2 ga-2">
       <div class="d-flex flex-wrap ga-1 flex-grow-1" style="min-width: 0;">
-        <TagFilter v-model:selectedTags="selectedTags" v-model:untagged="untagged" />
+        <TagFilter v-model:selected-tags="selectedTags" v-model:untagged="untagged" />
       </div>
       <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
         {{ filteredEntries.length }} {{ filteredEntries.length === 1 ? 'entry' : 'entries' }}

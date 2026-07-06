@@ -7,7 +7,6 @@ import LibraryBrowser from './LibraryBrowser.vue';
 
 const props = defineProps<{
   comp: Comp;
-  groupId: string;
 }>();
 
 const store = useAppStore();

@@ -31,7 +31,6 @@ const transitionOptions = [
 ];
 
 const modeType = computed(() => props.track.mode.type);
-const isSeamless = computed(() => modeType.value === 'seamless');
 const showsTransition = computed(() => modeType.value !== 'seamless');
 const transitionType = computed(() =>
   hasTransition(props.track.mode) ? props.track.mode.transition.type : 'gapless',

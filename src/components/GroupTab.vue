@@ -29,7 +29,6 @@ const selectedComp = computed(() =>
           v-for="comp in group.comps"
           :key="comp.id"
           :comp="comp"
-          :group-id="group.id"
           :selected="comp.id === selectedCompId"
           @select="selectedCompId = $event"
         />
@@ -60,7 +59,6 @@ const selectedComp = computed(() =>
       <CompDetails
         v-if="selectedComp"
         :comp="selectedComp"
-        :group-id="group.id"
       />
       <div v-else class="text-medium-emphasis text-center pa-8">
         Select a composition to see its tracks.
