@@ -7,6 +7,8 @@ import type { Group } from '@generated/index';
 import { isGroupActive } from '../shared/playback';
 import GroupTab from '../components/GroupTab.vue';
 import ConfigurationPicker from '../components/ConfigurationPicker.vue';
+import ConfirmDialog from '../components/ConfirmDialog.vue';
+import PromptDialog from '../components/PromptDialog.vue';
 
 const store = useAppStore();
 const { groups, activeConfigurationId } = storeToRefs(store);
@@ -19,7 +21,6 @@ watch(activeConfigurationId, () => {
 
 // New group dialog state
 const showNewGroupDialog = ref(false);
-const newGroupName = ref('');
 
 // Context menu state
 const { menuVisible: contextMenu, menuX: contextMenuX, menuY: contextMenuY, openMenu } = useContextMenuState();
@@ -28,14 +29,12 @@ const contextGroupName = ref('');
 
 // Rename group state
 const showRenameDialog = ref(false);
-const renameGroupName = ref('');
 
 // Delete group state
 const showDeleteConfirm = ref(false);
 
 // New comp dialog state
 const showNewCompDialog = ref(false);
-const newCompName = ref('');
 const newCompGroupId = ref('');
 
 function openContextMenu(event: MouseEvent, group: Group): void {
@@ -45,15 +44,11 @@ function openContextMenu(event: MouseEvent, group: Group): void {
 }
 
 function openRenameDialog(): void {
-  renameGroupName.value = contextGroupName.value;
   showRenameDialog.value = true;
 }
 
-async function renameGroup(): Promise<void> {
-  if (!renameGroupName.value.trim()) return;
-  await store.command('rename_group', { groupId: contextGroupId.value, name: renameGroupName.value.trim() });
-  renameGroupName.value = '';
-  showRenameDialog.value = false;
+async function renameGroup(name: string): Promise<void> {
+  await store.command('rename_group', { groupId: contextGroupId.value, name });
 }
 
 function confirmOrDeleteGroup(): void {
@@ -66,32 +61,24 @@ function confirmOrDeleteGroup(): void {
 }
 
 async function deleteGroup(): Promise<void> {
-  showDeleteConfirm.value = false;
   await store.command('delete_group', { groupId: contextGroupId.value });
   if (activeTab.value >= groups.value.length) {
     activeTab.value = Math.max(0, groups.value.length - 1);
   }
 }
 
-async function createGroup(): Promise<void> {
-  if (!newGroupName.value.trim()) return;
-  await store.command('add_group', { name: newGroupName.value.trim() });
-  newGroupName.value = '';
-  showNewGroupDialog.value = false;
+async function createGroup(name: string): Promise<void> {
+  await store.command('add_group', { name });
   activeTab.value = groups.value.length - 1;
 }
 
 function openNewCompDialog(groupId: string): void {
   newCompGroupId.value = groupId;
-  newCompName.value = '';
   showNewCompDialog.value = true;
 }
 
-async function createComp(): Promise<void> {
-  if (!newCompName.value.trim()) return;
-  await store.command('add_comp', { groupId: newCompGroupId.value, name: newCompName.value.trim() });
-  newCompName.value = '';
-  showNewCompDialog.value = false;
+async function createComp(name: string): Promise<void> {
+  await store.command('add_comp', { groupId: newCompGroupId.value, name });
 }
 </script>
 
@@ -137,25 +124,14 @@ async function createComp(): Promise<void> {
     </div>
 
     <!-- New group dialog -->
-    <VDialog v-model="showNewGroupDialog" max-width="400">
-      <VCard title="New Group">
-        <VCardText>
-          <VTextField
-            v-model="newGroupName"
-            label="Group Name"
-            variant="outlined"
-            autofocus
-            @keydown.enter="createGroup"
-          />
-        </VCardText>
-        <VDivider />
-        <VCardActions>
-          <VSpacer />
-          <VBtn text="Cancel" variant="plain" @click="showNewGroupDialog = false" />
-          <VBtn text="Create" color="primary" variant="tonal" @click="createGroup" />
-        </VCardActions>
-      </VCard>
-    </VDialog>
+    <PromptDialog
+      v-model="showNewGroupDialog"
+      title="New Group"
+      label="Group Name"
+      :initial="''"
+      confirm-label="Create"
+      @submit="createGroup"
+    />
 
     <!-- Group tab context menu -->
     <VMenu v-model="contextMenu" :target="[contextMenuX, contextMenuY]" close-on-content-click>
@@ -172,61 +148,33 @@ async function createComp(): Promise<void> {
     </VMenu>
 
     <!-- Rename group dialog -->
-    <VDialog v-model="showRenameDialog" max-width="400">
-      <VCard title="Rename Group">
-        <VCardText>
-          <VTextField
-            v-model="renameGroupName"
-            label="Group Name"
-            variant="outlined"
-            autofocus
-            @keydown.enter="renameGroup"
-          />
-        </VCardText>
-        <VDivider />
-        <VCardActions>
-          <VSpacer />
-          <VBtn text="Cancel" variant="plain" @click="showRenameDialog = false" />
-          <VBtn text="Rename" color="primary" variant="tonal" @click="renameGroup" />
-        </VCardActions>
-      </VCard>
-    </VDialog>
+    <PromptDialog
+      v-model="showRenameDialog"
+      title="Rename Group"
+      label="Group Name"
+      :initial="contextGroupName"
+      confirm-label="Rename"
+      @submit="renameGroup"
+    />
 
     <!-- Delete group confirmation dialog -->
-    <VDialog v-model="showDeleteConfirm" max-width="450">
-      <VCard title="Delete Group">
-        <VCardText>
-          Are you sure you want to delete group "{{ contextGroupName }}"? This will remove all compositions and tracks in it.
-        </VCardText>
-        <VDivider />
-        <VCardActions>
-          <VSpacer />
-          <VBtn text="Cancel" variant="plain" @click="showDeleteConfirm = false" />
-          <VBtn text="Delete" color="error" variant="tonal" @click="deleteGroup" />
-        </VCardActions>
-      </VCard>
-    </VDialog>
+    <ConfirmDialog
+      v-model="showDeleteConfirm"
+      title="Delete Group"
+      :message="`Are you sure you want to delete group &quot;${contextGroupName}&quot;? This will remove all compositions and tracks in it.`"
+      confirm-label="Delete"
+      confirm-color="error"
+      @confirm="deleteGroup"
+    />
 
     <!-- New comp dialog -->
-    <VDialog v-model="showNewCompDialog" max-width="400">
-      <VCard title="New Composition">
-        <VCardText>
-          <VTextField
-            v-model="newCompName"
-            label="Composition Name"
-            variant="outlined"
-            autofocus
-            @keydown.enter="createComp"
-          />
-        </VCardText>
-        <VDivider />
-        <VCardActions>
-          <VSpacer />
-          <VBtn text="Cancel" variant="plain" @click="showNewCompDialog = false" />
-          <VBtn text="Create" color="primary" variant="tonal" @click="createComp" />
-        </VCardActions>
-      </VCard>
-    </VDialog>
+    <PromptDialog
+      v-model="showNewCompDialog"
+      title="New Composition"
+      label="Composition Name"
+      confirm-label="Create"
+      @submit="createComp"
+    />
   </div>
 </template>
 
