@@ -98,7 +98,7 @@ async function deleteConfig(): Promise<void> {
       v-model="showSaveAsDialog"
       title="Save Configuration As"
       label="New Name"
-      :initial="activeConfig?.name ?? ''"
+      :initial="(activeConfig?.name ?? '') + ' Copy'"
       @submit="saveAs"
     />
 
