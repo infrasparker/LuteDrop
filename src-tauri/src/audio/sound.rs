@@ -1,8 +1,9 @@
 use std::time::Duration;
 use super::ffi;
 
-/// Playback state of a single sound. Replaces kira's `PlaybackState`; the audio
-/// module (`mod.rs`, `orchestrator.rs`) matches on these variants.
+/// Playback state of a single sound. Replaces kira's (the audio library this
+/// engine replaced) `PlaybackState`; the audio module (`mod.rs`,
+/// `orchestrator.rs`) matches on these variants.
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum PlaybackState {
     Playing,
@@ -23,6 +24,7 @@ pub struct SoundHandle {
     pub paused: bool,
 }
 
+#[derive(Clone)]
 pub struct PlayParams {
     pub file_path: String,
     pub start_position: f64,
@@ -80,6 +82,44 @@ pub fn play(
     })
 }
 
+/// Create a group-less streaming sound and pre-seek it to its start point,
+/// WITHOUT attaching it to a group or starting it. Runs on the loader thread
+/// (both the open and the seek may do file I/O). The poll tick later attaches
+/// it to a live group, sets volume, and starts it (`Voice::start_preloaded`).
+pub fn preload(engine: &ffi::EngineRef, params: &PlayParams) -> Result<SoundHandle, String> {
+    let sound = engine.create_sound_unattached(&params.file_path)?;
+
+    // Seek to the same effective start `start_clip`/`play` would use. Because
+    // ld_sound_play only seeks when start_secs > 0, `start_preloaded` starts
+    // this sound with start_secs == 0 and it begins from HERE — no re-seek,
+    // which is the whole point of pre-seeking off-lock.
+    let seek_to = params.start_position.max(params.trim_start.unwrap_or(0.0));
+    if seek_to > 0.0 {
+        sound.seek_secs(seek_to);
+    }
+
+    let duration = match params.trim_end {
+        Some(te) => Some(te),
+        None => {
+            let len = sound.length_secs();
+            if len > 0.0 { Some(len) } else { None }
+        }
+    };
+
+    Ok(SoundHandle {
+        sound,
+        fade_out: params.fade_out,
+        duration,
+        start_position: if params.start_position > 0.0 {
+            Some(params.start_position)
+        } else {
+            params.trim_start
+        },
+        loop_region: params.loop_region,
+        paused: false,
+    })
+}
+
 pub fn stop(sound: &mut SoundHandle, fade_override: Option<Duration>) {
     let fade = fade_override
         .map(|d| d.as_secs_f64())
@@ -89,6 +129,8 @@ pub fn stop(sound: &mut SoundHandle, fade_override: Option<Duration>) {
     sound.paused = false;
 }
 
+/// Stop with a minimal de-click fade (~4 ms floor in the shim); cursor is
+/// discarded and the sound is not parked for the reaper.
 pub fn stop_quick(sound: &mut SoundHandle) {
     sound.sound.stop(0.0);
     sound.paused = false;

@@ -1,23 +1,15 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
+use crate::database::now_millis;
+use crate::database::DbError;
 use crate::models::LibraryEntryUsage;
-
-// ─── Helper ───────────────────────────────────────────────────────────────────
-
-/// Returns the current time as milliseconds since the Unix epoch, as a string.
-fn chrono_now() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time before epoch")
-        .as_millis();
-    ms.to_string()
-}
 
 // ─── Library Entry CRUD ───────────────────────────────────────────────────────
 
 /// Inserts a new library entry. Returns the new UUID as a `String`.
+/// A `file_path` UNIQUE collision surfaces as `DbError::Constraint` so callers
+/// (bulk import) can treat it as "skip" without matching an error string.
 pub fn insert_library_entry(
     conn: &Connection,
     file_path: &str,
@@ -27,9 +19,9 @@ pub fn insert_library_entry(
     sample_rate: Option<i64>,
     file_size: Option<i64>,
     entry_type: &str,
-) -> Result<String, String> {
+) -> Result<String, DbError> {
     let id = Uuid::new_v4().to_string();
-    let created_at = chrono_now();
+    let created_at = now_millis();
 
     conn.execute(
         "INSERT INTO library_entries
@@ -38,7 +30,7 @@ pub fn insert_library_entry(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1.0, ?8, ?9)",
         params![id, file_path, content_hash, name, duration, sample_rate, file_size, created_at, entry_type],
     )
-    .map_err(|e| format!("Failed to insert library entry: {e}"))?;
+    .map_err(DbError::from_sqlite)?;
 
     Ok(id)
 }
@@ -351,6 +343,7 @@ pub fn add_tag_to_entry(
 /// Removes the association between a tag and a library entry.
 /// Does nothing if the association doesn't exist.
 /// Cleans up the tag row itself if no entries reference it anymore.
+#[cfg(test)]
 pub fn remove_tag_from_entry(
     conn: &Connection,
     entry_id: &str,
@@ -376,7 +369,36 @@ pub fn remove_tag_from_entry(
     Ok(())
 }
 
+/// Atomically replaces the full tag set for an entry: one delete, one insert
+/// per tag, one orphan sweep — all in a single transaction (the previous
+/// remove-then-re-add loop could leave a partial tag set on mid-way failure).
+pub fn set_entry_tags(conn: &Connection, entry_id: &str, tags: &[String]) -> Result<(), String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin tag transaction: {e}"))?;
+
+    conn.execute(
+        "DELETE FROM library_entry_tags WHERE library_entry_id = ?1",
+        params![entry_id],
+    )
+    .map_err(|e| format!("Failed to clear entry tags: {e}"))?;
+
+    for tag_name in tags {
+        add_tag_to_entry(conn, entry_id, tag_name)?;
+    }
+
+    conn.execute(
+        "DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM library_entry_tags)",
+        [],
+    )
+    .map_err(|e| format!("Failed to sweep orphaned tags: {e}"))?;
+
+    tx.commit().map_err(|e| format!("Failed to commit tag transaction: {e}"))?;
+    Ok(())
+}
+
 /// Returns all tag names associated with the given library entry, sorted.
+#[cfg(test)]
 pub fn get_tags_for_entry(
     conn: &Connection,
     entry_id: &str,
@@ -480,6 +502,18 @@ mod tests {
         );
 
         assert!(result.is_err(), "inserting duplicate file_path should fail");
+    }
+
+    #[test]
+    fn insert_duplicate_file_path_is_typed_constraint_error() {
+        use crate::database::DbError;
+        let conn = open_memory_db();
+        insert_library_entry(&conn, "/dup.mp3", Some("h1"), "A", None, None, None, "music").unwrap();
+        // Same file_path (UNIQUE) — must surface as DbError::Constraint, not a
+        // formatted string we have to grep.
+        let err = insert_library_entry(&conn, "/dup.mp3", Some("h2"), "B", None, None, None, "music")
+            .unwrap_err();
+        assert!(matches!(err, DbError::Constraint));
     }
 
     // ── 3. update_volume ─────────────────────────────────────────────────────
@@ -768,5 +802,24 @@ mod tests {
         let id = insert_library_entry(&conn, "/e.mp3", Some("e"), "E", None, None, None, "music").unwrap();
         let result = update_library_entry_loop(&conn, &id, Some(50.0), Some(10.0));
         assert!(result.is_err());
+    }
+
+    // ── 12. set_entry_tags_replaces_atomically_and_cleans_orphans ────────────
+
+    #[test]
+    fn set_entry_tags_replaces_atomically_and_cleans_orphans() {
+        let conn = open_memory_db();
+        let e = insert_library_entry(&conn, "/t.mp3", None, "T", None, None, None, "music").unwrap();
+        add_tag_to_entry(&conn, &e, "old-only").unwrap();
+        add_tag_to_entry(&conn, &e, "kept").unwrap();
+
+        set_entry_tags(&conn, &e, &["kept".to_string(), "new".to_string()]).unwrap();
+
+        assert_eq!(get_tags_for_entry(&conn, &e).unwrap(), vec!["kept", "new"]);
+        // "old-only" is orphaned and must be gone from tags entirely:
+        let orphan: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tags WHERE name = 'old-only'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(orphan, 0);
     }
 }

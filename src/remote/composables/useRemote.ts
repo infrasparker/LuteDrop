@@ -1,9 +1,16 @@
 import { ref, reactive } from 'vue';
 import type { AppState, TrackPlaybackState, CompStatus } from '@generated/index';
+import { compStatus } from '../../shared/playback';
 
 interface StateSnapshot {
   type: string;
   appState: AppState;
+  playbackStates: TrackPlaybackState[];
+  masterVolume: number;
+}
+
+interface PlaybackSnapshot {
+  type: string;
   playbackStates: TrackPlaybackState[];
   masterVolume: number;
 }
@@ -18,12 +25,29 @@ let ws: WebSocket | null = null;
 let initialized = false;
 
 function getWsUrl(): string {
-  // In dev mode (Vite on port 1421), connect to the Rust server on port 3333
-  // In production (served by axum), use the same host
+  // In dev mode (Vite on port 1421), connect to the Rust server on port 3333.
+  // In production (served by axum), use the same host. The pairing token
+  // arrives as ?token= on the page URL (from the link shown in the desktop
+  // app) and must be forwarded on the upgrade request.
   const isDev = location.port === '1421';
   const host = isDev ? `${location.hostname}:3333` : location.host;
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${host}/ws`;
+  const token = new URLSearchParams(location.search).get('token') ?? '';
+  return `${protocol}//${host}/ws?token=${encodeURIComponent(token)}`;
+}
+
+function applyPlaybackStates(states: TrackPlaybackState[], volume: number | undefined): void {
+  const seen = new Set<string>();
+  for (const ps of states) {
+    playbackStates.set(ps.trackId, ps);
+    seen.add(ps.trackId);
+  }
+  for (const key of [...playbackStates.keys()]) {
+    if (!seen.has(key)) playbackStates.delete(key);
+  }
+  if (volume !== undefined) {
+    masterVolume.value = volume;
+  }
 }
 
 function connect(): void {
@@ -37,17 +61,15 @@ function connect(): void {
 
   ws.onmessage = (event) => {
     try {
-      const data: StateSnapshot = JSON.parse(event.data);
+      const data: StateSnapshot | PlaybackSnapshot = JSON.parse(event.data);
       if (data.type === 'state') {
-        groups.value = data.appState.groups;
-        missingEntryIds.value = new Set(data.appState.missingEntryIds);
-        playbackStates.clear();
-        for (const ps of data.playbackStates) {
-          playbackStates.set(ps.trackId, ps);
-        }
-        if (data.masterVolume !== undefined) {
-          masterVolume.value = data.masterVolume;
-        }
+        const s = data as StateSnapshot;
+        groups.value = s.appState.groups;
+        missingEntryIds.value = new Set(s.appState.missingEntryIds);
+        applyPlaybackStates(s.playbackStates, s.masterVolume);
+      } else if (data.type === 'playback') {
+        const p = data as PlaybackSnapshot;
+        applyPlaybackStates(p.playbackStates, p.masterVolume);
       }
     } catch (e) {
       console.warn('Failed to parse state update:', e);
@@ -73,24 +95,8 @@ function send(command: Record<string, unknown>): void {
 }
 
 function getCompStatus(compId: string): CompStatus {
-  const comp = groups.value
-    .flatMap((g) => g.comps)
-    .find((c) => c.id === compId);
-  if (!comp || comp.tracks.length === 0) return 'inactive';
-
-  const playing = comp.tracks.filter((t) => {
-    const state = playbackStates.get(t.id);
-    return state?.isPlaying;
-  });
-  const paused = comp.tracks.filter((t) => {
-    const state = playbackStates.get(t.id);
-    return state?.isPaused;
-  });
-
-  if (playing.length === comp.tracks.length) return 'active';
-  if (playing.length > 0) return 'partial';
-  if (paused.length > 0) return 'paused';
-  return 'inactive';
+  const comp = groups.value.flatMap((g) => g.comps).find((c) => c.id === compId);
+  return compStatus(comp, playbackStates);
 }
 
 export function useRemote() {

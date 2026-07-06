@@ -117,7 +117,7 @@ function togglePause(): void {
       </div>
     </div>
 
-    <div class="footer-slot footer-slot-right"></div>
+    <div class="footer-slot footer-slot-right" />
   </VFooter>
 </template>
 

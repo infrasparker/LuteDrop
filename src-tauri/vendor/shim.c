@@ -24,46 +24,31 @@ static ma_result ld_make_decoder(const wchar_t* path, ma_decoder* dec) {
     return ma_decoder_init_file_w(path, &cfg, dec);
 }
 
-int ld_decode_file(const wchar_t* path, float** out, uint64_t* out_frames,
-                   uint32_t* out_channels, uint32_t* out_sample_rate) {
-    ma_decoder dec;
-    if (ld_make_decoder(path, &dec) != MA_SUCCESS) return 1;
-    *out_channels = dec.outputChannels;
-    *out_sample_rate = dec.outputSampleRate;
+typedef struct ld_decoder { ma_decoder dec; } ld_decoder;
 
-    ma_uint64 total = 0;
-    // Best-effort: may be 0/unknown for some streamed sources; we grow the
-    // buffer dynamically below regardless.
-    ma_decoder_get_length_in_pcm_frames(&dec, &total);
-
-    size_t cap_frames = total ? (size_t)total : 48000;
-    size_t cap = cap_frames * dec.outputChannels;
-    if (cap == 0) cap = 4096;
-    float* buf = (float*)malloc(cap * sizeof(float));
-    if (buf == NULL) { ma_decoder_uninit(&dec); return 2; }
-
-    ma_uint64 framesRead, totalRead = 0;
-    for (;;) {
-        // Ensure room for at least one more 4096-frame chunk.
-        if ((totalRead + 4096) * dec.outputChannels > cap) {
-            cap *= 2;
-            float* grown = (float*)realloc(buf, cap * sizeof(float));
-            if (grown == NULL) { free(buf); ma_decoder_uninit(&dec); return 3; }
-            buf = grown;
-        }
-        ma_result r = ma_decoder_read_pcm_frames(
-            &dec, buf + totalRead * dec.outputChannels, 4096, &framesRead);
-        totalRead += framesRead;
-        if ((r != MA_SUCCESS && r != MA_AT_END) || framesRead == 0) break;
-    }
-
-    ma_decoder_uninit(&dec);
-    *out = buf;
-    *out_frames = totalRead;
-    return 0;
+ld_decoder* ld_decoder_open(const wchar_t* path, uint32_t* out_channels, uint32_t* out_sample_rate) {
+    ld_decoder* d = (ld_decoder*)malloc(sizeof(ld_decoder));
+    if (d == NULL) return NULL;
+    if (ld_make_decoder(path, &d->dec) != MA_SUCCESS) { free(d); return NULL; }
+    *out_channels = d->dec.outputChannels;
+    *out_sample_rate = d->dec.outputSampleRate;
+    return d;
 }
 
-void ld_free_decoded(float* p) { free(p); }
+int64_t ld_decoder_read(ld_decoder* d, float* out, uint64_t max_frames) {
+    ma_uint64 framesRead = 0;
+    ma_result r = ma_decoder_read_pcm_frames(&d->dec, out, max_frames, &framesRead);
+    // MA_AT_END with a final partial chunk still returns those frames; the
+    // NEXT call returns 0. A hard mid-stream error must not masquerade as EOF.
+    if (r != MA_SUCCESS && r != MA_AT_END) return -1;
+    return (int64_t)framesRead;
+}
+
+void ld_decoder_close(ld_decoder* d) {
+    if (d == NULL) return;
+    ma_decoder_uninit(&d->dec);
+    free(d);
+}
 
 double ld_file_duration_secs(const wchar_t* path) {
     ma_decoder dec;
@@ -76,7 +61,7 @@ double ld_file_duration_secs(const wchar_t* path) {
     return (double)total / (double)sr;
 }
 
-// ---- Playback layer (Task 2) ------------------------------------------------
+// ---- Playback layer ---------------------------------------------------------
 
 struct ld_engine {
     ma_engine engine;
@@ -187,9 +172,10 @@ ld_sound* ld_sound_create(ld_engine* e, ld_group* g, const wchar_t* path, int st
 //
 // Starting or stopping playback abruptly at a non-zero sample produces a step
 // discontinuity in the waveform -> an audible click/pop. The old kira engine
-// avoided this because every start/stop/pause/resume ramped through zero with a
-// short tween. miniaudio does NOT ramp by default, so we enforce a minimum fade
-// on every transition here. These are FLOORS, not replacements: a longer
+// (the audio library this engine replaced) avoided this because every
+// start/stop/pause/resume ramped through zero with a short tween. miniaudio
+// does NOT ramp by default, so we enforce a minimum fade on every transition
+// here. These are FLOORS, not replacements: a longer
 // musical fade requested by the caller always wins (we take the max).
 #define LD_MIN_FADE_MS         4    // start / seek / stop (de-click floor; ~190 samples @48k)
 #define LD_MIN_PAUSE_FADE_MS   30   // pause / resume (slightly longer feels smoother)
@@ -311,6 +297,27 @@ void ld_sound_schedule_stop_secs(ld_sound* s, double secs_from_now, double fade_
     if (fade_frames > lead_frames) fade_frames = lead_frames;
 
     ma_sound_set_stop_time_with_fade_in_pcm_frames(&s->sound, stop_frame, fade_frames);
+}
+
+void ld_sound_attach_to_group(ld_sound* s, ld_group* g) {
+    if (s == NULL || s->owner == NULL) return;
+    // g == NULL routes back to the engine endpoint (the group-less default a
+    // preloaded sound was created with); the normal handoff always passes a group.
+    ma_node* target = (g != NULL)
+        ? (ma_node*)&g->group
+        : ma_engine_get_endpoint(&s->owner->engine);
+    // Re-parents output bus 0; ma_node_attach_output_bus detaches any prior
+    // attachment first, so no explicit detach is needed (miniaudio.h 7.1).
+    ma_node_attach_output_bus((ma_node*)&s->sound, 0, target, 0);
+}
+
+void ld_sound_seek_secs(ld_sound* s, double secs) {
+    if (s == NULL) return;
+    if (secs < 0.0) secs = 0.0;
+    // Same time base as ld_sound_play's internal seek (ld_sound_play seeks only
+    // when start_secs > 0, so a preloaded sound started with start_secs == 0
+    // begins from THIS cursor without re-seeking).
+    ma_sound_seek_to_second(&s->sound, (float)secs);
 }
 
 void ld_sound_destroy(ld_sound* s) {

@@ -2,22 +2,32 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
+use std::sync::MutexGuard;
 use rusqlite::Connection;
 use tauri::Emitter;
 use tokio::sync::broadcast;
 use crate::audio::AudioEngine;
 use crate::waveform::PeakCache;
 
+/// LOCK ORDERING: code that needs both locks takes `db` first, releases it,
+/// then takes `audio` — never nested, never the other way. Every existing
+/// call site follows this (see actions.rs, server.rs build_snapshot); a
+/// future function nesting them in the opposite order deadlocks against them.
 pub struct AppStateContainer {
     pub db: Mutex<Connection>,
     pub audio: Mutex<AudioEngine>,
     pub broadcast_tx: broadcast::Sender<String>,
     pub peak_cache: PeakCache,
     pub db_path: PathBuf,
+    /// Random per-session pairing token for the phone remote (see server.rs).
+    pub remote_token: String,
     pub missing_entry_ids: Mutex<HashSet<String>>,
     /// True while a background library import is running. Used to block
     /// overlapping imports. Set via `try_claim_import` / `release_import`.
     pub import_in_progress: AtomicBool,
+    /// Set by any action that changes persisted app state or the missing-entries snapshot; the broadcast tick
+    /// consumes it to decide when remotes need a fresh structural snapshot.
+    pub state_dirty: AtomicBool,
     app_handle: Mutex<Option<tauri::AppHandle>>,
 }
 
@@ -30,8 +40,10 @@ impl AppStateContainer {
             broadcast_tx,
             peak_cache: PeakCache::new(peak_cache_dir),
             db_path,
+            remote_token: crate::server::generate_remote_token(),
             missing_entry_ids: Mutex::new(HashSet::new()),
             import_in_progress: AtomicBool::new(false),
+            state_dirty: AtomicBool::new(false),
             app_handle: Mutex::new(None),
         }
     }
@@ -48,6 +60,29 @@ impl AppStateContainer {
     pub fn release_import(&self) {
         use std::sync::atomic::Ordering;
         self.import_in_progress.store(false, Ordering::Release);
+    }
+
+    pub fn mark_state_dirty(&self) {
+        use std::sync::atomic::Ordering;
+        self.state_dirty.store(true, Ordering::Release);
+    }
+
+    /// Returns true at most once per mark — the broadcast tick's consume side.
+    pub fn take_state_dirty(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        self.state_dirty.swap(false, Ordering::AcqRel)
+    }
+
+    /// Locks the audio engine, recovering from mutex poisoning. A panic on
+    /// the poll thread must not permanently kill audio: engine state stays
+    /// structurally valid across a panic (single-field mutations only), so
+    /// recovering the guard is safe. The poison is logged so a crashing poll
+    /// tick is visible instead of silent.
+    pub fn lock_audio(&self) -> MutexGuard<'_, AudioEngine> {
+        self.audio.lock().unwrap_or_else(|poisoned| {
+            log::error!("Audio mutex poisoned (a thread panicked while holding it); recovering");
+            poisoned.into_inner()
+        })
     }
 
     /// Emits a Tauri event to the frontend if the app handle is set.
@@ -76,6 +111,7 @@ impl AppStateContainer {
         };
         if newly_added {
             self.emit_missing_changed(id);
+            self.mark_state_dirty();
         }
         newly_added
     }
@@ -90,6 +126,7 @@ impl AppStateContainer {
         };
         if was_removed {
             self.emit_found(id);
+            self.mark_state_dirty();
         }
         was_removed
     }

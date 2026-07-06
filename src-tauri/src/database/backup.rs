@@ -78,6 +78,20 @@ pub fn perform_backup(src: &Connection, backup_dir: &Path) -> Result<PathBuf, St
 
 const BACKUP_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
+/// Performs one backup by opening a dedicated read-only connection to the
+/// database file. WAL mode allows this concurrent reader, so the app's main
+/// connection (and every UI command behind its mutex) stays unblocked for
+/// the duration — previously the mutex was held for the whole backup.
+pub fn backup_once(db_path: &Path, backup_dir: &Path) -> Result<PathBuf, String> {
+    use rusqlite::OpenFlags;
+    let src = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| format!("Failed to open backup source connection: {e}"))?;
+    perform_backup(&src, backup_dir)
+}
+
 /// Runs the backup loop: one backup immediately, then every 30 minutes.
 /// Intended to be spawned on a dedicated background thread.
 /// Never panics — errors are logged and the loop continues.
@@ -89,23 +103,10 @@ pub fn start_backup_loop(container: Arc<AppStateContainer>) {
         .join("backups");
 
     loop {
-        let result = {
-            let conn = match container.db.lock() {
-                Ok(c) => c,
-                Err(e) => {
-                    log::warn!("Backup: failed to acquire DB lock: {e}");
-                    std::thread::sleep(BACKUP_INTERVAL);
-                    continue;
-                }
-            };
-            perform_backup(&conn, &backup_dir)
-        };
-
-        match result {
+        match backup_once(&container.db_path, &backup_dir) {
             Ok(path) => log::info!("Backup complete: {:?}", path),
             Err(e) => log::warn!("Backup failed: {e}"),
         }
-
         std::thread::sleep(BACKUP_INTERVAL);
     }
 }
@@ -247,5 +248,29 @@ mod tests {
             })
             .count();
         assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn backup_once_reads_via_second_connection() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("app.db");
+        // A real file-backed DB, opened the way the app opens it:
+        let conn = crate::database::open_db(&db_path).expect("open db");
+        crate::database::library::insert_library_entry(
+            &conn, "/tmp/second-conn.mp3", Some("h2c"), "Second Conn", None, None, None, "music",
+        )
+        .expect("insert");
+
+        // The app connection stays open (and un-locked by us) while the
+        // backup runs from its own read-only connection:
+        let backup_dir = dir.path().join("backups");
+        let path = backup_once(&db_path, &backup_dir).expect("backup");
+
+        let dst = Connection::open(&path).expect("open backup");
+        let name: String = dst
+            .query_row("SELECT name FROM library_entries WHERE content_hash = 'h2c'", [], |r| r.get(0))
+            .expect("query");
+        assert_eq!(name, "Second Conn");
+        drop(conn);
     }
 }

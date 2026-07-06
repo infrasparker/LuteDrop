@@ -77,7 +77,7 @@ export function useWaveformData(filePath: Ref<string>) {
         zoomedPeaks.value = data.peaks;
         zoomedPeaksRangeStart.value = viewStart;
         zoomedPeaksRangeEnd.value = viewEnd;
-      } catch (_) {
+      } catch {
         // keep existing peaks on error
       }
     }, 150);

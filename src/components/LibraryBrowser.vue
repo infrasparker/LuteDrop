@@ -61,9 +61,10 @@ function close(): void {
 }
 
 async function addClips(): Promise<void> {
-  for (const libraryEntryId of selectedIds.value) {
-    await store.command('add_clip', { trackId: props.trackId, libraryEntryId });
-  }
+  await store.command('add_clips', {
+    trackId: props.trackId,
+    libraryEntryIds: [...selectedIds.value],
+  });
   close();
 }
 </script>
@@ -101,7 +102,7 @@ async function addClips(): Promise<void> {
 
         <!-- Tag filter -->
         <div class="mb-3">
-          <TagFilter v-model:selectedTags="selectedTags" v-model:untagged="untagged" />
+          <TagFilter v-model:selected-tags="selectedTags" v-model:untagged="untagged" />
         </div>
 
         <!-- Entry count -->

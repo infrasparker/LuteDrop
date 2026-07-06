@@ -25,12 +25,24 @@ pub fn probe_duration(path: &str) -> Option<f64> {
         return Some(secs);
     }
 
-    // Fallback: full decode, then frames / sample_rate.
-    let decoded = crate::audio::ffi::decode_file(path).ok()?;
-    if decoded.sample_rate == 0 || decoded.frames == 0 {
+    // Fallback: stream-count frames (bounded memory), then frames / sample_rate.
+    let mut dec = crate::audio::ffi::StreamingDecoder::open(path).ok()?;
+    let channels = dec.channels.max(1) as u64;
+    let sample_rate = dec.sample_rate;
+    let mut frames: u64 = 0;
+    loop {
+        match dec.read_chunk() {
+            Ok(Some(chunk)) => frames += chunk.len() as u64 / channels,
+            Ok(None) => break,
+            // A truncated count would report a wrong (short) duration —
+            // match the old fallback's behavior and report unknown instead.
+            Err(_) => return None,
+        }
+    }
+    if sample_rate == 0 || frames == 0 {
         return None;
     }
-    Some(decoded.frames as f64 / decoded.sample_rate as f64)
+    Some(frames as f64 / sample_rate as f64)
 }
 
 #[cfg(test)]

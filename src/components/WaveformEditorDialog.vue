@@ -4,6 +4,9 @@ import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
 import WaveformEditor from './WaveformEditor.vue';
 import { open } from '@tauri-apps/plugin-dialog';
+import { AUDIO_EXTENSIONS } from '../constants';
+import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
+import { useLocalVolume } from '../shared/useLocalVolume';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -53,16 +56,10 @@ async function toggleLoop(): Promise<void> {
 const editName = ref('');
 const editTags = ref<string[]>([]);
 const editEntryType = ref('music');
-const localGain = ref(1.0);
+const { local: localGain } = useLocalVolume(() => entry.value?.volume);
 
-const previewState = computed(() => store.playbackStates.get('__library'));
+const previewState = computed(() => store.playbackStates.get(LIBRARY_PLAYBACK_ID));
 const isPreviewPlaying = computed(() => store.libraryPlayingEntryId === props.entryId && previewState.value?.isPlaying);
-
-watch(previewState, (state) => {
-  if (!state?.isPlaying && store.libraryPlayingEntryId === props.entryId) {
-    store.libraryPlayingEntryId = null;
-  }
-});
 
 function togglePreview(): void {
   if (isPreviewPlaying.value) {
@@ -87,11 +84,6 @@ watch(() => props.modelValue, (open) => {
     localGain.value = entry.value.volume;
   }
 }, { immediate: true });
-
-// Sync gain from store when not dragging
-watch(() => entry.value?.volume, (v) => {
-  if (v !== undefined) localGain.value = v;
-});
 
 // --- Name ---
 async function saveName(): Promise<void> {
@@ -127,6 +119,9 @@ async function saveEntryType(v: string): Promise<void> {
 // --- Volume (local ref for smooth slider, persist on change) ---
 function setGain(v: number): void {
   localGain.value = v;
+  if (isPreviewPlaying.value) {
+    audio.setLibraryVolume(v);
+  }
 }
 
 async function persistGain(): Promise<void> {
@@ -147,8 +142,11 @@ async function onWaveformCommit(values: {
     entryId: props.entryId,
     trimStart: values.trimStart,
     trimEnd: values.trimEnd,
-    loopStart: values.loopStart || null,
-    loopEnd: values.loopEnd || null,
+    // The editor uses 0 as its "no loop" sentinel on loopEnd; the DB uses
+    // null. A loop exists only when loopEnd is set — loopStart may
+    // legitimately be 0.0 (the old `loopStart || null` erased that case).
+    loopStart: values.loopEnd === 0 ? null : values.loopStart,
+    loopEnd: values.loopEnd === 0 ? null : values.loopEnd,
   });
 }
 
@@ -184,7 +182,6 @@ function close(): void {
   emit('update:modelValue', false);
 }
 
-const AUDIO_EXTENSIONS = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'wma'];
 const isMissing = computed(() => store.isEntryMissing(props.entryId));
 
 async function relocateFile(): Promise<void> {

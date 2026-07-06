@@ -1,9 +1,10 @@
-import { ref } from 'vue';
+import { effectScope, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../stores/appStore';
 import { useToast } from './useToast';
 import type { TrackPlaybackState } from '@generated/index';
+import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
 
 let listenerRegistered = false;
 const masterVolume = ref(1);
@@ -34,6 +35,24 @@ function registerListener(): void {
 
   listen<string>('missing-entry-found', (event) => {
     store.missingEntryIds.delete(event.payload);
+  });
+
+  // Clear the "currently previewing" entry id whenever the single library
+  // preview voice stops (was duplicated as a per-component watch in three
+  // library components).
+  //
+  // Detached scope: registerListener() runs inside the first useAudio()
+  // caller's setup, so a bare watch() would be bound to that component's
+  // effect scope and disposed on its unmount — never recreated, because the
+  // module-level registration flag stays true. effectScope(true) detaches
+  // the watcher from any component so it lives for the app's lifetime.
+  effectScope(true).run(() => {
+    watch(
+      () => store.playbackStates.get(LIBRARY_PLAYBACK_ID)?.isPlaying ?? false,
+      (isPlaying) => {
+        if (!isPlaying) store.libraryPlayingEntryId = null;
+      },
+    );
   });
 }
 
@@ -100,6 +119,14 @@ export function useAudio() {
   async function setClipVolume(clipId: string, volume: number): Promise<void> {
     try {
       await invoke('set_clip_volume', { clipId, volume });
+    } catch (e) {
+      toast.showError(String(e));
+    }
+  }
+
+  async function setLibraryVolume(volume: number): Promise<void> {
+    try {
+      await invoke('set_library_volume', { volume });
     } catch (e) {
       toast.showError(String(e));
     }
@@ -191,7 +218,7 @@ export function useAudio() {
     try {
       await invoke('stop_library_sound');
       const appStore = useAppStore();
-      appStore.playbackStates.delete('__library');
+      appStore.playbackStates.delete(LIBRARY_PLAYBACK_ID);
       appStore.libraryPlayingEntryId = null;
     } catch (e) {
       toast.showError(String(e));
@@ -254,6 +281,7 @@ export function useAudio() {
     setMasterVolume,
     setTrackVolume,
     setClipVolume,
+    setLibraryVolume,
     activateComp,
     stopComp,
     pauseComp,

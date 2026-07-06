@@ -6,15 +6,20 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { useAppStore } from '../stores/appStore';
 import { useLibraryImport } from '../composables/useLibraryImport';
 import { useAudio } from '../composables/useAudio';
+import { useToast } from '../composables/useToast';
 import TagFilter from '../components/TagFilter.vue';
 import ImportDialog from '../components/ImportDialog.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import type { LibraryEntry, LibraryEntryUsage } from '@generated/index';
+import { AUDIO_EXTENSIONS } from '../constants';
+import { formatDuration } from '../shared/format';
+import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
 
 const store = useAppStore();
 const { libraryEntries, tags } = storeToRefs(store);
 const { pickFiles, pickFolder, runImport } = useLibraryImport();
 const audio = useAudio();
+const toast = useToast();
 
 const searchQuery = ref('');
 const selectedTags = ref<string[]>([]);
@@ -53,17 +58,11 @@ const headers = [
   { title: '', key: 'actions', sortable: false, width: '80px', align: 'end' as const },
 ];
 
-const previewState = computed(() => store.playbackStates.get('__library'));
+const previewState = computed(() => store.playbackStates.get(LIBRARY_PLAYBACK_ID));
 
 function isPreviewPlaying(entryId: string): boolean {
   return store.libraryPlayingEntryId === entryId && !!previewState.value?.isPlaying;
 }
-
-watch(previewState, (state) => {
-  if (!state?.isPlaying) {
-    store.libraryPlayingEntryId = null;
-  }
-});
 
 function togglePreview(entry: LibraryEntry): void {
   if (isPreviewPlaying(entry.id)) {
@@ -78,13 +77,6 @@ function togglePreview(entry: LibraryEntry): void {
       entry.loopStart, entry.loopEnd,
     );
   }
-}
-
-function formatDuration(seconds: number | null): string {
-  if (seconds === null) return '--:--';
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
 function openEditor(entryId: string): void {
@@ -135,8 +127,10 @@ async function deleteEntry(entryId: string): Promise<void> {
   try {
     usage = await invoke<LibraryEntryUsage[]>('get_library_entry_usage', { entryId });
   } catch (e) {
-    usage = [];
-    console.error('Failed to fetch library entry usage', e);
+    // Do NOT fall through to the unconfirmed-delete branch on a failed
+    // usage check — we can't know the entry is safe to delete.
+    toast.showError(`Could not check whether "${entry?.name ?? entryId}" is in use: ${e}`);
+    return;
   }
 
   if (usage.length === 0) {
@@ -160,8 +154,6 @@ async function confirmDelete(): Promise<void> {
 }
 
 // --- Relocate flow ---
-
-const AUDIO_EXTENSIONS = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'wma'];
 
 async function relocateEntry(entryId: string): Promise<void> {
   const path = await open({
@@ -223,7 +215,7 @@ async function relocateEntry(entryId: string): Promise<void> {
 
     <div class="d-flex align-end mb-2 ga-2">
       <div class="d-flex flex-wrap ga-1 flex-grow-1" style="min-width: 0;">
-        <TagFilter v-model:selectedTags="selectedTags" v-model:untagged="untagged" />
+        <TagFilter v-model:selected-tags="selectedTags" v-model:untagged="untagged" />
       </div>
       <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
         {{ filteredEntries.length }} {{ filteredEntries.length === 1 ? 'entry' : 'entries' }}

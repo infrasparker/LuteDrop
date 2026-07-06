@@ -4,10 +4,11 @@ import type { Comp } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
 import { useContextMenuState } from '../composables/useContextMenu';
+import ConfirmDialog from './ConfirmDialog.vue';
+import PromptDialog from './PromptDialog.vue';
 
 const props = defineProps<{
   comp: Comp;
-  groupId: string;
   selected: boolean;
 }>();
 
@@ -33,18 +34,13 @@ const showDeleteConfirm = ref(false);
 
 // Rename state
 const showRenameDialog = ref(false);
-const renameCompName = ref('');
 
 function openRenameDialog(): void {
-  renameCompName.value = props.comp.name;
   showRenameDialog.value = true;
 }
 
-async function renameComp(): Promise<void> {
-  if (!renameCompName.value.trim()) return;
-  await store.command('rename_comp', { compId: props.comp.id, name: renameCompName.value.trim() });
-  renameCompName.value = '';
-  showRenameDialog.value = false;
+async function renameComp(name: string): Promise<void> {
+  await store.command('rename_comp', { compId: props.comp.id, name });
 }
 
 function confirmOrDeleteComp(): void {
@@ -56,9 +52,8 @@ function confirmOrDeleteComp(): void {
 }
 
 async function deleteComp(): Promise<void> {
-  showDeleteConfirm.value = false;
   await audio.stopComp(props.comp.id);
-  await store.command('delete_comp', { groupId: props.groupId, compId: props.comp.id });
+  await store.command('delete_comp', { compId: props.comp.id });
 }
 
 function toggleComp(): void {
@@ -144,40 +139,24 @@ function toggleMute(): void {
     </VMenu>
 
     <!-- Rename dialog -->
-    <VDialog v-model="showRenameDialog" max-width="400">
-      <VCard title="Rename Composition">
-        <VCardText>
-          <VTextField
-            v-model="renameCompName"
-            label="Composition Name"
-            variant="outlined"
-            autofocus
-            @keydown.enter="renameComp"
-          />
-        </VCardText>
-        <VDivider />
-        <VCardActions>
-          <VSpacer />
-          <VBtn text="Cancel" variant="plain" @click="showRenameDialog = false" />
-          <VBtn text="Rename" color="primary" variant="tonal" @click="renameComp" />
-        </VCardActions>
-      </VCard>
-    </VDialog>
+    <PromptDialog
+      v-model="showRenameDialog"
+      title="Rename Composition"
+      label="Composition Name"
+      :initial="comp.name"
+      confirm-label="Rename"
+      @submit="renameComp"
+    />
 
     <!-- Delete confirmation dialog -->
-    <VDialog v-model="showDeleteConfirm" max-width="450">
-      <VCard title="Delete Composition">
-        <VCardText>
-          Are you sure you want to delete "{{ comp.name }}"? This will remove all tracks in it.
-        </VCardText>
-        <VDivider />
-        <VCardActions>
-          <VSpacer />
-          <VBtn text="Cancel" variant="plain" @click="showDeleteConfirm = false" />
-          <VBtn text="Delete" color="error" variant="tonal" @click="deleteComp" />
-        </VCardActions>
-      </VCard>
-    </VDialog>
+    <ConfirmDialog
+      v-model="showDeleteConfirm"
+      title="Delete Composition"
+      :message="`Are you sure you want to delete &quot;${comp.name}&quot;? This will remove all tracks in it.`"
+      confirm-label="Delete"
+      confirm-color="error"
+      @confirm="deleteComp"
+    />
   </VListItem>
 </template>
 

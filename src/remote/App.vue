@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
-import type { Group } from '@generated/index';
+import { isGroupActive } from '../shared/playback';
 import { useRemote } from './composables/useRemote';
 import RemotePlaybackView from './views/RemotePlaybackView.vue';
 
@@ -15,14 +15,6 @@ function setMasterVolume(v: number): void {
   remote.setMasterVolume(v);
 }
 
-function isGroupActive(group: Group): boolean {
-  return group.comps.some((comp) =>
-    comp.tracks.some((track) => {
-      const s = remote.playbackStates.get(track.id);
-      return s?.isPlaying || s?.isPaused;
-    })
-  );
-}
 const activeTab = ref(0);
 
 const toastVisible = ref(false);
@@ -129,7 +121,7 @@ function stopAll(): void {
             v-for="(group, i) in remote.groups.value"
             :key="group.id"
             :value="i"
-            :class="{ 'tab-active': isGroupActive(group) }"
+            :class="{ 'tab-active': isGroupActive(group, remote.playbackStates) }"
             size="small"
           >
             {{ group.name }}

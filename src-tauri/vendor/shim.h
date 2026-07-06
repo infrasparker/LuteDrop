@@ -9,21 +9,27 @@
 // open; the wide APIs (_wfopen) handle full Unicode. Rust builds these from
 // OsStr::encode_wide (see audio/ffi.rs).
 
-// ---- Offline decode (Task 1) ------------------------------------------------
-// Decode a whole audio file (any miniaudio format incl .opus) to interleaved f32.
-// Returns 0 on success. Caller frees with ld_free_decoded.
-int ld_decode_file(const wchar_t* path, float** out_interleaved,
-                   uint64_t* out_frames, uint32_t* out_channels, uint32_t* out_sample_rate);
-void ld_free_decoded(float* p);
+// ---- Streaming decode ---------------------------------------------------
+// Chunked decode for peak generation: open a decoder, pull interleaved f32
+// frames a chunk at a time, close. Replaces the old whole-file decode API
+// (which materialized the entire file in RAM).
+typedef struct ld_decoder ld_decoder;
+
+// Returns NULL if the file can't be opened / decoder init fails.
+ld_decoder* ld_decoder_open(const wchar_t* path, uint32_t* out_channels, uint32_t* out_sample_rate);
+// Reads up to max_frames interleaved f32 frames into out.
+// Returns frames read (0 = end of stream), or -1 on a hard mid-stream decode error.
+int64_t ld_decoder_read(ld_decoder*, float* out, uint64_t max_frames);
+void ld_decoder_close(ld_decoder*);
 
 // Cheap duration probe: inits a decoder (libopus backend registered, same as
-// ld_decode_file), reads the PCM frame count via ma_decoder_get_length_in_pcm_frames
+// ld_decoder_open), reads the PCM frame count via ma_decoder_get_length_in_pcm_frames
 // and divides by the output sample rate -- NO full decode. Returns the duration in
 // seconds, or a negative value if the file can't be opened or its length is unknown
 // (e.g. a streamed source with no reported length).
 double ld_file_duration_secs(const wchar_t* path);
 
-// ---- Playback layer (Task 2) ------------------------------------------------
+// ---- Playback layer ---------------------------------------------------------
 // Opaque handles. The shim owns the underlying miniaudio structs.
 typedef struct ld_engine ld_engine;
 typedef struct ld_group  ld_group;
@@ -60,6 +66,16 @@ void       ld_sound_schedule_start_frame(ld_sound*, uint64_t engine_frame);
 // with a trim_end stops exactly there without overshoot or a hard-cut click.
 // Floored at LD_MIN_FADE_MS and clamped so the fade never starts in the past.
 void       ld_sound_schedule_stop_secs(ld_sound*, double secs_from_now, double fade_secs);
+// Re-parent an already-created sound to `g` (or to the engine endpoint if g is
+// NULL). Wraps ma_node_attach_output_bus (the sound node's output bus 0 -> the
+// group's input bus 0), which is spinlock-synchronized against the audio thread
+// (miniaudio.h 7.2). Used at preload handoff to attach a group-less preloaded
+// sound to its target Voice's group, under the audio mutex.
+void       ld_sound_attach_to_group(ld_sound*, ld_group* g);
+// Seek to `secs` in the data source's own time base WITHOUT starting playback.
+// Streaming seeks can do file I/O (decode-skip for opus/mp3), so this runs on
+// the loader thread before handoff, never under the audio mutex.
+void       ld_sound_seek_secs(ld_sound*, double secs);
 void       ld_sound_destroy(ld_sound*);
 
 #endif

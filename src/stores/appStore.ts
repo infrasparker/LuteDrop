@@ -3,6 +3,7 @@ import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { Group, Comp, Track, AppState, TrackPlaybackState, CompStatus, LibraryEntry, Configuration, BulkImportProgress } from '@generated/index';
 import { useToast } from '../composables/useToast';
+import { compStatus, LIBRARY_PLAYBACK_ID } from '../shared/playback';
 
 export const useAppStore = defineStore('app', () => {
   const groups = ref<Group[]>([]);
@@ -33,6 +34,18 @@ export const useAppStore = defineStore('app', () => {
     configurations.value = state.configurations;
     activeConfigurationId.value = state.activeConfigurationId;
     missingEntryIds.value = new Set(state.missingEntryIds);
+
+    // Prune playback states for tracks that no longer exist (deleted
+    // tracks/comps/configs previously leaked entries forever).
+    const validIds = new Set<string>([LIBRARY_PLAYBACK_ID]);
+    for (const g of state.groups) {
+      for (const c of g.comps) {
+        for (const t of c.tracks) validIds.add(t.id);
+      }
+    }
+    for (const key of [...playbackStates.value.keys()]) {
+      if (!validIds.has(key)) playbackStates.value.delete(key);
+    }
   }
 
   // --- Command helper: invoke a Rust command and hydrate ---
@@ -54,22 +67,7 @@ export const useAppStore = defineStore('app', () => {
   }
 
   function getCompStatus(compId: string): CompStatus {
-    const comp = findComp(compId);
-    if (!comp || comp.tracks.length === 0) return 'inactive';
-
-    const playing = comp.tracks.filter((t) => {
-      const state = playbackStates.value.get(t.id);
-      return state?.isPlaying;
-    });
-    const paused = comp.tracks.filter((t) => {
-      const state = playbackStates.value.get(t.id);
-      return state?.isPaused;
-    });
-
-    if (playing.length === comp.tracks.length) return 'active';
-    if (playing.length > 0) return 'partial';
-    if (paused.length > 0) return 'paused';
-    return 'inactive';
+    return compStatus(findComp(compId), playbackStates.value);
   }
 
   // --- Lookups ---
