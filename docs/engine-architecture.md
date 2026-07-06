@@ -249,17 +249,45 @@ a short overlap (the last `LOOP_CROSSFADE_SECS` before `loop_end`) where the
 outgoing instance fades out while a fresh instance, started at `loop_start`, fades
 in — so the two sum smoothly across the loop point.
 
-The mechanism (`Voice::poll_loop` → `Voice::do_loop_crossfade`, run each tick):
+The mechanism (Plan 3C, engine-clocked ping-pong):
 
-1. When the current sound's position reaches `loop_end − LOOP_CROSSFADE_SECS`,
-   `poll_loop` returns `PollResult::Looped` and triggers `do_loop_crossfade`.
-2. The outgoing instance is `stop`-ped with a `LOOP_CROSSFADE_SECS` fade-out,
-   taken out of the `current` slot, and **parked** in the reaper
-   (`hold_until_silent`) so it keeps mixing through the fade instead of being
-   dropped mid-fade (a mid-fade `ma_sound_uninit` is a hard cut → pop).
-3. A fresh instance is started at `loop_start` with a matching
-   `LOOP_CROSSFADE_SECS` fade-in, rebuilt from a `LoopRestart` snapshot captured
-   at play time.
+1. When a looping sound starts, the Voice requests its next instance be
+   preloaded off-lock (`loop_wants_preload` → the loader thread opens + seeks it
+   to `loop_start` without the mutex).
+2. When the preload completes (an earlier poll tick, well before the loop
+   point), the tick attaches it to the group and — for tracks
+   (`LoopAnchor::EngineClock`) — schedules BOTH sides on the engine clock: the
+   incoming to start at the `loop_end − LOOP_CROSSFADE_SECS` frame with a
+   fade-in, and the outgoing to stop, faded, ending at `loop_end`. The audio
+   clock then executes the crossfade regardless of poll timing, so a poll stall
+   can no longer cause a seam.
+3. A later tick detects the swap completed, parks the (already-faded) outgoing
+   in the reaper, promotes the incoming to `current`, and requests the next
+   preload.
+
+The library preview (`LoopAnchor::Immediate`) uses the same preloaded instance
+but starts it immediately when the window is detected rather than frame-anchored
+(preserving its historical behavior with strictly fewer file opens). If the
+preload is not ready by the window on either path, the Voice falls back to the
+pre-3C synchronous `do_loop_crossfade` (open + play at the window) and warns once
+per path.
+
+**Why the swap check sits above the Playing gate.** `Voice::poll_loop` detects
+the staged-instance swap (`self.next_loop.is_some()`) *before* its own
+`!matches!(st, Playing) || !should_run` early return, not after — this ordering
+is load-bearing, not incidental. The EngineClock swap trigger fires on
+`!current.is_playing() || current.at_end() || pos >= loop_end`, which is the
+exact logical complement of the `Playing` gate: put the check below the gate
+and it becomes provably unreachable. The reason is timing, not logic — the
+outgoing's *scheduled* stop (step 2 above) makes it report non-`Playing` on
+precisely the tick the swap must run (the "stopped-outgoing tick"). Gate the
+check behind `Playing` and that tick instead falls through to
+`transitions.update`, which reads the stopped sound as a natural end and stops
+the track — an EngineClock seamless track would die one tick after its first
+`loop_end` whenever the preload arrived in time (a fast drive breaks; a slow
+drive is masked by the synchronous fallback). Pause safety is unaffected: `pause()`
+discards any staged instance first, so `next_loop` is `None` whenever a Voice is
+paused, and the swap check is skipped.
 
 ```rust
 pub const LOOP_CROSSFADE_SECS: f64 = 0.12;   // voice.rs
@@ -282,7 +310,10 @@ happened to run, so the overlap lines up precisely. The library preview passes
 at play time (`file_path`, `volume`, `trim_start`/`trim_end`, `loop_region`,
 `loop_start_position`), every loop iteration is byte-for-byte the same source and
 trim. `Voice::set_volume` also updates the stored `LoopRestart.volume` so a
-volume change mid-loop carries into the next iteration.
+volume change mid-loop carries into the next iteration — and, if a next-loop
+instance is already staged (`next_loop`), propagates to that instance's sound
+node and its `loop_incoming_restart.volume` too, so a volume change doesn't
+arrive one iteration late for whichever instance is currently pre-picked.
 
 ---
 
@@ -302,18 +333,33 @@ loop {
 
 `AudioEngine::poll` (`mod.rs`), each tick:
 
+0. `drain_completions()` — first thing each tick: pull finished off-lock
+   preloads off the loader's completion channel (`try_recv` loop). Each is
+   routed by sequence token (`loader::route_completion`); stale ones (target
+   gone or superseded) are dropped. Accepted loop instances are handed to their
+   Voice (`accept_loop_incoming`); accepted next-clip instances wait in
+   `pending` until the transition consumes them.
 1. For every real track, `orchestrator::poll_track`, which:
    - `voice.drop_finished()` — **the reaper**: drop any parked fade-out sounds
      that have gone silent (run first, so it happens every tick regardless of
      which branch returns early below).
-   - `voice.poll_loop(engine, playing && !paused, StopAtEnd::No)` — drive the
-     seamless-loop crossfade (tracks never stop a non-looping sound here; the
-     transition state machine detects a natural end instead).
-   - `transitions.update(...)` → execute the returned `TransitionAction`.
+   - `voice.poll_loop(...)` — now **bookkeeping** for seamless loops: when a
+     preloaded next instance has been scheduled (engine-clocked) it detects the
+     swap, parks the outgoing, and clears the request flag. Only if the preload
+     is not ready by the crossfade window (slow drive) does it fall back to the
+     old synchronous restart (with a one-per-path `log::warn!`). The
+     swap-detection check runs *before* `poll_loop`'s own
+     `!matches!(st, Playing) || !should_run` early return, not after it — see
+     "Why the swap check sits above the Playing gate" below.
+   - `transitions.update(..., next_clip_index)` — the next index is now
+     **pre-picked at clip-start time** and passed in, not computed here.
 2. Collect a `TrackPlaybackState` per track.
 3. `library.drop_finished()` then `library.poll_loop(engine, true, StopAtEnd::Yes)`
    — the preview *does* stop a non-looping sound at its `trim_end` here.
-4. Always push a `__library` state (a stopped one if nothing plays) so the
+4. `request_loop_preloads()` and `request_next_clip_preloads()` queue the next
+   off-lock opens — for every looping Voice (library + tracks) that wants its
+   next loop instance, and for every playing track's pre-picked next clip.
+5. Always push a `__library` state (a stopped one if nothing plays) so the
    frontend can tell when the preview ends.
 
 **What it emits.** Two channels:
@@ -356,6 +402,17 @@ valid across a panic (single-field mutations only), and permanently killing audi
 because one poll tick panicked would be worse. The poison is logged. This is also
 why the raw pointers can be `unsafe impl Send` (see `ffi.rs`): access is
 serialized to one thread at a time by this mutex.
+
+**Exception (Plan 3C): the loader thread.** `audio/loader.rs` runs one
+background thread that creates and pre-seeks streaming sounds *without* the
+audio mutex, using `ffi::EngineRef` (a `Send + Sync` engine-pointer copy limited
+to sound creation). This is sound because miniaudio synchronizes node
+init/attach/uninit internally with spinlocks (miniaudio.h §7.2) and the engine
+outlives the loader thread (`AudioEngine.loader` is joined on drop, before the
+`engine` field). Preloaded sounds are created group-less (engine endpoint) and
+only become audible after the poll tick re-parents them to a live group and
+starts them — under the mutex (`Voice::start_preloaded` / `accept_loop_incoming`).
+A group-less, never-started preloaded `Sound` may be dropped on any thread.
 
 **3. DB lock before audio lock.** Actions that touch both take the DB lock first,
 then the audio lock (e.g. `set_track_volume_action` persists to the DB, then
@@ -415,3 +472,40 @@ sound's own engine-clock state (silent → drop now); the wall-clock
    `orchestrator::start_clip`.
 4. Extend the `play_library_sound` command (`commands.rs` / `actions.rs`) and the
    `playLibrarySound` call in `src/composables/useAudio.ts`.
+
+---
+
+## Plan 3C manual verification (live device)
+
+Run the desktop app with a real audio device. `cargo test` covers the pure
+logic (seq-routing, backoff decision, `update` index threading, `pick_next_clip_index`);
+these cover the device-only behaviors.
+
+1. **Seamless loop over a slow drive.** Put a looping seamless-mode clip on a
+   network/removable drive; play it. Expected: no seam or pop at the loop point
+   across many iterations, including while other audio commands run (the open is
+   off-lock now). Temporarily throttle/disconnect the drive mid-loop: expect a
+   single `log::warn!` about a synchronous restart (fallback), not silence or a
+   command freeze. Also confirm the pre-seek actually removes the stall rather
+   than deferring it: with an opus/mp3 source and a non-zero `loop_start`, the
+   first audio of each incoming instance must arrive on time with no dropout at
+   the swap — a dropout there would mean the decode-skip I/O was deferred to
+   the audio thread's first read instead of happening on the loader thread.
+   Then pause the track while a staged next instance exists (pause shortly
+   after a loop point, when the preload has landed): expect full silence during
+   the pause (no ghost instance starting underneath) and a clean, seamless
+   resume.
+2. **Transition under load.** A Sequence/Shuffle track with crossfade or gapless
+   transitions, clips on a slow drive. Expected: transitions stay on time (the
+   next clip was preloaded); the crossfade seam is inaudible. Confirm shuffle
+   still avoids immediate repeats and the distribution looks unchanged (the
+   choice now commits one clip early — inaudible).
+3. **Teardown mid-preload.** Start playback that triggers a preload, then quit
+   the app while a preload is in flight (easiest on a slow drive). Expected:
+   clean exit, no crash — quit may pause up to the OS file-open timeout if a
+   load is blocked on a dead drive (acceptable; the join is required for
+   soundness — the loader must not outlive the engine, so do NOT detach the
+   thread). Any group-less pending sound drops before the engine.
+4. **Failed-start backoff.** Point a clip at a missing/disconnected file and play
+   the track. Expected: one failed start, then no retry for ~2 s (no 20 Hz
+   open storm); the file's missing state is still reported to the UI.

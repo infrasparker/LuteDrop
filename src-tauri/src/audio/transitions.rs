@@ -59,12 +59,16 @@ impl TransitionManager {
         clip_duration: Option<f64>,
         clip_start: Option<f64>,
         mode: &TrackMode,
-        current_clip_index: Option<usize>,
-        clip_count: usize,
-        clips_played: usize,
+        // Superseded by `next_clip_index` (D7 pre-pick moved the compute-time
+        // pick to `start_clip`); kept in the signature so callers don't need to
+        // restructure their state-gathering, but no longer read here.
+        _current_clip_index: Option<usize>,
+        _clip_count: usize,
+        _clips_played: usize,
         is_paused: bool,
         sound_playing: bool,
         sound_stopped: bool,
+        next_clip_index: Option<usize>,
     ) -> TransitionAction {
         if is_paused {
             return TransitionAction::None;
@@ -89,7 +93,7 @@ impl TransitionManager {
 
         // Check for sound finished naturally
         if sound_stopped && !is_paused {
-            let next = pick_next_clip_index(mode, current_clip_index, clip_count, clips_played);
+            let next = next_clip_index;
             return match next {
                 Some(idx) => {
                     // Determine transition type
@@ -145,8 +149,7 @@ impl TransitionManager {
                 };
 
                 if position >= clip_dur - effective_xfade {
-                    let next = pick_next_clip_index(mode, current_clip_index, clip_count, clips_played);
-                    if let Some(idx) = next {
+                    if let Some(idx) = next_clip_index {
                         return TransitionAction::StartCrossfade {
                             next_clip_index: idx,
                             duration: effective_xfade,
@@ -268,6 +271,20 @@ fn gap_delay(min: f64, max: f64) -> f64 {
     }
 }
 
+/// How long after a failed clip start to suppress transition-driven retries
+/// (D8). Without this, a disconnected drive triggers a ~20 Hz blocking-open
+/// retry storm on the poll thread.
+pub const START_RETRY_BACKOFF: Duration = Duration::from_secs(2);
+
+/// Whether a clip start should be suppressed because a recent start failed and
+/// the backoff window has not elapsed. Pure decision (testable without a device).
+pub fn retry_suppressed(last_failure: Option<Instant>, now: Instant) -> bool {
+    match last_failure {
+        Some(t) => now.duration_since(t) < START_RETRY_BACKOFF,
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,5 +337,102 @@ mod tests {
         assert_eq!(pick_next_clip_index(&seq(false), Some(0), 3, 1), Some(1));
         assert!(pick_next_clip_index(&seq(false), Some(2), 3, 3).is_none());
         assert_eq!(pick_next_clip_index(&seq(true), Some(2), 3, 3), Some(0));
+    }
+
+    fn seq(repeat: bool) -> TrackMode {
+        TrackMode::Sequence { repeat, transition: TrackTransition::Gapless }
+    }
+
+    #[test]
+    fn update_uses_prepicked_next_index_on_natural_end() {
+        let tm = TransitionManager::new();
+        // sound_stopped = true, not paused: the natural-end branch fires and must
+        // use the PASSED next index, not recompute it.
+        let action = tm.update(
+            10.0, Some(10.0), Some(0.0), &seq(true),
+            Some(1), 3, 2, false, /*playing*/ false, /*stopped*/ true,
+            /*next_clip_index*/ Some(2),
+        );
+        match action {
+            TransitionAction::AdvanceClip { next_clip_index } => assert_eq!(next_clip_index, 2),
+            _ => panic!("expected AdvanceClip{{2}}"),
+        }
+    }
+
+    #[test]
+    fn update_ends_track_when_prepicked_index_is_none() {
+        let tm = TransitionManager::new();
+        let action = tm.update(
+            10.0, Some(10.0), Some(0.0), &seq(false),
+            Some(2), 3, 3, false, false, true,
+            None,
+        );
+        assert!(matches!(action, TransitionAction::None));
+    }
+
+    fn seq_crossfade() -> TrackMode {
+        TrackMode::Sequence { repeat: true, transition: TrackTransition::Crossfade }
+    }
+
+    #[test]
+    fn update_crossfade_trigger_uses_prepicked_next_index() {
+        let tm = TransitionManager::new();
+        // clip_dur=10.0, clip_start=0.0: playable (10.0) > CROSSFADE_OVERLAP
+        // (4.0), so effective_xfade == CROSSFADE_OVERLAP and the window opens at
+        // position 6.0. position=7.0 is inside it; sound still playing, not
+        // stopped, not paused: the crossfade-trigger branch fires and must use
+        // the PASSED next index, not recompute it.
+        let action = tm.update(
+            7.0, Some(10.0), Some(0.0), &seq_crossfade(),
+            Some(0), 3, 1, /*is_paused*/ false, /*sound_playing*/ true, /*sound_stopped*/ false,
+            /*next_clip_index*/ Some(2),
+        );
+        match action {
+            TransitionAction::StartCrossfade { next_clip_index, duration } => {
+                assert_eq!(next_clip_index, 2);
+                assert_eq!(duration, CROSSFADE_OVERLAP);
+            }
+            _ => panic!("expected StartCrossfade{{next_clip_index: 2}}"),
+        }
+    }
+
+    #[test]
+    fn update_crossfade_trigger_does_not_fire_without_prepicked_index() {
+        let tm = TransitionManager::new();
+        // Same in-window position/state as above, but no pre-picked next clip
+        // (e.g. a non-repeating track on its last clip): no crossfade fires.
+        let action = tm.update(
+            7.0, Some(10.0), Some(0.0), &seq_crossfade(),
+            Some(0), 3, 1, false, true, false,
+            None,
+        );
+        assert!(matches!(action, TransitionAction::None));
+    }
+
+    #[test]
+    fn retry_suppressed_only_within_backoff() {
+        let now = Instant::now();
+        assert!(!retry_suppressed(None, now));
+        assert!(retry_suppressed(Some(now), now)); // just failed
+        let old = now - (START_RETRY_BACKOFF + Duration::from_millis(1));
+        assert!(!retry_suppressed(Some(old), now)); // past the window
+    }
+
+    /// I-1: `request_next_clip_preloads` gates on this same pure function via
+    /// `ManagedTrack.last_preload_failure`. Pins the three decision points that
+    /// matter for that gate: suppressed right after a stamped failure, not
+    /// suppressed once the backoff window has elapsed, and not suppressed once
+    /// the stamp has been cleared (e.g. by a successful preload or a track
+    /// reset/re-pick).
+    #[test]
+    fn next_clip_preload_retry_gate_suppressed_then_clears() {
+        let now = Instant::now();
+        // Just stamped a failure: suppressed.
+        assert!(retry_suppressed(Some(now), now));
+        // Past the backoff window: not suppressed.
+        let old = now - (START_RETRY_BACKOFF + Duration::from_millis(1));
+        assert!(!retry_suppressed(Some(old), now));
+        // Stamp cleared (None): not suppressed.
+        assert!(!retry_suppressed(None, now));
     }
 }

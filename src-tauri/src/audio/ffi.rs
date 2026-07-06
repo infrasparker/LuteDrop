@@ -23,9 +23,17 @@
 //! while the caller holds `AppStateContainer.audio: Mutex<AudioEngine>` —
 //! that serialization is the entire basis for the `unsafe impl Send` below on
 //! `Engine`/`Group`/`Sound` (miniaudio's objects are not internally
-//! thread-safe). `ld_decoder_*` (`StreamingDecoder`) is an unrelated handle
-//! that never touches the engine or that mutex, and is safe on any single
-//! thread as long as one `StreamingDecoder` isn't shared across threads.
+//! thread-safe). The single exception is `EngineRef` (below), a `Send + Sync`
+//! engine-pointer copy used ONLY by the loader thread (`audio/loader.rs`) to
+//! create and pre-seek group-less sounds off the mutex; its safety rests on
+//! miniaudio's internal spinlock synchronization of node init/attach/uninit
+//! (miniaudio.h §7.2) and on the engine outliving the loader thread (the
+//! `AudioEngine.loader` field is joined on drop, before the `engine` field).
+//! A group-less, never-started preloaded `Sound` may therefore be created,
+//! seeked, and dropped on the loader thread. `ld_decoder_*` (`StreamingDecoder`)
+//! is an unrelated handle that never touches the engine or that mutex, and is
+//! safe on any single thread as long as one `StreamingDecoder` isn't shared
+//! across threads.
 //!
 //! **Error conventions.** `ld_*_create`/`ld_decoder_open` return NULL on
 //! failure. `ld_sound_play` returns a non-zero `c_int` on failure (see
@@ -82,6 +90,8 @@ extern "C" {
     fn ld_sound_at_end(s: *mut LdSound) -> c_int;
     fn ld_sound_schedule_start_frame(s: *mut LdSound, engine_frame: u64);
     fn ld_sound_schedule_stop_secs(s: *mut LdSound, secs_from_now: f64, fade_secs: f64);
+    fn ld_sound_attach_to_group(s: *mut LdSound, g: *mut LdGroup);
+    fn ld_sound_seek_secs(s: *mut LdSound, secs: f64);
     fn ld_sound_destroy(s: *mut LdSound);
 }
 
@@ -134,6 +144,80 @@ pub struct Sound {
 unsafe impl Send for Engine {}
 unsafe impl Send for Group {}
 unsafe impl Send for Sound {}
+
+/// A `Send + Sync` copy of the raw engine pointer, handed to the loader thread
+/// for SOUND CREATION ONLY (`create_sound_unattached`). It exists so a
+/// background thread can open + pre-seek streaming sounds without holding the
+/// `AudioEngine` mutex.
+///
+// SAFETY: This is the one place a miniaudio engine pointer is used off the
+// audio mutex, so the argument is spelled out in full.
+//
+// (a) Internal synchronization. The engine operations reachable through an
+//     `EngineRef` are: `ma_sound_init_from_file_w` (via `create_sound_unattached`);
+//     `ma_sound_seek_to_second` and `ma_sound_get_length_in_seconds` (via
+//     `Sound::seek_secs`/`Sound::length_secs`, called from `sound::preload` on
+//     the loader thread to pre-seek and size the preloaded sound); and —
+//     because a never-started, group-less `Sound` may be dropped on this
+//     thread — `ma_sound_uninit`. All four mutate or read the miniaudio node
+//     graph, and miniaudio synchronizes node attachment, detachment, and
+//     uninitialization internally with spinlocks, crafted so that
+//     `ma_node_graph_read_pcm_frames` on the audio thread stays lock-free
+//     (miniaudio.h §7.2). Node uninit waits until the audio thread has
+//     finished with the node before freeing it. `ma_sound_init_from_file_*`
+//     also routes through the resource manager, whose multi-producer/
+//     multi-consumer job queue is likewise internally synchronized (spinlock +
+//     per-object serial execution counters, miniaudio.h §6.2.1, ~:1884-1898).
+//     `ma_sound_seek_to_second` and `ma_sound_get_length_in_seconds` are safe
+//     here for a stronger reason than synchronization alone: at the point
+//     `sound::preload` calls them the sound is never-started — its node has
+//     never entered the playing state, so the audio thread's graph read
+//     (`ma_node_graph_read_pcm_frames`) skips it as a stopped node and never
+//     concurrently touches its data source. The seek/length calls are
+//     therefore not racing the audio thread over this node at all, let alone
+//     relying on miniaudio's internal locking to arbitrate it. No other engine
+//     state is touched through this handle: volume, clock, group, and every
+//     already-created `Sound`/`Group` stay behind the `AudioEngine` mutex
+//     exactly as before.
+// (b) Lifetime. The pointer must outlive the loader thread. `AudioEngine` owns
+//     both the loader thread (`loader` field, joined on drop) and the engine
+//     (`engine` field, declared LAST so it drops after the loader is joined),
+//     and `AudioEngine` lives inside `AppStateContainer`, whose `Arc` is held by
+//     Tauri managed state for the process lifetime. The loader thread is joined
+//     in `Loader::drop` before the `engine` field is dropped, so the pointer is
+//     never dangling while the loader could dereference it.
+// (c) Not for playback. `EngineRef` deliberately exposes no play/stop/volume/
+//     clock method. A preloaded `Sound` is group-less and never started on the
+//     loader thread; it only becomes audible after the poll tick attaches it to
+//     a live group and starts it — under the mutex.
+#[derive(Clone, Copy)]
+pub struct EngineRef(*mut LdEngine);
+
+unsafe impl Send for EngineRef {}
+unsafe impl Sync for EngineRef {}
+
+impl Engine {
+    /// A sound-creation-only handle to this engine, safe to move to the loader
+    /// thread (see [`EngineRef`]).
+    pub fn engine_ref(&self) -> EngineRef {
+        EngineRef(self.0)
+    }
+}
+
+impl EngineRef {
+    /// Create a **group-less** streaming sound routed to the engine endpoint,
+    /// without starting it. Runs on the loader thread. The poll tick re-parents
+    /// it to a live group (`Sound::attach_to_group`) and starts it under the mutex.
+    pub fn create_sound_unattached(&self, path: &str) -> Result<Sound, String> {
+        let wide = to_wide(path);
+        // group = NULL -> engine endpoint (shim `ld_sound_create` accepts NULL).
+        let ptr = unsafe { ld_sound_create(self.0, std::ptr::null_mut(), wide.as_ptr(), 1) };
+        if ptr.is_null() {
+            return Err(format!("failed to preload sound for {path}"));
+        }
+        Ok(Sound { ptr })
+    }
+}
 
 impl Engine {
     /// Create the audio engine. Fails if no usable audio backend can init.
@@ -217,6 +301,17 @@ impl Sound {
         Ok(())
     }
 
+    /// Start from the current cursor WITHOUT seeking (the cursor was pre-set by
+    /// `seek_secs` on the loader thread), applying `fade_in_secs`. Relies on
+    /// `ld_sound_play` skipping its internal seek when `start_secs <= 0`.
+    pub fn play_no_seek(&self, fade_in_secs: f64) -> Result<(), String> {
+        let rc = unsafe { ld_sound_play(self.ptr, 0.0, fade_in_secs) };
+        if rc != 0 {
+            return Err(format!("failed to start preloaded sound (code {rc})"));
+        }
+        Ok(())
+    }
+
     /// Stop playback. With `fade_out_secs > 0`, fades out first. Cursor is kept.
     pub fn stop(&self, fade_out_secs: f64) {
         unsafe { ld_sound_stop(self.ptr, fade_out_secs) }
@@ -267,6 +362,19 @@ impl Sound {
     /// exactly at its `trim_end` without overshoot or a hard-cut click.
     pub fn schedule_stop_secs(&self, secs_from_now: f64, fade_secs: f64) {
         unsafe { ld_sound_schedule_stop_secs(self.ptr, secs_from_now, fade_secs) }
+    }
+
+    /// Re-parent this sound to `group`'s sub-mix (from the engine endpoint a
+    /// preloaded sound was created against). Must be called under the audio
+    /// mutex, with `group` provably alive (see the loader handoff in mod.rs).
+    pub fn attach_to_group(&self, group: &Group) {
+        unsafe { ld_sound_attach_to_group(self.ptr, group.ptr) }
+    }
+
+    /// Seek to `secs` without starting. Called on the LOADER thread only (may do
+    /// file I/O); never under the audio mutex.
+    pub fn seek_secs(&self, secs: f64) {
+        unsafe { ld_sound_seek_secs(self.ptr, secs) }
     }
 }
 
