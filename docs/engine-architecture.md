@@ -249,7 +249,7 @@ a short overlap (the last `LOOP_CROSSFADE_SECS` before `loop_end`) where the
 outgoing instance fades out while a fresh instance, started at `loop_start`, fades
 in — so the two sum smoothly across the loop point.
 
-The mechanism (Plan 3C, engine-clocked ping-pong):
+The mechanism (engine-clocked ping-pong):
 
 1. When a looping sound starts, the Voice requests its next instance be
    preloaded off-lock (`loop_wants_preload` → the loader thread opens + seeks it
@@ -269,7 +269,7 @@ The library preview (`LoopAnchor::Immediate`) uses the same preloaded instance
 but starts it immediately when the window is detected rather than frame-anchored
 (preserving its historical behavior with strictly fewer file opens). If the
 preload is not ready by the window on either path, the Voice falls back to the
-pre-3C synchronous `do_loop_crossfade` (open + play at the window) and warns once
+synchronous `do_loop_crossfade` (open + play at the window) and warns once
 per path.
 
 **Why the swap check sits above the Playing gate.** `Voice::poll_loop` detects
@@ -403,7 +403,7 @@ because one poll tick panicked would be worse. The poison is logged. This is als
 why the raw pointers can be `unsafe impl Send` (see `ffi.rs`): access is
 serialized to one thread at a time by this mutex.
 
-**Exception (Plan 3C): the loader thread.** `audio/loader.rs` runs one
+**Exception: the loader thread.** `audio/loader.rs` runs one
 background thread that creates and pre-seeks streaming sounds *without* the
 audio mutex, using `ffi::EngineRef` (a `Send + Sync` engine-pointer copy limited
 to sound creation). This is sound because miniaudio synchronizes node
@@ -475,7 +475,7 @@ sound's own engine-clock state (silent → drop now); the wall-clock
 
 ---
 
-## Plan 3C manual verification (live device)
+## Manual verification: audio engine (live device)
 
 Run the desktop app with a real audio device. `cargo test` covers the pure
 logic (seq-routing, backoff decision, `update` index threading, `pick_next_clip_index`);

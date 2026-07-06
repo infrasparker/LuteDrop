@@ -7,9 +7,10 @@ use super::sound::{self, PlayParams, PlaybackState, SoundHandle};
 /// Sized to at least TWO poll periods (2.4 × `POLL_INTERVAL`) so a single
 /// delayed tick can't land the check past loop_end and audibly overshoot the
 /// loop point.
-/// Shared by the library preview loop and seamless-mode tracks.
-/// (Engine-clock loop scheduling — removing the poll dependency entirely —
-/// is Plan 3C, alongside the loop-instance preload.)
+/// Shared by the library preview loop and seamless-mode tracks. When a
+/// preloaded next instance is staged, the crossfade is scheduled on the
+/// engine clock and this window only sizes the fades; the poll-timing
+/// tolerance matters on the synchronous fallback path (no staged instance).
 pub const LOOP_CROSSFADE_SECS: f64 = 0.12;
 
 /// De-click ramp applied to a scheduled trim-end stop. Short enough to be
