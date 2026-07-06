@@ -354,8 +354,9 @@ loop {
      swap-detection check runs *before* `poll_loop`'s own
      `!matches!(st, Playing) || !should_run` early return, not after it — see
      "Why the swap check sits above the Playing gate" below.
-   - `transitions.update(..., next_clip_index)` — the next index is now
-     **pre-picked at clip-start time** and passed in, not computed here.
+   - `transitions.update(&TickInputs { .. })` — one input struct carrying
+     position/state plus `next_clip_index`, which is **pre-picked at
+     clip-start time** and passed in, not computed here.
 2. Collect a `TrackPlaybackState` per track.
 3. `library.drop_finished()` then `library.poll_loop(engine, true, StopAtEnd::Yes)`
    — the preview *does* stop a non-looping sound at its `trim_end` here.
