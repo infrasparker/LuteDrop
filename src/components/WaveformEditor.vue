@@ -4,6 +4,7 @@ import { useAudio } from '../composables/useAudio';
 import { useAppStore } from '../stores/appStore';
 import { useWaveformData } from '../composables/useWaveformData';
 import { useWaveformZoom } from '../composables/useWaveformZoom';
+import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
 
 const props = defineProps<{
   filePath: string;
@@ -64,7 +65,7 @@ let resizeObserver: ResizeObserver | null = null;
 function getPlaybackState() {
   if (props.trackId) return store.playbackStates.get(props.trackId);
   if (props.entryId && store.libraryPlayingEntryId === props.entryId) {
-    return store.playbackStates.get('__library');
+    return store.playbackStates.get(LIBRARY_PLAYBACK_ID);
   }
   return undefined;
 }

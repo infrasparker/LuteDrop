@@ -5,6 +5,8 @@ import { useAudio } from '../composables/useAudio';
 import WaveformEditor from './WaveformEditor.vue';
 import { open } from '@tauri-apps/plugin-dialog';
 import { AUDIO_EXTENSIONS } from '../constants';
+import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
+import { useLocalVolume } from '../shared/useLocalVolume';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -54,16 +56,10 @@ async function toggleLoop(): Promise<void> {
 const editName = ref('');
 const editTags = ref<string[]>([]);
 const editEntryType = ref('music');
-const localGain = ref(1.0);
+const { local: localGain } = useLocalVolume(() => entry.value?.volume);
 
-const previewState = computed(() => store.playbackStates.get('__library'));
+const previewState = computed(() => store.playbackStates.get(LIBRARY_PLAYBACK_ID));
 const isPreviewPlaying = computed(() => store.libraryPlayingEntryId === props.entryId && previewState.value?.isPlaying);
-
-watch(previewState, (state) => {
-  if (!state?.isPlaying && store.libraryPlayingEntryId === props.entryId) {
-    store.libraryPlayingEntryId = null;
-  }
-});
 
 function togglePreview(): void {
   if (isPreviewPlaying.value) {
@@ -88,11 +84,6 @@ watch(() => props.modelValue, (open) => {
     localGain.value = entry.value.volume;
   }
 }, { immediate: true });
-
-// Sync gain from store when not dragging
-watch(() => entry.value?.volume, (v) => {
-  if (v !== undefined) localGain.value = v;
-});
 
 // --- Name ---
 async function saveName(): Promise<void> {

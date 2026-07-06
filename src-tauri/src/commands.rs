@@ -2,7 +2,7 @@ use serde::Serialize;
 use tauri::State;
 use std::sync::Arc;
 use crate::actions;
-use crate::models::{AppState, LibraryEntryUsage};
+use crate::models::{AppState, LibraryEntryUsage, TrackUpdates};
 use crate::state::AppStateContainer;
 use crate::waveform;
 
@@ -44,8 +44,8 @@ pub fn add_comp(state: State<'_, Arc<AppStateContainer>>, group_id: String, name
 }
 
 #[tauri::command]
-pub fn delete_comp(state: State<'_, Arc<AppStateContainer>>, group_id: String, comp_id: String) -> Result<AppState, String> {
-    actions::delete_comp(&state, &group_id, &comp_id)
+pub fn delete_comp(state: State<'_, Arc<AppStateContainer>>, comp_id: String) -> Result<AppState, String> {
+    actions::delete_comp(&state, &comp_id)
 }
 
 #[tauri::command]
@@ -54,13 +54,13 @@ pub fn add_track(state: State<'_, Arc<AppStateContainer>>, comp_id: String, name
 }
 
 #[tauri::command]
-pub fn delete_track(state: State<'_, Arc<AppStateContainer>>, comp_id: String, track_id: String) -> Result<AppState, String> {
-    actions::delete_track(&state, &comp_id, &track_id)
+pub fn delete_track(state: State<'_, Arc<AppStateContainer>>, track_id: String) -> Result<AppState, String> {
+    actions::delete_track(&state, &track_id)
 }
 
 #[tauri::command]
-pub fn update_track(state: State<'_, Arc<AppStateContainer>>, comp_id: String, track_id: String, updates: serde_json::Value) -> Result<AppState, String> {
-    actions::update_track(&state, &comp_id, &track_id, updates)
+pub fn update_track(state: State<'_, Arc<AppStateContainer>>, track_id: String, updates: TrackUpdates) -> Result<AppState, String> {
+    actions::update_track(&state, &track_id, updates)
 }
 
 #[tauri::command]
@@ -132,22 +132,22 @@ pub fn stop_track(state: State<'_, Arc<AppStateContainer>>, track_id: String) ->
 
 #[tauri::command]
 pub fn set_master_volume(state: State<'_, Arc<AppStateContainer>>, volume: f64) -> Result<(), String> {
-    actions::set_master_volume_action(&state, volume)
+    actions::set_master_volume(&state, volume)
 }
 
 #[tauri::command]
 pub fn set_track_volume(state: State<'_, Arc<AppStateContainer>>, track_id: String, volume: f64) -> Result<(), String> {
-    actions::set_track_volume_action(&state, &track_id, volume)
+    actions::set_track_volume(&state, &track_id, volume)
 }
 
 #[tauri::command]
 pub fn set_clip_volume(state: State<'_, Arc<AppStateContainer>>, clip_id: String, volume: f64) -> Result<(), String> {
-    actions::set_clip_volume_action(&state, &clip_id, volume)
+    actions::set_clip_volume(&state, &clip_id, volume)
 }
 
 #[tauri::command]
 pub fn set_library_volume(state: State<'_, Arc<AppStateContainer>>, volume: f64) -> Result<(), String> {
-    actions::set_library_volume_action(&state, volume)
+    actions::set_library_volume(&state, volume)
 }
 
 #[tauri::command]
@@ -262,7 +262,7 @@ pub fn update_library_entry_type(
     entry_id: String,
     entry_type: String,
 ) -> Result<AppState, String> {
-    actions::update_library_entry_type_action(&state, &entry_id, &entry_type)
+    actions::update_library_entry_type(&state, &entry_id, &entry_type)
 }
 
 #[tauri::command]
@@ -274,7 +274,7 @@ pub fn update_library_entry_markers(
     loop_start: Option<f64>,
     loop_end: Option<f64>,
 ) -> Result<AppState, String> {
-    actions::update_library_entry_markers_action(&state, &entry_id, trim_start, trim_end, loop_start, loop_end)
+    actions::update_library_entry_markers(&state, &entry_id, trim_start, trim_end, loop_start, loop_end)
 }
 
 #[tauri::command]
@@ -283,7 +283,7 @@ pub fn update_library_entry_volume(
     entry_id: String,
     volume: f64,
 ) -> Result<AppState, String> {
-    actions::update_library_entry_volume_action(&state, &entry_id, volume)
+    actions::update_library_entry_volume(&state, &entry_id, volume)
 }
 
 #[tauri::command]
@@ -292,7 +292,7 @@ pub fn rename_library_entry(
     entry_id: String,
     name: String,
 ) -> Result<AppState, String> {
-    actions::rename_library_entry_action(&state, &entry_id, name)
+    actions::rename_library_entry(&state, &entry_id, name)
 }
 
 #[tauri::command]
@@ -300,7 +300,7 @@ pub fn delete_library_entry(
     state: State<'_, Arc<AppStateContainer>>,
     entry_id: String,
 ) -> Result<AppState, String> {
-    actions::delete_library_entry_action(&state, &entry_id)
+    actions::delete_library_entry(&state, &entry_id)
 }
 
 #[tauri::command]
@@ -308,12 +308,12 @@ pub fn get_library_entry_usage(
     state: State<'_, Arc<AppStateContainer>>,
     entry_id: String,
 ) -> Result<Vec<LibraryEntryUsage>, String> {
-    actions::get_library_entry_usage_action(&state, &entry_id)
+    actions::get_library_entry_usage(&state, &entry_id)
 }
 
 #[tauri::command]
 pub fn scan_folder_for_audio(folder_path: String) -> Result<Vec<String>, String> {
-    actions::scan_folder_for_audio_action(&folder_path)
+    actions::scan_folder_for_audio(&folder_path)
 }
 
 #[tauri::command]
@@ -323,7 +323,7 @@ pub fn bulk_import_library_entries(
     tags: Vec<String>,
     entry_type: String,
 ) -> Result<(), String> {
-    actions::start_bulk_import_library_entries_action(state.inner(), paths, tags, entry_type)
+    actions::start_bulk_import_library_entries(state.inner(), paths, tags, entry_type)
 }
 
 #[tauri::command]

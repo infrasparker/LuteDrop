@@ -1,15 +1,15 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed } from 'vue';
 import type { Clip } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
 import { open } from '@tauri-apps/plugin-dialog';
 import { AUDIO_EXTENSIONS } from '../constants';
+import { useLocalVolume } from '../shared/useLocalVolume';
 
 const props = defineProps<{
   clip: Clip;
   trackId: string;
-  compId: string;
 }>();
 
 const store = useAppStore();
@@ -20,16 +20,10 @@ const isCurrentClip = computed(() => playbackState.value?.currentClipId === prop
 const isPlaying = computed(() => isCurrentClip.value && playbackState.value?.isPlaying);
 
 // Local ref for smooth slider — audio engine persists to DB directly
-const localVolume = ref(props.clip.volume);
-watch(() => props.clip.volume, (v) => { localVolume.value = v; });
+const { local: localVolume, set: setVolume } = useLocalVolume(() => props.clip.volume, (v) => audio.setClipVolume(props.clip.id, v));
 
 function playClip(): void {
   audio.playTrackClip(props.trackId, props.clip.id);
-}
-
-function setVolume(v: number): void {
-  localVolume.value = v;
-  audio.setClipVolume(props.clip.id, v);
 }
 
 async function remove(): Promise<void> {

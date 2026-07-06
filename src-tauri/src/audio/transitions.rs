@@ -36,46 +36,55 @@ struct PendingStart {
     start_at: Instant,
 }
 
+/// The transition phase for the current clip. Replaces the previously separate
+/// `crossfade_started: bool` + `pending_start: Option<PendingStart>` pair (which
+/// were mutually exclusive in practice). `outgoing` stays a separate field: a
+/// crossfade's outgoing sound keeps fading past `clip_started()`, so its
+/// lifecycle outlives this phase.
+enum TransitionState {
+    /// No transition armed for the current clip.
+    Idle,
+    /// A crossfade to the next clip has been started for the current clip.
+    Crossfading,
+    /// A gap-delayed next-clip start is pending.
+    Gap(PendingStart),
+}
+
 pub struct TransitionManager {
     outgoing: Option<OutgoingFade>,
-    crossfade_started: bool,
-    pending_start: Option<PendingStart>,
+    state: TransitionState,
+}
+
+/// The per-tick inputs to `TransitionManager::update`. Bundles the state the
+/// orchestrator gathers each poll so the call is one argument instead of ~11.
+pub struct TickInputs<'a> {
+    pub position: f64,
+    pub clip_duration: Option<f64>,
+    pub clip_start: Option<f64>,
+    pub mode: &'a TrackMode,
+    pub is_paused: bool,
+    pub sound_playing: bool,
+    pub sound_stopped: bool,
+    pub next_clip_index: Option<usize>,
 }
 
 impl TransitionManager {
     pub fn new() -> Self {
         Self {
             outgoing: None,
-            crossfade_started: false,
-            pending_start: None,
+            state: TransitionState::Idle,
         }
     }
 
     /// Main polling tick. Called every `audio::POLL_INTERVAL`.
     /// Returns the action the orchestrator should take.
-    pub fn update(
-        &self,
-        position: f64,
-        clip_duration: Option<f64>,
-        clip_start: Option<f64>,
-        mode: &TrackMode,
-        // Superseded by `next_clip_index` (D7 pre-pick moved the compute-time
-        // pick to `start_clip`); kept in the signature so callers don't need to
-        // restructure their state-gathering, but no longer read here.
-        _current_clip_index: Option<usize>,
-        _clip_count: usize,
-        _clips_played: usize,
-        is_paused: bool,
-        sound_playing: bool,
-        sound_stopped: bool,
-        next_clip_index: Option<usize>,
-    ) -> TransitionAction {
-        if is_paused {
+    pub fn update(&self, t: &TickInputs) -> TransitionAction {
+        if t.is_paused {
             return TransitionAction::None;
         }
 
         // Check for pending gap start
-        if let Some(ref pending) = self.pending_start {
+        if let TransitionState::Gap(ref pending) = self.state {
             if Instant::now() >= pending.start_at {
                 return TransitionAction::StartPendingClip { clip_index: pending.clip_index };
             }
@@ -92,12 +101,12 @@ impl TransitionManager {
         }
 
         // Check for sound finished naturally
-        if sound_stopped && !is_paused {
-            let next = next_clip_index;
+        if t.sound_stopped && !t.is_paused {
+            let next = t.next_clip_index;
             return match next {
                 Some(idx) => {
                     // Determine transition type
-                    let transition = match mode {
+                    let transition = match t.mode {
                         TrackMode::Sequence { transition, .. } => transition.clone(),
                         TrackMode::Shuffle { transition, .. } => transition.clone(),
                         TrackMode::Seamless { .. } => TrackTransition::Gapless,
@@ -122,8 +131,8 @@ impl TransitionManager {
         }
 
         // Check for crossfade trigger
-        if !self.crossfade_started && sound_playing {
-            let crossfade_duration = match mode {
+        if !matches!(self.state, TransitionState::Crossfading) && t.sound_playing {
+            let crossfade_duration = match t.mode {
                 TrackMode::Sequence {
                     transition: TrackTransition::Crossfade,
                     ..
@@ -135,8 +144,8 @@ impl TransitionManager {
                 _ => return TransitionAction::None,
             };
 
-            if let Some(clip_dur) = clip_duration {
-                let start = clip_start.unwrap_or(0.0);
+            if let Some(clip_dur) = t.clip_duration {
+                let start = t.clip_start.unwrap_or(0.0);
                 let playable = clip_dur - start;
                 // Short-clip fix: if the clip is shorter than the full crossfade window,
                 // use half the playable duration (minimum 0.1s) to avoid triggering the
@@ -148,8 +157,8 @@ impl TransitionManager {
                     (playable * SHORT_CLIP_XFADE_FRACTION).max(MIN_EFFECTIVE_XFADE_SECS)
                 };
 
-                if position >= clip_dur - effective_xfade {
-                    if let Some(idx) = next_clip_index {
+                if t.position >= clip_dur - effective_xfade {
+                    if let Some(idx) = t.next_clip_index {
                         return TransitionAction::StartCrossfade {
                             next_clip_index: idx,
                             duration: effective_xfade,
@@ -169,12 +178,12 @@ impl TransitionManager {
             started: Instant::now(),
             duration,
         });
-        self.crossfade_started = true;
+        self.state = TransitionState::Crossfading;
     }
 
     /// Schedule a delayed clip start after a gap transition.
     pub fn schedule_gap(&mut self, clip_index: usize, delay: f64) {
-        self.pending_start = Some(PendingStart {
+        self.state = TransitionState::Gap(PendingStart {
             clip_index,
             start_at: Instant::now() + Duration::from_secs_f64(delay),
         });
@@ -182,8 +191,7 @@ impl TransitionManager {
 
     /// Reset crossfade and pending state after a new clip has started.
     pub fn clip_started(&mut self) {
-        self.crossfade_started = false;
-        self.pending_start = None;
+        self.state = TransitionState::Idle;
     }
 
     /// Stop and drop the outgoing fading sound.
@@ -197,13 +205,12 @@ impl TransitionManager {
     /// Clear all transition state (called on track stop/reset).
     pub fn reset(&mut self) {
         self.cleanup_outgoing();
-        self.crossfade_started = false;
-        self.pending_start = None;
+        self.state = TransitionState::Idle;
     }
 
     /// Returns true if there is a gap-delayed clip start pending.
     pub fn has_pending(&self) -> bool {
-        self.pending_start.is_some()
+        matches!(self.state, TransitionState::Gap(_))
     }
 }
 
@@ -348,11 +355,10 @@ mod tests {
         let tm = TransitionManager::new();
         // sound_stopped = true, not paused: the natural-end branch fires and must
         // use the PASSED next index, not recompute it.
-        let action = tm.update(
-            10.0, Some(10.0), Some(0.0), &seq(true),
-            Some(1), 3, 2, false, /*playing*/ false, /*stopped*/ true,
-            /*next_clip_index*/ Some(2),
-        );
+        let action = tm.update(&TickInputs {
+            position: 10.0, clip_duration: Some(10.0), clip_start: Some(0.0), mode: &seq(true),
+            is_paused: false, sound_playing: false, sound_stopped: true, next_clip_index: Some(2),
+        });
         match action {
             TransitionAction::AdvanceClip { next_clip_index } => assert_eq!(next_clip_index, 2),
             _ => panic!("expected AdvanceClip{{2}}"),
@@ -362,11 +368,10 @@ mod tests {
     #[test]
     fn update_ends_track_when_prepicked_index_is_none() {
         let tm = TransitionManager::new();
-        let action = tm.update(
-            10.0, Some(10.0), Some(0.0), &seq(false),
-            Some(2), 3, 3, false, false, true,
-            None,
-        );
+        let action = tm.update(&TickInputs {
+            position: 10.0, clip_duration: Some(10.0), clip_start: Some(0.0), mode: &seq(false),
+            is_paused: false, sound_playing: false, sound_stopped: true, next_clip_index: None,
+        });
         assert!(matches!(action, TransitionAction::None));
     }
 
@@ -382,11 +387,10 @@ mod tests {
         // position 6.0. position=7.0 is inside it; sound still playing, not
         // stopped, not paused: the crossfade-trigger branch fires and must use
         // the PASSED next index, not recompute it.
-        let action = tm.update(
-            7.0, Some(10.0), Some(0.0), &seq_crossfade(),
-            Some(0), 3, 1, /*is_paused*/ false, /*sound_playing*/ true, /*sound_stopped*/ false,
-            /*next_clip_index*/ Some(2),
-        );
+        let action = tm.update(&TickInputs {
+            position: 7.0, clip_duration: Some(10.0), clip_start: Some(0.0), mode: &seq_crossfade(),
+            is_paused: false, sound_playing: true, sound_stopped: false, next_clip_index: Some(2),
+        });
         match action {
             TransitionAction::StartCrossfade { next_clip_index, duration } => {
                 assert_eq!(next_clip_index, 2);
@@ -401,11 +405,10 @@ mod tests {
         let tm = TransitionManager::new();
         // Same in-window position/state as above, but no pre-picked next clip
         // (e.g. a non-repeating track on its last clip): no crossfade fires.
-        let action = tm.update(
-            7.0, Some(10.0), Some(0.0), &seq_crossfade(),
-            Some(0), 3, 1, false, true, false,
-            None,
-        );
+        let action = tm.update(&TickInputs {
+            position: 7.0, clip_duration: Some(10.0), clip_start: Some(0.0), mode: &seq_crossfade(),
+            is_paused: false, sound_playing: true, sound_stopped: false, next_clip_index: None,
+        });
         assert!(matches!(action, TransitionAction::None));
     }
 

@@ -1,17 +1,7 @@
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
-const SORT_GAP: i64 = 1000;
-
-/// Returns the current time as milliseconds since the Unix epoch, as a string.
-fn now_millis() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time before epoch")
-        .as_millis()
-        .to_string()
-}
+use crate::database::{now_millis, SORT_GAP};
 
 pub fn insert_configuration(conn: &Connection, name: &str) -> Result<String, String> {
     let id = Uuid::new_v4().to_string();

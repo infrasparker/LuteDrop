@@ -12,6 +12,8 @@ import ImportDialog from '../components/ImportDialog.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import type { LibraryEntry, LibraryEntryUsage } from '@generated/index';
 import { AUDIO_EXTENSIONS } from '../constants';
+import { formatDuration } from '../shared/format';
+import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
 
 const store = useAppStore();
 const { libraryEntries, tags } = storeToRefs(store);
@@ -56,17 +58,11 @@ const headers = [
   { title: '', key: 'actions', sortable: false, width: '80px', align: 'end' as const },
 ];
 
-const previewState = computed(() => store.playbackStates.get('__library'));
+const previewState = computed(() => store.playbackStates.get(LIBRARY_PLAYBACK_ID));
 
 function isPreviewPlaying(entryId: string): boolean {
   return store.libraryPlayingEntryId === entryId && !!previewState.value?.isPlaying;
 }
-
-watch(previewState, (state) => {
-  if (!state?.isPlaying) {
-    store.libraryPlayingEntryId = null;
-  }
-});
 
 function togglePreview(entry: LibraryEntry): void {
   if (isPreviewPlaying(entry.id)) {
@@ -81,13 +77,6 @@ function togglePreview(entry: LibraryEntry): void {
       entry.loopStart, entry.loopEnd,
     );
   }
-}
-
-function formatDuration(seconds: number | null): string {
-  if (seconds === null) return '--:--';
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
 function openEditor(entryId: string): void {
@@ -226,7 +215,7 @@ async function relocateEntry(entryId: string): Promise<void> {
 
     <div class="d-flex align-end mb-2 ga-2">
       <div class="d-flex flex-wrap ga-1 flex-grow-1" style="min-width: 0;">
-        <TagFilter v-model:selectedTags="selectedTags" v-model:untagged="untagged" />
+        <TagFilter v-model:selected-tags="selectedTags" v-model:untagged="untagged" />
       </div>
       <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
         {{ filteredEntries.length }} {{ filteredEntries.length === 1 ? 'entry' : 'entries' }}

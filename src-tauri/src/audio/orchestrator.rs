@@ -4,7 +4,7 @@ use crate::models::{Track, TrackMode, TrackPlaybackState, TrackTransition};
 use super::ffi;
 use super::sound::{PlayParams, PlaybackState};
 use super::levels::{self, MuteState};
-use super::transitions::{TransitionManager, TransitionAction};
+use super::transitions::{TransitionManager, TransitionAction, TickInputs};
 use super::voice::{LoopAnchor, StopAtEnd, Voice};
 
 pub struct ManagedTrack {
@@ -293,7 +293,7 @@ pub fn poll_track(
     }
 
     // Gather state for transition check
-    let (position, clip_duration, clip_start, mode, current_clip_index, clip_count, clips_played, is_paused, sound_playing, sound_stopped) = {
+    let (position, clip_duration, clip_start, mode, is_paused, sound_playing, sound_stopped) = {
         let track = match tracks.get(track_id) {
             Some(t) => t,
             None => return,
@@ -308,7 +308,7 @@ pub fn poll_track(
         };
         let dur = track.voice.duration();
         let start = track.voice.start_position();
-        (pos, dur, start, track.config.mode.clone(), track.current_clip_index, track.config.clips.len(), track.clips_played, track.is_paused, playing, stopped)
+        (pos, dur, start, track.config.mode.clone(), track.is_paused, playing, stopped)
     };
 
     // Handle the seamless loop crossfade before checking transitions. The Voice
@@ -339,21 +339,25 @@ pub fn poll_track(
         }
     }
 
-    let (action, next_idx, suppressed) = {
+    let (action, suppressed) = {
         let track = match tracks.get(track_id) {
             Some(t) => t,
             None => return,
         };
         let next_idx = track.next_clip_index;
         let suppressed = super::transitions::retry_suppressed(track.last_start_failure, std::time::Instant::now());
-        let action = track.transitions.update(
-            position, clip_duration, clip_start, &mode,
-            current_clip_index, clip_count, clips_played, is_paused, sound_playing, sound_stopped,
-            next_idx,
-        );
-        (action, next_idx, suppressed)
+        let action = track.transitions.update(&TickInputs {
+            position,
+            clip_duration,
+            clip_start,
+            mode: &mode,
+            is_paused,
+            sound_playing,
+            sound_stopped,
+            next_clip_index: next_idx,
+        });
+        (action, suppressed)
     };
-    let _ = next_idx;
 
     // D8: after a failed start, suppress the transition actions that would
     // re-open a clip for START_RETRY_BACKOFF. CleanupOutgoing / None are not
@@ -370,6 +374,47 @@ pub fn poll_track(
         return;
     }
 
+    execute_action(
+        tracks, engine, track_id, action, mute_state, pending, missing_entries, found_entries,
+        sound_stopped, is_paused,
+    );
+}
+
+/// After a clip start attempt, record the clip's library entry as found (Ok) or,
+/// if its file is missing, as missing (Err). Shared by the transition arms.
+fn report_clip_result(
+    track: &ManagedTrack,
+    clip_index: usize,
+    result: &Result<(), String>,
+    found_entries: &mut Vec<String>,
+    missing_entries: &mut Vec<String>,
+) {
+    let Some(clip) = track.config.clips.get(clip_index) else { return };
+    match result {
+        Ok(_) => found_entries.push(clip.library_entry_id.clone()),
+        Err(_) => {
+            if !std::path::Path::new(&clip.file_path).exists() {
+                missing_entries.push(clip.library_entry_id.clone());
+            }
+        }
+    }
+}
+
+/// Execute the `TransitionAction` decided by `TransitionManager::update`.
+/// Extracted from `poll_track` so that function reads as: gather state →
+/// seamless-loop poll → suppression gate → `execute_action`.
+fn execute_action(
+    tracks: &mut HashMap<String, ManagedTrack>,
+    engine: &ffi::Engine,
+    track_id: &str,
+    action: TransitionAction,
+    mute_state: &MuteState,
+    pending: &mut HashMap<String, super::loader::PreloadTarget>,
+    missing_entries: &mut Vec<String>,
+    found_entries: &mut Vec<String>,
+    sound_stopped: bool,
+    is_paused: bool,
+) {
     match action {
         TransitionAction::StartCrossfade { next_clip_index, duration } => {
             if let Some(track) = tracks.get_mut(track_id) {
@@ -380,43 +425,15 @@ pub fn poll_track(
                     track.transitions.begin_crossfade(old, duration);
                 }
             }
-            match start_clip(tracks, engine, track_id, next_clip_index, None, false, mute_state, Some(pending)) {
-                Ok(_) => {
-                    if let Some(track) = tracks.get(track_id) {
-                        if let Some(clip) = track.config.clips.get(next_clip_index) {
-                            found_entries.push(clip.library_entry_id.clone());
-                        }
-                    }
-                }
-                Err(_) => {
-                    if let Some(track) = tracks.get(track_id) {
-                        if let Some(clip) = track.config.clips.get(next_clip_index) {
-                            if !std::path::Path::new(&clip.file_path).exists() {
-                                missing_entries.push(clip.library_entry_id.clone());
-                            }
-                        }
-                    }
-                }
+            let result = start_clip(tracks, engine, track_id, next_clip_index, None, false, mute_state, Some(pending));
+            if let Some(track) = tracks.get(track_id) {
+                report_clip_result(track, next_clip_index, &result, found_entries, missing_entries);
             }
         }
         TransitionAction::AdvanceClip { next_clip_index } => {
-            match start_clip(tracks, engine, track_id, next_clip_index, None, false, mute_state, Some(pending)) {
-                Ok(_) => {
-                    if let Some(track) = tracks.get(track_id) {
-                        if let Some(clip) = track.config.clips.get(next_clip_index) {
-                            found_entries.push(clip.library_entry_id.clone());
-                        }
-                    }
-                }
-                Err(_) => {
-                    if let Some(track) = tracks.get(track_id) {
-                        if let Some(clip) = track.config.clips.get(next_clip_index) {
-                            if !std::path::Path::new(&clip.file_path).exists() {
-                                missing_entries.push(clip.library_entry_id.clone());
-                            }
-                        }
-                    }
-                }
+            let result = start_clip(tracks, engine, track_id, next_clip_index, None, false, mute_state, Some(pending));
+            if let Some(track) = tracks.get(track_id) {
+                report_clip_result(track, next_clip_index, &result, found_entries, missing_entries);
             }
         }
         TransitionAction::ScheduleGap { next_clip_index, delay_seconds } => {
@@ -426,23 +443,9 @@ pub fn poll_track(
             }
         }
         TransitionAction::StartPendingClip { clip_index } => {
-            match start_clip(tracks, engine, track_id, clip_index, None, false, mute_state, Some(pending)) {
-                Ok(_) => {
-                    if let Some(track) = tracks.get(track_id) {
-                        if let Some(clip) = track.config.clips.get(clip_index) {
-                            found_entries.push(clip.library_entry_id.clone());
-                        }
-                    }
-                }
-                Err(_) => {
-                    if let Some(track) = tracks.get(track_id) {
-                        if let Some(clip) = track.config.clips.get(clip_index) {
-                            if !std::path::Path::new(&clip.file_path).exists() {
-                                missing_entries.push(clip.library_entry_id.clone());
-                            }
-                        }
-                    }
-                }
+            let result = start_clip(tracks, engine, track_id, clip_index, None, false, mute_state, Some(pending));
+            if let Some(track) = tracks.get(track_id) {
+                report_clip_result(track, clip_index, &result, found_entries, missing_entries);
             }
         }
         TransitionAction::CleanupOutgoing => {

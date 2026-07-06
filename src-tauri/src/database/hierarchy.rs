@@ -1,7 +1,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
-const SORT_GAP: i64 = 1000;
+use crate::database::SORT_GAP;
 
 // ─── Parent-existence helpers ────────────────────────────────────────────────
 
@@ -342,7 +342,7 @@ pub fn update_clip_volume(conn: &Connection, id: &str, volume: f64) -> Result<()
     Ok(())
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn reorder_clip(
     conn: &Connection,
     track_id: &str,

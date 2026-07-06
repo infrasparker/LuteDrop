@@ -201,7 +201,10 @@ uses `voice.play` or `voice.play_with_trim_stop` depends on the transition
 in `start_clip`).
 
 Sequencing decisions live in `TransitionManager::update`, which is called once
-per tick and returns a `TransitionAction` telling `poll_track` what to do:
+per tick — taking a `TickInputs` struct bundling the poll-gathered state
+(position, clip duration/start, mode, pause/playing/stopped flags, and the
+pre-picked next clip index) — and returns a `TransitionAction` telling
+`poll_track` what to do:
 
 | `TransitionAction` variant | When it fires | Effect in `poll_track` |
 |---|---|---|
@@ -351,8 +354,9 @@ loop {
      swap-detection check runs *before* `poll_loop`'s own
      `!matches!(st, Playing) || !should_run` early return, not after it — see
      "Why the swap check sits above the Playing gate" below.
-   - `transitions.update(..., next_clip_index)` — the next index is now
-     **pre-picked at clip-start time** and passed in, not computed here.
+   - `transitions.update(&TickInputs { .. })` — one input struct carrying
+     position/state plus `next_clip_index`, which is **pre-picked at
+     clip-start time** and passed in, not computed here.
 2. Collect a `TrackPlaybackState` per track.
 3. `library.drop_finished()` then `library.poll_loop(engine, true, StopAtEnd::Yes)`
    — the preview *does* stop a non-looping sound at its `trim_end` here.
@@ -415,7 +419,7 @@ starts them — under the mutex (`Voice::start_preloaded` / `accept_loop_incomin
 A group-less, never-started preloaded `Sound` may be dropped on any thread.
 
 **3. DB lock before audio lock.** Actions that touch both take the DB lock first,
-then the audio lock (e.g. `set_track_volume_action` persists to the DB, then
+then the audio lock (e.g. `set_track_volume` persists to the DB, then
 updates the engine). Keep this order everywhere to avoid a lock-ordering deadlock.
 
 **4. Loop points are snapshotted at track-load time.** The `loop_region` a

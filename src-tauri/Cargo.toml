@@ -28,6 +28,7 @@ axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["fs"] }
 rusqlite = { version = "0.34", features = ["bundled", "backup"] }
 sha2 = "0.10"
+thiserror = "1"
 chrono = "0.4"
 walkdir = "2"
 

@@ -1,0 +1,4 @@
+# ts-rs regenerates these on every `cargo test`; pin LF so regeneration never
+# produces line-ending-only diffs (recurring dirt on Windows checkouts).
+# Recursive glob to match tsconfig's generated/**/*.ts coverage.
+generated/**/*.ts text eol=lf

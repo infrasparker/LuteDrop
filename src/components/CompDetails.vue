@@ -7,7 +7,6 @@ import LibraryBrowser from './LibraryBrowser.vue';
 
 const props = defineProps<{
   comp: Comp;
-  groupId: string;
 }>();
 
 const store = useAppStore();
@@ -55,7 +54,6 @@ function openLibraryBrowser(trackId: string): void {
       v-for="track in comp.tracks"
       :key="track.id"
       :track="track"
-      :comp-id="comp.id"
       @open-library-browser="openLibraryBrowser"
     />
 

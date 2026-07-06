@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed } from 'vue';
 import type { Track } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
@@ -7,10 +7,12 @@ import { useTrackUpdates } from '../composables/useTrackUpdates';
 import { useContextMenuState } from '../composables/useContextMenu';
 import TrackSettings from './TrackSettings.vue';
 import TrackClipList from './TrackClipList.vue';
+import ConfirmDialog from './ConfirmDialog.vue';
+import PromptDialog from './PromptDialog.vue';
+import { useLocalVolume } from '../shared/useLocalVolume';
 
 const props = defineProps<{
   track: Track;
-  compId: string;
 }>();
 
 const emit = defineEmits<{
@@ -19,7 +21,7 @@ const emit = defineEmits<{
 
 const store = useAppStore();
 const audio = useAudio();
-const { updateField } = useTrackUpdates(() => props.track.id, () => props.compId);
+const { updateField } = useTrackUpdates(() => props.track.id);
 const { menuVisible, menuX, menuY, openMenu } = useContextMenuState();
 
 const playbackState = computed(() => store.playbackStates.get(props.track.id));
@@ -35,7 +37,6 @@ const currentClipName = computed(() => {
 
 // Rename state
 const showRenameDialog = ref(false);
-const renameTrackName = ref('');
 
 // Delete state
 const showDeleteConfirm = ref(false);
@@ -45,14 +46,11 @@ function openContextMenu(event: MouseEvent): void {
 }
 
 function openRenameDialog(): void {
-  renameTrackName.value = props.track.name;
   showRenameDialog.value = true;
 }
 
-async function renameTrack(): Promise<void> {
-  if (!renameTrackName.value.trim()) return;
-  await updateField({ name: renameTrackName.value.trim() });
-  showRenameDialog.value = false;
+async function renameTrack(name: string): Promise<void> {
+  await updateField({ name });
 }
 
 function confirmOrDeleteTrack(): void {
@@ -64,9 +62,8 @@ function confirmOrDeleteTrack(): void {
 }
 
 async function deleteTrack(): Promise<void> {
-  showDeleteConfirm.value = false;
   await audio.stopTrack(props.track.id);
-  await store.command('delete_track', { compId: props.compId, trackId: props.track.id });
+  await store.command('delete_track', { trackId: props.track.id });
 }
 
 function playTrack(): void {
@@ -82,13 +79,7 @@ function stopTrack(): void {
 }
 
 // Local ref for smooth slider dragging — audio engine persists to DB directly
-const localVolume = ref(props.track.volume);
-watch(() => props.track.volume, (v) => { localVolume.value = v; });
-
-function setVolume(v: number): void {
-  localVolume.value = v;
-  audio.setTrackVolume(props.track.id, v);
-}
+const { local: localVolume, set: setVolume } = useLocalVolume(() => props.track.volume, (v) => audio.setTrackVolume(props.track.id, v));
 
 const isMuted = computed(() => store.isTrackMuted(props.track.id));
 
@@ -165,8 +156,8 @@ function toggleMute(): void {
 
         <template #text>
           <div class="pt-2">
-            <TrackSettings :track="track" :comp-id="compId" />
-            <TrackClipList :track="track" :comp-id="compId" :is-seamless="isSeamless" @open-library-browser="(id) => emit('open-library-browser', id)" />
+            <TrackSettings :track="track" />
+            <TrackClipList :track="track" :is-seamless="isSeamless" @open-library-browser="(id) => emit('open-library-browser', id)" />
           </div>
         </template>
       </VExpansionPanel>
@@ -187,40 +178,24 @@ function toggleMute(): void {
     </VMenu>
 
     <!-- Rename dialog -->
-    <VDialog v-model="showRenameDialog" max-width="400">
-      <VCard title="Rename Track">
-        <VCardText>
-          <VTextField
-            v-model="renameTrackName"
-            label="Track Name"
-            variant="outlined"
-            autofocus
-            @keydown.enter="renameTrack"
-          />
-        </VCardText>
-        <VDivider />
-        <VCardActions>
-          <VSpacer />
-          <VBtn text="Cancel" variant="plain" @click="showRenameDialog = false" />
-          <VBtn text="Rename" color="primary" variant="tonal" @click="renameTrack" />
-        </VCardActions>
-      </VCard>
-    </VDialog>
+    <PromptDialog
+      v-model="showRenameDialog"
+      title="Rename Track"
+      label="Track Name"
+      :initial="track.name"
+      confirm-label="Rename"
+      @submit="renameTrack"
+    />
 
     <!-- Delete confirmation -->
-    <VDialog v-model="showDeleteConfirm" max-width="450">
-      <VCard title="Delete Track">
-        <VCardText>
-          Are you sure you want to delete "{{ track.name }}"?
-        </VCardText>
-        <VDivider />
-        <VCardActions>
-          <VSpacer />
-          <VBtn text="Cancel" variant="plain" @click="showDeleteConfirm = false" />
-          <VBtn text="Delete" color="error" variant="tonal" @click="deleteTrack" />
-        </VCardActions>
-      </VCard>
-    </VDialog>
+    <ConfirmDialog
+      v-model="showDeleteConfirm"
+      title="Delete Track"
+      :message="`Are you sure you want to delete &quot;${track.name}&quot;?`"
+      confirm-label="Delete"
+      confirm-color="error"
+      @confirm="deleteTrack"
+    />
   </div>
 </template>
 

@@ -1,5 +1,6 @@
 import { ref, reactive } from 'vue';
 import type { AppState, TrackPlaybackState, CompStatus } from '@generated/index';
+import { compStatus } from '../../shared/playback';
 
 interface StateSnapshot {
   type: string;
@@ -94,24 +95,8 @@ function send(command: Record<string, unknown>): void {
 }
 
 function getCompStatus(compId: string): CompStatus {
-  const comp = groups.value
-    .flatMap((g) => g.comps)
-    .find((c) => c.id === compId);
-  if (!comp || comp.tracks.length === 0) return 'inactive';
-
-  const playing = comp.tracks.filter((t) => {
-    const state = playbackStates.get(t.id);
-    return state?.isPlaying;
-  });
-  const paused = comp.tracks.filter((t) => {
-    const state = playbackStates.get(t.id);
-    return state?.isPaused;
-  });
-
-  if (playing.length === comp.tracks.length) return 'active';
-  if (playing.length > 0) return 'partial';
-  if (paused.length > 0) return 'paused';
-  return 'inactive';
+  const comp = groups.value.flatMap((g) => g.comps).find((c) => c.id === compId);
+  return compStatus(comp, playbackStates);
 }
 
 export function useRemote() {

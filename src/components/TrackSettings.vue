@@ -2,10 +2,10 @@
 import { computed } from 'vue';
 import type { Track } from '@generated/index';
 import { useTrackUpdates } from '../composables/useTrackUpdates';
+import { hasTransition } from '../shared/trackMode';
 
 const props = defineProps<{
   track: Track;
-  compId: string;
 }>();
 
 const {
@@ -16,7 +16,7 @@ const {
   updateGapMax,
   toggleFadeIn,
   toggleFadeOut,
-} = useTrackUpdates(() => props.track.id, () => props.compId);
+} = useTrackUpdates(() => props.track.id);
 
 const modeOptions = [
   { title: 'Seamless', value: 'seamless' },
@@ -31,11 +31,16 @@ const transitionOptions = [
 ];
 
 const modeType = computed(() => props.track.mode.type);
-const isSeamless = computed(() => modeType.value === 'seamless');
-const hasTransition = computed(() => modeType.value !== 'seamless');
+const showsTransition = computed(() => modeType.value !== 'seamless');
 const transitionType = computed(() =>
-  hasTransition.value ? (props.track.mode as any).transition.type : 'gapless'
+  hasTransition(props.track.mode) ? props.track.mode.transition.type : 'gapless',
 );
+const gapBounds = computed(() => {
+  const m = props.track.mode;
+  if (hasTransition(m) && m.transition.type === 'gap') return { min: m.transition.min, max: m.transition.max };
+  return { min: 0, max: 0 };
+});
+const repeat = computed(() => (hasTransition(props.track.mode) ? props.track.mode.repeat : false));
 </script>
 
 <template>
@@ -53,7 +58,7 @@ const transitionType = computed(() =>
       />
     </div>
 
-    <div v-if="hasTransition" style="min-width: 130px; max-width: 150px;">
+    <div v-if="showsTransition" style="min-width: 130px; max-width: 150px;">
       <VSelect
         :model-value="transitionType"
         @update:model-value="updateTransition"
@@ -65,10 +70,10 @@ const transitionType = computed(() =>
       />
     </div>
 
-    <template v-if="hasTransition && transitionType === 'gap'">
+    <template v-if="showsTransition && transitionType === 'gap'">
       <div style="min-width: 90px; max-width: 110px;">
         <VTextField
-          :model-value="(track.mode as any).transition.min"
+          :model-value="gapBounds.min"
           @update:model-value="updateGapMin"
           label="Gap Min (s)"
           type="number"
@@ -79,7 +84,7 @@ const transitionType = computed(() =>
       </div>
       <div style="min-width: 90px; max-width: 110px;">
         <VTextField
-          :model-value="(track.mode as any).transition.max"
+          :model-value="gapBounds.max"
           @update:model-value="updateGapMax"
           label="Gap Max (s)"
           type="number"
@@ -107,8 +112,8 @@ const transitionType = computed(() =>
     />
 
     <VCheckbox
-      v-if="hasTransition"
-      :model-value="(track.mode as any).repeat"
+      v-if="showsTransition"
+      :model-value="repeat"
       @update:model-value="updateRepeat"
       label="Repeat"
       density="compact"
