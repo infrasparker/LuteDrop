@@ -30,6 +30,13 @@ pub struct ManagedTrack {
     /// When the last clip start failed (D8); transition retries are suppressed
     /// for `START_RETRY_BACKOFF` after it.
     pub last_start_failure: Option<std::time::Instant>,
+    /// When the last NEXT-CLIP preload (D7) failed (I-1); `request_next_clip_preloads`
+    /// suppresses re-requesting this track's preload for `START_RETRY_BACKOFF` after
+    /// it, mirroring `last_start_failure`'s protection against a ~20 Hz retry storm.
+    /// Cleared when a preload for this track completes `Ok`, or whenever
+    /// `next_clip_index` is reset/re-picked (the stamp no longer applies to the
+    /// new target).
+    pub last_preload_failure: Option<std::time::Instant>,
 }
 
 pub fn setup_track(
@@ -61,6 +68,7 @@ pub fn setup_track(
         is_paused: false,
         next_clip_index: None,
         last_start_failure: None,
+        last_preload_failure: None,
     });
 
     Ok(())
@@ -74,6 +82,9 @@ pub fn update_track_config(tracks: &mut HashMap<String, ManagedTrack>, config: &
         // changed list makes the pick stale anyway). Re-picked from the live
         // config at the next transition via start_clip.
         track.next_clip_index = None;
+        // The stamp (if any) was for a preload target computed against the OLD
+        // config; it no longer applies (I-1).
+        track.last_preload_failure = None;
     }
 }
 
@@ -167,6 +178,8 @@ pub fn stop_track(tracks: &mut HashMap<String, ManagedTrack>, track_id: &str) ->
     // A stopped track has no next clip; leaving it set would make
     // `request_next_clip_preloads` keep re-opening files for a silent track.
     track.next_clip_index = None;
+    // The stamp (if any) was for that abandoned next clip; clear it (I-1).
+    track.last_preload_failure = None;
     track.transitions.reset();
     // Deferred destruction: fade the sound out and park it until the ramp
     // completes, instead of dropping it immediately (which would uninit it
@@ -586,6 +599,9 @@ fn start_clip(
         track.config.clips.len(),
         track.clips_played,
     );
+    // The freshly-picked index is a new preload target; any earlier preload
+    // failure stamp was for a different (now-stale) target (I-1).
+    track.last_preload_failure = None;
 
     Ok(())
 }

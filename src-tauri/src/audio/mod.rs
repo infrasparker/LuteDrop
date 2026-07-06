@@ -15,6 +15,7 @@ use levels::MuteState;
 use loader::{LoadRequest, Loader, PreloadKind, PreloadTarget};
 use orchestrator::ManagedTrack;
 use sound::{PlayParams, PlaybackState};
+use transitions::retry_suppressed;
 use voice::{StopAtEnd, Voice};
 
 const LIBRARY_TRACK_ID: &str = "__library";
@@ -389,6 +390,15 @@ impl AudioEngine {
                 if !track.voice.has_current() {
                     continue;
                 }
+                // I-1: a recent preload failure for this track suppresses
+                // re-requesting for START_RETRY_BACKOFF, mirroring the D8 gate
+                // on transition-driven clip starts. Without this, `drain_completions`'
+                // Err arm removes the pending entry every failed attempt, and this
+                // function re-requests it again next tick (~20 Hz retry storm for
+                // the whole current clip).
+                if retry_suppressed(track.last_preload_failure, std::time::Instant::now()) {
+                    continue;
+                }
                 let already = self
                     .pending
                     .get(&id)
@@ -429,6 +439,16 @@ impl AudioEngine {
                     // Open failed off-lock; forget it. The loop / transition
                     // fallback will retry synchronously (and log) when it fires.
                     log::warn!("Preload failed for '{}': {}", done.target, e);
+                    // I-1: stamp the owning track so `request_next_clip_preloads`
+                    // backs off instead of re-requesting every poll tick (~20 Hz)
+                    // for the rest of the current clip. Only NextClip targets are
+                    // tracks (LoopInstance failures are handled by the loop's own
+                    // synchronous fallback in `poll_loop`, not this gate).
+                    if matches!(self.pending.get(&done.target).map(|p| p.kind), Some(PreloadKind::NextClip)) {
+                        if let Some(t) = self.tracks.get_mut(&done.target) {
+                            t.last_preload_failure = Some(std::time::Instant::now());
+                        }
+                    }
                     self.pending.remove(&done.target);
                     continue;
                 }
@@ -463,6 +483,11 @@ impl AudioEngine {
                     self.pending.remove(&done.target);
                 }
                 Some(PreloadKind::NextClip) => {
+                    // Succeeded; clear any earlier failure stamp so the gate in
+                    // `request_next_clip_preloads` doesn't outlive its cause (I-1).
+                    if let Some(t) = self.tracks.get_mut(&done.target) {
+                        t.last_preload_failure = None;
+                    }
                     if let Some(p) = self.pending.get_mut(&done.target) {
                         p.ready = Some(handle);
                     }

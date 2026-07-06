@@ -370,6 +370,45 @@ mod tests {
         assert!(matches!(action, TransitionAction::None));
     }
 
+    fn seq_crossfade() -> TrackMode {
+        TrackMode::Sequence { repeat: true, transition: TrackTransition::Crossfade }
+    }
+
+    #[test]
+    fn update_crossfade_trigger_uses_prepicked_next_index() {
+        let tm = TransitionManager::new();
+        // clip_dur=10.0, clip_start=0.0: playable (10.0) > CROSSFADE_OVERLAP
+        // (4.0), so effective_xfade == CROSSFADE_OVERLAP and the window opens at
+        // position 6.0. position=7.0 is inside it; sound still playing, not
+        // stopped, not paused: the crossfade-trigger branch fires and must use
+        // the PASSED next index, not recompute it.
+        let action = tm.update(
+            7.0, Some(10.0), Some(0.0), &seq_crossfade(),
+            Some(0), 3, 1, /*is_paused*/ false, /*sound_playing*/ true, /*sound_stopped*/ false,
+            /*next_clip_index*/ Some(2),
+        );
+        match action {
+            TransitionAction::StartCrossfade { next_clip_index, duration } => {
+                assert_eq!(next_clip_index, 2);
+                assert_eq!(duration, CROSSFADE_OVERLAP);
+            }
+            _ => panic!("expected StartCrossfade{{next_clip_index: 2}}"),
+        }
+    }
+
+    #[test]
+    fn update_crossfade_trigger_does_not_fire_without_prepicked_index() {
+        let tm = TransitionManager::new();
+        // Same in-window position/state as above, but no pre-picked next clip
+        // (e.g. a non-repeating track on its last clip): no crossfade fires.
+        let action = tm.update(
+            7.0, Some(10.0), Some(0.0), &seq_crossfade(),
+            Some(0), 3, 1, false, true, false,
+            None,
+        );
+        assert!(matches!(action, TransitionAction::None));
+    }
+
     #[test]
     fn retry_suppressed_only_within_backoff() {
         let now = Instant::now();
@@ -377,5 +416,23 @@ mod tests {
         assert!(retry_suppressed(Some(now), now)); // just failed
         let old = now - (START_RETRY_BACKOFF + Duration::from_millis(1));
         assert!(!retry_suppressed(Some(old), now)); // past the window
+    }
+
+    /// I-1: `request_next_clip_preloads` gates on this same pure function via
+    /// `ManagedTrack.last_preload_failure`. Pins the three decision points that
+    /// matter for that gate: suppressed right after a stamped failure, not
+    /// suppressed once the backoff window has elapsed, and not suppressed once
+    /// the stamp has been cleared (e.g. by a successful preload or a track
+    /// reset/re-pick).
+    #[test]
+    fn next_clip_preload_retry_gate_suppressed_then_clears() {
+        let now = Instant::now();
+        // Just stamped a failure: suppressed.
+        assert!(retry_suppressed(Some(now), now));
+        // Past the backoff window: not suppressed.
+        let old = now - (START_RETRY_BACKOFF + Duration::from_millis(1));
+        assert!(!retry_suppressed(Some(old), now));
+        // Stamp cleared (None): not suppressed.
+        assert!(!retry_suppressed(None, now));
     }
 }

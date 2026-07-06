@@ -153,20 +153,32 @@ unsafe impl Send for Sound {}
 // SAFETY: This is the one place a miniaudio engine pointer is used off the
 // audio mutex, so the argument is spelled out in full.
 //
-// (a) Internal synchronization. The only engine operations reachable through an
-//     `EngineRef` are `ma_sound_init_from_file_w` (via `create_sound_unattached`)
-//     and — because a never-started, group-less `Sound` may be dropped on this
-//     thread — `ma_sound_uninit`. Both mutate the miniaudio node graph, and
-//     miniaudio synchronizes node attachment, detachment, and uninitialization
-//     internally with spinlocks, crafted so that `ma_node_graph_read_pcm_frames`
-//     on the audio thread stays lock-free (miniaudio.h §7.2). Node uninit waits
-//     until the audio thread has finished with the node before freeing it.
-//     `ma_sound_init_from_file_*` also routes through the resource manager,
-//     whose multi-producer/multi-consumer job queue is likewise internally
-//     synchronized (spinlock + per-object serial execution counters,
-//     miniaudio.h §6.2.1, ~:1884-1898). No other engine state is touched
-//     through this handle: volume, clock, group, and every already-created
-//     `Sound`/`Group` stay behind the `AudioEngine` mutex exactly as before.
+// (a) Internal synchronization. The engine operations reachable through an
+//     `EngineRef` are: `ma_sound_init_from_file_w` (via `create_sound_unattached`);
+//     `ma_sound_seek_to_second` and `ma_sound_get_length_in_seconds` (via
+//     `Sound::seek_secs`/`Sound::length_secs`, called from `sound::preload` on
+//     the loader thread to pre-seek and size the preloaded sound); and —
+//     because a never-started, group-less `Sound` may be dropped on this
+//     thread — `ma_sound_uninit`. All four mutate or read the miniaudio node
+//     graph, and miniaudio synchronizes node attachment, detachment, and
+//     uninitialization internally with spinlocks, crafted so that
+//     `ma_node_graph_read_pcm_frames` on the audio thread stays lock-free
+//     (miniaudio.h §7.2). Node uninit waits until the audio thread has
+//     finished with the node before freeing it. `ma_sound_init_from_file_*`
+//     also routes through the resource manager, whose multi-producer/
+//     multi-consumer job queue is likewise internally synchronized (spinlock +
+//     per-object serial execution counters, miniaudio.h §6.2.1, ~:1884-1898).
+//     `ma_sound_seek_to_second` and `ma_sound_get_length_in_seconds` are safe
+//     here for a stronger reason than synchronization alone: at the point
+//     `sound::preload` calls them the sound is never-started — its node has
+//     never entered the playing state, so the audio thread's graph read
+//     (`ma_node_graph_read_pcm_frames`) skips it as a stopped node and never
+//     concurrently touches its data source. The seek/length calls are
+//     therefore not racing the audio thread over this node at all, let alone
+//     relying on miniaudio's internal locking to arbitrate it. No other engine
+//     state is touched through this handle: volume, clock, group, and every
+//     already-created `Sound`/`Group` stay behind the `AudioEngine` mutex
+//     exactly as before.
 // (b) Lifetime. The pointer must outlive the loader thread. `AudioEngine` owns
 //     both the loader thread (`loader` field, joined on drop) and the engine
 //     (`engine` field, declared LAST so it drops after the loader is joined),

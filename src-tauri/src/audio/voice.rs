@@ -655,10 +655,15 @@ impl Voice {
             // can stash it UNSTARTED; start it defensively on promote so a
             // promoted instance is never silent.
             if self.anchor == LoopAnchor::Immediate || !incoming.sound.is_playing() {
-                debug_assert!(
-                    self.anchor == LoopAnchor::Immediate,
-                    "EngineClock staged instance should have been started at accept"
-                );
+                if self.anchor != LoopAnchor::Immediate {
+                    // Reachable via a device hiccup: `accept_loop_incoming`'s
+                    // no-current/no-loop-region arm stashes the incoming
+                    // instance unstarted, and `accept_loop_incoming`'s
+                    // `play_no_seek` call for the normal EngineClock path can
+                    // also fail silently (its `Err` is ignored there). Either
+                    // way, starting it now (unanchored) beats leaving it silent.
+                    log::warn!("loop swap promoted an unstarted incoming instance — starting now (device hiccup or failed scheduled start)");
+                }
                 let _ = incoming.sound.play_no_seek(LOOP_CROSSFADE_SECS);
             }
             self.current = Some(incoming);
