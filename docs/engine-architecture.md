@@ -201,7 +201,10 @@ uses `voice.play` or `voice.play_with_trim_stop` depends on the transition
 in `start_clip`).
 
 Sequencing decisions live in `TransitionManager::update`, which is called once
-per tick and returns a `TransitionAction` telling `poll_track` what to do:
+per tick — taking a `TickInputs` struct bundling the poll-gathered state
+(position, clip duration/start, mode, pause/playing/stopped flags, and the
+pre-picked next clip index) — and returns a `TransitionAction` telling
+`poll_track` what to do:
 
 | `TransitionAction` variant | When it fires | Effect in `poll_track` |
 |---|---|---|
