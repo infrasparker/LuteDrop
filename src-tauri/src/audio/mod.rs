@@ -335,7 +335,7 @@ impl AudioEngine {
         (states, missing_entries, found_entries)
     }
 
-    // --- Preload plumbing (Plan 3C) ---
+    // --- Preload plumbing ---
 
     /// Queue a preload for `target`, recording it in `pending` with a fresh seq.
     /// Overwrites any existing entry for the target (superseding it — the old
