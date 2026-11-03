@@ -1085,7 +1085,7 @@ mod tests {
         assert_eq!(public_url("https://s.example.org", "k").unwrap(), "https://s.example.org/listen/k");
         assert_eq!(public_url("https://s.example.org/", "k").unwrap(), "https://s.example.org/listen/k");
         assert_eq!(public_url("s.example.org/", "k").unwrap(), "https://s.example.org/listen/k");
-        assert_eq!(public_url("http://10.0.0.5:3334", "k").unwrap(), "http://10.0.0.5:3334/listen/k");
+        assert_eq!(public_url("http://10.0.0.5:5883", "k").unwrap(), "http://10.0.0.5:5883/listen/k");
     }
 
     #[test]

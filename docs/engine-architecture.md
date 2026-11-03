@@ -71,7 +71,7 @@ track groups ──▶ program bus ──▶ tap ──┐
 library preview group ─────────────────┘
 
 tap ──(2 s ring buffer, only while broadcast is on)──▶ encoder thread
-    (resample → stereo → Opus 128 kbps → Ogg) ──▶ listener server (:3334)
+    (resample → stereo → Opus 128 kbps → Ogg) ──▶ listener server (:5883)
 ```
 
 One sentence per layer:

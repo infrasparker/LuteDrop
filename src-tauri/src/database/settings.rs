@@ -10,7 +10,10 @@ const KEY_KEY: &str = "broadcast_key";
 const KEY_PUBLIC_BASE: &str = "broadcast_public_base";
 
 /// Port the stream server listens on until the user picks another one.
-pub const DEFAULT_BROADCAST_PORT: u16 = 3334;
+/// 5883 spells L-U-T-E on a phone keypad. We avoid 333x because other dev
+/// tools grab those generic numbers, and 5883 is in the registered range so the
+/// OS never hands it out as a temporary (ephemeral) port.
+pub const DEFAULT_BROADCAST_PORT: u16 = 5883;
 
 /// Everything the user can configure about the broadcast stream.
 #[derive(Debug, Clone, PartialEq)]
@@ -58,7 +61,7 @@ fn write_meta(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
 }
 
 /// Loads the broadcast settings, using defaults for anything missing
-/// (off, port 3334, no public base). If no listener key exists yet, a new
+/// (off, port 5883, no public base). If no listener key exists yet, a new
 /// one is generated and saved immediately so it stays the same on later loads.
 /// A stored port that is not a valid number falls back to the default.
 pub fn load_broadcast(conn: &Connection) -> Result<BroadcastSettings, String> {
@@ -112,7 +115,7 @@ mod tests {
         init_schema(&conn).unwrap();
         let a = load_broadcast(&conn).unwrap();
         assert!(!a.enabled);
-        assert_eq!(a.port, 3334);
+        assert_eq!(a.port, 5883);
         assert_eq!(a.key.len(), 32);
         assert!(a.key.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
         assert_eq!(a.public_base, "");
