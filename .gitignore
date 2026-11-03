@@ -16,3 +16,6 @@ target/
 
 # Design docs
 docs/superpowers/
+
+# Staged GitHub release assets (npm run package:release)
+release/

@@ -8,11 +8,22 @@ The module only plays a URL. It never talks to LuteDrop's control API.
 
 ## Install
 
-1. Copy the `lutedrop-stream` folder (the one containing `module.json`) into
-   Foundry's `Data/modules` folder, so you end up with
-   `Data/modules/lutedrop-stream/module.json`.
-2. Restart Foundry, open your world, then Settings > Manage Modules and enable
-   "LuteDrop Stream".
+**Option 1: manifest URL (recommended).** In Foundry, open Add-on Modules, click
+Install Module, paste this into the "Manifest URL" box at the bottom, and click Install:
+
+```
+https://github.com/infrasparker/LuteDrop/releases/latest/download/module.json
+```
+
+Foundry downloads and unpacks the module for you, and later updates show up in its
+module list.
+
+**Option 2: copy the folder** (if you have the repo). Copy the `lutedrop-stream` folder
+(the one containing `module.json`) into Foundry's `Data/modules` folder, so you end up
+with `Data/modules/lutedrop-stream/module.json`.
+
+Either way, restart Foundry if it was running, open your world, then Settings > Manage
+Modules and enable "LuteDrop Stream".
 
 ## Set up
 
