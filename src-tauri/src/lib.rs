@@ -25,6 +25,7 @@
 
 mod actions;
 mod audio;
+mod broadcast;
 mod commands;
 mod database;
 mod models;

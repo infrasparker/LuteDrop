@@ -357,7 +357,7 @@ impl Engine {
     ///
     /// The tap has a single reader, so call this on the thread that will
     /// [`pump`](Encoder::pump) the encoder: creation already reads the tap.
-    // Consumed by the broadcaster (a later task); drop the allow once wired.
+    // Consumed by the broadcaster wiring (Task 6); drop the allow once wired.
     #[allow(dead_code)]
     pub fn create_encoder(&self, bitrate_bps: u32) -> Result<Encoder, String> {
         let ptr = unsafe { ld_encoder_create(self.0, bitrate_bps) };
@@ -537,8 +537,6 @@ impl Encoder {
 
     /// The two header pages (OpusHead, OpusTags) every listener must receive
     /// before any audio page. Copied out of the shim.
-    // Consumed by the broadcaster (a later task); drop the allow once wired.
-    #[allow(dead_code)]
     pub fn header(&self) -> Vec<u8> {
         let mut p: *const u8 = std::ptr::null();
         let len = unsafe { ld_encoder_header(self.ptr, &mut p) };
@@ -554,8 +552,6 @@ impl Encoder {
     /// collected since the last call) and append the finished Ogg pages to
     /// `out`. Returns bytes appended; 0 means nothing is ready yet. What is
     /// appended always starts and ends on a page boundary.
-    // Consumed by the broadcaster (a later task); drop the allow once wired.
-    #[allow(dead_code)]
     pub fn pump(&mut self, out: &mut Vec<u8>) -> usize {
         // 64 KiB holds any Ogg page (at most 65 307 bytes). Pages that do not
         // fit in one call stay queued in the shim, so call until it is dry.
