@@ -120,7 +120,7 @@ hear the full-level mix regardless. The stream is Ogg/Opus at 128 kbps.
      stays empty until you fill in the Public address field (see below).
 3. Add `/page` to either link (`.../listen/<key>/page`) for a bare listening page with a
    play button, handy for a phone browser. The Foundry module plays the raw link instead.
-4. The sidebar badge and the dialog show how many people are listening.
+4. The badge in the transport bar and the dialog show how many people are listening.
 
 The stream is served on **port 3334** by default. You can change the port in the dialog,
 but only while Broadcast is off. Settings live in the database's `meta` table under
