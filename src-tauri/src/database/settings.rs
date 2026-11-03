@@ -36,6 +36,13 @@ pub fn generate_listener_key() -> String {
     Uuid::new_v4().simple().to_string()
 }
 
+/// True if `k` is exactly 32 lowercase hex characters, the only shape
+/// `generate_listener_key` produces. Anything else (empty, short, odd
+/// characters) would make a weak or guessable listener link.
+fn is_valid_listener_key(k: &str) -> bool {
+    k.len() == 32 && k.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+}
+
 /// Reads one value from the `meta` table, or `None` if the row is missing.
 fn read_meta(conn: &Connection, key: &str) -> Result<Option<String>, String> {
     conn.query_row("SELECT value FROM meta WHERE key = ?1", params![key], |row| {
@@ -74,8 +81,11 @@ pub fn load_broadcast(conn: &Connection) -> Result<BroadcastSettings, String> {
     };
 
     let key = match read_meta(conn, KEY_KEY)? {
-        Some(k) => k,
-        None => {
+        Some(k) if is_valid_listener_key(&k) => k,
+        stored => {
+            if stored.is_some() {
+                log::warn!("Stored {KEY_KEY} is malformed; replacing it with a new key");
+            }
             let k = generate_listener_key();
             write_meta(conn, KEY_KEY, &k)?;
             k
@@ -129,5 +139,18 @@ mod tests {
         };
         save_broadcast(&conn, &s).unwrap();
         assert_eq!(load_broadcast(&conn).unwrap(), s);
+    }
+
+    #[test]
+    fn malformed_stored_key_is_replaced_and_persisted() {
+        for bad in ["", "abc"] {
+            let conn = Connection::open_in_memory().unwrap();
+            init_schema(&conn).unwrap();
+            write_meta(&conn, KEY_KEY, bad).unwrap();
+            let a = load_broadcast(&conn).unwrap();
+            assert!(is_valid_listener_key(&a.key), "bad input {bad:?} must be replaced");
+            let b = load_broadcast(&conn).unwrap();
+            assert_eq!(a.key, b.key, "replacement key must be persisted");
+        }
     }
 }
