@@ -174,6 +174,28 @@ Hooks.once("ready", async () => {
 
 const ROW_CLASS = "lutedrop-volume";
 
+// Ears hear loudness on a roughly logarithmic scale, so Foundry's own volume
+// sliders pass the slider position through a curve (position ^ 1.5) before
+// using it as the volume; a straight 1:1 slider puts nearly all the audible
+// change in its bottom third. We use the same curve so our row feels like the
+// Music / Environment / Interface rows beside it. The saved "volume" setting
+// holds the real volume (as Foundry's do); only the slider position is curved.
+// AudioHelper lives at foundry.audio.AudioHelper (v12+; v12 also has a global
+// AudioHelper). If neither is found, fall back to a straight 1:1 slider.
+function audioHelper() {
+  return globalThis.foundry?.audio?.AudioHelper ?? globalThis.AudioHelper;
+}
+
+function sliderToVolume(position) {
+  const helper = audioHelper();
+  return typeof helper?.inputToVolume === "function" ? helper.inputToVolume(position) : position;
+}
+
+function volumeToSlider(volume) {
+  const helper = audioHelper();
+  return typeof helper?.volumeToInput === "function" ? helper.volumeToInput(volume) : volume;
+}
+
 function buildSliderRow() {
   const label = game.i18n.localize("LUTEDROP.SliderLabel");
   const row = document.createElement("li");
@@ -186,8 +208,10 @@ function buildSliderRow() {
 
   const slider = row.querySelector("input");
   // Drag: change the live audio at once; save the setting only on release.
-  slider.addEventListener("input", () => player?.setVolume(slider.valueAsNumber));
-  slider.addEventListener("change", () => game.settings.set(MODULE_ID, "volume", slider.valueAsNumber));
+  slider.addEventListener("input", () => player?.setVolume(sliderToVolume(slider.valueAsNumber)));
+  slider.addEventListener("change", () =>
+    game.settings.set(MODULE_ID, "volume", sliderToVolume(slider.valueAsNumber)),
+  );
   row.querySelector("button").addEventListener("click", () => {
     game.settings.set(MODULE_ID, "listen", !game.settings.get(MODULE_ID, "listen"));
   });
@@ -196,7 +220,7 @@ function buildSliderRow() {
 
 /** Make a row show the current settings (slider position and mute icon). */
 function syncSliderRow(row) {
-  row.querySelector("input").value = game.settings.get(MODULE_ID, "volume");
+  row.querySelector("input").value = volumeToSlider(game.settings.get(MODULE_ID, "volume"));
   const listening = game.settings.get(MODULE_ID, "listen");
   // Foundry dims .volume-icon.fa-volume-xmark, which suits a muted state.
   row.querySelector("button").classList.toggle("fa-volume-xmark", !listening);
