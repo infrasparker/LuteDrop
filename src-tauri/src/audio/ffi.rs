@@ -371,7 +371,7 @@ impl Engine {
         if ptr.is_null() {
             return Err("failed to create broadcast encoder".to_string());
         }
-        Ok(Encoder { ptr, in_channels: self.channels() })
+        Ok(Encoder { ptr, in_channels: self.channels(), scratch: vec![0u8; ENCODER_SCRATCH_BYTES] })
     }
 }
 
@@ -487,6 +487,9 @@ impl Drop for Sound {
     }
 }
 
+/// Size of [`Encoder`]'s reusable pump buffer: big enough for any Ogg page.
+const ENCODER_SCRATCH_BYTES: usize = 64 * 1024;
+
 /// Ogg/Opus encoder for the broadcast stream (implemented in `shim.c`).
 ///
 /// It turns PCM into bytes a browser `<audio>` element can play:
@@ -514,6 +517,11 @@ pub struct Encoder {
     /// Samples per input frame, so `feed` can turn a sample slice into the
     /// frame count the shim expects.
     in_channels: u32,
+    /// Reusable landing buffer for [`pump`](Encoder::pump). Allocated once
+    /// here instead of on every pump (about 50 times a second), since the
+    /// shim copies each finished page into it and we copy it straight out.
+    /// 64 KiB holds any Ogg page (at most 65 307 bytes).
+    scratch: Vec<u8>,
 }
 
 // SAFETY: An `Encoder` is owned and used by one thread at a time (the
@@ -539,7 +547,7 @@ impl Encoder {
         if ptr.is_null() {
             return Err(format!("failed to create encoder for {in_rate} Hz / {in_channels} ch input"));
         }
-        Ok(Encoder { ptr, in_channels })
+        Ok(Encoder { ptr, in_channels, scratch: vec![0u8; ENCODER_SCRATCH_BYTES] })
     }
 
     /// The two header pages (OpusHead, OpusTags) every listener must receive
@@ -560,16 +568,15 @@ impl Encoder {
     /// `out`. Returns bytes appended; 0 means nothing is ready yet. What is
     /// appended always starts and ends on a page boundary.
     pub fn pump(&mut self, out: &mut Vec<u8>) -> usize {
-        // 64 KiB holds any Ogg page (at most 65 307 bytes). Pages that do not
-        // fit in one call stay queued in the shim, so call until it is dry.
-        let mut scratch = vec![0u8; 64 * 1024];
+        // Pages that do not fit in one call stay queued in the shim, so call
+        // until it is dry. `self.scratch` is reused across calls.
         let mut total = 0;
         loop {
-            let n = unsafe { ld_encoder_pump(self.ptr, scratch.as_mut_ptr(), scratch.len()) };
+            let n = unsafe { ld_encoder_pump(self.ptr, self.scratch.as_mut_ptr(), self.scratch.len()) };
             if n == 0 {
                 break;
             }
-            out.extend_from_slice(&scratch[..n]);
+            out.extend_from_slice(&self.scratch[..n]);
             total += n;
         }
         total

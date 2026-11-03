@@ -948,11 +948,16 @@ fn broadcast_status(s: &BroadcastSettings, listeners: Option<usize>, error: Opti
     }
 }
 
-/// Current broadcast settings, links and listener count.
+/// Current broadcast settings, links and listener count. `error` carries why
+/// the launch-time restore failed, if it did and the stream has not started
+/// successfully since (see [`restore_broadcast_on_startup`]).
 pub fn get_broadcast_status(container: &AppStateContainer) -> Result<BroadcastStatus, String> {
     let s = load_broadcast_settings(container)?;
-    let listeners = broadcast_listeners(container);
-    Ok(broadcast_status(&s, listeners, None))
+    let (listeners, error) = {
+        let audio = container.lock_audio();
+        (audio.broadcast_listeners(), audio.last_broadcast_error())
+    };
+    Ok(broadcast_status(&s, listeners, error))
 }
 
 /// Turn the stream on or off and remember the choice.
@@ -1038,15 +1043,17 @@ pub fn regenerate_broadcast_key(container: &AppStateContainer) -> Result<Broadca
 }
 
 /// At launch, turn the stream back on if it was on when the app closed.
-/// Failures are logged, not shown: [`set_broadcast_enabled`] has already
-/// cleared the saved flag, and the dialog will show the stream as off.
+///
+/// Unlike a failed switch-on in the dialog, a failure here does NOT clear the
+/// saved flag: the user asked for Broadcast to be on, and the cause (often a
+/// port briefly held by something else) may be gone by the next launch. The
+/// reason is kept on the audio engine instead, so the dialog shows it next to
+/// a switch that reads off (`enabled` reflects whether the stream is actually
+/// running).
 pub fn restore_broadcast_on_startup(container: &AppStateContainer) {
     match load_broadcast_settings(container) {
-        Ok(s) if s.enabled => match set_broadcast_enabled(container, true) {
-            Ok(status) => match status.error {
-                Some(e) => log::warn!("Could not restore Broadcast on startup: {e}"),
-                None => log::info!("Broadcast restored on port {}", status.port),
-            },
+        Ok(s) if s.enabled => match container.lock_audio().restore_broadcast(s.port, s.key.clone()) {
+            Ok(()) => log::info!("Broadcast restored on port {}", s.port),
             Err(e) => log::warn!("Could not restore Broadcast on startup: {e}"),
         },
         Ok(_) => {}
@@ -1056,7 +1063,10 @@ pub fn restore_broadcast_on_startup(container: &AppStateContainer) {
 
 #[cfg(test)]
 mod tests {
-    use super::{hash_file, public_url, sanitize_volume, set_broadcast_enabled, set_broadcast_settings, with_db};
+    use super::{
+        get_broadcast_status, hash_file, public_url, restore_broadcast_on_startup, sanitize_volume,
+        set_broadcast_enabled, set_broadcast_settings, with_db,
+    };
     use crate::state::AppStateContainer;
 
     /// A container with an in-memory database and a real audio engine, for
@@ -1089,6 +1099,32 @@ mod tests {
         assert!(status.error.as_deref().unwrap_or("").contains(&port.to_string()));
         let persisted = with_db(&c, |conn| crate::database::settings::load_broadcast(conn)).unwrap();
         assert!(!persisted.enabled, "a failed start must not be remembered as on");
+    }
+
+    #[test]
+    fn failed_startup_restore_shows_error_and_keeps_saved_flag() {
+        let holder = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = holder.local_addr().unwrap().port();
+        let c = test_container();
+        set_broadcast_settings(&c, port, String::new()).unwrap();
+        with_db(&c, |conn| {
+            let mut s = crate::database::settings::load_broadcast(conn)?;
+            s.enabled = true;
+            crate::database::settings::save_broadcast(conn, &s)
+        })
+        .unwrap();
+
+        restore_broadcast_on_startup(&c);
+
+        let status = get_broadcast_status(&c).unwrap();
+        assert!(!status.enabled, "the stream must show as off when it could not start");
+        assert!(
+            status.error.as_deref().unwrap_or("").contains(&port.to_string()),
+            "the startup failure must be shown, got {:?}",
+            status.error
+        );
+        let persisted = with_db(&c, |conn| crate::database::settings::load_broadcast(conn)).unwrap();
+        assert!(persisted.enabled, "a failed startup restore must keep the saved preference");
     }
 
     #[test]

@@ -175,8 +175,8 @@ struct ld_engine {
     // The "program bus": a sound group every track's group feeds into. Think of
     // it as a mixing-desk submaster: all tracks are summed here before reaching
     // the speakers. It is parented to the endpoint, so what it carries still
-    // gets master volume (applied by the engine) afterwards. A later change
-    // taps this bus to broadcast the mix.
+    // gets master volume (applied by the engine) afterwards. The broadcast tap
+    // (below) captures the mix right after this bus, before master volume.
     ma_sound_group bus;
     // Pass-through node spliced in after the bus: bus -> tap -> endpoint (see
     // "Broadcast tap" above).
@@ -228,7 +228,11 @@ ld_engine* ld_engine_create(void) {
 
     // Parent NULL = attach to the engine endpoint. Volume stays at the default
     // 1.0; master volume lives on the engine, not here.
-    if (ma_sound_group_init(&e->engine, 0, NULL, &e->bus) != MA_SUCCESS) {
+    // The bus is a plain pass-through sub-mix: it only sums the track groups.
+    // NO_SPATIALIZATION turns off miniaudio's 3D positioning/panning for it.
+    // (Before, it was transparent only because it sat at distance 0 from the
+    // listener; this makes that explicit instead of accidental.)
+    if (ma_sound_group_init(&e->engine, MA_SOUND_FLAG_NO_SPATIALIZATION, NULL, &e->bus) != MA_SUCCESS) {
         ma_node_uninit(&e->tap, NULL);
         ma_pcm_rb_uninit(&e->tap.rb);
         ma_engine_uninit(&e->engine);
@@ -542,11 +546,13 @@ void ld_sound_destroy(ld_sound* s) {
 // can start at any audio page boundary. That is why pump only ever hands out
 // whole pages.
 //
-// What granule position means: for Opus, a page's granule position is the
-// number of 48 kHz samples (per channel) decoded up to the end of the last
-// packet that finishes on that page, COUNTING the pre-skip. Players use it to
-// know where in time each page sits, which is what lets them seek and keep
-// audio in sync.
+// What granule position means: for Opus (RFC 7845), a page's granule position
+// is the total number of 48 kHz samples (per channel) the encoder has output
+// up to the end of the last packet that finishes on that page. That total
+// INCLUDES the pre-skip warm-up samples, because they are real encoder output
+// too. So the playback position of real audio is granule - pre-skip. Players
+// use it to know where in time each page sits, which is what lets them seek
+// and keep audio in sync.
 //
 // What pre-skip is: the Opus encoder has a small built-in delay ("lookahead",
 // a few milliseconds): the first samples it outputs are warm-up, not real
@@ -778,9 +784,11 @@ fail:
     return NULL;
 }
 
-// Threading contract: call this on the thread that will pump the encoder. The
-// tap's ring buffer has a single reader, its read cursor may only move on that
-// thread, and this function already reads it (to discard stale frames).
+// Threading contract: the tap's ring buffer has a single reader, and this
+// function already reads it (to discard stale frames). Pump on this same
+// thread, or hand the encoder to the pumping thread by spawning that thread
+// with it (a thread spawn orders this create before every later pump), so the
+// two never read the tap at the same time. See shim.h.
 ld_encoder* ld_encoder_create(ld_engine* e, uint32_t bitrate_bps) {
     if (e == NULL) return NULL;
     ld_encoder* enc = ld_encoder_new(ld_engine_sample_rate(e), ld_engine_channels(e), bitrate_bps);
@@ -901,8 +909,11 @@ static int ld_enc_encode_staged(ld_encoder* enc) {
         memset(&op, 0, sizeof(op));
         op.packet = packet;
         op.bytes = n;
-        // Granule = pre-skip + samples encoded so far, this packet included.
-        op.granulepos = (ogg_int64_t)enc->pre_skip + enc->samples_out;
+        // Granule = every sample the encoder has output so far, this packet
+        // included. samples_out already counts the pre-skip warm-up (it is
+        // part of the encoder's output), so nothing is added here; a player
+        // finds the real-audio position as granule - pre-skip.
+        op.granulepos = enc->samples_out;
         op.packetno = enc->packetno++;
         // e_o_s stays 0: a live stream never ends.
         if (ogg_stream_packetin(&enc->os, &op) != 0) { rc = -1; break; }

@@ -56,6 +56,11 @@ pub struct AudioEngine {
     /// dropping the `Broadcaster` joins that thread, so it must finish
     /// before the engine is destroyed.
     broadcaster: Option<crate::broadcast::Broadcaster>,
+    /// Why the broadcast could not be turned back on at launch, kept so the
+    /// Broadcast dialog can show it later (the launch itself has no dialog
+    /// open to show it in). Set by [`AudioEngine::restore_broadcast`] and
+    /// cleared whenever a broadcast starts successfully.
+    last_broadcast_error: Option<String>,
     /// Owns the whole audio graph; declared LAST so it outlives all groups/
     /// sounds AND the loader thread (see ffi::EngineRef safety (b)).
     engine: ffi::Engine,
@@ -77,6 +82,7 @@ impl AudioEngine {
             master_volume: 1.0,
             mute_state: MuteState::new(),
             broadcaster: None,
+            last_broadcast_error: None,
             engine,
         })
     }
@@ -93,7 +99,26 @@ impl AudioEngine {
         }
         let encoder = self.engine.create_encoder(128_000)?;
         self.broadcaster = Some(crate::broadcast::Broadcaster::start(encoder, port, key)?);
+        self.last_broadcast_error = None;
         Ok(())
+    }
+
+    /// Like [`start_broadcast`](Self::start_broadcast), for turning the
+    /// stream back on at launch: if it fails, the reason is also kept (see
+    /// [`last_broadcast_error`](Self::last_broadcast_error)) so the dialog can
+    /// show it whenever it is opened.
+    pub fn restore_broadcast(&mut self, port: u16, key: String) -> Result<(), String> {
+        let result = self.start_broadcast(port, key);
+        if let Err(e) = &result {
+            self.last_broadcast_error = Some(e.clone());
+        }
+        result
+    }
+
+    /// Why the launch-time restore failed, if it did and no broadcast has
+    /// started successfully since.
+    pub fn last_broadcast_error(&self) -> Option<String> {
+        self.last_broadcast_error.clone()
     }
 
     /// Stop the live broadcast, if it is running. This joins the encoder and
@@ -109,6 +134,13 @@ impl AudioEngine {
     /// How many listeners are connected, or `None` when the broadcast is off.
     pub fn broadcast_listeners(&self) -> Option<usize> {
         self.broadcaster.as_ref().map(|b| b.listener_count())
+    }
+
+    /// Tests only: the raw engine, so a test can switch the broadcast tap on
+    /// and read it without starting the whole broadcast.
+    #[cfg(test)]
+    pub(crate) fn engine_for_test(&self) -> &ffi::Engine {
+        &self.engine
     }
 
     // --- Track operations ---
@@ -533,5 +565,104 @@ impl AudioEngine {
                 None => { /* invalidated between route check and here; drop */ }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AudioEngine;
+    use crate::models::{Clip, Track, TrackMode, TrackTransition};
+    use std::path::Path;
+    use std::time::Duration;
+
+    fn fixture() -> String {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/sample.opus")
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// Pull everything currently queued in the broadcast tap.
+    fn drain_tap(audio: &AudioEngine) -> Vec<f32> {
+        let eng = audio.engine_for_test();
+        let ch = eng.channels() as usize;
+        let mut scratch = vec![0f32; 4800 * ch];
+        let mut all = Vec::new();
+        loop {
+            let frames = eng.tap_read(&mut scratch);
+            if frames == 0 {
+                break;
+            }
+            all.extend_from_slice(&scratch[..frames * ch]);
+        }
+        all
+    }
+
+    /// Largest absolute sample value (0.0 for silence or an empty slice).
+    fn peak(samples: &[f32]) -> f32 {
+        samples.iter().fold(0.0f32, |m, s| m.max(s.abs()))
+    }
+
+    /// The library preview is for the operator's ears only: it must never
+    /// reach the broadcast, even while the tap is on.
+    #[test]
+    fn library_preview_never_reaches_the_tap() {
+        let mut audio = AudioEngine::new().expect("engine");
+        audio.engine_for_test().tap_set_enabled(true);
+        drain_tap(&audio);
+        audio
+            .play_library_sound(super::sound::PlayParams {
+                file_path: fixture(),
+                start_position: 10.0,
+                volume: 1.0,
+                trim_start: None,
+                trim_end: None,
+                loop_region: None,
+                fade_in: None,
+                fade_out: None,
+            })
+            .expect("play preview");
+        std::thread::sleep(Duration::from_millis(300));
+        let captured = drain_tap(&audio);
+        assert!(!captured.is_empty(), "tap produced no frames while enabled");
+        assert!(peak(&captured) < 1e-6, "library preview leaked into the tap");
+        audio.stop_library_sound();
+        audio.engine_for_test().tap_set_enabled(false);
+    }
+
+    /// Master volume is the operator's local speaker level. The tap sits
+    /// before it, so turning master all the way down must not silence the
+    /// broadcast.
+    #[test]
+    fn master_volume_zero_does_not_silence_the_tap() {
+        let mut audio = AudioEngine::new().expect("engine");
+        let track = Track {
+            id: "t1".into(),
+            name: "Track".into(),
+            clips: vec![Clip {
+                id: "c1".into(),
+                name: "Clip".into(),
+                file_path: fixture(),
+                volume: 1.0,
+                library_entry_id: "e1".into(),
+                library_volume: 1.0,
+                // Start 10 s in, where the fixture is clearly audible.
+                trim_start: Some(10.0),
+                trim_end: None,
+            }],
+            volume: 1.0,
+            mode: TrackMode::Sequence { repeat: false, transition: TrackTransition::Gapless },
+            fade_in: 0.0,
+            fade_out: 0.0,
+        };
+        audio.setup_track(&track).expect("setup track");
+        audio.set_master_volume(0.0);
+        audio.engine_for_test().tap_set_enabled(true);
+        drain_tap(&audio);
+        audio.play_track("t1").expect("play track");
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(peak(&drain_tap(&audio)) > 0.01, "master volume 0 silenced the tap");
+        audio.engine_for_test().tap_set_enabled(false);
     }
 }

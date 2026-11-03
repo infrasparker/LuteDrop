@@ -60,7 +60,7 @@ int64_t    ld_tap_read(ld_engine*, float* out, uint64_t max_frames);
 
 // Group wraps ma_sound_group (a per-track / library sub-mix). Returns NULL on failure.
 // on_program_bus != 0: the group feeds the engine's program bus (the mix of all
-// tracks; the future tap point for broadcasting). 0: it feeds the endpoint
+// tracks, which the broadcast tap captures). 0: it feeds the endpoint
 // directly, bypassing the bus (used by the library preview so it is never
 // broadcast). Master volume is NOT applied at the bus; it stays on the engine
 // (ld_engine_set_volume), downstream of the bus.
@@ -109,9 +109,13 @@ void       ld_sound_destroy(ld_sound*);
 // Two sources, fixed at creation:
 //   tap  -- production: reads the engine's broadcast tap (ld_tap_read).
 //   feed -- tests: frames are pushed in by hand with ld_encoder_feed.
-// An encoder is used from ONE thread (the encoder thread) and never from the
-// audio thread. For a tap source that thread is also the tap's single reader:
-// create/pump/destroy must all happen on it.
+// An encoder is used from ONE thread at a time and never from the audio
+// thread. For a tap source the encoder is also the tap's single reader, and
+// create already reads the tap (to discard stale frames). Creating it on one
+// thread and pumping it on another is fine when ownership moves by spawning
+// the pumping thread with the encoder handed to it (as the Rust Broadcaster
+// does): the spawn orders the create before every pump, so there is still
+// only one reader at any moment. Never pump from two threads at once.
 typedef struct ld_encoder ld_encoder;
 
 // Tap source: input rate/channels come from the engine. Enables the tap and

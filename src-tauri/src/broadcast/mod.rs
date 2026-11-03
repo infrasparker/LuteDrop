@@ -29,8 +29,7 @@ const PAGE_CAPACITY: usize = 256;
 
 /// How long the encoder thread naps when the encoder has nothing ready. Opus
 /// pages arrive every few tens of milliseconds, so 10 ms adds no audible
-/// delay and keeps `pump` (which allocates a 64 KiB scratch per call) from
-/// spinning.
+/// delay and keeps the thread from spinning on empty `pump` calls.
 const IDLE_SLEEP: Duration = Duration::from_millis(10);
 
 /// A running broadcast: the encoder thread plus the listener server.

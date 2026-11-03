@@ -12,9 +12,10 @@
 //!
 //! ## Fan-out and "lag"
 //! Pages reach listeners through a `tokio::sync::broadcast` channel holding
-//! the last 256 pages. Each listener has its own read position in that
+//! the last 256 batches (each batch is whatever one encoder pump produced,
+//! about one page). Each listener has its own read position in that
 //! channel. If a listener reads too slowly (a bad network, a stalled player)
-//! and falls more than 256 pages behind, the channel has already overwritten
+//! and falls more than 256 batches behind, the channel has already overwritten
 //! pages it never saw: that listener has **lagged**. We then end that
 //! listener's response; the encoder never waits for anyone, and every other
 //! listener keeps going. The dropped listener's player reconnects and starts
