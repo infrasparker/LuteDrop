@@ -2,9 +2,11 @@
 import { computed } from 'vue';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
+import { useBroadcast } from '../composables/useBroadcast';
 
 const store = useAppStore();
 const audio = useAudio();
+const broadcast = useBroadcast();
 
 const playingCount = computed(() => {
   let count = 0;
@@ -117,7 +119,11 @@ function togglePause(): void {
       </div>
     </div>
 
-    <div class="footer-slot footer-slot-right" />
+    <div class="footer-slot footer-slot-right">
+      <VChip v-if="broadcast.status.value?.enabled" size="small" variant="tonal" color="primary" prepend-icon="mdi-broadcast" title="Broadcasting">
+        {{ broadcast.status.value.listenerCount === 1 ? '1 listening' : `${broadcast.status.value.listenerCount} listening` }}
+      </VChip>
+    </div>
   </VFooter>
 </template>
 
