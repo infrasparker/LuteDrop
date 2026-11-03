@@ -1,6 +1,7 @@
 #ifndef LD_SHIM_H
 #define LD_SHIM_H
 #include <stdint.h>
+#include <stddef.h>
 #include <wchar.h>
 
 // Paths are passed as wide (UTF-16) strings and forwarded to miniaudio's `_w`
@@ -96,5 +97,44 @@ void       ld_sound_attach_to_group(ld_sound*, ld_group* g);
 // the loader thread before handoff, never under the audio mutex.
 void       ld_sound_seek_secs(ld_sound*, double secs);
 void       ld_sound_destroy(ld_sound*);
+
+// ---- Broadcast encoder ------------------------------------------------------
+// Turns audio into an Ogg/Opus byte stream a browser can play. Opus is the
+// codec (it squeezes 20 ms blocks of PCM into small "packets"); Ogg is the
+// container (it wraps packets into "pages", each with a small header carrying
+// a stream serial number, a sequence number and a timestamp, so a listener can
+// pick up the stream at any page boundary). Output is always 48 kHz stereo at
+// the requested bitrate, whatever the input rate/channel count.
+//
+// Two sources, fixed at creation:
+//   tap  -- production: reads the engine's broadcast tap (ld_tap_read).
+//   feed -- tests: frames are pushed in by hand with ld_encoder_feed.
+// An encoder is used from ONE thread (the encoder thread) and never from the
+// audio thread. For a tap source that thread is also the tap's single reader:
+// create/pump/destroy must all happen on it.
+typedef struct ld_encoder ld_encoder;
+
+// Tap source: input rate/channels come from the engine. Enables the tap and
+// discards whatever stale audio it was still holding, so a new broadcast never
+// starts with old frames. NULL on failure.
+ld_encoder* ld_encoder_create(ld_engine*, uint32_t bitrate_bps);
+// Feed source: no engine involved; input arrives via ld_encoder_feed at
+// in_rate / in_channels. NULL on failure.
+ld_encoder* ld_encoder_create_detached(uint32_t in_rate, uint32_t in_channels, uint32_t bitrate_bps);
+// The two header pages (OpusHead, OpusTags) every listener must receive before
+// any audio page. *out is valid for the encoder's lifetime. Returns its length.
+size_t      ld_encoder_header(ld_encoder*, const uint8_t** out);
+// Pulls pending input (tap source: drains the tap first), encodes every
+// complete 20 ms block, and copies whole Ogg pages into out while they fit.
+// Pages that do not fit wait for the next call; out never ends mid-page, so
+// every chunk returned starts at a page boundary. cap should be at least
+// 65307 bytes (the largest possible Ogg page) or a large page can never be
+// delivered. Returns bytes written; 0 means nothing ready yet.
+size_t      ld_encoder_pump(ld_encoder*, uint8_t* out, size_t cap);
+// Feed source only: queue `count` interleaved frames at in_rate/in_channels.
+// On a tap-source encoder this logs a warning and does nothing.
+void        ld_encoder_feed(ld_encoder*, const float* frames, uint64_t count);
+// Tap source: disables the tap. Frees everything. NULL is a no-op.
+void        ld_encoder_destroy(ld_encoder*);
 
 #endif
