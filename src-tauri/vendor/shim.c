@@ -240,8 +240,18 @@ ld_engine* ld_engine_create(void) {
     // Splice the tap in: bus -> tap -> endpoint. A sound group IS a node, so the
     // cast is how miniaudio itself treats one. Attaching the bus's output bus
     // detaches it from the endpoint first (miniaudio.h 7.1).
-    ma_node_attach_output_bus(&e->tap, 0, ma_engine_get_endpoint(&e->engine), 0);
-    ma_node_attach_output_bus((ma_node*)&e->bus, 0, &e->tap, 0);
+    // A failed attach would leave track audio silently disconnected, so treat
+    // it like any other init failure.
+    if (ma_node_attach_output_bus(&e->tap, 0, ma_engine_get_endpoint(&e->engine), 0) != MA_SUCCESS ||
+        ma_node_attach_output_bus((ma_node*)&e->bus, 0, &e->tap, 0) != MA_SUCCESS) {
+        ma_sound_group_uninit(&e->bus);
+        ma_node_uninit(&e->tap, NULL);
+        ma_pcm_rb_uninit(&e->tap.rb);
+        ma_engine_uninit(&e->engine);
+        ma_resource_manager_uninit(&e->resource_manager);
+        free(e);
+        return NULL;
+    }
     return e;
 }
 
