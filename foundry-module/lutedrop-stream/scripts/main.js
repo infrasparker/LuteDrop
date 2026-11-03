@@ -137,7 +137,10 @@ function registerSettings() {
     config: true,
     type: Boolean,
     default: true,
-    onChange: (on) => player?.setListening(on),
+    onChange: (on) => {
+      player?.setListening(on);
+      refreshSliderRows();
+    },
   });
 
   game.settings.register(MODULE_ID, "volume", {
@@ -148,7 +151,10 @@ function registerSettings() {
     type: Number,
     default: 0.8,
     range: { min: 0, max: 1, step: 0.05 },
-    onChange: (v) => player?.setVolume(v),
+    onChange: (v) => {
+      player?.setVolume(v);
+      refreshSliderRows();
+    },
   });
 }
 
@@ -162,4 +168,53 @@ Hooks.once("ready", async () => {
   // game.audio.unlock is a Promise (not a function) that resolves on the user's first click/key.
   await game.audio.unlock;
   player.start();
+});
+
+// ---- Playlists sidebar slider ----
+
+const ROW_CLASS = "lutedrop-volume";
+
+function buildSliderRow() {
+  const label = game.i18n.localize("LUTEDROP.SliderLabel");
+  const row = document.createElement("li");
+  // "flexrow" and "volume-icon" are Foundry's own classes, so the row picks up their styling.
+  row.className = `${ROW_CLASS} flexrow`;
+  row.innerHTML = `
+    <label>${label}</label>
+    <button type="button" class="volume-icon fa-fw fa-solid" aria-label="${label}"></button>
+    <input type="range" min="0" max="1" step="0.05" aria-label="${label}">`;
+
+  const slider = row.querySelector("input");
+  // Drag: change the live audio at once; save the setting only on release.
+  slider.addEventListener("input", () => player?.setVolume(slider.valueAsNumber));
+  slider.addEventListener("change", () => game.settings.set(MODULE_ID, "volume", slider.valueAsNumber));
+  row.querySelector("button").addEventListener("click", () => {
+    game.settings.set(MODULE_ID, "listen", !game.settings.get(MODULE_ID, "listen"));
+  });
+  return row;
+}
+
+/** Make a row show the current settings (slider position and mute icon). */
+function syncSliderRow(row) {
+  row.querySelector("input").value = game.settings.get(MODULE_ID, "volume");
+  const listening = game.settings.get(MODULE_ID, "listen");
+  // Foundry dims .volume-icon.fa-volume-xmark, which suits a muted state.
+  row.querySelector("button").classList.toggle("fa-volume-xmark", !listening);
+  row.querySelector("button").classList.toggle("fa-volume-low", listening);
+}
+
+function refreshSliderRows() {
+  document.querySelectorAll(`.${ROW_CLASS}`).forEach(syncSliderRow);
+}
+
+// v14 passes (application, HTMLElement) here; the old jQuery object is gone.
+Hooks.on("renderPlaylistDirectory", (_app, element) => {
+  // ".global-volume ol" holds the Music / Environment / Interface <li> rows.
+  const list = element.querySelector(".global-volume ol");
+  if (!list) return;
+  // This hook fires on every re-render, so only add the row once.
+  if (list.querySelector(`.${ROW_CLASS}`)) return;
+  const row = buildSliderRow();
+  syncSliderRow(row);
+  list.append(row);
 });
