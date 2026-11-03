@@ -42,6 +42,20 @@ void       ld_engine_destroy(ld_engine*);
 void       ld_engine_set_volume(ld_engine*, float linear);   // master volume
 uint64_t   ld_engine_time_frames(ld_engine*);                // global engine clock
 uint32_t   ld_engine_sample_rate(ld_engine*);
+uint32_t   ld_engine_channels(ld_engine*);
+
+// Broadcast tap: a pass-through node between the program bus and the endpoint
+// (bus -> tap -> endpoint). While enabled it copies every frame the bus carries
+// (silence included) into a 2-second lock-free ring buffer; groups routed
+// straight to the endpoint never reach it. If the reader falls behind, the
+// newest frames are dropped -- the audio thread never waits.
+// ld_tap_set_enabled: atomic flag the audio thread reads; 0 = copy nothing.
+void       ld_tap_set_enabled(ld_engine*, int enabled);
+// Pops up to max_frames interleaved f32 frames at the ENGINE's sample rate and
+// channel count into out (which must hold max_frames * channels floats).
+// Returns frames read (0 = nothing queued). Single consumer only: call from
+// one thread at a time.
+int64_t    ld_tap_read(ld_engine*, float* out, uint64_t max_frames);
 
 // Group wraps ma_sound_group (a per-track / library sub-mix). Returns NULL on failure.
 // on_program_bus != 0: the group feeds the engine's program bus (the mix of all

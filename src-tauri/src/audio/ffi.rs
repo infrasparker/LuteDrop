@@ -68,6 +68,9 @@ extern "C" {
     fn ld_engine_set_volume(e: *mut LdEngine, linear: c_float);
     fn ld_engine_time_frames(e: *mut LdEngine) -> u64;
     fn ld_engine_sample_rate(e: *mut LdEngine) -> u32;
+    fn ld_engine_channels(e: *mut LdEngine) -> u32;
+    fn ld_tap_set_enabled(e: *mut LdEngine, enabled: c_int);
+    fn ld_tap_read(e: *mut LdEngine, out: *mut f32, max_frames: u64) -> i64;
 
     fn ld_group_create(e: *mut LdEngine, on_program_bus: c_int) -> *mut LdGroup;
     fn ld_group_set_volume(g: *mut LdGroup, linear: c_float);
@@ -256,6 +259,56 @@ impl Engine {
     /// Engine output sample rate (Hz).
     pub fn sample_rate(&self) -> u32 {
         unsafe { ld_engine_sample_rate(self.0) }
+    }
+
+    /// Engine output channel count (2 = stereo). Tap frames are interleaved
+    /// with this many samples per frame.
+    // Consumed by the broadcast encoder (a later task); drop the allow once wired.
+    #[allow(dead_code)]
+    pub fn channels(&self) -> u32 {
+        unsafe { ld_engine_channels(self.0) }
+    }
+
+    /// Turn the broadcast tap on or off.
+    ///
+    /// The tap is a "pass-through" stage spliced in after the program bus: the
+    /// audio flows through it to the speakers unchanged, and while enabled it
+    /// also copies those samples into a ring buffer (a fixed-size queue that
+    /// wraps around) for [`Engine::tap_read`] to collect. Only groups created
+    /// with [`GroupRoute::ProgramBus`] pass through it; the library preview
+    /// (`GroupRoute::Endpoint`) never does. The flag is a single atomic the
+    /// audio thread reads each block, so this never blocks playback.
+    // Consumed by the broadcast encoder (a later task); drop the allow once wired.
+    #[allow(dead_code)]
+    pub fn tap_set_enabled(&self, enabled: bool) {
+        unsafe { ld_tap_set_enabled(self.0, enabled as c_int) }
+    }
+
+    /// Pop tapped audio into `out`: interleaved f32 at the engine's
+    /// [`sample_rate`](Engine::sample_rate) and [`channels`](Engine::channels).
+    /// Returns whole frames read (0 when nothing is queued); only the first
+    /// `frames * channels` samples of `out` are written.
+    ///
+    /// The ring buffer holds 2 seconds. The audio thread may never wait (it has
+    /// a few milliseconds to hand the sound card each block), so if this is not
+    /// called often enough the newest audio is dropped instead.
+    ///
+    /// Takes `&self` with no mutex because miniaudio's ring buffer is
+    /// single-producer/single-consumer: the audio thread is the one producer.
+    /// Caller contract: **only one thread reads** (the future encoder thread).
+    // Consumed by the broadcast encoder (a later task); drop the allow once wired.
+    #[allow(dead_code)]
+    pub fn tap_read(&self, out: &mut [f32]) -> usize {
+        let ch = self.channels() as usize;
+        if ch == 0 {
+            return 0;
+        }
+        let max_frames = (out.len() / ch) as u64;
+        if max_frames == 0 {
+            return 0;
+        }
+        let n = unsafe { ld_tap_read(self.0, out.as_mut_ptr(), max_frames) };
+        n.max(0) as usize
     }
 
     /// Create a sub-mix group attached to this engine, feeding `route`.
@@ -527,6 +580,56 @@ mod tests {
         let a = eng.create_sound(Some(&on_bus), p.to_str().unwrap(), true).expect("sound on bus");
         let b = eng.create_sound(Some(&direct), p.to_str().unwrap(), true).expect("sound direct");
         assert!(a.length_secs() > 0.0 && b.length_secs() > 0.0);
+    }
+
+    /// Pull everything currently queued in the tap's ring buffer.
+    fn drain(eng: &Engine) -> Vec<f32> {
+        let ch = eng.channels() as usize;
+        let mut scratch = vec![0f32; 4800 * ch];
+        let mut all = Vec::new();
+        loop {
+            let frames = eng.tap_read(&mut scratch);
+            if frames == 0 {
+                break;
+            }
+            all.extend_from_slice(&scratch[..frames * ch]);
+        }
+        all
+    }
+
+    /// Largest absolute sample value (0.0 for silence or an empty slice).
+    fn peak(samples: &[f32]) -> f32 {
+        samples.iter().fold(0.0f32, |m, s| m.max(s.abs()))
+    }
+
+    #[test]
+    fn tap_captures_bus_but_not_endpoint_groups() {
+        let eng = Engine::new().expect("engine");
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.opus");
+
+        // Preview-style group: must never reach the tap.
+        let direct = eng.create_group(GroupRoute::Endpoint).unwrap();
+        let s = eng.create_sound(Some(&direct), p.to_str().unwrap(), true).unwrap();
+        eng.tap_set_enabled(true);
+        s.play(10.0, 0.0).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let captured = drain(&eng);
+        assert!(!captured.is_empty(), "tap produced no frames while enabled");
+        assert!(peak(&captured) < 1e-6, "endpoint-routed audio leaked into the tap");
+        s.stop(0.0);
+
+        // Track-style group: must be captured.
+        let on_bus = eng.create_group(GroupRoute::ProgramBus).unwrap();
+        let t = eng.create_sound(Some(&on_bus), p.to_str().unwrap(), true).unwrap();
+        t.play(10.0, 0.0).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(peak(&drain(&eng)) > 0.01, "bus-routed audio did not reach the tap");
+
+        // Disabled tap yields nothing.
+        eng.tap_set_enabled(false);
+        drain(&eng);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(drain(&eng).is_empty());
     }
 
     #[test]
