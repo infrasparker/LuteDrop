@@ -14,8 +14,12 @@
 //! pointer back to the engine; destroying it first is undefined behavior).
 //! This is enforced by FIELD DECLARATION ORDER — Rust drops struct fields
 //! top-to-bottom — in `Voice` (`current`/`fading_out` before `group`),
-//! `AudioEngine` (`mod.rs`: `tracks`/`library` before `engine`), and
+//! `AudioEngine` (`mod.rs`: `tracks`/`library`, and `broadcaster` (whose
+//! encoder thread owns an `Encoder` holding the engine pointer) before
+//! `engine`), and
 //! `ManagedTrack` (`orchestrator.rs`: `transitions` before `voice`).
+//! An `Encoder` made by `Engine::create_encoder` must likewise be dropped
+//! before its `Engine`: it reads the engine's tap through a raw pointer.
 //! Reordering any of those fields silently reintroduces the UB; there is no
 //! compile-time check.
 //!
@@ -355,10 +359,13 @@ impl Engine {
     /// [`Encoder`]). Turns the tap on and discards any stale audio it still
     /// held from an earlier broadcast; dropping the encoder turns it off.
     ///
-    /// The tap has a single reader, so call this on the thread that will
-    /// [`pump`](Encoder::pump) the encoder: creation already reads the tap.
-    // Consumed by the broadcaster wiring (Task 6); drop the allow once wired.
-    #[allow(dead_code)]
+    /// The tap has a single reader, and creation already reads it. Creating
+    /// the encoder on one thread and pumping it on another is fine as long as
+    /// ownership is handed over by spawning the pumping thread with the
+    /// encoder moved into it (as `Broadcaster::start` does): a thread spawn
+    /// orders everything the creating thread did before everything the new
+    /// thread does, so the two never read the tap at the same time and there
+    /// is still exactly one reader at any moment.
     pub fn create_encoder(&self, bitrate_bps: u32) -> Result<Encoder, String> {
         let ptr = unsafe { ld_encoder_create(self.0, bitrate_bps) };
         if ptr.is_null() {

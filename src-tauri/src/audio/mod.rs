@@ -31,6 +31,8 @@ pub struct AudioEngine {
     // Fields are declared so playing sounds / groups drop before the engine.
     // Rust drops struct fields in declaration order; miniaudio requires the
     // object graph torn down innermost-first (Sounds → Groups → Engine).
+    // Threads that hold the engine pointer (`loader`, `broadcaster`'s encoder
+    // thread) are likewise declared before `engine` so they are joined first.
     tracks: HashMap<String, ManagedTrack>,
     /// Single-sound playback for the library preview: owns its sub-mix group, the
     /// current sound, the de-click fade-out reaper, and the seamless-loop
@@ -49,6 +51,11 @@ pub struct AudioEngine {
     loader: Loader,
     master_volume: f64,
     mute_state: MuteState,
+    /// The live broadcast, when it is on. Declared before `engine`: its
+    /// encoder thread reads the engine's tap through a raw pointer, and
+    /// dropping the `Broadcaster` joins that thread, so it must finish
+    /// before the engine is destroyed.
+    broadcaster: Option<crate::broadcast::Broadcaster>,
     /// Owns the whole audio graph; declared LAST so it outlives all groups/
     /// sounds AND the loader thread (see ffi::EngineRef safety (b)).
     engine: ffi::Engine,
@@ -69,8 +76,39 @@ impl AudioEngine {
             loader,
             master_volume: 1.0,
             mute_state: MuteState::new(),
+            broadcaster: None,
             engine,
         })
+    }
+
+    // --- Broadcast ---
+
+    /// Start the live broadcast on `port`, reachable at `/listen/{key}`.
+    /// Fails if a broadcast is already running, or if the encoder or the
+    /// listener server cannot start (e.g. the port is busy); after a failure
+    /// nothing is left running.
+    pub fn start_broadcast(&mut self, port: u16, key: String) -> Result<(), String> {
+        if self.broadcaster.is_some() {
+            return Err("Broadcast is already running".into());
+        }
+        let encoder = self.engine.create_encoder(128_000)?;
+        self.broadcaster = Some(crate::broadcast::Broadcaster::start(encoder, port, key)?);
+        Ok(())
+    }
+
+    /// Stop the live broadcast, if it is running. This joins the encoder and
+    /// listener-server threads while the caller holds the audio lock. That is
+    /// safe: neither thread ever takes the audio lock, so the join cannot
+    /// wait on us.
+    pub fn stop_broadcast(&mut self) {
+        if let Some(b) = self.broadcaster.take() {
+            b.stop();
+        }
+    }
+
+    /// How many listeners are connected, or `None` when the broadcast is off.
+    pub fn broadcast_listeners(&self) -> Option<usize> {
+        self.broadcaster.as_ref().map(|b| b.listener_count())
     }
 
     // --- Track operations ---

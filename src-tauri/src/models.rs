@@ -256,3 +256,28 @@ mod tests {
         assert!(empty.name.is_none() && empty.mode.is_none() && empty.clips.is_none());
     }
 }
+
+/// What the Broadcast dialog shows: the saved settings, the links listeners
+/// use, how many are connected, and why the last attempt to turn it on
+/// failed (if it did).
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct BroadcastStatus {
+    /// Whether the stream is running right now.
+    pub enabled: bool,
+    /// TCP port the stream server listens on.
+    pub port: u16,
+    /// Secret part of the listener link.
+    pub key: String,
+    /// User-entered public address (e.g. a reverse-proxy URL); empty if unset.
+    pub public_base: String,
+    /// Link for listeners on the same network.
+    pub lan_url: String,
+    /// Link for listeners elsewhere, built from `public_base`; `None` if unset.
+    pub public_url: Option<String>,
+    /// Listeners connected right now (0 when off).
+    pub listener_count: u32,
+    /// Why turning the stream on just failed; `None` otherwise.
+    pub error: Option<String>,
+}

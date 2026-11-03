@@ -3,7 +3,8 @@ use std::sync::Arc;
 use crate::audio::util::is_audio_path;
 use crate::database;
 use crate::database::{configurations, hierarchy, library, DbError};
-use crate::models::{AppState, BulkImportProgress, LibraryEntryUsage, Track, TrackUpdates};
+use crate::database::settings::{self as broadcast_settings, BroadcastSettings};
+use crate::models::{AppState, BroadcastStatus, BulkImportProgress, LibraryEntryUsage, Track, TrackUpdates};
 use crate::state::AppStateContainer;
 use rusqlite::params;
 
@@ -892,9 +893,203 @@ pub fn preload_peaks(container: &AppStateContainer) -> Result<usize, String> {
     Ok(loaded)
 }
 
+// --- Broadcast (live stream) ---
+//
+// Every function here follows the lock order: settings are read or saved
+// under the db lock, the stream is started/stopped under the audio lock, and
+// the two are never held at once. Starting or stopping spawns/joins only our
+// own broadcast threads, which never take either lock.
+
+/// Build the public listener link from the user's `base` address: `None` if
+/// `base` is blank; otherwise surrounding spaces and trailing slashes are
+/// removed, `https://` is added when no scheme was given, and
+/// `/listen/{key}` is appended.
+pub fn public_url(base: &str, key: &str) -> Option<String> {
+    let base = base.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return None;
+    }
+    let with_scheme = if base.contains("://") {
+        base.to_string()
+    } else {
+        format!("https://{base}")
+    };
+    Some(format!("{with_scheme}/listen/{key}"))
+}
+
+/// Read the saved broadcast settings (db lock only).
+fn load_broadcast_settings(container: &AppStateContainer) -> Result<BroadcastSettings, String> {
+    with_db(container, |conn| broadcast_settings::load_broadcast(conn))
+}
+
+/// Save the broadcast settings (db lock only).
+fn save_broadcast_settings(container: &AppStateContainer, s: &BroadcastSettings) -> Result<(), String> {
+    with_db(container, |conn| broadcast_settings::save_broadcast(conn, s))
+}
+
+/// Listener count, or `None` when the stream is off (audio lock only).
+fn broadcast_listeners(container: &AppStateContainer) -> Option<usize> {
+    container.lock_audio().broadcast_listeners()
+}
+
+/// Assemble what the Broadcast dialog shows. `listeners` is the live count
+/// (`None` = not running), and it is also what `enabled` reports, so the
+/// dialog always shows whether the stream is actually up.
+fn broadcast_status(s: &BroadcastSettings, listeners: Option<usize>, error: Option<String>) -> BroadcastStatus {
+    BroadcastStatus {
+        enabled: listeners.is_some(),
+        port: s.port,
+        key: s.key.clone(),
+        public_base: s.public_base.clone(),
+        lan_url: format!("http://{}:{}/listen/{}", crate::server::get_local_ip(), s.port, s.key),
+        public_url: public_url(&s.public_base, &s.key),
+        listener_count: listeners.unwrap_or(0) as u32,
+        error,
+    }
+}
+
+/// Current broadcast settings, links and listener count.
+pub fn get_broadcast_status(container: &AppStateContainer) -> Result<BroadcastStatus, String> {
+    let s = load_broadcast_settings(container)?;
+    let listeners = broadcast_listeners(container);
+    Ok(broadcast_status(&s, listeners, None))
+}
+
+/// Turn the stream on or off and remember the choice.
+///
+/// If turning it on fails (most often: the port is in use) this still
+/// returns `Ok`, with `enabled: false` and the reason in `error`, because
+/// that is a state for the dialog to show rather than a broken command. The
+/// saved flag is set to off, so the next launch does not retry a start that
+/// just failed. `Err` means the database could not be read or written.
+pub fn set_broadcast_enabled(container: &AppStateContainer, enabled: bool) -> Result<BroadcastStatus, String> {
+    let mut s = load_broadcast_settings(container)?;
+    let error = if enabled {
+        let started = {
+            let mut audio = container.lock_audio();
+            if audio.broadcast_listeners().is_some() {
+                Ok(()) // already on: nothing to do
+            } else {
+                audio.start_broadcast(s.port, s.key.clone())
+            }
+        };
+        s.enabled = started.is_ok();
+        started.err()
+    } else {
+        container.lock_audio().stop_broadcast();
+        s.enabled = false;
+        None
+    };
+    save_broadcast_settings(container, &s)?;
+    Ok(broadcast_status(&s, broadcast_listeners(container), error))
+}
+
+/// Change the port and public address. The port cannot change while the
+/// stream is running (the listener server is already bound to the old one),
+/// so that case is refused; the public address only feeds the shown link
+/// and can change any time.
+pub fn set_broadcast_settings(
+    container: &AppStateContainer,
+    port: u16,
+    public_base: String,
+) -> Result<BroadcastStatus, String> {
+    if port == 0 {
+        return Err("Port must be between 1 and 65535".into());
+    }
+    let mut s = load_broadcast_settings(container)?;
+    let listeners = broadcast_listeners(container);
+    if listeners.is_some() && port != s.port {
+        return Err("Turn Broadcast off before changing the port".into());
+    }
+    s.port = port;
+    s.public_base = public_base;
+    save_broadcast_settings(container, &s)?;
+    Ok(broadcast_status(&s, listeners, None))
+}
+
+/// Replace the listener key with a new random one, so every link shared so
+/// far stops working. If the stream is running it is restarted with the new
+/// key at once, which disconnects anyone still on the old link. If that
+/// restart fails the stream stays off, the saved flag is cleared, and the
+/// reason is returned in `error` (as for [`set_broadcast_enabled`]).
+pub fn regenerate_broadcast_key(container: &AppStateContainer) -> Result<BroadcastStatus, String> {
+    let mut s = load_broadcast_settings(container)?;
+    s.key = broadcast_settings::generate_listener_key();
+    save_broadcast_settings(container, &s)?;
+
+    let restarted = {
+        let mut audio = container.lock_audio();
+        if audio.broadcast_listeners().is_some() {
+            audio.stop_broadcast();
+            Some(audio.start_broadcast(s.port, s.key.clone()))
+        } else {
+            None
+        }
+    };
+    let error = match restarted {
+        Some(Err(e)) => {
+            s.enabled = false;
+            save_broadcast_settings(container, &s)?;
+            Some(e)
+        }
+        _ => None,
+    };
+    Ok(broadcast_status(&s, broadcast_listeners(container), error))
+}
+
+/// At launch, turn the stream back on if it was on when the app closed.
+/// Failures are logged, not shown: [`set_broadcast_enabled`] has already
+/// cleared the saved flag, and the dialog will show the stream as off.
+pub fn restore_broadcast_on_startup(container: &AppStateContainer) {
+    match load_broadcast_settings(container) {
+        Ok(s) if s.enabled => match set_broadcast_enabled(container, true) {
+            Ok(status) => match status.error {
+                Some(e) => log::warn!("Could not restore Broadcast on startup: {e}"),
+                None => log::info!("Broadcast restored on port {}", status.port),
+            },
+            Err(e) => log::warn!("Could not restore Broadcast on startup: {e}"),
+        },
+        Ok(_) => {}
+        Err(e) => log::warn!("Could not read Broadcast settings on startup: {e}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{hash_file, sanitize_volume};
+    use super::{hash_file, public_url, sanitize_volume, set_broadcast_enabled, set_broadcast_settings, with_db};
+    use crate::state::AppStateContainer;
+
+    /// A container with an in-memory database and a real audio engine, for
+    /// actions that touch both.
+    fn test_container() -> AppStateContainer {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::database::init_schema(&conn).unwrap();
+        let dir = tempfile::tempdir().unwrap().keep();
+        AppStateContainer::new(conn, crate::audio::AudioEngine::new().unwrap(), dir.join("peaks"), dir.join("db"))
+    }
+
+    #[test]
+    fn public_url_normalizes_base() {
+        assert_eq!(public_url("", "k"), None);
+        assert_eq!(public_url("   ", "k"), None);
+        assert_eq!(public_url("https://s.example.org", "k").unwrap(), "https://s.example.org/listen/k");
+        assert_eq!(public_url("https://s.example.org/", "k").unwrap(), "https://s.example.org/listen/k");
+        assert_eq!(public_url("s.example.org/", "k").unwrap(), "https://s.example.org/listen/k");
+        assert_eq!(public_url("http://10.0.0.5:3334", "k").unwrap(), "http://10.0.0.5:3334/listen/k");
+    }
+
+    #[test]
+    fn set_broadcast_enabled_clears_flag_on_bind_failure() {
+        let holder = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = holder.local_addr().unwrap().port();
+        let c = test_container();
+        set_broadcast_settings(&c, port, String::new()).unwrap();
+        let status = set_broadcast_enabled(&c, true).unwrap();
+        assert!(!status.enabled);
+        assert!(status.error.as_deref().unwrap_or("").contains(&port.to_string()));
+        let persisted = with_db(&c, |conn| crate::database::settings::load_broadcast(conn)).unwrap();
+        assert!(!persisted.enabled, "a failed start must not be remembered as on");
+    }
 
     #[test]
     fn sanitize_volume_clamps_and_rejects_non_finite() {

@@ -5,11 +5,14 @@
 //! - **Actions**: Business logic orchestrating state mutations and notifications.
 //! - **Persistence & Audio**: SQLite database and audio engine.
 //!
-//! ## Background Threads Spawned in Setup (4)
+//! ## Background Threads Spawned in Setup (5)
 //! 1. **Peak preload**: Precomputes waveform peaks for the library on startup.
 //! 2. **Backup loop**: Automatic database snapshots every 30 minutes.
 //! 3. **WebSocket server**: Axum HTTP + WS for remote control (with tokio runtime).
 //! 4. **50ms poll loop**: Drives audio engine, emits playback updates.
+//! 5. **Broadcast restore**: Short-lived; turns the live stream back on if it
+//!    was on at last exit (the stream's own encoder/server threads then run
+//!    until it is turned off).
 //!
 //! ## Tauri Events Emitted to Frontend
 //! - `playback-state-update`: Per-track playback position and state (every 50ms; listened: useAudio.ts).
@@ -18,6 +21,7 @@
 //! - `missing-entry-found`: Audio file relocated or found (listened: useAudio.ts).
 //! - `library-import-progress`: Bulk import progress (listened: useLibraryImport.ts).
 //! - `library-import-complete`: Bulk import finished (listened: useLibraryImport.ts).
+//! - `broadcast-listeners`: Live-stream listener count, `null` when off; sent only on change (listened: useBroadcast.ts).
 //!
 //! ## WebSocket Message Types to Remote Clients
 //! - `"state"`: Full structural snapshot (app state, library, all playback).
@@ -115,6 +119,13 @@ pub fn run() {
                 rt.block_on(server::start_server(server_container, remote_dist));
             });
 
+            // Turn the live broadcast back on if it was on at last exit. On its
+            // own thread so a slow start never delays the window opening.
+            let broadcast_container = container.clone();
+            std::thread::spawn(move || {
+                actions::restore_broadcast_on_startup(&broadcast_container);
+            });
+
             // Spawn the playback state polling task
             let poll_container = container.clone();
             let app_handle = app.handle().clone();
@@ -179,6 +190,10 @@ pub fn run() {
             commands::load_configuration,
             commands::delete_configuration,
             commands::rename_configuration,
+            commands::get_broadcast_status,
+            commands::set_broadcast_enabled,
+            commands::set_broadcast_settings,
+            commands::regenerate_broadcast_key,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LuteDrop");
@@ -187,20 +202,28 @@ pub fn run() {
 /// Polling loop that drives the audio engine and emits playback state updates.
 /// Runs on its own thread every 50ms.
 fn playback_polling_loop(app_handle: tauri::AppHandle, container: Arc<AppStateContainer>) {
+    // Last listener count sent as `broadcast-listeners`, so the event goes out
+    // only on change. Starts as "off", matching the stream at launch.
+    let mut last_listeners: Option<u32> = None;
     loop {
         std::thread::sleep(audio::POLL_INTERVAL);
 
-        let (states, master_vol, newly_missing, newly_found) = {
+        let (states, master_vol, newly_missing, newly_found, listeners) = {
             let mut audio = container.lock_audio();
             let (states, missing, found) = audio.poll();
             let vol = audio.get_master_volume();
-            (states, vol, missing, found)
+            let listeners = audio.broadcast_listeners().map(|n| n as u32);
+            (states, vol, missing, found, listeners)
         };
 
         for state in &states {
             let _ = app_handle.emit("playback-state-update", state);
         }
         let _ = app_handle.emit("master-volume-update", master_vol);
+        if listeners != last_listeners {
+            let _ = app_handle.emit("broadcast-listeners", listeners);
+            last_listeners = listeners;
+        }
 
         // Update missing state — events are emitted automatically by mark_entry_missing/found
         for entry_id in &newly_missing {

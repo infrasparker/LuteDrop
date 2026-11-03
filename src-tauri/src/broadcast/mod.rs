@@ -34,18 +34,23 @@ const PAGE_CAPACITY: usize = 256;
 const IDLE_SLEEP: Duration = Duration::from_millis(10);
 
 /// A running broadcast: the encoder thread plus the listener server.
-/// Stop it with [`Broadcaster::stop`]; that also drops the [`Encoder`],
-/// which disables the engine's tap.
-// Task 6 wires this into the app; it removes this allow.
-#[allow(dead_code)]
+/// Stop it with [`Broadcaster::stop`] or simply drop it; either way the
+/// encoder thread is joined (which drops the [`Encoder`] and disables the
+/// engine's tap) before the listener server shuts down.
+///
+/// Dropping always joins the encoder thread because that thread holds a raw
+/// pointer to the audio engine: `AudioEngine` owns the `Broadcaster` and
+/// declares it before its `engine` field, so this join finishes before the
+/// engine is destroyed. Without it, dropping the engine while the thread was
+/// still pumping would be a use-after-free.
 pub struct Broadcaster {
     stop_flag: Arc<AtomicBool>,
-    encoder_thread: JoinHandle<()>,
-    server: ListenerServer,
+    /// `Option` only so `Drop` can take the handle out and join it.
+    encoder_thread: Option<JoinHandle<()>>,
+    /// `Option` only so `Drop` can take the server out and stop it.
+    server: Option<ListenerServer>,
 }
 
-// Task 6 wires this into the app; it removes this allow.
-#[allow(dead_code)]
 impl Broadcaster {
     /// Start broadcasting `encoder`'s output on `0.0.0.0:port`, reachable at
     /// `/listen/{key}`.
@@ -78,20 +83,33 @@ impl Broadcaster {
             }
         };
 
-        Ok(Broadcaster { stop_flag, encoder_thread, server })
+        Ok(Broadcaster { stop_flag, encoder_thread: Some(encoder_thread), server: Some(server) })
     }
 
     /// How many listeners are connected right now.
     pub fn listener_count(&self) -> usize {
-        self.server.listener_count()
+        self.server.as_ref().map_or(0, |s| s.listener_count())
     }
 
-    /// Stop the encoder thread (which drops the encoder and disables the
-    /// tap), then shut down the listener server.
+    /// Stop broadcasting. Same as dropping it (see the `Drop` impl); this
+    /// just names the intent at the call site.
     pub fn stop(self) {
+        drop(self);
+    }
+}
+
+impl Drop for Broadcaster {
+    /// Stop the encoder thread and wait for it (it drops the encoder, which
+    /// disables the tap), then shut down the listener server. The encoder
+    /// goes first so nothing is still reading the engine once this returns.
+    fn drop(&mut self) {
         self.stop_flag.store(true, Ordering::SeqCst);
-        let _ = self.encoder_thread.join();
-        self.server.stop();
+        if let Some(thread) = self.encoder_thread.take() {
+            let _ = thread.join();
+        }
+        if let Some(server) = self.server.take() {
+            server.stop();
+        }
     }
 }
 
@@ -111,4 +129,23 @@ fn encoder_loop(mut encoder: Encoder, pages: broadcast::Sender<Bytes>, stop: Arc
     }
     // Dropping the encoder here, on its own thread, disables the tap.
     drop(encoder);
+}
+
+#[cfg(test)]
+mod tests {
+    // Needs a real engine (an audio device), like the ffi tests.
+    #[test]
+    fn enable_fails_cleanly_when_port_busy() {
+        let holder = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = holder.local_addr().unwrap().port();
+        let mut audio = crate::audio::AudioEngine::new().unwrap();
+        let err = audio.start_broadcast(port, "k".into()).err().expect("busy port must fail");
+        assert!(err.contains(&port.to_string()));
+        assert!(audio.broadcast_listeners().is_none(), "nothing left running after a failed start");
+        drop(holder);
+        audio.start_broadcast(port, "k".into()).expect("works once the port is free");
+        assert_eq!(audio.broadcast_listeners(), Some(0));
+        audio.stop_broadcast();
+        assert!(audio.broadcast_listeners().is_none());
+    }
 }

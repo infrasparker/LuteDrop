@@ -2,7 +2,7 @@ use serde::Serialize;
 use tauri::State;
 use std::sync::Arc;
 use crate::actions;
-use crate::models::{AppState, LibraryEntryUsage, TrackUpdates};
+use crate::models::{AppState, BroadcastStatus, LibraryEntryUsage, TrackUpdates};
 use crate::state::AppStateContainer;
 use crate::waveform;
 
@@ -380,4 +380,28 @@ pub fn toggle_comp_mute(state: State<'_, Arc<AppStateContainer>>, comp_id: Strin
 #[tauri::command]
 pub fn get_mute_state(state: State<'_, Arc<AppStateContainer>>) -> Result<serde_json::Value, String> {
     actions::get_mute_state(&state)
+}
+
+#[tauri::command]
+pub fn get_broadcast_status(state: State<'_, Arc<AppStateContainer>>) -> Result<BroadcastStatus, String> {
+    actions::get_broadcast_status(&state)
+}
+
+#[tauri::command]
+pub fn set_broadcast_enabled(state: State<'_, Arc<AppStateContainer>>, enabled: bool) -> Result<BroadcastStatus, String> {
+    actions::set_broadcast_enabled(&state, enabled)
+}
+
+#[tauri::command]
+pub fn set_broadcast_settings(
+    state: State<'_, Arc<AppStateContainer>>,
+    port: u16,
+    public_base: String,
+) -> Result<BroadcastStatus, String> {
+    actions::set_broadcast_settings(&state, port, public_base)
+}
+
+#[tauri::command]
+pub fn regenerate_broadcast_key(state: State<'_, Arc<AppStateContainer>>) -> Result<BroadcastStatus, String> {
+    actions::regenerate_broadcast_key(&state)
 }

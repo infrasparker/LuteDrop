@@ -1,8 +1,6 @@
 //! Persisted Broadcast (live stream) settings, stored as plain key/value
 //! rows in the `meta` table.
 
-// Task 6 wires these into actions and removes the dead_code allows below.
-
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
@@ -12,11 +10,9 @@ const KEY_KEY: &str = "broadcast_key";
 const KEY_PUBLIC_BASE: &str = "broadcast_public_base";
 
 /// Port the stream server listens on until the user picks another one.
-#[allow(dead_code)] // Task 6 removes this allow
 pub const DEFAULT_BROADCAST_PORT: u16 = 3334;
 
 /// Everything the user can configure about the broadcast stream.
-#[allow(dead_code)] // Task 6 removes this allow
 #[derive(Debug, Clone, PartialEq)]
 pub struct BroadcastSettings {
     /// Whether the stream server should be running.
@@ -31,7 +27,6 @@ pub struct BroadcastSettings {
 
 /// Makes a new secret listener key: a random UUID written as 32 lowercase
 /// hex characters (no dashes).
-#[allow(dead_code)] // Task 6 removes this allow
 pub fn generate_listener_key() -> String {
     Uuid::new_v4().simple().to_string()
 }
@@ -66,7 +61,6 @@ fn write_meta(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
 /// (off, port 3334, no public base). If no listener key exists yet, a new
 /// one is generated and saved immediately so it stays the same on later loads.
 /// A stored port that is not a valid number falls back to the default.
-#[allow(dead_code)] // Task 6 removes this allow
 pub fn load_broadcast(conn: &Connection) -> Result<BroadcastSettings, String> {
     let enabled = read_meta(conn, KEY_ENABLED)?.as_deref() == Some("1");
 
@@ -98,7 +92,6 @@ pub fn load_broadcast(conn: &Connection) -> Result<BroadcastSettings, String> {
 }
 
 /// Saves all four broadcast settings, replacing whatever was stored before.
-#[allow(dead_code)] // Task 6 removes this allow
 pub fn save_broadcast(conn: &Connection, s: &BroadcastSettings) -> Result<(), String> {
     write_meta(conn, KEY_ENABLED, if s.enabled { "1" } else { "0" })?;
     write_meta(conn, KEY_PORT, &s.port.to_string())?;
