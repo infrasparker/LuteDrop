@@ -1,0 +1,9 @@
+{
+  "LUTEDROP.StreamUrl.Name": "LuteDrop stream URL",
+  "LUTEDROP.StreamUrl.Hint": "The public stream URL from LuteDrop's Broadcast dialog. Leave blank to stop playback.",
+  "LUTEDROP.Listen.Name": "Listen to LuteDrop",
+  "LUTEDROP.Listen.Hint": "Turn off to silence the LuteDrop stream on this device only.",
+  "LUTEDROP.Volume.Name": "LuteDrop volume",
+  "LUTEDROP.Volume.Hint": "How loud the LuteDrop stream is on this device.",
+  "LUTEDROP.SliderLabel": "LuteDrop"
+}

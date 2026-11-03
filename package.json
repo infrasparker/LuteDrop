@@ -1,7 +1,7 @@
 {
   "name": "lutedrop",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,6 +11,7 @@
     "build:remote": "vue-tsc --noEmit && vite build --config vite.remote.config.ts",
     "lint": "eslint .",
     "check:generated": "node scripts/check-generated.mjs",
+    "package:release": "node scripts/package-release.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

@@ -3,6 +3,7 @@ pub mod configurations;
 pub mod error;
 pub mod hierarchy;
 pub mod library;
+pub mod settings;
 
 pub use error::DbError;
 

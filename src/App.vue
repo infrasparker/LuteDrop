@@ -9,10 +9,12 @@ import type { AppState } from '@generated/index';
 import TransportBar from './components/TransportBar.vue';
 import WaveformEditorDialog from './components/WaveformEditorDialog.vue';
 import RemoteInfoDialog from './components/RemoteInfoDialog.vue';
+import BroadcastDialog from './components/BroadcastDialog.vue';
 
 const store = useAppStore();
 const toast = useToast();
 const showRemoteInfo = ref(false);
+const showBroadcast = ref(false);
 
 // Initialize audio early to register event listeners
 const audio = useAudio();
@@ -70,6 +72,12 @@ onMounted(async () => {
       <template #append>
         <VList nav density="compact">
           <VListItem
+            prepend-icon="mdi-broadcast"
+            title="Broadcast"
+            aria-label="Broadcast"
+            @click="showBroadcast = true"
+          />
+          <VListItem
             prepend-icon="mdi-cellphone-link"
             title="Phone remote"
             aria-label="Phone remote"
@@ -96,6 +104,7 @@ onMounted(async () => {
     />
 
     <RemoteInfoDialog v-model="showRemoteInfo" />
+    <BroadcastDialog v-model="showBroadcast" />
 
     <VSnackbar v-model="toast.visible.value" :color="toast.color.value" :timeout="3000">
       {{ toast.message.value }}

@@ -23,7 +23,32 @@ use std::path::PathBuf;
 
 fn main() {
     build_audio_shim();
-    tauri_build::build();
+    // The Windows app manifest is added by `embed_manifest` below instead of
+    // by tauri-build, so that test executables get it too.
+    let windows = tauri_build::WindowsAttributes::new_without_app_manifest();
+    tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows))
+        .expect("tauri-build failed");
+    embed_manifest();
+}
+
+/// Embed the Common-Controls v6 manifest (the one tauri-build would add by
+/// default) into every linked target: the app and the test executables.
+///
+/// Why tests need it: tests that build an `AppStateContainer` link in tauri's
+/// Windows code, which imports functions (e.g. `TaskDialogIndirect`) that
+/// only exist in Common-Controls v6. Without this manifest Windows loads v5
+/// and the test exe dies before running anything, with
+/// STATUS_ENTRYPOINT_NOT_FOUND (0xc0000139). tauri-build only manifests
+/// binaries, and cargo rejects test-only link args in a package with no
+/// `tests/` directory, so the manifest is applied to all targets here.
+fn embed_manifest() {
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc") {
+        return;
+    }
+    println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+    println!(
+        "cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32'          name='Microsoft.Windows.Common-Controls' version='6.0.0.0'          processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+    );
 }
 
 fn build_audio_shim() {

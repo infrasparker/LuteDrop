@@ -6,7 +6,7 @@
 //! **Ownership.** Every `ld_*_create`/`ld_decoder_open` call is paired with
 //! exactly one `ld_*_destroy`/`ld_decoder_close` call, and each pairing is
 //! wrapped in a `Drop` impl in this module (`Engine`, `Group`, `Sound`,
-//! `StreamingDecoder`). Rust code elsewhere never calls the raw `ld_*_destroy`
+//! `StreamingDecoder`, `Encoder`). Rust code elsewhere never calls the raw `ld_*_destroy`
 //! functions directly.
 //!
 //! **Drop order.** The shim requires sounds to be destroyed before their
@@ -14,8 +14,12 @@
 //! pointer back to the engine; destroying it first is undefined behavior).
 //! This is enforced by FIELD DECLARATION ORDER — Rust drops struct fields
 //! top-to-bottom — in `Voice` (`current`/`fading_out` before `group`),
-//! `AudioEngine` (`mod.rs`: `tracks`/`library` before `engine`), and
+//! `AudioEngine` (`mod.rs`: `tracks`/`library`, and `broadcaster` (whose
+//! encoder thread owns an `Encoder` holding the engine pointer) before
+//! `engine`), and
 //! `ManagedTrack` (`orchestrator.rs`: `transitions` before `voice`).
+//! An `Encoder` made by `Engine::create_encoder` must likewise be dropped
+//! before its `Engine`: it reads the engine's tap through a raw pointer.
 //! Reordering any of those fields silently reintroduces the UB; there is no
 //! compile-time check.
 //!
@@ -68,8 +72,11 @@ extern "C" {
     fn ld_engine_set_volume(e: *mut LdEngine, linear: c_float);
     fn ld_engine_time_frames(e: *mut LdEngine) -> u64;
     fn ld_engine_sample_rate(e: *mut LdEngine) -> u32;
+    fn ld_engine_channels(e: *mut LdEngine) -> u32;
+    fn ld_tap_set_enabled(e: *mut LdEngine, enabled: c_int);
+    fn ld_tap_read(e: *mut LdEngine, out: *mut f32, max_frames: u64) -> i64;
 
-    fn ld_group_create(e: *mut LdEngine) -> *mut LdGroup;
+    fn ld_group_create(e: *mut LdEngine, on_program_bus: c_int) -> *mut LdGroup;
     fn ld_group_set_volume(g: *mut LdGroup, linear: c_float);
     fn ld_group_destroy(g: *mut LdGroup);
 
@@ -93,6 +100,13 @@ extern "C" {
     fn ld_sound_attach_to_group(s: *mut LdSound, g: *mut LdGroup);
     fn ld_sound_seek_secs(s: *mut LdSound, secs: f64);
     fn ld_sound_destroy(s: *mut LdSound);
+
+    fn ld_encoder_create(e: *mut LdEngine, bitrate_bps: u32) -> *mut LdEncoder;
+    fn ld_encoder_create_detached(in_rate: u32, in_channels: u32, bitrate_bps: u32) -> *mut LdEncoder;
+    fn ld_encoder_header(enc: *mut LdEncoder, out: *mut *const u8) -> usize;
+    fn ld_encoder_pump(enc: *mut LdEncoder, out: *mut u8, cap: usize) -> usize;
+    fn ld_encoder_feed(enc: *mut LdEncoder, frames: *const f32, count: u64);
+    fn ld_encoder_destroy(enc: *mut LdEncoder);
 }
 
 // Opaque C types. We never construct or dereference these in Rust; the shim
@@ -113,6 +127,10 @@ pub struct LdSound {
 pub struct LdDecoder {
     _private: [u8; 0],
 }
+#[repr(C)]
+pub struct LdEncoder {
+    _private: [u8; 0],
+}
 
 /// Safe wrapper over `ma_engine` (+ its libopus-aware resource manager).
 ///
@@ -124,6 +142,20 @@ pub struct LdDecoder {
 /// fields so Rust drops sounds before groups before the engine (Rust drops
 /// struct fields in declaration order), or drop them explicitly in that order.
 pub struct Engine(*mut LdEngine);
+
+/// Where a sound group sends its audio.
+///
+/// Audio in miniaudio flows through a graph of nodes toward the "endpoint"
+/// (the speakers). The program bus is one extra node on that path: all track
+/// groups are summed there first, which gives a single place to tap "the mix".
+/// Master volume is applied after the bus, at the engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupRoute {
+    /// Feed the program bus (the broadcastable mix of all tracks).
+    ProgramBus,
+    /// Feed the endpoint directly, skipping the bus (local-only audio).
+    Endpoint,
+}
 
 /// Safe wrapper over `ma_sound_group` (a per-track / library sub-mix).
 /// Must be dropped before the owning `Engine` (see [`Engine`] drop-order note).
@@ -244,9 +276,61 @@ impl Engine {
         unsafe { ld_engine_sample_rate(self.0) }
     }
 
-    /// Create a sub-mix group attached to this engine.
-    pub fn create_group(&self) -> Result<Group, String> {
-        let ptr = unsafe { ld_group_create(self.0) };
+    /// Engine output channel count (2 = stereo). Tap frames are interleaved
+    /// with this many samples per frame.
+    pub fn channels(&self) -> u32 {
+        unsafe { ld_engine_channels(self.0) }
+    }
+
+    /// Turn the broadcast tap on or off.
+    ///
+    /// The tap is a "pass-through" stage spliced in after the program bus: the
+    /// audio flows through it to the speakers unchanged, and while enabled it
+    /// also copies those samples into a ring buffer (a fixed-size queue that
+    /// wraps around) for [`Engine::tap_read`] to collect. Only groups created
+    /// with [`GroupRoute::ProgramBus`] pass through it; the library preview
+    /// (`GroupRoute::Endpoint`) never does. The flag is a single atomic the
+    /// audio thread reads each block, so this never blocks playback.
+    // The encoder reads the tap directly in C (ld_encoder_create/pump), so
+    // outside tests nothing calls this wrapper.
+    #[allow(dead_code)]
+    pub fn tap_set_enabled(&self, enabled: bool) {
+        unsafe { ld_tap_set_enabled(self.0, enabled as c_int) }
+    }
+
+    /// Pop tapped audio into `out`: interleaved f32 at the engine's
+    /// [`sample_rate`](Engine::sample_rate) and [`channels`](Engine::channels).
+    /// Returns whole frames read (0 when nothing is queued); only the first
+    /// `frames * channels` samples of `out` are written.
+    ///
+    /// The ring buffer holds 2 seconds. The audio thread may never wait (it has
+    /// a few milliseconds to hand the sound card each block), so if this is not
+    /// called often enough the newest audio is dropped instead.
+    ///
+    /// Takes `&self` with no mutex because miniaudio's ring buffer is
+    /// single-producer/single-consumer: the audio thread is the one producer.
+    /// Caller contract: **only one thread reads**. While an [`Encoder`] made by
+    /// [`Engine::create_encoder`] exists it is that reader, so do not call this.
+    // The encoder reads the tap directly in C (ld_encoder_create/pump), so
+    // outside tests nothing calls this wrapper.
+    #[allow(dead_code)]
+    pub fn tap_read(&self, out: &mut [f32]) -> usize {
+        let ch = self.channels() as usize;
+        if ch == 0 {
+            return 0;
+        }
+        let max_frames = (out.len() / ch) as u64;
+        if max_frames == 0 {
+            return 0;
+        }
+        let n = unsafe { ld_tap_read(self.0, out.as_mut_ptr(), max_frames) };
+        n.max(0) as usize
+    }
+
+    /// Create a sub-mix group attached to this engine, feeding `route`.
+    pub fn create_group(&self, route: GroupRoute) -> Result<Group, String> {
+        let on_program_bus = matches!(route, GroupRoute::ProgramBus) as c_int;
+        let ptr = unsafe { ld_group_create(self.0, on_program_bus) };
         if ptr.is_null() {
             return Err("failed to create audio group".to_string());
         }
@@ -269,6 +353,25 @@ impl Engine {
             return Err(format!("failed to create sound for {path}"));
         }
         Ok(Sound { ptr })
+    }
+
+    /// Create a broadcast encoder that reads this engine's tap (see
+    /// [`Encoder`]). Turns the tap on and discards any stale audio it still
+    /// held from an earlier broadcast; dropping the encoder turns it off.
+    ///
+    /// The tap has a single reader, and creation already reads it. Creating
+    /// the encoder on one thread and pumping it on another is fine as long as
+    /// ownership is handed over by spawning the pumping thread with the
+    /// encoder moved into it (as `Broadcaster::start` does): a thread spawn
+    /// orders everything the creating thread did before everything the new
+    /// thread does, so the two never read the tap at the same time and there
+    /// is still exactly one reader at any moment.
+    pub fn create_encoder(&self, bitrate_bps: u32) -> Result<Encoder, String> {
+        let ptr = unsafe { ld_encoder_create(self.0, bitrate_bps) };
+        if ptr.is_null() {
+            return Err("failed to create broadcast encoder".to_string());
+        }
+        Ok(Encoder { ptr, in_channels: self.channels(), scratch: vec![0u8; ENCODER_SCRATCH_BYTES] })
     }
 }
 
@@ -381,6 +484,122 @@ impl Sound {
 impl Drop for Sound {
     fn drop(&mut self) {
         unsafe { ld_sound_destroy(self.ptr) }
+    }
+}
+
+/// Size of [`Encoder`]'s reusable pump buffer: big enough for any Ogg page.
+const ENCODER_SCRATCH_BYTES: usize = 64 * 1024;
+
+/// Ogg/Opus encoder for the broadcast stream (implemented in `shim.c`).
+///
+/// It turns PCM into bytes a browser `<audio>` element can play:
+/// - **Opus** is the codec. It compresses audio in fixed 20 ms blocks (960
+///   samples per channel at 48 kHz, its recommended default: long enough to
+///   compress well, short enough to keep latency low) into small packets.
+/// - **Ogg** is the container. It wraps packets into *pages*, each with a
+///   short header carrying the stream's serial number, a page sequence number
+///   and a *granule position*: the number of 48 kHz samples decoded by the end
+///   of that page, which players use as a timestamp to seek and stay in sync.
+/// - The stream opens with two *header pages*: OpusHead (format, channel
+///   count, and *pre-skip*: how many warm-up samples the decoder should drop,
+///   since the encoder's first output is lookahead rather than real audio)
+///   and OpusTags (vendor "LuteDrop"). Every listener needs these first, then
+///   can start at any audio page boundary.
+///
+/// Output is always 48 kHz stereo; other input rates and channel counts are
+/// converted inside the shim. Two sources, fixed at creation: the engine's
+/// tap ([`Engine::create_encoder`], production) or frames pushed in by hand
+/// ([`Encoder::create_detached`] + [`Encoder::feed`], tests). Never used on
+/// the audio thread. Dropping it frees the encoder and, for a tap source,
+/// disables the tap; drop it before the `Engine` it reads from.
+pub struct Encoder {
+    ptr: *mut LdEncoder,
+    /// Samples per input frame, so `feed` can turn a sample slice into the
+    /// frame count the shim expects.
+    in_channels: u32,
+    /// Reusable landing buffer for [`pump`](Encoder::pump). Allocated once
+    /// here instead of on every pump (about 50 times a second), since the
+    /// shim copies each finished page into it and we copy it straight out.
+    /// 64 KiB holds any Ogg page (at most 65 307 bytes).
+    scratch: Vec<u8>,
+}
+
+// SAFETY: An `Encoder` is owned and used by one thread at a time (the
+// broadcast encoder thread; `&mut self` on `pump`/`feed` gives exclusive
+// access), and the shim's encoder state is plain heap memory with no thread
+// affinity. A tap-source encoder also holds the engine pointer, mirroring
+// `EngineRef` (b): the owning `AudioEngine` joins the encoder thread before
+// its `engine` field drops, so the pointer is never dangling while the
+// encoder can use it. Through it the encoder touches only the tap's atomic
+// enable flag and the read side of its single-producer/single-consumer ring
+// buffer, both built for use off the audio mutex; this encoder is that
+// buffer's one consumer.
+unsafe impl Send for Encoder {}
+
+impl Encoder {
+    /// Create a feed-source encoder (no engine): input arrives through
+    /// [`feed`](Encoder::feed) as interleaved f32 frames at `in_rate` Hz with
+    /// `in_channels` samples per frame. Used by tests.
+    // Only the tests construct a feed-source encoder; production uses the tap.
+    #[allow(dead_code)]
+    pub fn create_detached(in_rate: u32, in_channels: u32, bitrate_bps: u32) -> Result<Encoder, String> {
+        let ptr = unsafe { ld_encoder_create_detached(in_rate, in_channels, bitrate_bps) };
+        if ptr.is_null() {
+            return Err(format!("failed to create encoder for {in_rate} Hz / {in_channels} ch input"));
+        }
+        Ok(Encoder { ptr, in_channels, scratch: vec![0u8; ENCODER_SCRATCH_BYTES] })
+    }
+
+    /// The two header pages (OpusHead, OpusTags) every listener must receive
+    /// before any audio page. Copied out of the shim.
+    pub fn header(&self) -> Vec<u8> {
+        let mut p: *const u8 = std::ptr::null();
+        let len = unsafe { ld_encoder_header(self.ptr, &mut p) };
+        if p.is_null() || len == 0 {
+            return Vec::new();
+        }
+        // SAFETY: the shim keeps the header buffer alive for the encoder's
+        // lifetime, and `self` stays borrowed for the duration of this copy.
+        unsafe { std::slice::from_raw_parts(p, len) }.to_vec()
+    }
+
+    /// Encode whatever input is pending (for a tap source, everything the tap
+    /// collected since the last call) and append the finished Ogg pages to
+    /// `out`. Returns bytes appended; 0 means nothing is ready yet. What is
+    /// appended always starts and ends on a page boundary.
+    pub fn pump(&mut self, out: &mut Vec<u8>) -> usize {
+        // Pages that do not fit in one call stay queued in the shim, so call
+        // until it is dry. `self.scratch` is reused across calls.
+        let mut total = 0;
+        loop {
+            let n = unsafe { ld_encoder_pump(self.ptr, self.scratch.as_mut_ptr(), self.scratch.len()) };
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&self.scratch[..n]);
+            total += n;
+        }
+        total
+    }
+
+    /// Feed-source only: queue interleaved frames at the `in_rate` /
+    /// `in_channels` given to [`create_detached`](Encoder::create_detached).
+    /// A trailing partial frame is ignored. On a tap-source encoder the shim
+    /// logs a warning and ignores the call.
+    // Only the tests feed frames by hand; production uses the tap.
+    #[allow(dead_code)]
+    pub fn feed(&mut self, frames: &[f32]) {
+        let count = (frames.len() / self.in_channels.max(1) as usize) as u64;
+        if count == 0 {
+            return;
+        }
+        unsafe { ld_encoder_feed(self.ptr, frames.as_ptr(), count) }
+    }
+}
+
+impl Drop for Encoder {
+    fn drop(&mut self) {
+        unsafe { ld_encoder_destroy(self.ptr) }
     }
 }
 
@@ -504,9 +723,200 @@ mod tests {
     }
 
     #[test]
+    fn groups_can_route_to_bus_or_endpoint() {
+        let eng = Engine::new().expect("engine");
+        let on_bus = eng.create_group(GroupRoute::ProgramBus).expect("bus group");
+        let direct = eng.create_group(GroupRoute::Endpoint).expect("endpoint group");
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.opus");
+        let a = eng.create_sound(Some(&on_bus), p.to_str().unwrap(), true).expect("sound on bus");
+        let b = eng.create_sound(Some(&direct), p.to_str().unwrap(), true).expect("sound direct");
+        assert!(a.length_secs() > 0.0 && b.length_secs() > 0.0);
+    }
+
+    /// Pull everything currently queued in the tap's ring buffer.
+    fn drain(eng: &Engine) -> Vec<f32> {
+        let ch = eng.channels() as usize;
+        let mut scratch = vec![0f32; 4800 * ch];
+        let mut all = Vec::new();
+        loop {
+            let frames = eng.tap_read(&mut scratch);
+            if frames == 0 {
+                break;
+            }
+            all.extend_from_slice(&scratch[..frames * ch]);
+        }
+        all
+    }
+
+    /// Largest absolute sample value (0.0 for silence or an empty slice).
+    fn peak(samples: &[f32]) -> f32 {
+        samples.iter().fold(0.0f32, |m, s| m.max(s.abs()))
+    }
+
+    #[test]
+    fn tap_captures_bus_but_not_endpoint_groups() {
+        let eng = Engine::new().expect("engine");
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.opus");
+
+        // Preview-style group: must never reach the tap.
+        let direct = eng.create_group(GroupRoute::Endpoint).unwrap();
+        let s = eng.create_sound(Some(&direct), p.to_str().unwrap(), true).unwrap();
+        eng.tap_set_enabled(true);
+        s.play(10.0, 0.0).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let captured = drain(&eng);
+        assert!(!captured.is_empty(), "tap produced no frames while enabled");
+        assert!(peak(&captured) < 1e-6, "endpoint-routed audio leaked into the tap");
+        s.stop(0.0);
+
+        // Track-style group: must be captured.
+        let on_bus = eng.create_group(GroupRoute::ProgramBus).unwrap();
+        let t = eng.create_sound(Some(&on_bus), p.to_str().unwrap(), true).unwrap();
+        t.play(10.0, 0.0).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(peak(&drain(&eng)) > 0.01, "bus-routed audio did not reach the tap");
+
+        // Disabled tap yields nothing.
+        eng.tap_set_enabled(false);
+        drain(&eng);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(drain(&eng).is_empty());
+    }
+
+    /// One Ogg page as seen by [`ogg_pages`].
+    struct OggPage {
+        granule: u64,
+        serial: u32,
+        seq: u32,
+        header_type: u8,
+        body: Vec<u8>,
+    }
+
+    /// Minimal Ogg page walker for the encoder tests. Each page is a 27-byte
+    /// fixed header ("OggS", version, header_type, granule u64 LE, serial u32
+    /// LE, sequence u32 LE, CRC u32, segment count), then a segment table of
+    /// that many length bytes, then a body whose length is their sum. The CRC
+    /// is not checked; the decode tests cover stream validity.
+    fn ogg_pages(bytes: &[u8]) -> Vec<OggPage> {
+        let mut pages = Vec::new();
+        let mut at = 0;
+        while at < bytes.len() {
+            let h = &bytes[at..];
+            assert!(h.len() >= 27, "truncated page header at byte {at}");
+            assert_eq!(&h[0..4], b"OggS", "missing capture pattern at byte {at}");
+            assert_eq!(h[4], 0, "Ogg version");
+            let header_type = h[5];
+            let granule = u64::from_le_bytes(h[6..14].try_into().unwrap());
+            let serial = u32::from_le_bytes(h[14..18].try_into().unwrap());
+            let seq = u32::from_le_bytes(h[18..22].try_into().unwrap());
+            // h[22..26] is the CRC, skipped.
+            let n_segments = h[26] as usize;
+            let table = &h[27..27 + n_segments];
+            let body_len: usize = table.iter().map(|&b| b as usize).sum();
+            let body_start = 27 + n_segments;
+            let body = h[body_start..body_start + body_len].to_vec();
+            pages.push(OggPage { granule, serial, seq, header_type, body });
+            at += body_start + body_len;
+        }
+        pages
+    }
+
+    #[test]
+    fn encoder_header_is_opus_head_then_tags() {
+        let eng = Engine::new().unwrap();
+        let enc = eng.create_encoder(128_000).unwrap();
+        let pages = ogg_pages(&enc.header());
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].header_type & 0x02, 0x02, "first page is beginning-of-stream");
+        assert!(pages[0].body.starts_with(b"OpusHead"));
+        assert_eq!(pages[0].body[9], 2, "channel count");
+        assert!(pages[1].body.starts_with(b"OpusTags"));
+        assert_eq!(pages[0].serial, pages[1].serial);
+    }
+
+    #[test]
+    fn encoder_pages_have_monotonic_granules_and_same_serial() {
+        let eng = Engine::new().unwrap();
+        let mut enc = eng.create_encoder(128_000).unwrap();
+        let serial = ogg_pages(&enc.header())[0].serial;
+        let mut out = Vec::new();
+        for _ in 0..20 {
+            // ~0.4 s of silence from the (enabled) tap
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            enc.pump(&mut out);
+        }
+        let pages = ogg_pages(&out);
+        assert!(pages.len() >= 2, "got {} pages", pages.len());
+        let mut last = 0u64;
+        let mut seq = pages[0].seq;
+        for p in &pages {
+            assert_eq!(p.serial, serial);
+            assert!(p.granule >= last);
+            last = p.granule;
+            assert_eq!(p.seq, seq);
+            seq += 1;
+        }
+    }
+
+    #[test]
+    fn encoder_output_decodes_and_carries_bus_audio() {
+        let eng = Engine::new().unwrap();
+        let on_bus = eng.create_group(GroupRoute::ProgramBus).unwrap();
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.opus");
+        let s = eng.create_sound(Some(&on_bus), p.to_str().unwrap(), true).unwrap();
+        let mut enc = eng.create_encoder(128_000).unwrap();
+        s.play(10.0, 0.0).unwrap();
+        let mut out = enc.header();
+        for _ in 0..50 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            enc.pump(&mut out);
+        }
+        s.stop(0.0);
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("captured.opus");
+        std::fs::write(&path, &out).unwrap();
+        // opusfile tolerates a stream with no end-of-stream page, which is what a live capture is.
+        let mut dec = StreamingDecoder::open(path.to_str().unwrap()).expect("captured stream decodes");
+        assert_eq!(dec.sample_rate, 48000);
+        assert_eq!(dec.channels, 2);
+        let mut peak = 0f32;
+        while let Some(chunk) = dec.read_chunk().unwrap() {
+            for v in chunk {
+                peak = peak.max(v.abs());
+            }
+        }
+        assert!(peak > 0.01, "decoded stream is silent (peak {peak})");
+    }
+
+    #[test]
+    fn encoder_accepts_44100_mono_input() {
+        let mut enc = Encoder::create_detached(44_100, 1, 128_000).unwrap();
+        // 0.5 s of a 440 Hz tone, mono, 44.1 kHz.
+        let tone: Vec<f32> = (0..22_050)
+            .map(|i| (i as f32 * 440.0 * std::f32::consts::TAU / 44_100.0).sin() * 0.5)
+            .collect();
+        enc.feed(&tone);
+        let mut out = enc.header();
+        enc.pump(&mut out);
+        let pages = ogg_pages(&out);
+        assert!(pages.len() > 2);
+        assert_eq!(pages[0].body[9], 2, "output is stereo regardless of input");
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("tone.opus");
+        std::fs::write(&path, &out).unwrap();
+        let mut dec = StreamingDecoder::open(path.to_str().unwrap()).unwrap();
+        assert_eq!(dec.sample_rate, 48000);
+        let mut frames = 0u64;
+        while let Some(c) = dec.read_chunk().unwrap() {
+            frames += c.len() as u64 / 2;
+        }
+        assert!((frames as i64 - 24_000).abs() < 2_000, "≈0.5 s at 48 kHz, got {frames}");
+    }
+
+    #[test]
     fn engine_creates_and_loads_fixture() {
         let eng = Engine::new().expect("engine");
-        let g = eng.create_group().expect("group");
+        let g = eng.create_group(GroupRoute::ProgramBus).expect("group");
         let p =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.opus");
         let s = eng

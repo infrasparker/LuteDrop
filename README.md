@@ -11,10 +11,8 @@ forms:
 
 - **Installer** — `LuteDrop_<version>_x64-setup.exe` (NSIS) or `LuteDrop_<version>_x64_en-US.msi`.
   Installs to Program Files with Start-menu shortcuts.
-- **Portable** — `lutedrop.7z` (recommended) or the bare `lutedrop.exe`. No install; unzip and
-  run `lutedrop.exe`. Use the **`.7z`**, not the bare exe, if you want the phone remote: the
-  archive includes the `dist-remote/` folder the exe needs beside it. The bare `lutedrop.exe`
-  runs the desktop app fine on its own.
+- **Portable** — `LuteDrop_<version>_x64_portable.zip`: no install, unzip and run `lutedrop.exe`;
+  the `dist-remote/` folder inside enables the phone remote.
 
 Either way you need the **Microsoft Edge WebView2 Runtime** (preinstalled on Windows 11; the
 installer fetches it automatically, the portable build assumes it's present).
@@ -102,6 +100,87 @@ The remote provides:
 - Master, track, and clip volume control
 - Real-time status updates via WebSocket
 
+## Broadcast
+
+Broadcast streams what LuteDrop is playing to listeners over the internet, so remote
+players hear the same soundscape you do. It is **off until you switch it on**.
+
+**What is streamed:** the live mix of your tracks, taken *before* master volume. **What
+is not:** the library preview (auditioning an entry in the editor) is never streamed.
+Master volume (and master mute) only changes what comes out of your speakers; listeners
+hear the full-level mix regardless. The stream is Ogg/Opus at 128 kbps.
+
+1. Click the **Broadcast** entry in the sidebar to open the dialog and switch it on.
+2. The dialog shows two links:
+   - **Same Wi-Fi** - `http://<your-computer-ip>:5883/listen/<key>`, built from your
+     computer's local address. Works for anyone on your network with no extra setup.
+   - **Players on the internet** - your **Public address** plus `/listen/<key>`. This
+     stays empty until you fill in the Public address field (see below).
+3. Add `/page` to either link (`.../listen/<key>/page`) for a bare listening page with a
+   play button, handy for a phone browser. The Foundry module plays the raw link instead.
+4. The badge in the transport bar and the dialog show how many people are listening.
+
+The stream is served on **port 5883** by default. You can change the port in the dialog,
+but only while Broadcast is off. Settings live in the database's `meta` table under
+`broadcast_enabled`, `broadcast_port`, `broadcast_key` and `broadcast_public_base`; if
+Broadcast was on when you quit, it turns itself back on at the next start.
+
+**Regenerate key** (in the dialog) makes a new listener key. The old link stops working
+immediately, so everyone needs the new one.
+
+### Public access through Caddy
+
+The public link goes through the same Caddy reverse proxy that fronts the phone remote.
+On gargantua, add this block to `~/stacks/caddy/Caddyfile`, beside the existing
+`lutedrop.irslandia.duckdns.org` one:
+
+```
+stream.lutedrop.irslandia.duckdns.org {
+	import tls_duckdns
+	reverse_proxy 192.168.86.42:5883 {
+		flush_interval -1
+	}
+}
+```
+
+`flush_interval -1` tells Caddy to pass stream bytes through immediately instead of
+buffering the response, which would otherwise make the audio stutter or never start.
+
+Caddy runs from `~/stacks/caddy/docker-compose.yml` as the `caddy` container, with the
+Caddyfile mounted read-only, so reload it with:
+
+```sh
+docker compose -f ~/stacks/caddy/docker-compose.yml exec caddy caddy reload --config /etc/caddy/Caddyfile
+```
+
+Then, in the Broadcast dialog, set **Public address** to
+`https://stream.lutedrop.irslandia.duckdns.org` and press Save.
+
+> If the two-level name `stream.lutedrop.irslandia.duckdns.org` does not resolve, use
+> `lutedrop-stream.irslandia.duckdns.org` instead, in both the Caddy block and the
+> dialog's Public address.
+
+To check it from the desktop (with Broadcast on), run:
+
+```sh
+curl -sI https://stream.lutedrop.irslandia.duckdns.org/listen/<key>
+```
+
+Expect `HTTP/2 200` and `content-type: audio/ogg`. With Broadcast off you get `502`. For
+the real test, open `https://stream.lutedrop.irslandia.duckdns.org/listen/<key>/page` on
+a phone using mobile data and press play.
+
+### Notes
+
+- Safari may not play Ogg/Opus; use Chrome or Firefox for listeners where possible.
+- The first time Broadcast binds port 5883, Windows Firewall may ask whether to allow
+  LuteDrop (dev builds ask again from each new exe path); allow it, because dismissing
+  the prompt blocks other machines, so Caddy returns `502`.
+- To play the stream inside Foundry VTT for every player, install the module from the
+  manifest URL `https://github.com/infrasparker/LuteDrop/releases/latest/download/module.json`
+  (Foundry: Add-on Modules > Install Module); details in
+  [`foundry-module/README.md`](foundry-module/README.md).
+
 ## Configurations
 
 Configurations save your entire soundstage state (groups, compositions, tracks, clips, and settings). Use the configuration picker in the top bar to switch between saved configurations — useful for different campaigns or sessions.
@@ -181,24 +260,44 @@ src-tauri/target/release/bundle/
   msi/LuteDrop_<version>_x64_en-US.msi    # MSI installer
 ```
 
-Bump the version in `src-tauri/tauri.conf.json`, `package.json`, and `src-tauri/Cargo.toml`
-before building a new release.
+Before building a new release, bump the version in `src-tauri/tauri.conf.json`,
+`package.json`, `src-tauri/Cargo.toml`, and `foundry-module/lutedrop-stream/module.json`
+(its `version` and the `/v<version>/` in its `download` URL). `npm run package:release`
+refuses to run if they disagree.
 
-### Portable build
+### Packaging the release assets
 
-For a no-install **portable** download, package the standalone binary with the remote web
-assets it expects beside it:
+After `cargo tauri build`, stage everything for GitHub in one step:
 
 ```sh
-mkdir portable
-cp src-tauri/target/release/lutedrop.exe portable/
-cp -r dist-remote portable/dist-remote      # so the phone remote works
-cd portable && 7z a -mx=9 lutedrop.7z lutedrop.exe dist-remote
+npm run package:release
 ```
 
-`lutedrop.exe` runs the desktop app by itself; the `dist-remote/` folder beside it enables the
-port-3333 phone remote. Attach `lutedrop.7z` (and optionally the bare `lutedrop.exe`) to the
-GitHub [Release](../../releases) alongside the installers.
+This fills the git-ignored `release/` folder with:
+
+```
+release/
+  LuteDrop_<version>_x64-setup.exe        # NSIS installer
+  LuteDrop_<version>_x64_en-US.msi        # MSI installer
+  LuteDrop_<version>_x64_portable.zip     # lutedrop.exe + dist-remote/ (no install needed)
+  lutedrop-stream.zip                     # the Foundry module
+  module.json                             # the Foundry manifest
+```
+
+The portable zip works because `lutedrop.exe` runs by itself, and the `dist-remote/`
+folder beside it enables the port-3333 phone remote.
+
+**Every release must attach `lutedrop-stream.zip` and `module.json`.** Foundry's manifest
+URL points at the *latest* release, so a release without them breaks module installs and
+updates. Upload with the five files listed explicitly (PowerShell does not expand `release/*` for
+`gh`; in bash, use `\` instead of the backtick line continuations):
+
+```powershell
+gh release create v<version> `
+  release/LuteDrop_<version>_x64-setup.exe release/LuteDrop_<version>_x64_en-US.msi `
+  release/LuteDrop_<version>_x64_portable.zip release/lutedrop-stream.zip release/module.json `
+  --title "LuteDrop v<version>" --notes-file <notes>
+```
 
 ### Audio engine
 

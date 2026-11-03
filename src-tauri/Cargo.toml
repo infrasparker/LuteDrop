@@ -1,6 +1,6 @@
 [package]
 name = "lutedrop"
-version = "0.4.0"
+version = "0.5.0"
 description = "D&D audio command center"
 edition = "2021"
 rust-version = "1.77.2"
@@ -25,6 +25,8 @@ uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "sync"] }
 axum = { version = "0.8", features = ["ws"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+bytes = "1"
 tower-http = { version = "0.6", features = ["fs"] }
 rusqlite = { version = "0.34", features = ["bundled", "backup"] }
 sha2 = "0.10"

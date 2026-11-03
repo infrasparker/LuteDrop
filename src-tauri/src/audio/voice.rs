@@ -128,15 +128,28 @@ pub struct Voice {
 
 impl Voice {
     /// Create a Voice with a fresh sub-mix group on `engine`. Loop restarts are
-    /// NOT sample-accurately anchored (library-preview behavior).
+    /// NOT sample-accurately anchored (library-preview behavior). The group
+    /// feeds the endpoint directly (`GroupRoute::Endpoint`), so the library
+    /// preview stays local-only and never reaches the broadcast tap.
     pub fn new(engine: &ffi::Engine) -> Result<Self, String> {
-        Self::with_loop_anchor(engine, LoopAnchor::Immediate)
+        Self::build(engine, LoopAnchor::Immediate, ffi::GroupRoute::Endpoint)
     }
 
     /// Like [`Voice::new`] but with sample-accurate loop-restart anchoring
-    /// enabled (per-track seamless-mode behavior).
+    /// enabled (per-track seamless-mode behavior). The group feeds the program
+    /// bus (`GroupRoute::ProgramBus`), so tracks are part of the mix the
+    /// broadcast tap will carry.
     pub fn with_loop_anchor(engine: &ffi::Engine, anchor: LoopAnchor) -> Result<Self, String> {
-        let group = engine.create_group()?;
+        Self::build(engine, anchor, ffi::GroupRoute::ProgramBus)
+    }
+
+    /// Shared constructor: creates the group on `route` and an otherwise empty Voice.
+    fn build(
+        engine: &ffi::Engine,
+        anchor: LoopAnchor,
+        route: ffi::GroupRoute,
+    ) -> Result<Self, String> {
+        let group = engine.create_group(route)?;
         Ok(Self {
             current: None,
             fading_out: Vec::new(),

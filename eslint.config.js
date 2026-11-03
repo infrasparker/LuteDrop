@@ -55,4 +55,18 @@ export default tseslint.config(
       globals: { ...globals.node },
     },
   },
+  {
+    // Foundry VTT module (plain browser JS; Foundry supplies these globals).
+    files: ['foundry-module/**/*.js'],
+    languageOptions: {
+      globals: {
+        ...globals.browser,
+        game: 'readonly',
+        Hooks: 'readonly',
+        ui: 'readonly',
+        foundry: 'readonly',
+        CONFIG: 'readonly',
+      },
+    },
+  },
 );
