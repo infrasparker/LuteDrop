@@ -207,10 +207,12 @@ function refreshSliderRows() {
   document.querySelectorAll(`.${ROW_CLASS}`).forEach(syncSliderRow);
 }
 
-// v14 passes (application, HTMLElement) here; the old jQuery object is gone.
+// v14 passes (application, HTMLElement); v12 passes a jQuery object, so unwrap it.
 Hooks.on("renderPlaylistDirectory", (_app, element) => {
+  const root = element instanceof HTMLElement ? element : element?.[0];
+  if (!root) return;
   // ".global-volume ol" holds the Music / Environment / Interface <li> rows.
-  const list = element.querySelector(".global-volume ol");
+  const list = root.querySelector(".global-volume ol");
   if (!list) return;
   // This hook fires on every re-render, so only add the row once.
   if (list.querySelector(`.${ROW_CLASS}`)) return;
