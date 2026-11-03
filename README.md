@@ -102,6 +102,82 @@ The remote provides:
 - Master, track, and clip volume control
 - Real-time status updates via WebSocket
 
+## Broadcast
+
+Broadcast streams what LuteDrop is playing to listeners over the internet, so remote
+players hear the same soundscape you do. It is **off until you switch it on**.
+
+**What is streamed:** the live mix of your tracks, taken *before* master volume. **What
+is not:** the library preview (auditioning an entry in the editor) is never streamed.
+Master volume (and master mute) only changes what comes out of your speakers; listeners
+hear the full-level mix regardless. The stream is Ogg/Opus at 128 kbps.
+
+1. Click the **Broadcast** entry in the sidebar to open the dialog and switch it on.
+2. The dialog shows two links:
+   - **Same Wi-Fi** - `http://<your-computer-ip>:3334/listen/<key>`, built from your
+     computer's local address. Works for anyone on your network with no extra setup.
+   - **Players on the internet** - your **Public address** plus `/listen/<key>`. This
+     stays empty until you fill in the Public address field (see below).
+3. Add `/page` to either link (`.../listen/<key>/page`) for a bare listening page with a
+   play button, handy for a phone browser. The Foundry module plays the raw link instead.
+4. The sidebar badge and the dialog show how many people are listening.
+
+The stream is served on **port 3334** by default. You can change the port in the dialog,
+but only while Broadcast is off. Settings live in the database's `meta` table under
+`broadcast_enabled`, `broadcast_port`, `broadcast_key` and `broadcast_public_base`; if
+Broadcast was on when you quit, it turns itself back on at the next start.
+
+**Regenerate key** (in the dialog) makes a new listener key. The old link stops working
+immediately, so everyone needs the new one.
+
+### Public access through Caddy
+
+The public link goes through the same Caddy reverse proxy that fronts the phone remote.
+On gargantua, add this block to `~/stacks/caddy/Caddyfile`, beside the existing
+`lutedrop.irslandia.duckdns.org` one:
+
+```
+stream.lutedrop.irslandia.duckdns.org {
+	import tls_duckdns
+	reverse_proxy 192.168.86.42:3334 {
+		flush_interval -1
+	}
+}
+```
+
+`flush_interval -1` tells Caddy to pass stream bytes through immediately instead of
+buffering the response, which would otherwise make the audio stutter or never start.
+
+Caddy runs from `~/stacks/caddy/docker-compose.yml` as the `caddy` container, with the
+Caddyfile mounted read-only, so reload it with:
+
+```sh
+docker compose -f ~/stacks/caddy/docker-compose.yml exec caddy caddy reload --config /etc/caddy/Caddyfile
+```
+
+Then, in the Broadcast dialog, set **Public address** to
+`https://stream.lutedrop.irslandia.duckdns.org` and press Save.
+
+> If the two-level name `stream.lutedrop.irslandia.duckdns.org` does not resolve, use
+> `lutedrop-stream.irslandia.duckdns.org` instead, in both the Caddy block and the
+> dialog's Public address.
+
+To check it from the desktop (with Broadcast on), run:
+
+```sh
+curl -sI https://stream.lutedrop.irslandia.duckdns.org/listen/<key>
+```
+
+Expect `HTTP/2 200` and `content-type: audio/ogg`. With Broadcast off you get `502`. For
+the real test, open `https://stream.lutedrop.irslandia.duckdns.org/listen/<key>/page` on
+a phone using mobile data and press play.
+
+### Notes
+
+- Safari may not play Ogg/Opus; use Chrome or Firefox for listeners where possible.
+- To play the stream inside Foundry VTT for every player, see
+  [`foundry-module/README.md`](foundry-module/README.md).
+
 ## Configurations
 
 Configurations save your entire soundstage state (groups, compositions, tracks, clips, and settings). Use the configuration picker in the top bar to switch between saved configurations — useful for different campaigns or sessions.

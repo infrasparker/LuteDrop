@@ -43,6 +43,8 @@ Vue UI  ──invoke──▶  Tauri command (commands.rs)
                     ▼                    ▼
           orchestrator.rs         (library preview)
           + transitions.rs         uses a Voice directly
+                                   (routed to the endpoint, so it
+                                    bypasses the program bus)
                     │
                     ▼
                  voice.rs          ← plays ONE sound at a time, click-free
@@ -58,6 +60,18 @@ Vue UI  ──invoke──▶  Tauri command (commands.rs)
                     │
                     ▼
               miniaudio (C)        ← the actual audio thread
+```
+
+Inside miniaudio, the node graph the shim builds looks like this (tracks feed a
+**program bus**; the broadcast **tap** sits after it; the preview skips both):
+
+```
+track groups ──▶ program bus ──▶ tap ──┐
+                                       ├──▶ endpoint (master volume) ──▶ speakers
+library preview group ─────────────────┘
+
+tap ──(2 s ring buffer, only while broadcast is on)──▶ encoder thread
+    (resample → stereo → Opus 128 kbps → Ogg) ──▶ listener server (:3334)
 ```
 
 One sentence per layer:
@@ -96,16 +110,17 @@ for each node and tracks mute intent; `util.rs` holds constants
 
 miniaudio arranges sounds in a **node graph** — a tree where each node has its
 own volume and a node's output is multiplied by its parent's on the way to the
-speakers. LuteDrop uses exactly three levels, and lets miniaudio do the
-multiplication natively:
+speakers. LuteDrop uses exactly three volume levels, and lets miniaudio do the
+multiplication natively (the program bus and tap between track and master sit at
+volume 1.0 and add no level of their own):
 
 | Level  | miniaudio node        | Set via                                    | Stored on            |
 |--------|-----------------------|--------------------------------------------|----------------------|
-| master | engine node           | `Engine::set_master_volume`                | `AudioEngine.master_volume` |
+| master | engine node (endpoint, **after** the tap) | `Engine::set_master_volume`                | `AudioEngine.master_volume` |
 | track  | sub-mix group node    | `Group::set_volume` (via `Voice::set_group_volume`) | `Track.volume`       |
 | clip   | individual sound node | `Sound::set_volume` (via `Voice::set_volume`) | `Clip.volume` × `Clip.library_volume` |
 
-Final loudness = `master × track × clip` — but **no Rust code multiplies those
+Final loudness at the speakers = `master × track × clip` — but **no Rust code multiplies those
 together**. Each level is set on its own node and miniaudio combines them on the
 audio thread. This is why the old `compute_volume` / dB conversion is gone: there
 is nothing to recompute per tick.
@@ -122,6 +137,25 @@ nodes:
 - master mute → `engine.set_master_volume(0.0)` (`AudioEngine::toggle_master_mute`)
 - track mute → `refresh_track_group_volume` sets the group node to 0
 - clip mute → `set_clip_volume` re-applies the sound node at 0
+
+### The program bus, the tap, and Broadcast
+
+Every track's group is routed to the **program bus** (`GroupRoute::ProgramBus`,
+chosen by `Voice::with_loop_anchor`), a group node at volume 1.0. A **tap** node sits
+between the bus and the endpoint: it passes audio through unchanged and, only while
+Broadcast is on, copies the frames into a 2 s ring buffer that the encoder thread
+drains (`Engine::tap_set_enabled` / `tap_read`, `Encoder` in `ffi.rs`;
+`start_broadcast` / `stop_broadcast` in `audio/mod.rs`).
+
+Two rules follow from where things are wired:
+
+- **Master volume is applied after the tap**, at the endpoint. Master volume and
+  master mute change the speakers only; the stream carries `track × clip` at full
+  master level. Track and clip volume/mute still affect the stream, because they
+  sit upstream of the tap.
+- **The library preview bypasses the bus.** `Voice::new` builds its group with
+  `GroupRoute::Endpoint`, so previews reach the speakers (and master volume) but
+  never pass through the tap and are never broadcast.
 
 `levels::MuteState` (`master: bool`, `tracks`/`clips: HashMap<String, bool>`) only
 records **intent** — which things the user muted — so it can restore the
