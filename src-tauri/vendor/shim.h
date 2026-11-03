@@ -44,7 +44,12 @@ uint64_t   ld_engine_time_frames(ld_engine*);                // global engine cl
 uint32_t   ld_engine_sample_rate(ld_engine*);
 
 // Group wraps ma_sound_group (a per-track / library sub-mix). Returns NULL on failure.
-ld_group*  ld_group_create(ld_engine*);
+// on_program_bus != 0: the group feeds the engine's program bus (the mix of all
+// tracks; the future tap point for broadcasting). 0: it feeds the endpoint
+// directly, bypassing the bus (used by the library preview so it is never
+// broadcast). Master volume is NOT applied at the bus; it stays on the engine
+// (ld_engine_set_volume), downstream of the bus.
+ld_group*  ld_group_create(ld_engine*, int on_program_bus);
 void       ld_group_set_volume(ld_group*, float linear);
 void       ld_group_destroy(ld_group*);
 

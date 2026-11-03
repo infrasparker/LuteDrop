@@ -69,7 +69,7 @@ extern "C" {
     fn ld_engine_time_frames(e: *mut LdEngine) -> u64;
     fn ld_engine_sample_rate(e: *mut LdEngine) -> u32;
 
-    fn ld_group_create(e: *mut LdEngine) -> *mut LdGroup;
+    fn ld_group_create(e: *mut LdEngine, on_program_bus: c_int) -> *mut LdGroup;
     fn ld_group_set_volume(g: *mut LdGroup, linear: c_float);
     fn ld_group_destroy(g: *mut LdGroup);
 
@@ -124,6 +124,20 @@ pub struct LdDecoder {
 /// fields so Rust drops sounds before groups before the engine (Rust drops
 /// struct fields in declaration order), or drop them explicitly in that order.
 pub struct Engine(*mut LdEngine);
+
+/// Where a sound group sends its audio.
+///
+/// Audio in miniaudio flows through a graph of nodes toward the "endpoint"
+/// (the speakers). The program bus is one extra node on that path: all track
+/// groups are summed there first, which gives a single place to tap "the mix".
+/// Master volume is applied after the bus, at the engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupRoute {
+    /// Feed the program bus (the broadcastable mix of all tracks).
+    ProgramBus,
+    /// Feed the endpoint directly, skipping the bus (local-only audio).
+    Endpoint,
+}
 
 /// Safe wrapper over `ma_sound_group` (a per-track / library sub-mix).
 /// Must be dropped before the owning `Engine` (see [`Engine`] drop-order note).
@@ -244,9 +258,10 @@ impl Engine {
         unsafe { ld_engine_sample_rate(self.0) }
     }
 
-    /// Create a sub-mix group attached to this engine.
-    pub fn create_group(&self) -> Result<Group, String> {
-        let ptr = unsafe { ld_group_create(self.0) };
+    /// Create a sub-mix group attached to this engine, feeding `route`.
+    pub fn create_group(&self, route: GroupRoute) -> Result<Group, String> {
+        let on_program_bus = matches!(route, GroupRoute::ProgramBus) as c_int;
+        let ptr = unsafe { ld_group_create(self.0, on_program_bus) };
         if ptr.is_null() {
             return Err("failed to create audio group".to_string());
         }
@@ -504,9 +519,20 @@ mod tests {
     }
 
     #[test]
+    fn groups_can_route_to_bus_or_endpoint() {
+        let eng = Engine::new().expect("engine");
+        let on_bus = eng.create_group(GroupRoute::ProgramBus).expect("bus group");
+        let direct = eng.create_group(GroupRoute::Endpoint).expect("endpoint group");
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.opus");
+        let a = eng.create_sound(Some(&on_bus), p.to_str().unwrap(), true).expect("sound on bus");
+        let b = eng.create_sound(Some(&direct), p.to_str().unwrap(), true).expect("sound direct");
+        assert!(a.length_secs() > 0.0 && b.length_secs() > 0.0);
+    }
+
+    #[test]
     fn engine_creates_and_loads_fixture() {
         let eng = Engine::new().expect("engine");
-        let g = eng.create_group().expect("group");
+        let g = eng.create_group(GroupRoute::ProgramBus).expect("group");
         let p =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.opus");
         let s = eng

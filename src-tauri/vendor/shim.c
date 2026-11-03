@@ -66,6 +66,12 @@ double ld_file_duration_secs(const wchar_t* path) {
 struct ld_engine {
     ma_engine engine;
     ma_resource_manager resource_manager;
+    // The "program bus": a sound group every track's group feeds into. Think of
+    // it as a mixing-desk submaster: all tracks are summed here before reaching
+    // the speakers. It is parented to the endpoint, so what it carries still
+    // gets master volume (applied by the engine) afterwards. A later change
+    // taps this bus to broadcast the mix.
+    ma_sound_group bus;
 };
 
 struct ld_group {
@@ -102,11 +108,22 @@ ld_engine* ld_engine_create(void) {
         free(e);
         return NULL;
     }
+
+    // Parent NULL = attach to the engine endpoint. Volume stays at the default
+    // 1.0; master volume lives on the engine, not here.
+    if (ma_sound_group_init(&e->engine, 0, NULL, &e->bus) != MA_SUCCESS) {
+        ma_engine_uninit(&e->engine);
+        ma_resource_manager_uninit(&e->resource_manager);
+        free(e);
+        return NULL;
+    }
     return e;
 }
 
 void ld_engine_destroy(ld_engine* e) {
     if (e == NULL) return;
+    // The bus is a node inside the engine's graph, so it must go first.
+    ma_sound_group_uninit(&e->bus);
     ma_engine_uninit(&e->engine);
     ma_resource_manager_uninit(&e->resource_manager);
     free(e);
@@ -127,11 +144,12 @@ uint32_t ld_engine_sample_rate(ld_engine* e) {
     return ma_engine_get_sample_rate(&e->engine);
 }
 
-ld_group* ld_group_create(ld_engine* e) {
+ld_group* ld_group_create(ld_engine* e, int on_program_bus) {
     if (e == NULL) return NULL;
     ld_group* g = (ld_group*)calloc(1, sizeof(ld_group));
     if (g == NULL) return NULL;
-    if (ma_sound_group_init(&e->engine, 0, NULL, &g->group) != MA_SUCCESS) {
+    ma_sound_group* parent = on_program_bus ? &e->bus : NULL;
+    if (ma_sound_group_init(&e->engine, 0, parent, &g->group) != MA_SUCCESS) {
         free(g);
         return NULL;
     }
