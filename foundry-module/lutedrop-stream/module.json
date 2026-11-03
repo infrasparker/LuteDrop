@@ -1,0 +1,12 @@
+{
+  "id": "lutedrop-stream",
+  "title": "LuteDrop Stream",
+  "description": "Plays the LuteDrop broadcast stream on every connected client.",
+  "version": "0.4.0",
+  "compatibility": { "minimum": "12", "verified": "14" },
+  "authors": [{ "name": "Devin Wu" }],
+  "esmodules": ["scripts/main.js"],
+  "languages": [
+    { "lang": "en", "name": "English", "path": "lang/en.json" }
+  ]
+}
