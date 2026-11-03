@@ -14,8 +14,13 @@ function start(): void {
   started = true;
 
   // Pushed by the backend when a player connects/disconnects; null when off.
+  // It also tells us whether the stream is running, so `enabled` follows it
+  // too: if the first status read raced the startup restore, the transport
+  // badge still appears once the stream is up.
   listen<number | null>('broadcast-listeners', (event) => {
-    if (status.value) status.value.listenerCount = event.payload ?? 0;
+    if (!status.value) return;
+    status.value.enabled = event.payload !== null;
+    status.value.listenerCount = event.payload ?? 0;
   });
 
   void refresh();
