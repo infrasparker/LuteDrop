@@ -175,6 +175,9 @@ a phone using mobile data and press play.
 ### Notes
 
 - Safari may not play Ogg/Opus; use Chrome or Firefox for listeners where possible.
+- The first time Broadcast binds port 3334, Windows Firewall may ask whether to allow
+  LuteDrop (dev builds ask again from each new exe path); allow it, because dismissing
+  the prompt blocks other machines, so Caddy returns `502`.
 - To play the stream inside Foundry VTT for every player, see
   [`foundry-module/README.md`](foundry-module/README.md).
 
