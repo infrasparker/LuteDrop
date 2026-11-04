@@ -34,14 +34,15 @@ pub const MIN_CONTAINS_LEN: usize = 4;
 pub const MIN_SIMILARITY: f64 = 0.5;
 
 /// Turns a file name (without extension) into a comparable form: lowercase,
-/// apostrophes (`'` and `’`) deleted, and every other run of non-letter,
+/// apostrophes (`'` and `’`) and the replacement character (U+FFFD, what an
+/// apostrophe becomes after an encoding mix-up) deleted, and every other run of non-letter,
 /// non-digit characters collapsed into a single space.
 pub fn normalize_stem(text: &str) -> String {
     let mut out = String::new();
     // True when a separator is waiting to be written before the next word.
     let mut pending_space = false;
     for ch in text.chars() {
-        if ch == '\'' || ch == '\u{2019}' {
+        if ch == '\'' || ch == '\u{2019}' || ch == '\u{FFFD}' {
             continue;
         }
         if ch.is_alphanumeric() {
@@ -250,6 +251,7 @@ mod tests {
         assert_eq!(normalize_stem("03_dont_let_your_guard_down"), "03 dont let your guard down");
         assert_eq!(normalize_stem("  Hello---World  "), "hello world");
         assert_eq!(normalize_stem("Don\u{2019}t"), "dont");
+        assert_eq!(normalize_stem("Don\u{FFFD}t Stop"), "dont stop");
     }
 
     #[test]

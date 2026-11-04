@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::audio::util::is_audio_path;
+use crate::audio::util::{is_audio_path, is_file_usable};
 use crate::database;
 use crate::database::{configurations, hierarchy, library, DbError};
 use crate::database::settings::{self as broadcast_settings, BroadcastSettings};
@@ -585,17 +585,6 @@ fn emit_progress(
         "library-import-progress",
         BulkImportProgress { processed, imported, skipped, total },
     );
-}
-
-/// The one definition of "this library file is there": it exists, is a
-/// regular file (not a folder) and is not empty. A zero-byte file is treated
-/// as missing because it is what a failed copy or cloud-sync stub leaves
-/// behind, and it can never play. The missing badge, playback and the
-/// fix-missing dialog all call this so they always agree.
-pub(crate) fn is_file_usable(path: &str) -> bool {
-    std::fs::metadata(path)
-        .map(|m| m.is_file() && m.len() > 0)
-        .unwrap_or(false)
 }
 
 pub fn relocate_library_entry(

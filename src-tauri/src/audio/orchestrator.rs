@@ -330,7 +330,7 @@ pub fn poll_track(
                 if let Some(clip) = track.current_clip_index.and_then(|idx| track.config.clips.get(idx)) {
                     if track.voice.has_current() {
                         found_entries.push(clip.library_entry_id.clone());
-                    } else if !std::path::Path::new(&clip.file_path).exists() {
+                    } else if !super::util::is_file_usable(&clip.file_path) {
                         missing_entries.push(clip.library_entry_id.clone());
                     }
                 }
@@ -393,7 +393,7 @@ fn report_clip_result(
     match result {
         Ok(_) => found_entries.push(clip.library_entry_id.clone()),
         Err(_) => {
-            if !std::path::Path::new(&clip.file_path).exists() {
+            if !super::util::is_file_usable(&clip.file_path) {
                 missing_entries.push(clip.library_entry_id.clone());
             }
         }

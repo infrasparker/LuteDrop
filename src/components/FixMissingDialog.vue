@@ -38,6 +38,11 @@ const relinked = ref(0);
 const skipped = ref(0);
 
 // Human-readable labels for the match-quality chip on each candidate.
+// Bumped every time the dialog closes or a new scan/relink starts. A backend call
+// remembers the number it started with and drops its result if the number has
+// changed, so a slow answer from an earlier pass cannot touch the current one.
+let requestId = 0;
+
 const KIND_LABELS: Record<MatchKind, string> = {
   exact: 'Exact',
   contains: 'Contains',
@@ -54,22 +59,27 @@ const current = computed(() => report.value?.entries[index.value]);
 watch(
   () => props.modelValue,
   (isOpen) => {
-    if (isOpen) {
-      relinked.value = 0;
-      skipped.value = 0;
-      index.value = 0;
-      selectedPath.value = null;
-      void load('');
+    if (!isOpen) {
+      requestId++; // drop any scan or relink still in flight
+      return;
     }
+    relinked.value = 0;
+    skipped.value = 0;
+    index.value = 0;
+    selectedPath.value = null;
+    void load('');
   },
 );
 
 // Ask the backend for candidates under `folder`, then show the first entry.
 async function load(folder: string): Promise<void> {
+  const id = ++requestId;
   loading.value = true;
   loadError.value = null;
   try {
-    report.value = await invoke<FixMissingReport>('find_missing_file_candidates', { folder });
+    const result = await invoke<FixMissingReport>('find_missing_file_candidates', { folder });
+    if (id !== requestId) return; // dialog was closed or a newer scan started
+    report.value = result;
     // A fresh report starts a fresh pass, so the counters start over too.
     relinked.value = 0;
     skipped.value = 0;
@@ -77,10 +87,11 @@ async function load(folder: string): Promise<void> {
     selectedPath.value = null;
     preselect();
   } catch (e) {
+    if (id !== requestId) return;
     loadError.value = String(e);
     toast.showError(`Could not scan for missing files: ${e}`);
   } finally {
-    loading.value = false;
+    if (id === requestId) loading.value = false;
   }
 }
 
@@ -114,14 +125,21 @@ async function rescan(): Promise<void> {
 async function relink(path: string): Promise<void> {
   const entryId = current.value?.entry.id;
   if (!entryId || relinking.value) return;
+  const id = ++requestId;
   relinking.value = true;
   try {
     await store.command('relocate_library_entry', { entryId, newFilePath: path });
   } finally {
     relinking.value = false;
   }
+  if (id !== requestId) return; // dialog was closed or reopened meanwhile
   const updated = store.findLibraryEntry(entryId);
   if (updated?.filePath !== path) return; // failed; stay on this entry
+  if (store.isEntryMissing(entryId)) {
+    // The path was saved but the file is empty or unreadable, so it is still missing.
+    toast.showError('That file is empty or unreadable; the entry is still missing.');
+    return;
+  }
   relinked.value++;
   // Mark the file as taken in the other entries' lists, because the scan
   // result is stale and would otherwise let a second entry pick the same file.
@@ -191,7 +209,7 @@ function close(): void {
           density="compact"
           class="mb-3"
         >
-          Folder not found. Choose a folder to search.
+          {{ report.searchRoot === '' ? 'No folder to search yet. Choose a folder.' : 'Folder not found. Choose a folder to search.' }}
         </VAlert>
 
         <!-- Loading: scan in progress -->
