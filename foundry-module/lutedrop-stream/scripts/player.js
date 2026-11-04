@@ -324,17 +324,105 @@ function cacheBusted(url) {
   return `${url}${separator}t=${Date.now()}`;
 }
 
-// Fourth piece: ElementPlayer (the fallback).
+// Fourth piece: LiveEdgeHold (keeps the <audio> fallback near live).
+//
+// Why the element drifts: an <audio> element decides on its own how much of a
+// stream to download ahead of what it plays. On a live stream that "ahead" is
+// pure delay: everything downloaded but not yet played is audio the players
+// hear late. The browser never tries to catch up, so the delay only grows
+// (measured: 2 s right after starting, then 7-28 s).
+//
+// What we can see from outside: currentTime (where the element is playing) and
+// the end of its `buffered` range (how far it has downloaded, i.e. the live
+// edge as far as this element knows). The difference is the delay we add.
+//
+// What we do about it, gently first:
+// 1. Seek: set currentTime to just behind the buffered end. One jump, done.
+// 2. If the next look shows the gap is still too big, the seek was ignored
+//    (a chunked live stream often has no seekable range). Then play slightly
+//    faster (HOLD_CATCHUP_RATE = 1.15) until caught up, and back to normal.
+//    The browser keeps the pitch the same, so a few seconds at 1.15x is
+//    barely audible.
+// 3. If currentTime has not moved for HOLD_STALL_S seconds, the element is
+//    stuck; the only cure is to open the stream again.
+//
+// Why 0.5 s behind the edge (HOLD_TARGET_S): the element needs some audio in
+// hand or it will run dry and stutter whenever the network hiccups. Half a
+// second is enough for that while still being close to live. We only act when
+// the gap passes HOLD_MAX_GAP_S (1 s), so normal jitter does not cause
+// constant seeking.
+//
+// Like LiveClock, this is pure: no DOM, just numbers in, a decision out, so it
+// can be tested under Node. ElementPlayer polls it every HOLD_POLL_MS.
+export const HOLD_TARGET_S = 0.5;
+export const HOLD_MAX_GAP_S = 1.0;
+export const HOLD_CATCHUP_RATE = 1.15;
+export const HOLD_POLL_MS = 250;
+export const HOLD_STALL_S = 3;
+
+export class LiveEdgeHold {
+  constructor() {
+    this.reset();
+  }
+
+  /**
+   * Look at the element once and decide what to do.
+   * @param {{ currentTime: number, bufferedEnd: number, now: number }} view  seconds
+   * @returns {{ action: "none" | "seek" | "rate" | "normal" | "reconnect", to?: number, rate?: number }}
+   */
+  poll({ currentTime, bufferedEnd, now }) {
+    // Stall check first: if playback is stuck, catching up is pointless.
+    if (this._lastTime === null || currentTime !== this._lastTime) {
+      this._lastTime = currentTime;
+      this._movedAt = now;
+    } else if (now - this._movedAt >= HOLD_STALL_S) {
+      this.reset(); // the caller opens a new connection
+      return { action: "reconnect" };
+    }
+
+    const gap = bufferedEnd - currentTime;
+    if (this._mode === "rate") {
+      if (gap > HOLD_TARGET_S) return { action: "rate", rate: HOLD_CATCHUP_RATE };
+      this._mode = "idle";
+      return { action: "normal" };
+    }
+    if (this._mode === "seeked") {
+      if (gap > HOLD_MAX_GAP_S) {
+        // The seek did not take; speed up instead.
+        this._mode = "rate";
+        return { action: "rate", rate: HOLD_CATCHUP_RATE };
+      }
+      this._mode = "idle"; // the seek worked
+      return { action: "none" };
+    }
+    if (gap > HOLD_MAX_GAP_S) {
+      this._mode = "seeked";
+      return { action: "seek", to: bufferedEnd - HOLD_TARGET_S };
+    }
+    return { action: "none" };
+  }
+
+  /** New connection: forget everything. */
+  reset() {
+    this._mode = "idle"; // "idle" | "seeked" (just tried a seek) | "rate" (catching up)
+    this._lastTime = null; // currentTime at the last poll
+    this._movedAt = 0; // `now` when currentTime last changed
+  }
+}
+
+// Fifth piece: ElementPlayer (the fallback).
 //
 // Keeps one HTMLAudioElement playing the stream and reconnects when it drops.
 // It needs no CORS header from the stream server, which is why it is the
-// fallback; but the browser decides how much to buffer, so it runs seconds
-// behind live. It never gives up.
+// fallback; but the browser decides how much to buffer, so left alone it runs
+// seconds behind live. LiveEdgeHold (above) pulls it back: while playing we
+// look at the element every HOLD_POLL_MS and seek, speed up, or reconnect as
+// the policy says. It never gives up.
 //
 // "Listen off" sets volume to 0 instead of pausing, so the stream stays live
 // and un-muting resumes at the current position.
 export class ElementPlayer {
-  #audio = new Audio();
+  #audio;
   #url = "";
   #listening = true;
   #volume = 0.8;
@@ -342,8 +430,17 @@ export class ElementPlayer {
   #policy = new ReconnectPolicy();
   #retryTimer = null; // at most one pending reconnect at any time
   #stableTimer = null;
+  #hold = new LiveEdgeHold();
+  #holdTimer = null; // the live-edge poll; at most one per connection
+  #catchingUp = false; // playing at HOLD_CATCHUP_RATE right now (so we log it once)
 
-  constructor() {
+  /**
+   * @param {object} [opts]
+   * @param {HTMLAudioElement} [opts.audio]  only the latency probe passes one (it
+   *   needs crossOrigin to listen to the element); the module passes nothing.
+   */
+  constructor({ audio = new Audio() } = {}) {
+    this.#audio = audio;
     this.#audio.preload = "none";
     // Do not set crossOrigin: that would require CORS headers on the stream.
     for (const name of ["error", "stalled", "ended"]) {
@@ -352,6 +449,7 @@ export class ElementPlayer {
     this.#audio.addEventListener("playing", () => {
       this.#policy.markBytesReceived();
       this.#watchForStability();
+      this.#startHold();
     });
   }
 
@@ -392,6 +490,8 @@ export class ElementPlayer {
   /** Point the element at the stream (fresh connection) and play. */
   #connect() {
     this.#clearTimers();
+    this.#stopHold();
+    this.#hold.reset(); // a new connection has its own clock and its own buffer
     if (!this.#url) {
       this.#stop();
       return;
@@ -401,6 +501,7 @@ export class ElementPlayer {
   }
 
   #stop() {
+    this.#stopHold();
     this.#audio.src = "";
     this.#audio.pause();
     console.info(`${MODULE_ID} | no stream URL set; staying silent`);
@@ -419,6 +520,9 @@ export class ElementPlayer {
   #reconnect() {
     clearTimeout(this.#stableTimer);
     this.#stableTimer = null;
+    // Covers error, stalled, ended, a rejected play() and the hold's own stall
+    // check: there is no point steering a connection that is being replaced.
+    this.#stopHold();
     // Blank URL (an empty src also raises "error") or already waiting: do nothing.
     if (!this.#started || !this.#url || this.#retryTimer !== null) return;
     this.#retryTimer = setTimeout(() => this.#connect(), this.#policy.nextDelayMs());
@@ -432,9 +536,67 @@ export class ElementPlayer {
       this.#policy.markStable();
     }, STABLE_AFTER_MS);
   }
+
+  /**
+   * Start polling the live-edge hold. "playing" fires again after every seek,
+   * rate change or short buffering pause, so only the first one per
+   * connection creates the interval.
+   */
+  #startHold() {
+    if (this.#holdTimer !== null) return;
+    this.#holdTimer = setInterval(() => this.#pollHold(), HOLD_POLL_MS);
+  }
+
+  #stopHold() {
+    clearInterval(this.#holdTimer);
+    this.#holdTimer = null;
+    this.#catchingUp = false;
+    // Back to normal speed. (Loading a new src does this too; being explicit
+    // means a stopped or reconnecting player never keeps the catch-up rate.)
+    this.#audio.playbackRate = 1;
+  }
+
+  /** One look at the element; act on what LiveEdgeHold decides. */
+  #pollHold() {
+    const audio = this.#audio;
+    const buffered = audio.buffered;
+    if (buffered.length === 0) return; // nothing downloaded yet, nothing to judge
+    const bufferedEnd = buffered.end(buffered.length - 1);
+    const decision = this.#hold.poll({
+      currentTime: audio.currentTime,
+      bufferedEnd,
+      now: performance.now() / 1000,
+    });
+    switch (decision.action) {
+      case "seek": {
+        const behindS = (bufferedEnd - audio.currentTime).toFixed(1);
+        console.info(`${MODULE_ID} | ${behindS} s behind live; jumping to the live edge`);
+        audio.currentTime = decision.to;
+        break;
+      }
+      case "rate":
+        if (!this.#catchingUp) {
+          this.#catchingUp = true;
+          console.info(`${MODULE_ID} | the jump did not take; playing at ${decision.rate}x to catch up`);
+        }
+        audio.playbackRate = decision.rate;
+        break;
+      case "normal":
+        this.#catchingUp = false;
+        audio.playbackRate = 1;
+        console.info(`${MODULE_ID} | caught up with live; back to normal speed`);
+        break;
+      case "reconnect":
+        console.info(`${MODULE_ID} | playback stuck for ${HOLD_STALL_S} s; reconnecting`);
+        this.#reconnect();
+        break;
+      default:
+        break; // "none": close enough to live
+    }
+  }
 }
 
-// Fifth piece: WebCodecsPlayer (the low-latency player).
+// Sixth piece: WebCodecsPlayer (the low-latency player).
 //
 // Why not just an <audio> element: the element owns its buffer and fills it as
 // it sees fit, typically several seconds on a live stream, and it reacts

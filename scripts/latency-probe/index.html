@@ -42,7 +42,7 @@ background tab still measures; only timers are throttled there, which just makes
 
 <script type="module">
 // serve.mjs exposes foundry-module/lutedrop-stream/scripts/ at /module/.
-import { WebCodecsPlayer } from '/module/player.js';
+import { ElementPlayer, WebCodecsPlayer } from '/module/player.js';
 
 // ---------------------------------------------------------------- helpers
 const $ = (id) => document.getElementById(id);
@@ -293,7 +293,44 @@ function makeWebCodecsConsumer() {
   };
 }
 
-const consumers = [makeArrivalConsumer(), makeElementConsumer(), makeWebCodecsConsumer()];
+// "held": the Foundry module's <audio> fallback (ElementPlayer), which keeps the
+// element near the live edge with LiveEdgeHold. This is what players on plain
+// http:// actually hear, since WebCodecs is not available there. We hand it our
+// own element with crossOrigin set, because Web Audio may only listen to an
+// element whose stream allows it (the module itself never sets crossOrigin).
+function makeHeldConsumer() {
+  let heard = () => {};
+  let ctx = null;
+  let player = null;
+  let detector = null;
+  return {
+    name: 'held',
+    onHeard(cb) { heard = cb; },
+    async start() {
+      ctx = new AudioContext();
+      await ctx.resume();
+      const audio = new Audio();
+      audio.crossOrigin = 'anonymous';
+      const source = ctx.createMediaElementSource(audio);
+      detector = await attachDetector(ctx, (t) => heard(t));
+      source.connect(detector.input);
+      player = new ElementPlayer({ audio });
+      player.setVolume(1); // full level into the detector, like the plain element
+      player.setUrl('/stream');
+      player.start();
+    },
+    stop() {
+      player?.setUrl(''); // clears the hold's poll and empties the element
+      detector?.dispose();
+      ctx?.close();
+      player = null;
+      detector = null;
+      ctx = null;
+    },
+  };
+}
+
+const consumers = [makeArrivalConsumer(), makeElementConsumer(), makeWebCodecsConsumer(), makeHeldConsumer()];
 
 // ------------------------------------------------------- WebSocket (remote)
 let ws = null;
@@ -350,7 +387,7 @@ const sendCommand = (command) => ws.send(JSON.stringify({ command, trackId: sele
 // ----------------------------------------------------------------- trials
 const sourceNames = () => ['arrival', 'mixing', ...consumers.map((c) => c.name).filter((n) => n !== 'arrival')];
 let cancelled = false;
-const trials = []; // each: { arrival, mixing, element, webcodecs, t0 } in performance.now() ms
+const trials = []; // each: { arrival, mixing, element, webcodecs, held, t0 } in performance.now() ms
 
 async function runTrial() {
   const stamps = {};
@@ -465,6 +502,12 @@ const columns = () => {
     cols.push(
       { label: 'webcodecs−T0', get: (t) => diff(t.webcodecs, t.t0) },
       { label: 'webcodecs−arrival', get: (t) => diff(t.webcodecs, t.arrival) },
+    );
+  }
+  if (consumers.some((c) => c.name === 'held')) {
+    cols.push(
+      { label: 'held−T0', get: (t) => diff(t.held, t.t0) },
+      { label: 'held−arrival', get: (t) => diff(t.held, t.arrival) },
     );
   }
   return cols;

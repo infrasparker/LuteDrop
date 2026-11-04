@@ -44,7 +44,12 @@ All times are milliseconds after T0, the moment the page sends `play_track`.
 - **element**: a plain `<audio>` element on the stream (today's Foundry behaviour).
 - **webcodecs**: the Foundry module's `WebCodecsPlayer`, loaded from
   `foundry-module/lutedrop-stream/scripts/player.js` and watched by the same detector.
-- `element-arrival`, `webcodecs-arrival`: extra delay a player adds over the bare minimum.
+- **held**: the module's `<audio>` fallback (`ElementPlayer`) with its live-edge hold:
+  it seeks back to the live edge, or plays at 1.15x until caught up when the seek is
+  ignored. This is what players reaching Foundry over plain `http://` hear (WebCodecs
+  is unavailable there). The browser console shows `lutedrop-stream | ...` lines when
+  it seeks, speeds up, returns to normal speed, or reconnects.
+- `element-arrival`, `webcodecs-arrival`, `held-arrival`: extra delay a player adds over the bare minimum.
   This is the number to compare before and after.
 
 ## Background tabs
