@@ -1077,14 +1077,9 @@ class StreamPlayerBase {
     if (gen !== this.#generation) return; // this connection is already gone
     this.#halt(false); // let the last scheduled audio play out while we wait
     if (countsTowardGiveUp && this.#policy.markFailure()) {
-      this.#gaveUp = true;
-      this.#stopSources();
-      // Detach from the output so nothing of this player stays in the graph.
-      this.#gain.disconnect();
-      console.warn(
-        `${MODULE_ID} | ${this.#name} giving up: fetch refused ${GIVE_UP_AFTER} times and no data ever arrived (${reason})`,
+      this.#giveUp(
+        `${this.#name} giving up: fetch refused ${GIVE_UP_AFTER} times and no data ever arrived (${reason})`,
       );
-      this.#onGiveUp?.();
       return;
     }
     const delay = this.#policy.nextDelayMs();
@@ -1093,6 +1088,27 @@ class StreamPlayerBase {
       this.#retryTimer = null;
       this.#connect();
     }, delay);
+  }
+
+  /**
+   * A subclass decided this player cannot work here (see the decodeAudioData
+   * player's decode give-up). Ends the connection and gives up for good, like
+   * the fetch give-up in `_reconnect`. `info` is passed on to `onGiveUp`.
+   */
+  _giveUp(gen, message, info) {
+    if (gen !== this.#generation) return; // this connection is already gone
+    this.#halt(false);
+    this.#giveUp(message, info);
+  }
+
+  /** Stop for good: silence, leave the audio graph, log, tell the caller. */
+  #giveUp(message, info) {
+    this.#gaveUp = true;
+    this.#stopSources();
+    // Detach from the output so nothing of this player stays in the graph.
+    this.#gain.disconnect();
+    console.warn(`${MODULE_ID} | ${message}`);
+    this.#onGiveUp?.(info);
   }
 }
 
@@ -1248,7 +1264,31 @@ function copyPlanes(audioData) {
 // connection keeps a promise chain: a chunk is scheduled only after the one
 // before it. Every step checks the generation, so audio from a connection
 // that has since ended is dropped, and nothing is decoded after setUrl("").
+// Each step also has a rejection handler, so one step that throws cannot
+// stop every step after it.
+//
+// Giving up on decoding: createPlayer() only picks this player after
+// isOggOpusDecodable() decoded one 3-byte silent packet, which proves little
+// about real music. If a browser turns out unable to decode the real stream
+// (each failure reconnects), we would retry forever in silence. So after
+// DECODE_GIVE_UP_AFTER (3) failed decodes in a row, when not a single decode
+// on this player has ever worked, it gives up and the caller switches to the
+// <audio> player. Once any decode has worked, the browser clearly can do it,
+// so later failures are treated as glitches: reconnect, never give up.
+// A decode that has not finished after DECODE_TIMEOUT_MS (5 s) counts as a
+// failure too: a browser that never answers is as useless as one that says no.
 export const PREROLL_PACKETS = 16;
+export const DECODE_GIVE_UP_AFTER = 3;
+export const DECODE_TIMEOUT_MS = 5000;
+
+/** `promise`, or a rejection once `ms` have passed without it settling. */
+function withTimeout(promise, ms) {
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`timed out after ${ms} ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 // An OpusTags packet with an empty vendor string and no comments, for streams
 // that skip OpusTags (the file we hand the decoder must have one).
@@ -1262,6 +1302,9 @@ export class DecodeAudioDataPlayer extends StreamPlayerBase {
   #preroll = []; // the last PREROLL_PACKETS audio packets of this connection
   #chain = Promise.resolve(); // decodes of this connection, in order
   #warnedShort = false;
+  // Not reset per connection: they describe this player (this browser), not one connection.
+  #failedDecodes = 0; // decode failures in a row
+  #everDecoded = false; // has any decode on this player worked?
 
   /**
    * @param {object} opts
@@ -1294,13 +1337,15 @@ export class DecodeAudioDataPlayer extends StreamPlayerBase {
     // Start decoding at once (several files may decode side by side), but
     // schedule strictly in arrival order through the chain. decodeAudioData
     // takes ownership of (detaches) the buffer; `file` was built for this one
-    // call, so nothing else needs it. The result is wrapped so a failure is a
-    // value the chain handles, never an unhandled rejection.
-    const decoding = this.#offline.decodeAudioData(file.buffer).then(
+    // call, so nothing else needs it. The result is wrapped so a failure (or
+    // a timeout) is a value the chain handles, never an unhandled rejection.
+    const decoding = withTimeout(this.#offline.decodeAudioData(file.buffer), DECODE_TIMEOUT_MS).then(
       (audio) => ({ audio }),
       (error) => ({ error }),
     );
-    this.#chain = this.#chain.then(() => this.#play(decoding, prerollCount, packets.length, preSkip, gen));
+    this.#chain = this.#chain
+      .then(() => this.#play(decoding, prerollCount, packets.length, preSkip, gen))
+      .catch((err) => this._reconnect(gen, `decode step failed: ${err?.message ?? err}`));
   }
 
   /** Wait for one file's decode, cut out the new packets' samples, schedule them. */
@@ -1308,9 +1353,11 @@ export class DecodeAudioDataPlayer extends StreamPlayerBase {
     const { audio, error } = await decoding;
     if (!this._isCurrent(gen)) return; // this connection ended meanwhile
     if (error) {
-      this._reconnect(gen, `decodeAudioData failed: ${error?.message ?? error}`);
+      this.#decodeFailed(gen, `decodeAudioData failed: ${error?.message ?? error}`);
       return;
     }
+    this.#failedDecodes = 0;
+    this.#everDecoded = true;
     try {
       const wanted = SAMPLES_PER_PACKET * count;
       // Without enough pre-roll (the first chunk of a connection) the
@@ -1332,6 +1379,20 @@ export class DecodeAudioDataPlayer extends StreamPlayerBase {
     } catch (err) {
       this._reconnect(gen, `playing decoded audio failed: ${err?.message ?? err}`);
     }
+  }
+
+  /** One decode failed or timed out: reconnect, or give up (see the notes above). */
+  #decodeFailed(gen, reason) {
+    this.#failedDecodes++;
+    if (!this.#everDecoded && this.#failedDecodes >= DECODE_GIVE_UP_AFTER) {
+      this._giveUp(
+        gen,
+        `decodeAudioData player giving up: ${DECODE_GIVE_UP_AFTER} decodes failed in a row and none ever succeeded`,
+        { decodeFailed: true },
+      );
+      return;
+    }
+    this._reconnect(gen, reason);
   }
 }
 

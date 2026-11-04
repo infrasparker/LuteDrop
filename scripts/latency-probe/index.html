@@ -359,7 +359,8 @@ function makeDecodeAudioDataConsumer() {
         onGiveUp: () => setStatus('decodeAudioData player gave up (no CORS header, or the stream URL fails).'),
       });
       player.setVolume(1); // full level into the detector
-      player.setUrl('/stream');
+      // ?decodeaudiodata=<url> points this consumer elsewhere, like ?webcodecs= (README: fallback test).
+      player.setUrl(new URLSearchParams(location.search).get('decodeaudiodata') || '/stream');
       player.start();
     },
     stop() {

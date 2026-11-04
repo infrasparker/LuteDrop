@@ -101,7 +101,8 @@ Two `serve.mjs` switches exercise the WebCodecs player's give-up path:
   giving up. The other consumers fail too, so watch the console.
 - `--no-cors`: `/stream` is sent without `Access-Control-Allow-Origin`. The probe page
   itself is same-origin, so point the webcodecs consumer at another origin:
-  open `http://127.0.0.1:8790/?webcodecs=http://localhost:8790/stream`. The browser
+  open `http://127.0.0.1:8790/?webcodecs=http://localhost:8790/stream`
+  (`?decodeaudiodata=<url>` does the same for the decodeaudiodata consumer). The browser
   refuses each fetch; after 3 refusals (about 3 s) the console shows
   `WebCodecs player giving up`. This cross-origin `?webcodecs=` recipe is the realistic
   one for "joined before Broadcast was on" as well: with `--fail` instead of

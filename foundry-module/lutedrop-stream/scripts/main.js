@@ -79,18 +79,25 @@ function applySettings(target) {
 }
 
 /**
- * The WebCodecs player could never reach the stream (see ReconnectPolicy in
- * player.js), so use the <audio> player until the stream can be fetched again
- * (see tryUpgrade). Settings handlers call `player?.setX(...)`, so swapping the
- * variable is enough.
+ * Either low-latency player gave up: it could never reach the stream (see
+ * ReconnectPolicy in player.js), or, for the decodeAudioData player, this
+ * browser could never decode it (`decodeFailed`). Use the <audio> player
+ * instead. After a reachability give-up that lasts until the stream can be
+ * fetched again (see tryUpgrade); after a decode give-up it lasts for the
+ * session, because a fresh decodeAudioData player would only fail the same
+ * way. Settings handlers call `player?.setX(...)`, so swapping the variable
+ * is enough.
  */
-function switchToElementPlayer() {
+function switchToElementPlayer({ decodeFailed = false } = {}) {
+  if (decodeFailed) preferred = null; // nothing to upgrade back to
   const fallback = new ElementPlayer({ onPlaying: tryUpgrade });
   applySettings(fallback);
   fallback.start();
   player = fallback;
   console.info(
-    `${MODULE_ID} | falling back to the <audio> player (stream server sent no CORS header, or network down)`,
+    decodeFailed
+      ? `${MODULE_ID} | falling back to the <audio> player (this browser could not decode the stream)`
+      : `${MODULE_ID} | falling back to the <audio> player (stream server sent no CORS header, or network down)`,
   );
 }
 
