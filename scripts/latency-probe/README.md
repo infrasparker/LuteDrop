@@ -58,11 +58,15 @@ give-up) coarser, not the recorded times. Keeping the tab visible is still the s
 
 Two `serve.mjs` switches exercise the WebCodecs player's give-up path:
 
-- `--fail`: `/stream` answers 404. After 3 failed connects (about 3 s) the console shows
-  `WebCodecs player giving up`. The other consumers fail too, so watch the console.
+- `--fail`: `/stream` answers 404. An HTTP error means the server answered, so the
+  WebCodecs player must keep retrying with growing delays (1, 2, 4, 8, 15 s...) and must
+  NOT give up (this is what happens behind Caddy, which answers 502 while LuteDrop is
+  not broadcasting). The other consumers fail too, so watch the console.
 - `--no-cors`: `/stream` is sent without `Access-Control-Allow-Origin`. The probe page
   itself is same-origin, so point the webcodecs consumer at another origin:
-  open `http://127.0.0.1:8790/?webcodecs=http://localhost:8790/stream`.
+  open `http://127.0.0.1:8790/?webcodecs=http://localhost:8790/stream`. The browser
+  refuses each fetch; after 3 refusals (about 3 s) the console shows
+  `WebCodecs player giving up`. This is the only path that gives up.
 
 ## Caveat
 

@@ -265,9 +265,13 @@ export const MODULE_ID = "lutedrop-stream";
 // Giving up (WebCodecs player only): the WebCodecs player reads the stream with
 // fetch(), which the browser only allows when the stream server sends a CORS
 // header; the <audio> element needs no such header. If a URL has never
-// delivered a single byte and GIVE_UP_AFTER connects in a row fail, the likely
-// cause is a missing CORS header (or no network), so the caller switches to
-// the <audio> player. Why "never received a byte": once any data has arrived,
+// delivered a single byte and fetch() itself has been refused GIVE_UP_AFTER
+// times, the likely cause is a missing CORS header (or no network), so the
+// caller switches to the <audio> player. The player only reports those
+// refusals as failures here (see WebCodecsPlayer#reconnect): an HTTP error
+// such as 502 means the server did answer and we were allowed to read it
+// (e.g. Caddy while LuteDrop is not broadcasting yet), so that is a reason
+// to wait and retry, not to fall back. Why "never received a byte": once any data has arrived,
 // we know fetch() works against this server, so later failures are ordinary
 // outages (LuteDrop restarting). Falling back then would downgrade this
 // client for the rest of the session over something temporary.
@@ -576,8 +580,20 @@ export class WebCodecsPlayer {
   }
 
   async #read(gen, signal) {
+    let res;
     try {
-      const res = await fetch(cacheBusted(this.#url), { cache: "no-store", signal });
+      res = await fetch(cacheBusted(this.#url), { cache: "no-store", signal });
+    } catch (err) {
+      // fetch() itself refused (a TypeError: CORS blocked, DNS failure,
+      // connection refused). This is the only kind of failure that counts
+      // toward giving up; see ReconnectPolicy.
+      if (gen !== this.#generation || err?.name === "AbortError") return;
+      this.#reconnect(gen, err?.message ?? String(err), { countsTowardGiveUp: true });
+      return;
+    }
+    try {
+      // A non-OK status (e.g. Caddy's 502 while LuteDrop is not broadcasting
+      // yet) proves the server answered and we may read it: retry, never give up.
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const reader = res.body.getReader();
       let first = true;
@@ -675,28 +691,37 @@ export class WebCodecsPlayer {
   #onDecoded(audioData, gen) {
     try {
       if (gen !== this.#generation) return;
-      const channels = audioData.numberOfChannels;
-      const frames = audioData.numberOfFrames;
-      const buffer = this.#ctx.createBuffer(channels, frames, audioData.sampleRate);
-      if (audioData.format === "f32") {
-        // Interleaved (L R L R ...): copy once, then split into channels.
-        const interleaved = new Float32Array(frames * channels);
-        audioData.copyTo(interleaved, { planeIndex: 0, format: "f32" });
-        for (let ch = 0; ch < channels; ch++) {
-          const out = buffer.getChannelData(ch);
-          for (let i = 0; i < frames; i++) out[i] = interleaved[i * channels + ch];
-        }
-      } else {
-        // Planar, or another sample format the browser converts for us.
-        for (let ch = 0; ch < channels; ch++) {
-          audioData.copyTo(buffer.getChannelData(ch), { planeIndex: ch, format: "f32-planar" });
-        }
-      }
-      this.#schedule(buffer, audioData.duration / 1e6);
+      this.#copyAndSchedule(audioData);
+    } catch (err) {
+      // An exception here would otherwise escape the decoder callback as an
+      // uncaught error and leave the stream silently broken; reconnect instead.
+      this.#reconnect(gen, `playing decoded audio failed: ${err?.message ?? err}`);
     } finally {
       // AudioData holds memory outside JavaScript; release it once copied.
       audioData.close();
     }
+  }
+
+  /** Copy one decoded chunk (20 ms of PCM) into an AudioBuffer and schedule it. */
+  #copyAndSchedule(audioData) {
+    const channels = audioData.numberOfChannels;
+    const frames = audioData.numberOfFrames;
+    const buffer = this.#ctx.createBuffer(channels, frames, audioData.sampleRate);
+    if (audioData.format === "f32") {
+      // Interleaved (L R L R ...): copy once, then split into channels.
+      const interleaved = new Float32Array(frames * channels);
+      audioData.copyTo(interleaved, { planeIndex: 0, format: "f32" });
+      for (let ch = 0; ch < channels; ch++) {
+        const out = buffer.getChannelData(ch);
+        for (let i = 0; i < frames; i++) out[i] = interleaved[i * channels + ch];
+      }
+    } else {
+      // Planar, or another sample format the browser converts for us.
+      for (let ch = 0; ch < channels; ch++) {
+        audioData.copyTo(buffer.getChannelData(ch), { planeIndex: ch, format: "f32-planar" });
+      }
+    }
+    this.#schedule(buffer, audioData.duration / 1e6);
   }
 
   #schedule(buffer, durationS) {
@@ -723,17 +748,21 @@ export class WebCodecsPlayer {
   }
 
   /**
-   * The connection failed (fetch error, HTTP error, stream ended, decoder
-   * error, or stall). Either give up (see ReconnectPolicy) or retry later.
+   * The connection failed (fetch refused, HTTP error, stream ended, decoder
+   * error, or stall). Retry later, or give up (see ReconnectPolicy). Only a
+   * refused fetch() passes `countsTowardGiveUp`: everything else means the
+   * server is reachable and readable, so we keep retrying with backoff.
    */
-  #reconnect(gen, reason) {
+  #reconnect(gen, reason, { countsTowardGiveUp = false } = {}) {
     if (gen !== this.#generation) return; // this connection is already gone
     this.#halt(false); // let the last scheduled audio play out while we wait
-    if (this.#policy.markFailure()) {
+    if (countsTowardGiveUp && this.#policy.markFailure()) {
       this.#gaveUp = true;
       this.#stopSources();
+      // Detach from the output so nothing of this player stays in the graph.
+      this.#gain.disconnect();
       console.warn(
-        `${MODULE_ID} | WebCodecs player giving up: ${GIVE_UP_AFTER} connects failed and no data ever arrived (${reason})`,
+        `${MODULE_ID} | WebCodecs player giving up: fetch refused ${GIVE_UP_AFTER} times and no data ever arrived (${reason})`,
       );
       this.#onGiveUp?.();
       return;
