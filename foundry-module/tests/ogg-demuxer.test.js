@@ -28,7 +28,8 @@ test('splits_a_page_header_across_feeds', () => {
     ...d.feed(page.subarray(0, 1)),
     ...d.feed(page.subarray(1, 13)),
     ...d.feed(page.subarray(13, 20)),
-    ...d.feed(page.subarray(20)),
+    ...d.feed(page.subarray(20, 28)), // ends inside the lacing table
+    ...d.feed(page.subarray(28)),
   ];
   assert.equal(out.length, 2);
   assert.deepEqual(out[0].data, a);
@@ -96,4 +97,37 @@ test('reset_drops_partial_state', () => {
   const out = d.feed(full);
   assert.equal(out.length, 1);
   assert.deepEqual(out[0].data, fullData);
+});
+
+test('non_continued_page_drops_open_partial', () => {
+  const open = buildPage({
+    seq: 2,
+    granule: -1,
+    segments: [bytes(255, 8)],
+    leaveLastOpen: true,
+  });
+  const nextData = bytes(20, 9);
+  const next = buildPage({ seq: 3, granule: 1920, segments: [nextData] });
+  const out = new OggDemuxer().feed(concat(open, next));
+  assert.equal(out.length, 1);
+  assert.deepEqual(out[0].data, nextData);
+});
+
+test('orphan_continuation_is_dropped', () => {
+  // Tail of a packet we never saw the start of, then two whole packets.
+  const keepA = bytes(15, 2);
+  const keepB = bytes(40, 3);
+  const page = buildPage({
+    seq: 3,
+    granule: 1920,
+    continued: true,
+    segments: [bytes(30, 1), keepA, keepB],
+  });
+  const d = new OggDemuxer();
+  d.feed(buildPage({ seq: 2, granule: 960, segments: [bytes(5, 0)] }));
+  d.reset();
+  const out = d.feed(page);
+  assert.equal(out.length, 2);
+  assert.deepEqual(out[0].data, keepA);
+  assert.deepEqual(out[1].data, keepB);
 });

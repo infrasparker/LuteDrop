@@ -54,7 +54,6 @@ function pageCrc(page) {
 }
 
 function concatBytes(a, b) {
-  if (a.length === 0) return b;
   const out = new Uint8Array(a.length + b.length);
   out.set(a, 0);
   out.set(b, a.length);
@@ -135,8 +134,10 @@ export class OggDemuxer {
     const bos = (headerType & 0x02) !== 0;
     const granule = Number(view.getBigInt64(6, true));
 
-    // If the previous page left a packet open but this page doesn't continue
-    // it (or vice versa), a page was lost; the half-packet is unusable.
+    // A packet cannot carry on past a page that is not flagged "continued", so
+    // an open partial from the previous page is dropped. Conversely, a
+    // "continued" page with no partial open is the tail of a packet whose start
+    // we never saw (e.g. we joined mid-stream); its first fragment is skipped.
     if (!continued) this._partial = null;
     let skipFirst = continued && this._partial === null;
 
