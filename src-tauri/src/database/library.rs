@@ -430,6 +430,47 @@ pub fn set_entry_tags(conn: &Connection, entry_id: &str, tags: &[String]) -> Res
     Ok(())
 }
 
+/// Adds `add` to and removes `remove` from every entry in `entry_ids`, in
+/// one transaction. Tags the entry already has are left alone, so this is
+/// safe to apply to a mixed selection. Orphaned tag rows are swept at the
+/// end, matching `set_entry_tags`.
+pub fn bulk_edit_entry_tags(
+    conn: &Connection,
+    entry_ids: &[String],
+    add: &[String],
+    remove: &[String],
+) -> Result<(), String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin bulk tag transaction: {e}"))?;
+
+    for entry_id in entry_ids {
+        for tag_name in remove {
+            let normalised = tag_name.trim().to_lowercase();
+            conn.execute(
+                "DELETE FROM library_entry_tags
+                 WHERE library_entry_id = ?1
+                   AND tag_id = (SELECT id FROM tags WHERE name = ?2)",
+                params![entry_id, normalised],
+            )
+            .map_err(|e| format!("Failed to remove tag from entry: {e}"))?;
+        }
+        for tag_name in add {
+            add_tag_to_entry(conn, entry_id, tag_name)?;
+        }
+    }
+
+    conn.execute(
+        "DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM library_entry_tags)",
+        [],
+    )
+    .map_err(|e| format!("Failed to sweep orphaned tags: {e}"))?;
+
+    tx.commit()
+        .map_err(|e| format!("Failed to commit bulk tag transaction: {e}"))?;
+    Ok(())
+}
+
 /// Returns all tag names associated with the given library entry, sorted.
 #[cfg(test)]
 pub fn get_tags_for_entry(
@@ -854,5 +895,37 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM tags WHERE name = 'old-only'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(orphan, 0);
+    }
+
+    #[test]
+    fn bulk_edit_entry_tags_adds_and_removes_across_entries() {
+        let conn = open_memory_db();
+        let a = insert_library_entry(&conn, "/tmp/a.mp3", None, "A", None, None, None, "music")
+            .expect("insert a");
+        let b = insert_library_entry(&conn, "/tmp/b.mp3", None, "B", None, None, None, "music")
+            .expect("insert b");
+        let c = insert_library_entry(&conn, "/tmp/c.mp3", None, "C", None, None, None, "music")
+            .expect("insert c");
+
+        set_entry_tags(&conn, &a, &["combat".into(), "night".into()]).expect("tag a");
+        set_entry_tags(&conn, &b, &["night".into()]).expect("tag b");
+        set_entry_tags(&conn, &c, &["night".into()]).expect("tag c");
+
+        // Add "boss" and remove "night" from a and b only; c is untouched.
+        bulk_edit_entry_tags(
+            &conn,
+            &[a.clone(), b.clone()],
+            &["Boss ".into()],
+            &["night".into()],
+        )
+        .expect("bulk edit");
+
+        assert_eq!(get_tags_for_entry(&conn, &a).unwrap(), vec!["boss", "combat"]);
+        assert_eq!(get_tags_for_entry(&conn, &b).unwrap(), vec!["boss"]);
+        assert_eq!(get_tags_for_entry(&conn, &c).unwrap(), vec!["night"]);
+
+        // Removing the last use of a tag sweeps the orphan row.
+        bulk_edit_entry_tags(&conn, &[c.clone()], &[], &["night".into()]).expect("bulk remove");
+        assert_eq!(list_all_tags(&conn).unwrap(), vec!["boss", "combat"]);
     }
 }

@@ -257,6 +257,16 @@ pub fn update_library_entry_tags(
 }
 
 #[tauri::command]
+pub fn bulk_edit_library_entry_tags(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_ids: Vec<String>,
+    add: Vec<String>,
+    remove: Vec<String>,
+) -> Result<AppState, String> {
+    actions::bulk_edit_library_entry_tags(&state, entry_ids, add, remove)
+}
+
+#[tauri::command]
 pub fn update_library_entry_type(
     state: State<'_, Arc<AppStateContainer>>,
     entry_id: String,
