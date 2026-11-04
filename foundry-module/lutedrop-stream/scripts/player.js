@@ -805,6 +805,7 @@ const OPUS_HEAD = "OpusHead";
 const OPUS_TAGS = "OpusTags";
 const OPUS_SAMPLE_RATE = 48000;
 const PACKET_US = 20000; // each Opus packet LuteDrop sends is 20 ms (in microseconds)
+const GAIN_SMOOTHING_S = 0.02; // volume changes glide with this time constant
 
 function startsWithAscii(bytes, text) {
   if (bytes.length < text.length) return false;
@@ -909,8 +910,15 @@ class StreamPlayerBase {
   // need a fresh connection and a fresh decoder (a noticeable pause); keeping
   // the stream flowing silently means un-muting is instant and already at the
   // live edge. The <audio> player does the same, so both behave alike.
+  //
+  // Why setTargetAtTime instead of assigning gain.value: an instant jump in
+  // volume is a step in the waveform, which you hear as a click; dragging the
+  // slider makes dozens of them ("zipper noise"). setTargetAtTime glides to
+  // the new value instead, covering most of the way within about 0.05 s
+  // (time constant GAIN_SMOOTHING_S), which sounds instant but smooth.
   #applyVolume() {
-    this.#gain.gain.value = this.#listening ? this.#volume : 0;
+    const value = this.#listening ? this.#volume : 0;
+    this.#gain.gain.setTargetAtTime(value, this.#ctx.currentTime, GAIN_SMOOTHING_S);
   }
 
   /**
@@ -1052,6 +1060,9 @@ class StreamPlayerBase {
     }
     if (catchUp) {
       // Far behind live: drop what is queued and jump back to the live edge.
+      // Stopping mid-chunk can click once; a catch-up is rare (a burst after
+      // a stall, or slow drift every few minutes at most), so we accept that
+      // rather than fade the gain around it.
       this.#stopSources();
       console.info(`${MODULE_ID} | fell behind live; jumped ahead (cushion ${leadMs} ms)`);
     }

@@ -56,19 +56,28 @@ does not cause a gap. It starts at 0.2 s, grows by 0.1 s each time the stream ru
 The cushion shrinks back by 0.1 s after each quiet minute without a gap, so one bad
 moment (such as a slow scene load) does not leave the stream late for the whole night.
 
-This fast path needs the browser's `AudioDecoder`, which only exists on an `https://`
-page or on `localhost`. A browser without it gets the older `<audio>` player, which
-works but runs several seconds behind. Browsers that have it: Chrome and Edge 94+,
-Safari 16.4+, Firefox 130+ on desktop, and the Foundry desktop app.
+### How players should join
 
-In practice: if Foundry is reached over plain `http://` from another machine, remote
-players get the slow player. Serve Foundry over `https://` (for example behind a reverse
-proxy such as Caddy, with Foundry's `proxySSL` and `proxyPort` options set) to give them
-the fast one.
+**Recommended: the `https://` address**, e.g. `https://foundry.irslandia.duckdns.org`
+(Foundry behind a reverse proxy such as Caddy, with Foundry's `proxySSL` and `proxyPort`
+options set). An `https://` page gets the fastest player, which decodes with the
+browser's `AudioDecoder`. That only exists on `https://` pages or on `localhost` /
+`127.0.0.1`. Browsers that have it: Chrome and Edge 94+, recent Safari (the module
+checks for Opus support at start-up and falls back otherwise), Firefox 130+ on desktop,
+and the Foundry desktop app.
 
-To see which player a client got, open the browser console (F12) and look for
-`lutedrop-stream | using the low-latency WebCodecs player` or
-`lutedrop-stream | WebCodecs Opus unavailable; using the <audio> player`.
+The plain `http://<ip>:5884` address still works. There Chrome, Edge and Firefox use a
+second low-latency player (built on `decodeAudioData`, nearly as fast), and a browser
+that cannot do that either gets the `<audio>` player, which is held close to live but
+still runs a second or more behind. Nobody has to choose: the module picks the best
+player the browser supports, and falls back automatically.
+
+To see which player a client got, open the browser console (F12) and look for one of
+`lutedrop-stream | using the low-latency WebCodecs player`,
+`lutedrop-stream | WebCodecs Opus unavailable; using the low-latency decodeAudioData player` or
+`lutedrop-stream | WebCodecs Opus and decodeAudioData Ogg Opus unavailable; using the <audio> player`.
+
+### When the fast player falls back
 
 If the stream server never sends a byte and the browser refuses three connections, the
 client switches to the `<audio>` player and logs
@@ -76,11 +85,19 @@ client switches to the `<audio>` player and logs
 The browser refuses any reply from another address that lacks a CORS header, whatever
 its status. So besides a LuteDrop older than this change (it sends no CORS header), a
 player who joins before the GM switches Broadcast on also gets there: Caddy's own 502
-"LuteDrop is not running" page carries no such header. That is why the fallback is only
-for the session *until the stream becomes reachable*: each time the `<audio>` player
-starts playing, the module tries one direct read of the stream, and if that works it
-switches back to the fast player and logs
-`lutedrop-stream | stream reachable again with CORS; upgrading to the WebCodecs player`.
+"LuteDrop is not running" page carries no such header. A LAN stream URL while LuteDrop
+is closed counts too (the connection is refused outright).
+
+That is why the fallback only lasts *until the stream becomes reachable*: each time the
+`<audio>` player starts playing, the module tries one direct read of the stream, and as
+soon as that works (the stream is live) it switches back to the fast player and logs
+`lutedrop-stream | stream reachable again with CORS; upgrading to the WebCodecs player`
+(or `... decodeAudioData player` on plain `http://`).
+
+One fallback is for the whole session: if the decodeAudioData player's first three
+decodes all fail, the browser cannot decode the stream that way, so it logs
+`lutedrop-stream | decodeAudioData player giving up: 3 decodes failed in a row and none ever succeeded`
+and the `<audio>` player stays. Reloading the page starts over.
 
 ## Mixed content
 

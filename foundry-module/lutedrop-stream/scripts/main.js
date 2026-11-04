@@ -150,8 +150,11 @@ async function tryUpgrade() {
 Hooks.once("ready", async () => {
   // game.audio.unlock is a Promise (not a function) that resolves on the user's first click/key.
   await game.audio.unlock;
-  // Reuse Foundry's AudioContext when it has one (already unlocked), else make our own.
-  audioContext = game.audio?.context ?? new AudioContext();
+  // Reuse one of Foundry's AudioContexts (already unlocked), else make our own.
+  // Foundry v12+ keeps a separate context per channel (music, environment,
+  // interface); `music` is the right one for a soundtrack. Older versions
+  // have a single `context`.
+  audioContext = game.audio?.music ?? game.audio?.context ?? new AudioContext();
   player = await createPlayer({ audioContext, onGiveUp: switchToElementPlayer });
   // Remember what start-up chose (see `preferred` above).
   const label = PLAYER_LABELS.get(player.constructor);
