@@ -40,7 +40,11 @@ if (!fs.existsSync(remote)) fail('dist-remote/ is missing: run `npm run build:re
 
 // --- 3. Start with an empty release/ folder. --------------------------------
 const out = at('release');
-fs.rmSync(out, { recursive: true, force: true });
+try {
+  fs.rmSync(out, { recursive: true, force: true });
+} catch {
+  fail('could not clear release/: close LuteDrop if it is running from release/portable/');
+}
 fs.mkdirSync(out);
 
 // Zips `entries` (relative to `dir`) into `zipPath`. We avoid PowerShell's
@@ -67,16 +71,17 @@ fs.copyFileSync(nsis, path.join(out, path.basename(nsis)));
 fs.copyFileSync(msi, path.join(out, path.basename(msi)));
 
 // Portable: the exe plus dist-remote/ (which the phone remote needs) side by side.
-const stage = fs.mkdtempSync(path.join(out, '.portable-'));
+// The unzipped folder is kept at release/portable/ so a shortcut can point at a
+// stable path that every release refreshes.
+const stage = path.join(out, 'portable');
+fs.mkdirSync(stage);
 try {
   fs.copyFileSync(exe, path.join(stage, 'lutedrop.exe'));
   fs.cpSync(remote, path.join(stage, 'dist-remote'), { recursive: true });
   zip(path.join(out, `LuteDrop_${V}_x64_portable.zip`), stage, ['lutedrop.exe', 'dist-remote']);
 } catch (e) {
-  fs.rmSync(stage, { recursive: true, force: true }); // don't leave the temp folder behind
   fail(e.message);
 }
-fs.rmSync(stage, { recursive: true, force: true });
 
 // Foundry module: module.json must sit at the zip root, not inside a folder.
 // Only these entries ship; anything else in the folder (Thumbs.db, editor backups) is an error.
@@ -92,7 +97,7 @@ fs.copyFileSync(path.join(moduleDir, 'module.json'), path.join(out, 'module.json
 
 // --- 5. Tell the user what to do next. ---------------------------------------
 console.log('\nStaged in release/:');
-for (const f of fs.readdirSync(out)) console.log(`  ${f}`);
+for (const f of fs.readdirSync(out)) console.log(`  ${f}${f === 'portable' ? '/   (unzipped portable build, kept for local use)' : ''}`);
 // Files are listed one by one because PowerShell does not expand wildcards for gh.
 const assets = [`LuteDrop_${V}_x64-setup.exe`, `LuteDrop_${V}_x64_en-US.msi`, `LuteDrop_${V}_x64_portable.zip`, 'lutedrop-stream.zip', 'module.json'];
 console.log(`\nNext: gh release create v${V} ${assets.map((f) => `release/${f}`).join(' ')} --title "LuteDrop v${V}" --notes-file <notes>`);

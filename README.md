@@ -288,7 +288,11 @@ release/
   LuteDrop_<version>_x64_portable.zip     # lutedrop.exe + dist-remote/ (no install needed)
   lutedrop-stream.zip                     # the Foundry module
   module.json                             # the Foundry manifest
+  portable/                               # the unzipped portable build, kept for running locally
 ```
+
+The `portable/` folder is for this machine: point a shortcut at `release/portable/lutedrop.exe`
+and every release refreshes it. Close LuteDrop before packaging, or the folder cannot be replaced.
 
 The portable zip works because `lutedrop.exe` runs by itself, and the `dist-remote/`
 folder beside it enables the port-3333 phone remote.
