@@ -28,6 +28,11 @@ const loading = ref(false);
 const index = ref(0);
 // The candidate file path the user has clicked in the list, if any.
 const selectedPath = ref<string | null>(null);
+// True while a relink call is running (it hashes the new file, which can be slow).
+// Used to block clicks so one relink cannot be started twice.
+const relinking = ref(false);
+// Message from the last failed scan, or null. Shown instead of the all-clear text.
+const loadError = ref<string | null>(null);
 // Running totals for the summary screen at the end.
 const relinked = ref(0);
 const skipped = ref(0);
@@ -62,12 +67,17 @@ watch(
 // Ask the backend for candidates under `folder`, then show the first entry.
 async function load(folder: string): Promise<void> {
   loading.value = true;
+  loadError.value = null;
   try {
     report.value = await invoke<FixMissingReport>('find_missing_file_candidates', { folder });
+    // A fresh report starts a fresh pass, so the counters start over too.
+    relinked.value = 0;
+    skipped.value = 0;
     index.value = 0;
     selectedPath.value = null;
     preselect();
   } catch (e) {
+    loadError.value = String(e);
     toast.showError(`Could not scan for missing files: ${e}`);
   } finally {
     loading.value = false;
@@ -103,8 +113,13 @@ async function rescan(): Promise<void> {
 // and does not throw, so success is detected by checking the entry afterwards.
 async function relink(path: string): Promise<void> {
   const entryId = current.value?.entry.id;
-  if (!entryId) return;
-  await store.command('relocate_library_entry', { entryId, newFilePath: path });
+  if (!entryId || relinking.value) return;
+  relinking.value = true;
+  try {
+    await store.command('relocate_library_entry', { entryId, newFilePath: path });
+  } finally {
+    relinking.value = false;
+  }
   const updated = store.findLibraryEntry(entryId);
   if (updated?.filePath !== path) return; // failed; stay on this entry
   relinked.value++;
@@ -130,6 +145,7 @@ async function browse(): Promise<void> {
 
 // Leave this entry missing and move on.
 function skip(): void {
+  if (relinking.value) return;
   skipped.value++;
   advance();
 }
@@ -159,10 +175,10 @@ function close(): void {
             style="direction: rtl; text-align: left;"
             :title="report?.searchRoot"
           >{{ report?.searchRoot || 'none chosen' }}</span>
-          <VBtn size="x-small" variant="tonal" prepend-icon="mdi-folder-search" :disabled="loading" @click="changeFolder">
+          <VBtn size="x-small" variant="tonal" prepend-icon="mdi-folder-search" :disabled="loading || relinking" @click="changeFolder">
             Change...
           </VBtn>
-          <VBtn size="x-small" variant="text" prepend-icon="mdi-refresh" :disabled="loading" @click="rescan">
+          <VBtn size="x-small" variant="text" prepend-icon="mdi-refresh" :disabled="loading || relinking" @click="rescan">
             Rescan
           </VBtn>
         </div>
@@ -181,6 +197,11 @@ function close(): void {
         <!-- Loading: scan in progress -->
         <div v-if="loading" class="d-flex justify-center pa-8">
           <VProgressCircular indeterminate />
+        </div>
+
+        <!-- The scan failed: say so instead of claiming everything is fine -->
+        <div v-else-if="loadError" class="text-error pa-4 text-center">
+          Could not search: {{ loadError }}
         </div>
 
         <!-- Nothing to fix -->
@@ -245,17 +266,19 @@ function close(): void {
           v-if="current && !loading"
           text="Browse..."
           variant="plain"
+          :disabled="relinking"
           prepend-icon="mdi-file-search"
           @click="browse"
         />
         <VSpacer />
-        <VBtn v-if="current && !loading" text="Skip" variant="plain" @click="skip" />
+        <VBtn v-if="current && !loading" text="Skip" variant="plain" :disabled="relinking" @click="skip" />
         <VBtn
           v-if="current && !loading"
           text="Relink"
           color="primary"
           variant="tonal"
-          :disabled="!selectedPath"
+          :disabled="!selectedPath || relinking"
+          :loading="relinking"
           @click="selectedPath && relink(selectedPath)"
         />
         <VBtn text="Close" variant="plain" @click="close" />
