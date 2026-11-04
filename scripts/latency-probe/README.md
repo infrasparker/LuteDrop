@@ -16,7 +16,10 @@ Use it for before/after numbers when changing the stream player.
 6. Pick a short sound that starts loudly, then click **Run trials**.
 
 Each trial stops the track, waits 1.5 s of silence, presses play, and notes when each
-listener first hears sound (8 s timeout), then stops and waits 2 s.
+listener first hears sound, then stops and waits 2 s. A listener that has not heard
+anything after the **Give-up (s)** time (default 8) shows `n/a`. The plain `<audio>`
+element can need 10-30 s to start playing a live stream on first use, so raise
+Give-up (e.g. 30) when measuring it.
 
 ## Columns
 
