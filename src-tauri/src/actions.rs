@@ -582,6 +582,17 @@ fn emit_progress(
     );
 }
 
+/// The one definition of "this library file is there": it exists, is a
+/// regular file (not a folder) and is not empty. A zero-byte file is treated
+/// as missing because it is what a failed copy or cloud-sync stub leaves
+/// behind, and it can never play. The missing badge, playback and the
+/// fix-missing dialog all call this so they always agree.
+pub(crate) fn is_file_usable(path: &str) -> bool {
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.len() > 0)
+        .unwrap_or(false)
+}
+
 pub fn relocate_library_entry(
     container: &AppStateContainer,
     entry_id: &str,
@@ -597,9 +608,37 @@ pub fn relocate_library_entry(
     })?;
 
     with_db(container, |conn| {
+        // The path column is UNIQUE, so check for an owner first and give a
+        // readable message instead of a raw SQLite constraint error.
+        if let Some((owner_id, owner_name)) = library::find_entry_name_by_file_path(conn, &new_file_path)? {
+            if owner_id != entry_id {
+                return Err(format!("That file is already linked to \"{owner_name}\""));
+            }
+        }
         library::update_library_entry_file_path(conn, entry_id, &new_file_path)?;
         Ok(())
     })?;
+
+    // The relinked file is often a different encoding of the same recording
+    // (e.g. a FLAC replacing an MP3), so the stored hash, size and duration
+    // describe the OLD file. Refresh them from the new one. Trim, loop and
+    // other markers are untouched. Failures here are only logged: a relink
+    // must never fail just because a hash or duration could not be read.
+    if is_file_usable(&new_file_path) {
+        let refreshed = hash_file(&new_file_path).and_then(|hash| {
+            let size = std::fs::metadata(&new_file_path)
+                .map_err(|e| format!("Failed to read file size: {e}"))?
+                .len() as i64;
+            // None (undecodable file) leaves the old duration in place.
+            let duration = crate::audio::util::probe_duration(&new_file_path);
+            with_db(container, |conn| {
+                library::update_library_entry_file_info(conn, entry_id, &hash, size, duration)
+            })
+        });
+        if let Err(e) = refreshed {
+            log::warn!("Relink: could not refresh file info for {entry_id}: {e}");
+        }
+    }
 
     // Evict old peak caches (in-memory + disk .peaks file)
     if old_file_path != new_file_path {
@@ -607,7 +646,7 @@ pub fn relocate_library_entry(
         container.peak_cache.evict(old);
     }
 
-    if std::path::Path::new(&new_file_path).exists() {
+    if is_file_usable(&new_file_path) {
         container.mark_entry_found(entry_id);
     }
     load_state(container)
@@ -621,7 +660,7 @@ pub fn scan_missing_files(container: &AppStateContainer) {
         Err(_) => return,
     };
     for entry in &entries {
-        if !std::path::Path::new(&entry.file_path).exists() {
+        if !is_file_usable(&entry.file_path) {
             container.mark_entry_missing(&entry.id);
         }
     }
@@ -633,7 +672,7 @@ pub fn scan_missing_files(container: &AppStateContainer) {
 fn update_clip_file_state(container: &AppStateContainer, track: &Track) {
     for clip in &track.clips {
         if !clip.file_path.is_empty() {
-            if std::path::Path::new(&clip.file_path).exists() {
+            if is_file_usable(&clip.file_path) {
                 container.mark_entry_found(&clip.library_entry_id);
             } else {
                 container.mark_entry_missing(&clip.library_entry_id);
@@ -806,7 +845,7 @@ pub fn play_library_sound(
     loop_end: Option<f64>,
 ) -> Result<(), String> {
     // Check file exists before attempting playback
-    if !std::path::Path::new(file_path).exists() {
+    if !is_file_usable(file_path) {
         container.mark_entry_missing(entry_id);
         return Err(format!("Audio file not found: {}", file_path));
     }
@@ -1064,9 +1103,11 @@ pub fn restore_broadcast_on_startup(container: &AppStateContainer) {
 #[cfg(test)]
 mod tests {
     use super::{
-        get_broadcast_status, hash_file, public_url, restore_broadcast_on_startup, sanitize_volume,
-        set_broadcast_enabled, set_broadcast_settings, with_db,
+        get_broadcast_status, hash_file, is_file_usable, public_url, relocate_library_entry,
+        restore_broadcast_on_startup, sanitize_volume, scan_missing_files, set_broadcast_enabled,
+        set_broadcast_settings, with_db,
     };
+    use crate::database::{self, library};
     use crate::state::AppStateContainer;
 
     /// A container with an in-memory database and a real audio engine, for
@@ -1074,6 +1115,8 @@ mod tests {
     fn test_container() -> AppStateContainer {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::database::init_schema(&conn).unwrap();
+        // load_state needs an active configuration to exist.
+        crate::database::ensure_default_configuration(&conn).unwrap();
         let dir = tempfile::tempdir().unwrap().keep();
         AppStateContainer::new(conn, crate::audio::AudioEngine::new().unwrap(), dir.join("peaks"), dir.join("db"))
     }
@@ -1158,5 +1201,88 @@ mod tests {
         let result = hash_file("Z:\\this\\path\\does\\not\\exist\\lutedrop_missing.bin");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Failed to open file for hashing"));
+    }
+
+    /// Inserts a "music" entry pointing at `path` and returns its id.
+    fn add_entry(c: &AppStateContainer, path: &str, hash: &str, name: &str, size: i64) -> String {
+        with_db(c, |conn| {
+            Ok(library::insert_library_entry(conn, path, Some(hash), name, None, None, Some(size), "music")?)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn relocate_refreshes_hash_size_and_keeps_markers() {
+        use sha2::{Digest, Sha256};
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("old.wav").to_str().unwrap().to_string();
+        let new = tmp.path().join("new.wav").to_str().unwrap().to_string();
+        let bytes = b"0123456789abcdef";
+        std::fs::write(&new, bytes).unwrap();
+
+        let c = test_container();
+        let id = add_entry(&c, &old, "stale", "Song", 1);
+        with_db(&c, |conn| library::update_library_entry_markers(conn, &id, Some(2.0), None, None, None)).unwrap();
+
+        relocate_library_entry(&c, &id, new.clone()).unwrap();
+
+        let state = with_db(&c, |conn| database::load_full_state(conn)).unwrap();
+        let e = state.library_entries.iter().find(|e| e.id == id).unwrap();
+        assert_eq!(e.file_path, new);
+        assert_eq!(e.file_size, Some(16));
+        assert_eq!(e.content_hash.as_deref(), Some(format!("{:x}", Sha256::digest(bytes)).as_str()));
+        assert_eq!(e.trim_start, Some(2.0));
+        assert_eq!(e.duration, None, "an undecodable file must leave the old duration alone");
+    }
+
+    #[test]
+    fn relocate_to_nonexistent_path_keeps_missing_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("old.wav").to_str().unwrap().to_string();
+        let nope = tmp.path().join("nope.wav").to_str().unwrap().to_string();
+        let c = test_container();
+        let id = add_entry(&c, &old, "h", "Song", 1);
+        c.mark_entry_missing(&id);
+
+        relocate_library_entry(&c, &id, nope.clone()).unwrap();
+
+        assert!(c.missing_snapshot().contains(&id));
+        let state = with_db(&c, |conn| database::load_full_state(conn)).unwrap();
+        assert_eq!(state.library_entries.iter().find(|e| e.id == id).unwrap().file_path, nope);
+    }
+
+    #[test]
+    fn zero_byte_file_is_not_usable_and_launch_scan_marks_it_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let empty = tmp.path().join("empty.wav").to_str().unwrap().to_string();
+        let ok = tmp.path().join("ok.wav").to_str().unwrap().to_string();
+        std::fs::write(&empty, b"").unwrap();
+        std::fs::write(&ok, b"data").unwrap();
+        assert!(!is_file_usable(&empty));
+        assert!(is_file_usable(&ok));
+
+        let c = test_container();
+        let empty_id = add_entry(&c, &empty, "h1", "Empty", 0);
+        let _ok_id = add_entry(&c, &ok, "h2", "Ok", 4);
+        scan_missing_files(&c);
+
+        assert_eq!(c.missing_snapshot(), vec![empty_id]);
+    }
+
+    #[test]
+    fn relocate_to_path_owned_by_other_entry_errs_cleanly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a_path = tmp.path().join("a.wav").to_str().unwrap().to_string();
+        let b_path = tmp.path().join("b.wav").to_str().unwrap().to_string();
+        let c = test_container();
+        let a = add_entry(&c, &a_path, "ha", "A", 1);
+        let _b = add_entry(&c, &b_path, "hb", "B", 1);
+
+        let err = relocate_library_entry(&c, &a, b_path).unwrap_err();
+
+        assert!(err.contains("already linked to"), "got {err}");
+        assert!(err.contains("B"), "got {err}");
+        let state = with_db(&c, |conn| database::load_full_state(conn)).unwrap();
+        assert_eq!(state.library_entries.iter().find(|e| e.id == a).unwrap().file_path, a_path);
     }
 }
