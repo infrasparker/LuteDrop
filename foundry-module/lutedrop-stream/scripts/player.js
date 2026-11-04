@@ -167,3 +167,83 @@ export class OggDemuxer {
     }
   }
 }
+
+// Second piece: LiveClock.
+//
+// The decoder hands us chunks of PCM audio; Web Audio plays a chunk at a time
+// we choose. LiveClock is the pure policy for choosing that time. It knows
+// nothing about Web Audio: it is given a function that returns "now" in
+// seconds (AudioContext.currentTime in production) so tests can use a fake.
+//
+// Why a cushion (TARGET_LEAD_S = 0.2 s): we never start a chunk exactly "now",
+// because by the time the call reaches the speaker it would already be late.
+// 0.2 s covers one 40 ms Ogg page (we cannot decode half a page), the decoder's
+// own latency, and roughly 100 ms of network jitter. Smaller is lower latency
+// but more gaps; larger is safer but laggier.
+//
+// Why chunks go back to back: TCP cannot lose or reorder packets, so every
+// chunk that arrives belongs directly after the previous one. We schedule each
+// at the previous chunk's end, computed from its decoded length, which keeps
+// the audio gapless with no timestamps needed.
+//
+// Underruns: if a chunk would have to start in the past, the stream stalled
+// and we ran out of audio. Playing a gap is the honest outcome. We restart at
+// now + lead, and raise the cushion by LEAD_STEP_S (up to MAX_LEAD_S) so a bad
+// link ends up with a bigger cushion rather than repeated gaps.
+//
+// Catch-up: after a burst of pages (a stall that then delivers everything at
+// once) we can end up far ahead of "now", i.e. permanently behind live. When
+// the pending position is more than lead + CATCHUP_SLACK_S ahead, we report
+// catchUp so the caller stops everything already scheduled, and we place this
+// chunk at now + lead. One jump back to live beats staying late forever.
+export const TARGET_LEAD_S = 0.2;
+export const LEAD_STEP_S = 0.1;
+export const MAX_LEAD_S = 0.6;
+export const CATCHUP_SLACK_S = 0.4;
+
+export class LiveClock {
+  /** @param {() => number} now seconds (AudioContext.currentTime in production) */
+  constructor(now) {
+    this._now = now;
+    this._lead = TARGET_LEAD_S;
+    this._next = null; // where the next chunk starts; null means nothing pending
+  }
+
+  /** Current cushion in seconds. */
+  get lead() {
+    return this._lead;
+  }
+
+  /**
+   * Decide when a chunk of `durationS` seconds should start.
+   * @returns {{ at: number, restart: boolean, catchUp: boolean }}
+   */
+  place(durationS) {
+    const now = this._now();
+    let at;
+    let restart = false;
+    let catchUp = false;
+    if (this._next === null || this._next < now) {
+      // First chunk, or an underrun: start fresh. Only a genuine underrun
+      // (we had a position and missed it) grows the cushion.
+      if (this._next !== null) {
+        this._lead = Math.min(this._lead + LEAD_STEP_S, MAX_LEAD_S);
+      }
+      restart = true;
+      at = now + this._lead;
+    } else if (this._next - now > this._lead + CATCHUP_SLACK_S) {
+      catchUp = true;
+      at = now + this._lead;
+    } else {
+      at = this._next;
+    }
+    this._next = at + durationS;
+    return { at, restart, catchUp };
+  }
+
+  /** New connection: cushion back to the target, nothing pending. */
+  reset() {
+    this._lead = TARGET_LEAD_S;
+    this._next = null;
+  }
+}
