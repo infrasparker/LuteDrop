@@ -33,6 +33,7 @@ mod broadcast;
 mod commands;
 mod database;
 mod models;
+mod relink;
 mod server;
 mod state;
 mod waveform;

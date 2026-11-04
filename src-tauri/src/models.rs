@@ -180,6 +180,52 @@ pub struct BulkImportProgress {
     pub total: u32,
 }
 
+/// How closely a file's name matched a missing entry; the dialog shows it as a badge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub enum MatchKind {
+    Exact,
+    Contains,
+    Similar,
+}
+
+/// One file the "Fix missing files" dialog offers as a replacement for a missing entry.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct RelinkCandidate {
+    pub file_path: String,
+    /// Path relative to the search folder, shown in the candidate list.
+    pub relative_path: String,
+    pub kind: MatchKind,
+    pub score: f64,
+    /// Name of another library entry already using this file, if any.
+    pub used_by_entry_name: Option<String>,
+}
+
+/// A missing library entry together with its candidate replacement files.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // used by the scan command in a later step
+pub struct MissingEntryCandidates {
+    pub entry: LibraryEntry,
+    pub candidates: Vec<RelinkCandidate>,
+}
+
+/// Everything the "Fix missing files" dialog needs after a scan.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // used by the scan command in a later step
+pub struct FixMissingReport {
+    pub search_root: String,
+    pub search_root_exists: bool,
+    pub files_scanned: u32,
+    pub entries: Vec<MissingEntryCandidates>,
+}
+
 /// Partial-update payload for `update_track`. Every field is optional; only the
 /// present ones are applied. Deserialized directly from the frontend's
 /// `updates` object (camelCase), replacing hand-parsed `serde_json::Value`.
