@@ -295,17 +295,38 @@ export class OggOpusMuxer {
 // the pending position is more than lead + CATCHUP_SLACK_S ahead, we report
 // catchUp so the caller stops everything already scheduled, and we place this
 // chunk at now + lead. One jump back to live beats staying late forever.
+//
+// Shrinking back (decay): underruns are not always the network's fault.
+// Foundry itself freezes the page for a moment when it loads a scene, and
+// that starves us too. Without a way down, each such freeze would leave a
+// bigger cushion (more delay) for the rest of the night. So after
+// LEAD_DECAY_AFTER_S (60 s) with no underrun, the cushion drops by
+// LEAD_STEP_S, and again after every further quiet minute, never below
+// TARGET_LEAD_S. A link that really needs the bigger cushion will underrun
+// again and grow it back; one that does not stays fast.
+//
+// Slow drift: LuteDrop's sound card and the listener's sound card each keep
+// their own time, and no two run at exactly the same speed. If ours runs a
+// touch slow, audio piles up a few milliseconds per minute: never enough for
+// the big catch-up above, but enough to leave us late for good. Lowering the
+// cushion (decay) has the same effect: the audio already queued stays where
+// it is. So if the pending audio has stayed more than DRIFT_SLACK_S (0.1 s)
+// above the cushion for DRIFT_AFTER_S (5 s) in a row, we report catchUp just
+// like the big jump. The 5 s wait means a brief burst (which drains by
+// itself) never causes a jump; only lateness that sticks does.
 export const TARGET_LEAD_S = 0.2;
 export const LEAD_STEP_S = 0.1;
 export const MAX_LEAD_S = 0.6;
 export const CATCHUP_SLACK_S = 0.4;
+export const LEAD_DECAY_AFTER_S = 60;
+export const DRIFT_SLACK_S = 0.1;
+export const DRIFT_AFTER_S = 5;
 
 export class LiveClock {
   /** @param {() => number} now seconds (AudioContext.currentTime in production) */
   constructor(now) {
     this._now = now;
-    this._lead = TARGET_LEAD_S;
-    this._next = null; // where the next chunk starts; null means nothing pending
+    this.reset();
   }
 
   /** Current cushion in seconds. */
@@ -328,22 +349,48 @@ export class LiveClock {
       if (this._next !== null) {
         this._lead = Math.min(this._lead + LEAD_STEP_S, MAX_LEAD_S);
       }
+      this._quietSince = now; // the quiet minute (decay) counts from here
+      this._driftSince = null;
       restart = true;
       at = now + this._lead;
-    } else if (this._next - now > this._lead + CATCHUP_SLACK_S) {
-      catchUp = true;
-      at = now + this._lead;
     } else {
-      at = this._next;
+      this.#decay(now);
+      const pending = this._next - now;
+      if (pending > this._lead + CATCHUP_SLACK_S || this.#driftedLongEnough(pending, now)) {
+        catchUp = true;
+        this._driftSince = null;
+        at = now + this._lead;
+      } else {
+        at = this._next;
+      }
     }
     this._next = at + durationS;
     return { at, restart, catchUp };
   }
 
+  /** After a quiet minute, lower the cushion one step (not below the target). */
+  #decay(now) {
+    if (now - this._quietSince < LEAD_DECAY_AFTER_S) return;
+    this._quietSince = now; // the next step needs another quiet minute
+    this._lead = Math.max(this._lead - LEAD_STEP_S, TARGET_LEAD_S);
+  }
+
+  /** True once `pending` has sat above lead + DRIFT_SLACK_S for DRIFT_AFTER_S. */
+  #driftedLongEnough(pending, now) {
+    if (pending <= this._lead + DRIFT_SLACK_S) {
+      this._driftSince = null; // back within the slack: the clock starts over
+      return false;
+    }
+    this._driftSince ??= now;
+    return now - this._driftSince >= DRIFT_AFTER_S;
+  }
+
   /** New connection: cushion back to the target, nothing pending. */
   reset() {
     this._lead = TARGET_LEAD_S;
-    this._next = null;
+    this._next = null; // where the next chunk starts; null means nothing pending
+    this._quietSince = 0; // `now` of the last underrun (or the first chunk)
+    this._driftSince = null; // `now` when pending first went above lead + slack
   }
 }
 

@@ -53,6 +53,8 @@ jitter.
 Most of that is a cushion of audio the player keeps in hand so a late network packet
 does not cause a gap. It starts at 0.2 s, grows by 0.1 s each time the stream runs dry
 (up to 0.6 s on a bad link), and jumps forward if it ever falls more than 0.4 s behind.
+The cushion shrinks back by 0.1 s after each quiet minute without a gap, so one bad
+moment (such as a slow scene load) does not leave the stream late for the whole night.
 
 This fast path needs the browser's `AudioDecoder`, which only exists on an `https://`
 page or on `localhost`. A browser without it gets the older `<audio>` player, which
