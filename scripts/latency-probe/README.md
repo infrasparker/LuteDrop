@@ -1,7 +1,8 @@
 # Latency probe
 
 Developer tool (not shipped) that measures how long a sound takes to get from
-"play pressed" to "heard by a Broadcast listener", for several kinds of listener.
+"play pressed" to "heard by a Broadcast listener", for several kinds of listener,
+and checks the decodeAudioData player's output against a continuous decoder.
 Use it for before/after numbers when changing the stream player.
 
 ## Run it
@@ -49,8 +50,36 @@ All times are milliseconds after T0, the moment the page sends `play_track`.
   ignored. This is what players reaching Foundry over plain `http://` hear (WebCodecs
   is unavailable there). The browser console shows `lutedrop-stream | ...` lines when
   it seeks, speeds up, returns to normal speed, or reconnects.
-- `element-arrival`, `webcodecs-arrival`, `held-arrival`: extra delay a player adds over the bare minimum.
-  This is the number to compare before and after.
+- **decodeaudiodata**: the module's `DecodeAudioDataPlayer`, the low-latency player for
+  pages without WebCodecs (Foundry over plain `http://` in Chrome, Edge, Firefox). It
+  wraps each network read's Opus packets in a tiny Ogg Opus file, decodes it with
+  `decodeAudioData`, and schedules the result with the same 0.2 s cushion as the
+  WebCodecs player, so expect numbers close to `webcodecs`.
+- `element-arrival`, `webcodecs-arrival`, `held-arrival`, `decodeaudiodata-arrival`: extra
+  delay a player adds over the bare minimum. This is the number to compare before and after.
+
+## Continuity check
+
+**Continuity check (10 s)** checks that the decodeAudioData player produces the same
+samples as a decoder that runs continuously. Each tiny file starts a fresh decoder, so
+the player puts the previous `PREROLL_PACKETS` packets in front to warm it up; if that
+were too little, every chunk would come out slightly wrong and the joins would click.
+
+Run it with the probe server pointed at the live stream, and play a track in LuteDrop
+while it runs (silence compares equal trivially; the status line says so if the signal
+was nearly silent). It reads `/stream` for 10 s and decodes every packet twice: once
+through one WebCodecs `AudioDecoder` (the reference) and once per network read through
+`OggOpusMuxer` + `decodeAudioData` with pre-roll, exactly as the player does. Both are
+lined up by packet index and compared on both channels. The status line and the console
+show: the number of chunks, max |difference| over all samples, RMS of the difference,
+the worst difference within the first or last 48 samples of any chunk (the joins), how
+many joins are above 1e-3, the worst difference away from the joins, and the signal RMS.
+
+Acceptance: **PASS** when max |diff| < 1e-3 everywhere and no join is above 1e-3 (no
+audible tick). **FAIL** when anything is above 1e-2. In between is **BORDERLINE**.
+Measured in Chrome on an encoded test signal: 4 packets of pre-roll gave 0.14 (fail),
+8 gave 0.011, 12 gave 0.0007, 16 (the value used) gave 0.00004. Needs WebCodecs, so
+open the probe on `127.0.0.1` / `localhost`.
 
 ## Background tabs
 

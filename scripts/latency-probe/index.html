@@ -36,13 +36,21 @@ background tab still measures; only timers are throttled there, which just makes
   <button id="run" disabled>Run trials</button>
   <button id="stop" disabled>Stop</button>
   <button id="copy">Copy as Markdown</button>
+  <button id="continuity">Continuity check (10 s)</button>
 </div>
 <div id="status"></div>
 <table id="results"></table>
 
 <script type="module">
 // serve.mjs exposes foundry-module/lutedrop-stream/scripts/ at /module/.
-import { ElementPlayer, WebCodecsPlayer } from '/module/player.js';
+import {
+  ElementPlayer,
+  WebCodecsPlayer,
+  DecodeAudioDataPlayer,
+  OggDemuxer,
+  OggOpusMuxer,
+  PREROLL_PACKETS,
+} from '/module/player.js';
 
 // ---------------------------------------------------------------- helpers
 const $ = (id) => document.getElementById(id);
@@ -330,7 +338,48 @@ function makeHeldConsumer() {
   };
 }
 
-const consumers = [makeArrivalConsumer(), makeElementConsumer(), makeWebCodecsConsumer(), makeHeldConsumer()];
+// "decodeaudiodata": the module's player for plain-http pages, which wraps each
+// Ogg page in a tiny Ogg Opus file and decodes it with decodeAudioData. Set up
+// exactly like the webcodecs consumer: its sound goes into the detector.
+function makeDecodeAudioDataConsumer() {
+  let heard = () => {};
+  let ctx = null;
+  let player = null;
+  let detector = null;
+  return {
+    name: 'decodeaudiodata',
+    onHeard(cb) { heard = cb; },
+    async start() {
+      ctx = new AudioContext();
+      await ctx.resume();
+      detector = await attachDetector(ctx, (t) => heard(t));
+      player = new DecodeAudioDataPlayer({
+        audioContext: ctx,
+        output: detector.input,
+        onGiveUp: () => setStatus('decodeAudioData player gave up (no CORS header, or the stream URL fails).'),
+      });
+      player.setVolume(1); // full level into the detector
+      player.setUrl('/stream');
+      player.start();
+    },
+    stop() {
+      player?.setUrl(''); // aborts the fetch; pending decodes see the new generation and drop out
+      detector?.dispose();
+      ctx?.close();
+      player = null;
+      detector = null;
+      ctx = null;
+    },
+  };
+}
+
+const consumers = [
+  makeArrivalConsumer(),
+  makeElementConsumer(),
+  makeWebCodecsConsumer(),
+  makeHeldConsumer(),
+  makeDecodeAudioDataConsumer(),
+];
 
 // ------------------------------------------------------- WebSocket (remote)
 let ws = null;
@@ -387,7 +436,7 @@ const sendCommand = (command) => ws.send(JSON.stringify({ command, trackId: sele
 // ----------------------------------------------------------------- trials
 const sourceNames = () => ['arrival', 'mixing', ...consumers.map((c) => c.name).filter((n) => n !== 'arrival')];
 let cancelled = false;
-const trials = []; // each: { arrival, mixing, element, webcodecs, held, t0 } in performance.now() ms
+const trials = []; // each: { arrival, mixing, element, webcodecs, held, decodeaudiodata, t0 } in performance.now() ms
 
 async function runTrial() {
   const stamps = {};
@@ -510,6 +559,12 @@ const columns = () => {
       { label: 'held−arrival', get: (t) => diff(t.held, t.arrival) },
     );
   }
+  if (consumers.some((c) => c.name === 'decodeaudiodata')) {
+    cols.push(
+      { label: 'decodeaudiodata−T0', get: (t) => diff(t.decodeaudiodata, t.t0) },
+      { label: 'decodeaudiodata−arrival', get: (t) => diff(t.decodeaudiodata, t.arrival) },
+    );
+  }
   return cols;
 };
 const fmt = (v) => (v == null ? 'n/a' : Math.round(v).toString());
@@ -553,10 +608,187 @@ function copyMarkdown() {
   navigator.clipboard.writeText(md).then(() => setStatus('Copied table to clipboard.'));
 }
 
+// ------------------------------------------------------- continuity check
+// The decodeAudioData player decodes each network read's packets as their own
+// tiny Ogg file, with PREROLL_PACKETS earlier packets in front to warm the
+// decoder up. If that warm-up were not enough, the first samples of each chunk
+// would differ from what a decoder running all along produces, and every join
+// would click. This check reads the stream for 10 s and decodes the same
+// packets both ways:
+// - continuous: one WebCodecs AudioDecoder fed every packet (the reference);
+// - chunked: per demuxer feed, with pre-roll and tail slice, as the player does.
+// Both go on one timeline where audio packet i owns samples [960*i, 960*(i+1)).
+// Each decoded piece is aligned by its END, because a decoder may trim
+// pre-skip off the front of the stream but never off the back.
+// Play a track in LuteDrop while it runs: silence compares equal trivially.
+const CHECK_SECONDS = 10;
+const SPP = 960; // samples per 20 ms packet at 48 kHz
+const JOIN = 48; // samples at each chunk edge counted as "the join" (1 ms)
+const EMPTY_TAGS = new Uint8Array([79, 112, 117, 115, 84, 97, 103, 115, 0, 0, 0, 0, 0, 0, 0, 0]); // "OpusTags", no vendor, no comments
+const startsWith = (bytes, text) => String.fromCharCode(...bytes.subarray(0, text.length)) === text;
+
+async function continuityCheck() {
+  const button = $('continuity');
+  button.disabled = true;
+  const capacity = SPP * 50 * (CHECK_SECONDS + 5); // 50 packets per second, with room for bursts
+  const lane = () => ({ ch: [new Float32Array(capacity), new Float32Array(capacity)], has: new Uint8Array(capacity) });
+  const cont = lane();
+  const chunked = lane();
+  // Write `planes` (channel 0 and 1) so they end at sample `endAt`; returns the range written.
+  const put = (target, planes, endAt) => {
+    const len = planes[0].length;
+    const start = endAt - len;
+    for (let i = 0; i < len; i++) {
+      const at = start + i;
+      if (at < 0 || at >= capacity) continue;
+      target.ch[0][at] = planes[0][i];
+      target.ch[1][at] = planes[planes.length > 1 ? 1 : 0][i];
+      target.has[at] = 1;
+    }
+    return { start: Math.max(0, start), end: Math.min(capacity, endAt) };
+  };
+
+  const abort = new AbortController();
+  let decoder = null;
+  let chunks = []; // sample ranges of each chunked decode, in stream order
+  try {
+    const offline = new OfflineAudioContext(2, 1, 48000); // 48 kHz, as in the player
+    const demuxer = new OggDemuxer();
+    const decodes = [];
+    let state = 'head'; // 'head' | 'tags' | 'audio'
+    let opusHead = null;
+    let muxer = null;
+    let preroll = [];
+    let packetIndex = 0; // audio packets so far
+    const contPieces = []; // the continuous decoder's output, in order
+    decoder = new AudioDecoder({
+      output: (data) => {
+        // Not placed by timestamp: Chrome trims the pre-skip off the first
+        // output and shifts every later timestamp by it. Collected in order and
+        // end-aligned after the flush instead.
+        contPieces.push([0, 1].map((ch) => {
+          const out = new Float32Array(data.numberOfFrames);
+          data.copyTo(out, { planeIndex: Math.min(ch, data.numberOfChannels - 1), format: 'f32-planar' });
+          return out;
+        }));
+        data.close();
+      },
+      error: (e) => console.error('continuity: AudioDecoder error', e),
+    });
+
+    setStatus(`Continuity check: reading the stream for ${CHECK_SECONDS} s (play a track now)...`);
+    const res = await fetch('/stream?t=' + Date.now(), { signal: abort.signal, cache: 'no-store' });
+    if (!res.ok) throw new Error(`stream proxy returned HTTP ${res.status}`);
+    const reader = res.body.getReader();
+    const began = performance.now();
+    while (performance.now() - began < CHECK_SECONDS * 1000) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const audio = [];
+      for (const p of demuxer.feed(value)) {
+        if (state === 'head') {
+          if (p.bos && startsWith(p.data, 'OpusHead')) {
+            decoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 2, description: p.data });
+            opusHead = p.data;
+            state = 'tags';
+          }
+        } else if (state === 'tags') {
+          state = 'audio';
+          const isTags = startsWith(p.data, 'OpusTags');
+          muxer = new OggOpusMuxer(opusHead, isTags ? p.data : EMPTY_TAGS);
+          if (!isTags) audio.push(p.data);
+        } else {
+          audio.push(p.data);
+        }
+      }
+      if (audio.length === 0) continue;
+      // Continuous reference: every packet into the one decoder.
+      audio.forEach((data, k) => {
+        decoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: (packetIndex + k) * 20000, data }));
+      });
+      // Chunked: one tiny file per feed, pre-roll in front, keep the tail.
+      const file = muxer.file([...preroll, ...audio]);
+      preroll = [...preroll, ...audio].slice(-PREROLL_PACKETS);
+      const endAt = SPP * (packetIndex + audio.length);
+      const wanted = SPP * audio.length;
+      decodes.push(
+        offline.decodeAudioData(file.buffer).then((buf) => {
+          const take = Math.min(wanted, buf.length);
+          const planes = [0, 1].map((ch) =>
+            buf.getChannelData(Math.min(ch, buf.numberOfChannels - 1)).subarray(buf.length - take),
+          );
+          return put(chunked, planes, endAt);
+        }),
+      );
+      packetIndex += audio.length;
+    }
+    abort.abort();
+    await decoder.flush();
+    // Lay the continuous output down so it ends where the last packet ends.
+    let end = SPP * packetIndex - contPieces.reduce((n, p) => n + p[0].length, 0);
+    for (const planes of contPieces) {
+      end += planes[0].length;
+      put(cont, planes, end);
+    }
+    chunks = await Promise.all(decodes);
+  } catch (e) {
+    console.error('continuity check failed', e);
+    setStatus('Continuity check failed: ' + e.message);
+    button.disabled = false;
+    return;
+  } finally {
+    abort.abort();
+    if (decoder && decoder.state !== 'closed') decoder.close();
+  }
+
+  // Compare every chunk. Both paths start from the same first packet, so even
+  // the early chunks (less pre-roll than PREROLL_PACKETS, but every packet
+  // since the start) must match.
+  let maxDiff = 0;
+  let sumSq = 0;
+  let sumSignal = 0;
+  let n = 0;
+  let worstJoin = 0;
+  let badJoins = 0;
+  let interiorMax = 0;
+  for (const { start, end } of chunks) {
+    let joinMax = 0;
+    for (let i = start; i < end; i++) {
+      if (!cont.has[i] || !chunked.has[i]) continue;
+      for (let ch = 0; ch < 2; ch++) {
+        const d = Math.abs(cont.ch[ch][i] - chunked.ch[ch][i]);
+        maxDiff = Math.max(maxDiff, d);
+        sumSq += d * d;
+        sumSignal += cont.ch[ch][i] * cont.ch[ch][i];
+        n++;
+        if (i - start < JOIN || end - i <= JOIN) joinMax = Math.max(joinMax, d);
+        else interiorMax = Math.max(interiorMax, d);
+      }
+    }
+    worstJoin = Math.max(worstJoin, joinMax);
+    if (joinMax > 1e-3) badJoins++;
+  }
+  const rmsDiff = n ? Math.sqrt(sumSq / n) : NaN;
+  const rmsSignal = n ? Math.sqrt(sumSignal / n) : NaN;
+  let verdict = 'BORDERLINE';
+  if (n === 0) verdict = 'NO DATA';
+  else if (maxDiff > 1e-2 || worstJoin > 1e-2) verdict = 'FAIL';
+  else if (maxDiff < 1e-3 && worstJoin < 1e-3) verdict = 'PASS';
+  const e = (v) => v.toExponential(2);
+  const summary = `Continuity ${verdict}: ${chunks.length} chunks, ` +
+    `max |diff| ${e(maxDiff)}, RMS diff ${e(rmsDiff)}, worst join ${e(worstJoin)} ` +
+    `(${badJoins} joins over 1e-3), interior max ${e(interiorMax)}, signal RMS ${e(rmsSignal)}`;
+  console.info(summary);
+  const quiet = rmsSignal < 1e-3 ? ' The stream was (nearly) silent: play a track and run again.' : '';
+  setStatus(summary + quiet);
+  button.disabled = false;
+}
+
 $('connect').onclick = connect;
 $('run').onclick = runAll;
 $('stop').onclick = () => { cancelled = true; };
 $('copy').onclick = copyMarkdown;
+$('continuity').onclick = continuityCheck;
 </script>
 </body>
 </html>
