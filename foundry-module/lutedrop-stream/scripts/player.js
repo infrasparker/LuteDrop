@@ -362,18 +362,31 @@ export const MODULE_ID = "lutedrop-stream";
 // players wait with no bytes at all before treating the connection as dead.
 //
 // Giving up (low-latency players only): those players read the stream with
-// fetch(), which the browser only allows when the stream server sends a CORS
+// fetch(), which the browser only allows when the response carries a CORS
 // header; the <audio> element needs no such header. If a URL has never
 // delivered a single byte and fetch() itself has been refused GIVE_UP_AFTER
-// times, the likely cause is a missing CORS header (or no network), so the
-// caller switches to the <audio> player. The player only reports those
-// refusals as failures here (see StreamPlayerBase _reconnect): an HTTP error
-// such as 502 means the server did answer and we were allowed to read it
-// (e.g. Caddy while LuteDrop is not broadcasting yet), so that is a reason
-// to wait and retry, not to fall back. Why "never received a byte": once any data has arrived,
-// we know fetch() works against this server, so later failures are ordinary
-// outages (LuteDrop restarting). Falling back then would downgrade this
-// client for the rest of the session over something temporary.
+// times since the last URL change (not necessarily in a row), the caller
+// switches to the <audio> player. The player only reports those refusals as
+// failures here (see StreamPlayerBase _reconnect).
+//
+// What counts as "refused": the browser rejects a cross-origin fetch() of
+// any response without the CORS header, whatever its status. So besides a
+// LuteDrop too old to send the header and a network that is down, a server
+// that answers but whose error page has no header also counts: Caddy's own
+// 502 while LuteDrop is not broadcasting yet, or LuteDrop closed on the LAN
+// (connection refused). LuteDrop's own 404 for a wrong key does carry the
+// header, so that one is a plain HTTP error: retry, never give up.
+//
+// That is why falling back is not final: main.js lets the <audio> player
+// check, each time it starts playing, whether the stream can be fetched
+// again, and if so swaps the low-latency player back in. A client that opens
+// Foundry before the GM switches Broadcast on starts on the <audio> player
+// and upgrades a few seconds after the stream goes live.
+//
+// Why "never received a byte": once any data has arrived, we know fetch()
+// works against this server, so later failures are ordinary outages
+// (LuteDrop restarting). Falling back then would downgrade this client over
+// something temporary.
 export const BACKOFF_START_MS = 1000;
 export const BACKOFF_MAX_MS = 15000;
 export const STABLE_AFTER_MS = 10000;
@@ -418,7 +431,7 @@ export class ReconnectPolicy {
 }
 
 /** Append a throwaway query value so the browser never reuses a dead cached response. */
-function cacheBusted(url) {
+export function cacheBusted(url) {
   const separator = url.includes("?") ? "&" : "?";
   return `${url}${separator}t=${Date.now()}`;
 }
@@ -518,6 +531,10 @@ export class LiveEdgeHold {
 // look at the element every HOLD_POLL_MS and seek, speed up, or reconnect as
 // the policy says. It never gives up.
 //
+// `onPlaying` (optional) is called once per connection, the first time the
+// element reaches "playing" (bytes are flowing). main.js uses it to check
+// whether the faster player can take over again (see ReconnectPolicy).
+//
 // "Listen off" sets volume to 0 instead of pausing, so the stream stays live
 // and un-muting resumes at the current position.
 export class ElementPlayer {
@@ -532,14 +549,19 @@ export class ElementPlayer {
   #hold = new LiveEdgeHold();
   #holdTimer = null; // the live-edge poll; at most one per connection
   #catchingUp = false; // playing at HOLD_CATCHUP_RATE right now (so we log it once)
+  #onPlaying;
+  #announcedPlaying = false; // has this connection called onPlaying yet?
 
   /**
    * @param {object} [opts]
    * @param {HTMLAudioElement} [opts.audio]  only the latency probe passes one (it
    *   needs crossOrigin to listen to the element); the module passes nothing.
+   * @param {() => void} [opts.onPlaying]  called once per connection when playback
+   *   first starts
    */
-  constructor({ audio = new Audio() } = {}) {
+  constructor({ audio = new Audio(), onPlaying } = {}) {
     this.#audio = audio;
+    this.#onPlaying = onPlaying;
     this.#audio.preload = "none";
     // Do not set crossOrigin: that would require CORS headers on the stream.
     for (const name of ["error", "stalled", "ended"]) {
@@ -549,6 +571,12 @@ export class ElementPlayer {
       this.#policy.markBytesReceived();
       this.#watchForStability();
       this.#startHold();
+      // "playing" also fires after every seek or short buffering pause; only
+      // the first one of a connection is news.
+      if (!this.#announcedPlaying) {
+        this.#announcedPlaying = true;
+        this.#onPlaying?.();
+      }
     });
   }
 
@@ -591,6 +619,7 @@ export class ElementPlayer {
     this.#clearTimers();
     this.#stopHold();
     this.#hold.reset(); // a new connection has its own clock and its own buffer
+    this.#announcedPlaying = false;
     if (!this.#url) {
       this.#stop();
       return;
@@ -718,7 +747,8 @@ export class ElementPlayer {
 //
 // The cost of both: fetch() of another origin needs the server's CORS header
 // (LuteDrop sends one). createPlayer() checks what the browser supports;
-// giving up falls back to the <audio> element.
+// giving up falls back to the <audio> element until the stream can be
+// fetched again (see ReconnectPolicy).
 //
 // Every connection gets a "generation" number. Anything asynchronous (a read,
 // a decoder callback, a timer) remembers the generation it belongs to and does
@@ -884,16 +914,18 @@ class StreamPlayerBase {
     try {
       res = await fetch(cacheBusted(this.#url), { cache: "no-store", signal });
     } catch (err) {
-      // fetch() itself refused (a TypeError: CORS blocked, DNS failure,
-      // connection refused). This is the only kind of failure that counts
-      // toward giving up; see ReconnectPolicy.
+      // fetch() itself refused (a TypeError: CORS blocked, including an
+      // error page sent without the CORS header, DNS failure, connection
+      // refused). This is the only kind of failure that counts toward giving
+      // up; see ReconnectPolicy.
       if (gen !== this.#generation || err?.name === "AbortError") return;
       this._reconnect(gen, err?.message ?? String(err), { countsTowardGiveUp: true });
       return;
     }
     try {
-      // A non-OK status (e.g. Caddy's 502 while LuteDrop is not broadcasting
-      // yet) proves the server answered and we may read it: retry, never give up.
+      // A non-OK status we are allowed to see (LuteDrop's own 404 for a wrong
+      // key carries the CORS header) proves the server answered: retry, never
+      // give up. One without the header never gets here; see ReconnectPolicy.
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const reader = res.body.getReader();
       let first = true;

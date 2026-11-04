@@ -193,7 +193,16 @@ impl ListenerServer {
 /// `GET /listen/{key}`: the audio stream itself (see the module docs).
 async fn stream(Path(key): Path<String>, State(state): State<ServerState>) -> Response {
     if key != *state.key {
-        return StatusCode::NOT_FOUND.into_response();
+        // Same CORS header as the 200 below, for the same reason: without it
+        // the browser hides this 404 from the Foundry module's `fetch` and
+        // reports a refused connection instead, which the module counts
+        // toward giving up on its low-latency player. With it, the module
+        // sees an ordinary HTTP error and simply retries.
+        return (
+            StatusCode::NOT_FOUND,
+            [(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")],
+        )
+            .into_response();
     }
     let guard = ListenerGuard::new(state.count.clone());
     let header = tokio_stream::once(Bytes::copy_from_slice(&state.header));
@@ -405,6 +414,11 @@ mod tests {
         let srv = ListenerServer::start(port, "k7".into(), fake_source()).unwrap();
         let (st, headers, _) = http_get(port, "/listen/k7", 0);
         assert_eq!(st, 200);
+        assert!(headers.to_ascii_lowercase().contains("access-control-allow-origin: *"));
+        // A wrong key must be readable cross-origin too, or the browser turns
+        // the 404 into a refused fetch() (see `stream`).
+        let (st, headers, _) = http_get(port, "/listen/wrong", 0);
+        assert_eq!(st, 404);
         assert!(headers.to_ascii_lowercase().contains("access-control-allow-origin: *"));
         let (_, headers, _) = http_get(port, "/listen/k7/page", 0);
         assert!(!headers.to_ascii_lowercase().contains("access-control-allow-origin"));

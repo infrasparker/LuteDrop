@@ -2,11 +2,31 @@
 
 // MODULE_ID is defined in player.js (which must not import this entry file)
 // and re-exported here so existing imports of it from main.js keep working.
-import { MODULE_ID, createPlayer, ElementPlayer } from "./player.js";
+import {
+  MODULE_ID,
+  createPlayer,
+  cacheBusted,
+  ElementPlayer,
+  WebCodecsPlayer,
+  DecodeAudioDataPlayer,
+  STALL_TIMEOUT_MS,
+} from "./player.js";
 
 export { MODULE_ID };
 
 let player = null;
+let audioContext = null;
+// The player createPlayer() chose at start-up, remembered so the <audio>
+// fallback can hand back to "the player we would have chosen" once the stream
+// is reachable again. null when start-up already chose the <audio> player:
+// then there is nothing faster to go back to, and we never probe.
+let preferred = null; // { Player: the class, label: how log lines name it }
+let upgrading = false; // a reachability check is in flight
+
+const PLAYER_LABELS = new Map([
+  [WebCodecsPlayer, "WebCodecs player"],
+  [DecodeAudioDataPlayer, "decodeAudioData player"],
+]);
 
 function registerSettings() {
   // World scope: one value for the whole game, and only the GM can edit it.
@@ -60,11 +80,12 @@ function applySettings(target) {
 
 /**
  * The WebCodecs player could never reach the stream (see ReconnectPolicy in
- * player.js), so use the <audio> player for the rest of this session. Settings
- * handlers call `player?.setX(...)`, so swapping the variable is enough.
+ * player.js), so use the <audio> player until the stream can be fetched again
+ * (see tryUpgrade). Settings handlers call `player?.setX(...)`, so swapping the
+ * variable is enough.
  */
 function switchToElementPlayer() {
-  const fallback = new ElementPlayer();
+  const fallback = new ElementPlayer({ onPlaying: tryUpgrade });
   applySettings(fallback);
   fallback.start();
   player = fallback;
@@ -73,12 +94,61 @@ function switchToElementPlayer() {
   );
 }
 
+/**
+ * Called by the <audio> fallback each time it starts playing a connection.
+ * The fallback usually began because fetch() was refused: a stream server
+ * with no CORS header, or (far more often) Caddy's 502 or a closed LuteDrop
+ * before the GM switched Broadcast on. Now that the element is playing, the
+ * stream is live, so try one fetch() of it: if that is allowed and delivers
+ * a chunk, the low-latency player will work too, and we swap it back in.
+ * If fetch() is still refused (an old LuteDrop without the CORS header), we
+ * keep the element; the browser already logs its own CORS error, so we add
+ * nothing.
+ */
+async function tryUpgrade() {
+  if (!preferred || upgrading) return;
+  const url = String(game.settings.get(MODULE_ID, "streamUrl") ?? "").trim();
+  if (!url) return;
+  const fallback = player;
+  upgrading = true;
+  const abort = new AbortController();
+  // A server that accepts but never sends must not block later checks.
+  const timer = setTimeout(() => abort.abort(), STALL_TIMEOUT_MS);
+  let reachable = false;
+  try {
+    const res = await fetch(cacheBusted(url), { cache: "no-store", signal: abort.signal });
+    if (res.ok) {
+      const { done, value } = await res.body.getReader().read();
+      reachable = !done && value?.length > 0;
+    }
+  } catch {
+    // Refused (no CORS header, network down) or timed out: keep the element.
+  } finally {
+    clearTimeout(timer);
+    abort.abort(); // we only wanted one chunk; close the connection
+    upgrading = false;
+  }
+  // Only replace the element player that asked; if anything swapped players
+  // meanwhile, that newer choice stands.
+  if (!reachable || player !== fallback) return;
+
+  const upgraded = new preferred.Player({ audioContext, onGiveUp: switchToElementPlayer });
+  applySettings(upgraded);
+  upgraded.start();
+  player = upgraded;
+  console.info(`${MODULE_ID} | stream reachable again with CORS; upgrading to the ${preferred.label}`);
+  fallback.setUrl(""); // silence the element; with no URL it never reconnects
+}
+
 Hooks.once("ready", async () => {
   // game.audio.unlock is a Promise (not a function) that resolves on the user's first click/key.
   await game.audio.unlock;
   // Reuse Foundry's AudioContext when it has one (already unlocked), else make our own.
-  const ctx = game.audio?.context ?? new AudioContext();
-  player = await createPlayer({ audioContext: ctx, onGiveUp: switchToElementPlayer });
+  audioContext = game.audio?.context ?? new AudioContext();
+  player = await createPlayer({ audioContext, onGiveUp: switchToElementPlayer });
+  // Remember what start-up chose (see `preferred` above).
+  const label = PLAYER_LABELS.get(player.constructor);
+  if (label) preferred = { Player: player.constructor, label };
   applySettings(player);
   player.start();
 });

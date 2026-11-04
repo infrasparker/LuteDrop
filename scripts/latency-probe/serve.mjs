@@ -24,7 +24,8 @@ const port = Number(arg('port', '8790'));
 // Test switches for the WebCodecs player's reconnect and give-up paths (the page is
 // same-origin, so --no-cors only matters when the stream is fetched from another
 // origin): --no-cors leaves out the CORS header (fetch is refused -> give-up after 3),
-// --fail answers 404 on /stream (the server answered -> retry forever, no give-up).
+// --fail answers 404 on /stream (same-origin: the page may read it -> retry forever,
+// no give-up; cross-origin it has no CORS header, so it is refused like --no-cors).
 const noCors = process.argv.includes('--no-cors');
 const fail = process.argv.includes('--fail');
 if (!streamUrl) {

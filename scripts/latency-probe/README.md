@@ -92,15 +92,21 @@ give-up) coarser, not the recorded times. Keeping the tab visible is still the s
 
 Two `serve.mjs` switches exercise the WebCodecs player's give-up path:
 
-- `--fail`: `/stream` answers 404. An HTTP error means the server answered, so the
-  WebCodecs player must keep retrying with growing delays (1, 2, 4, 8, 15 s...) and must
-  NOT give up (this is what happens behind Caddy, which answers 502 while LuteDrop is
-  not broadcasting). The other consumers fail too, so watch the console.
+- `--fail`: `/stream` answers 404. On the probe's own origin the page may read that
+  404, so the WebCodecs player keeps retrying with growing delays (1, 2, 4, 8, 15 s...)
+  and does NOT give up. That is how LuteDrop's own 404 for a wrong key behaves, since it
+  carries the CORS header. It is *not* what a Foundry client sees behind Caddy while
+  LuteDrop is not broadcasting: that 502 comes from another origin without the CORS
+  header, so the browser refuses it like `--no-cors` below, and it does count toward
+  giving up. The other consumers fail too, so watch the console.
 - `--no-cors`: `/stream` is sent without `Access-Control-Allow-Origin`. The probe page
   itself is same-origin, so point the webcodecs consumer at another origin:
   open `http://127.0.0.1:8790/?webcodecs=http://localhost:8790/stream`. The browser
   refuses each fetch; after 3 refusals (about 3 s) the console shows
-  `WebCodecs player giving up`. This is the only path that gives up.
+  `WebCodecs player giving up`. This cross-origin `?webcodecs=` recipe is the realistic
+  one for "joined before Broadcast was on" as well: with `--fail` instead of
+  `--no-cors`, the same cross-origin URL gets a 404 without the header, which the
+  browser refuses in exactly the same way.
 
 ## Caveat
 

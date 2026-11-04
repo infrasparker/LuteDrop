@@ -68,12 +68,17 @@ To see which player a client got, open the browser console (F12) and look for
 `lutedrop-stream | using the low-latency WebCodecs player` or
 `lutedrop-stream | WebCodecs Opus unavailable; using the <audio> player`.
 
-If the stream server never sends a byte and the browser refuses three connections in a
-row, the client switches to the `<audio>` player for that session and logs
+If the stream server never sends a byte and the browser refuses three connections, the
+client switches to the `<audio>` player and logs
 `lutedrop-stream | falling back to the <audio> player (stream server sent no CORS header, or network down)`.
-That is what a LuteDrop older than this change causes, because it sends no CORS header.
-A 502 (LuteDrop is not broadcasting yet) does not count, so players who join early keep
-the fast path. Reloading the page starts over.
+The browser refuses any reply from another address that lacks a CORS header, whatever
+its status. So besides a LuteDrop older than this change (it sends no CORS header), a
+player who joins before the GM switches Broadcast on also gets there: Caddy's own 502
+"LuteDrop is not running" page carries no such header. That is why the fallback is only
+for the session *until the stream becomes reachable*: each time the `<audio>` player
+starts playing, the module tries one direct read of the stream, and if that works it
+switches back to the fast player and logs
+`lutedrop-stream | stream reachable again with CORS; upgrading to the WebCodecs player`.
 
 ## Mixed content
 
