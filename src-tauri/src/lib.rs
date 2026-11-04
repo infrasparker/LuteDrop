@@ -179,6 +179,7 @@ pub fn run() {
             commands::delete_library_entry,
             commands::get_library_entry_usage,
             commands::relocate_library_entry,
+            commands::find_missing_file_candidates,
             commands::play_library_sound,
             commands::stop_library_sound,
             commands::toggle_master_mute,

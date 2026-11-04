@@ -208,7 +208,6 @@ pub struct RelinkCandidate {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)] // used by the scan command in a later step
 pub struct MissingEntryCandidates {
     pub entry: LibraryEntry,
     pub candidates: Vec<RelinkCandidate>,
@@ -218,7 +217,6 @@ pub struct MissingEntryCandidates {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)] // used by the scan command in a later step
 pub struct FixMissingReport {
     pub search_root: String,
     pub search_root_exists: bool,

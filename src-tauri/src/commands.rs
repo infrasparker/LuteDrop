@@ -335,6 +335,20 @@ pub fn relocate_library_entry(
     actions::relocate_library_entry(&state, &entry_id, new_file_path)
 }
 
+/// Async on purpose: the search folder may be a network share, and a plain
+/// (non-async) command runs on the main thread, which would freeze the window
+/// during the scan. `spawn_blocking` moves the work to a worker thread.
+#[tauri::command]
+pub async fn find_missing_file_candidates(
+    state: State<'_, Arc<AppStateContainer>>,
+    folder: String,
+) -> Result<crate::models::FixMissingReport, String> {
+    let container = state.inner().clone();
+    tokio::task::spawn_blocking(move || actions::find_missing_file_candidates(&container, &folder))
+        .await
+        .map_err(|e| format!("Scan task failed: {e}"))?
+}
+
 #[tauri::command]
 pub fn play_library_sound(
     state: State<'_, Arc<AppStateContainer>>,

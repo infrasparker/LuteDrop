@@ -1,10 +1,15 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::audio::util::is_audio_path;
 use crate::database;
 use crate::database::{configurations, hierarchy, library, DbError};
 use crate::database::settings::{self as broadcast_settings, BroadcastSettings};
-use crate::models::{AppState, BroadcastStatus, BulkImportProgress, LibraryEntryUsage, Track, TrackUpdates};
+use crate::models::{
+    AppState, BroadcastStatus, BulkImportProgress, FixMissingReport, LibraryEntry, LibraryEntryUsage,
+    MissingEntryCandidates, Track, TrackUpdates,
+};
+use crate::relink;
 use crate::state::AppStateContainer;
 use rusqlite::params;
 
@@ -624,7 +629,8 @@ pub fn relocate_library_entry(
     // describe the OLD file. Refresh them from the new one. Trim, loop and
     // other markers are untouched. Failures here are only logged: a relink
     // must never fail just because a hash or duration could not be read.
-    if is_file_usable(&new_file_path) {
+    let usable = is_file_usable(&new_file_path);
+    if usable {
         let refreshed = hash_file(&new_file_path).and_then(|hash| {
             let size = std::fs::metadata(&new_file_path)
                 .map_err(|e| format!("Failed to read file size: {e}"))?
@@ -646,7 +652,7 @@ pub fn relocate_library_entry(
         container.peak_cache.evict(old);
     }
 
-    if is_file_usable(&new_file_path) {
+    if usable {
         container.mark_entry_found(entry_id);
     }
     load_state(container)
@@ -664,6 +670,92 @@ pub fn scan_missing_files(container: &AppStateContainer) {
             container.mark_entry_missing(&entry.id);
         }
     }
+}
+
+/// Builds the data for the "Fix missing files" dialog in one call, so the
+/// expensive part (walking the search folder, possibly over a network share)
+/// happens exactly once. Steps, in order: (1) load every entry; (2) re-check
+/// each file and update the missing flags; (3) pick the search folder: the one
+/// passed in (and remember it), else the remembered one, else a guess from the
+/// entries whose files are still there; (4) if there is no usable folder,
+/// return the missing entries with no candidates; (5) otherwise scan the
+/// folder once; (6) match each missing entry against that scan, dropping empty
+/// (zero-byte) files from its candidates.
+pub fn find_missing_file_candidates(
+    container: &AppStateContainer,
+    folder: &str,
+) -> Result<FixMissingReport, String> {
+    // (1) Entries come back ordered by name, which is the order we report in.
+    let entries = with_db(container, |conn| database::load_full_state(conn))?.library_entries;
+
+    // (2) Refresh the missing flags so the main window agrees with this report.
+    let mut present_paths: Vec<String> = Vec::new();
+    let mut missing: Vec<&LibraryEntry> = Vec::new();
+    for entry in &entries {
+        if is_file_usable(&entry.file_path) {
+            container.mark_entry_found(&entry.id);
+            present_paths.push(entry.file_path.clone());
+        } else {
+            container.mark_entry_missing(&entry.id);
+            missing.push(entry);
+        }
+    }
+
+    // (3) Choose the search folder. Only a folder the user typed is saved;
+    // a guessed one is not, so it keeps following the library around.
+    let given = folder.trim();
+    let search_root = if !given.is_empty() {
+        with_db(container, |conn| broadcast_settings::save_fix_missing_root(conn, given))?;
+        given.to_string()
+    } else if let Some(saved) = with_db(container, |conn| broadcast_settings::load_fix_missing_root(conn))? {
+        saved
+    } else {
+        relink::common_root(&present_paths)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+
+    // (4) No folder, or it is not reachable right now: not an error, the
+    // dialog just shows the missing entries and lets the user pick a folder.
+    let root_path = std::path::Path::new(&search_root);
+    if search_root.is_empty() || !root_path.is_dir() {
+        return Ok(FixMissingReport {
+            search_root,
+            search_root_exists: false,
+            files_scanned: 0,
+            entries: missing
+                .into_iter()
+                .map(|entry| MissingEntryCandidates { entry: entry.clone(), candidates: Vec::new() })
+                .collect(),
+        });
+    }
+
+    // (5) The one folder walk.
+    let scanned = relink::index_files(root_path, &scan_folder_for_audio(&search_root)?);
+    // Which file belongs to which entry, so used files can be flagged.
+    let used: HashMap<String, String> = entries
+        .iter()
+        .map(|e| (e.file_path.clone(), e.name.clone()))
+        .collect();
+
+    // (6) Match each missing entry.
+    let report_entries = missing
+        .into_iter()
+        .map(|entry| {
+            let needles = relink::needles_for(&entry.file_path, &entry.name);
+            let mut candidates = relink::match_candidates(&needles, &scanned, &used);
+            // Only the few kept candidates are checked on disk, not every scanned file.
+            candidates.retain(|c| is_file_usable(&c.file_path));
+            MissingEntryCandidates { entry: entry.clone(), candidates }
+        })
+        .collect();
+
+    Ok(FixMissingReport {
+        search_root,
+        search_root_exists: true,
+        files_scanned: scanned.len() as u32,
+        entries: report_entries,
+    })
 }
 
 // --- Audio actions (no state return) ---
@@ -844,12 +936,12 @@ pub fn play_library_sound(
     loop_start: Option<f64>,
     loop_end: Option<f64>,
 ) -> Result<(), String> {
-    // Check file exists before attempting playback
+    // Check the file is usable (exists and is not empty) before attempting playback
     if !is_file_usable(file_path) {
         container.mark_entry_missing(entry_id);
-        return Err(format!("Audio file not found: {}", file_path));
+        return Err(format!("Audio file missing or empty: {}", file_path));
     }
-    // File exists — clear stale missing state if any
+    // File is usable — clear stale missing state if any
     container.mark_entry_found(entry_id);
     let mut audio = container.lock_audio();
     // Volume is linear now; master is applied by the engine node automatically.
@@ -1103,7 +1195,8 @@ pub fn restore_broadcast_on_startup(container: &AppStateContainer) {
 #[cfg(test)]
 mod tests {
     use super::{
-        get_broadcast_status, hash_file, is_file_usable, public_url, relocate_library_entry,
+        find_missing_file_candidates, get_broadcast_status, hash_file, is_file_usable, public_url,
+        relocate_library_entry,
         restore_broadcast_on_startup, sanitize_volume, scan_missing_files, set_broadcast_enabled,
         set_broadcast_settings, with_db,
     };
@@ -1222,6 +1315,12 @@ mod tests {
 
         let c = test_container();
         let id = add_entry(&c, &old, "stale", "Song", 1);
+        with_db(&c, |conn| {
+            conn.execute("UPDATE library_entries SET duration = 12.5 WHERE id = ?1", [&id])
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+        .unwrap();
         with_db(&c, |conn| library::update_library_entry_markers(conn, &id, Some(2.0), None, None, None)).unwrap();
 
         relocate_library_entry(&c, &id, new.clone()).unwrap();
@@ -1232,7 +1331,7 @@ mod tests {
         assert_eq!(e.file_size, Some(16));
         assert_eq!(e.content_hash.as_deref(), Some(format!("{:x}", Sha256::digest(bytes)).as_str()));
         assert_eq!(e.trim_start, Some(2.0));
-        assert_eq!(e.duration, None, "an undecodable file must leave the old duration alone");
+        assert_eq!(e.duration, Some(12.5), "an undecodable file must leave the old duration alone");
     }
 
     #[test]
@@ -1281,8 +1380,156 @@ mod tests {
         let err = relocate_library_entry(&c, &a, b_path).unwrap_err();
 
         assert!(err.contains("already linked to"), "got {err}");
-        assert!(err.contains("B"), "got {err}");
+        assert!(err.contains("\"B\""), "got {err}");
         let state = with_db(&c, |conn| database::load_full_state(conn)).unwrap();
         assert_eq!(state.library_entries.iter().find(|e| e.id == a).unwrap().file_path, a_path);
+    }
+
+    // --- find_missing_file_candidates ---
+
+    use crate::models::MatchKind;
+
+    fn s(p: &std::path::Path) -> String {
+        p.to_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn report_lists_missing_entries_with_candidates_and_skips_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = tmp.path().join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join("keep.wav"), b"data").unwrap();
+        std::fs::write(lib.join("Battle Theme.opus"), b"data").unwrap();
+        std::fs::write(lib.join("01 battle theme.opus"), b"data").unwrap();
+        let old = tmp.path().join("old").join("battle theme.mp3");
+
+        let c = test_container();
+        add_entry(&c, &s(&lib.join("keep.wav")), "h1", "Keep", 4);
+        let missing_id = add_entry(&c, &s(&old), "h2", "Battle Theme", 9);
+
+        let report = find_missing_file_candidates(&c, &s(&lib)).unwrap();
+
+        assert_eq!(report.entries.len(), 1);
+        let e = &report.entries[0];
+        assert_eq!(e.entry.name, "Battle Theme");
+        assert_eq!(e.candidates[0].kind, MatchKind::Exact);
+        assert_eq!(e.candidates[0].relative_path, "Battle Theme.opus");
+        assert_eq!(e.candidates[1].kind, MatchKind::Contains);
+        assert_eq!(report.search_root, s(&lib));
+        assert!(report.search_root_exists);
+        assert_eq!(report.files_scanned, 3);
+        assert_eq!(c.missing_snapshot(), vec![missing_id]);
+    }
+
+    #[test]
+    fn zero_byte_file_counts_as_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let empty = tmp.path().join("empty.wav");
+        std::fs::write(&empty, b"").unwrap();
+        let c = test_container();
+        let id = add_entry(&c, &s(&empty), "h", "Empty", 0);
+
+        let report = find_missing_file_candidates(&c, &s(tmp.path())).unwrap();
+
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(report.entries[0].entry.id, id);
+        assert!(c.missing_snapshot().contains(&id));
+    }
+
+    #[test]
+    fn default_root_derives_from_present_entries_and_is_not_saved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let music = tmp.path().join("music");
+        for album in ["A", "B"] {
+            std::fs::create_dir_all(music.join(album)).unwrap();
+            std::fs::write(music.join(album).join("x.wav"), b"data").unwrap();
+        }
+        let c = test_container();
+        add_entry(&c, &s(&music.join("A").join("x.wav")), "h1", "One", 4);
+        add_entry(&c, &s(&music.join("B").join("x.wav")), "h2", "Two", 4);
+
+        let report = find_missing_file_candidates(&c, "").unwrap();
+
+        assert_eq!(report.search_root, s(&music));
+        let saved = with_db(&c, |conn| crate::database::settings::load_fix_missing_root(conn)).unwrap();
+        assert_eq!(saved, None);
+    }
+
+    #[test]
+    fn given_root_is_remembered_and_used_next_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let x = tmp.path().join("x");
+        std::fs::create_dir_all(&x).unwrap();
+        let c = test_container();
+
+        find_missing_file_candidates(&c, &s(&x)).unwrap();
+        let report = find_missing_file_candidates(&c, "").unwrap();
+
+        assert_eq!(report.search_root, s(&x));
+        assert!(report.search_root_exists);
+    }
+
+    #[test]
+    fn report_for_unreachable_root_is_empty_not_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gone = tmp.path().join("does-not-exist");
+        let c = test_container();
+        add_entry(&c, &s(&tmp.path().join("old.mp3")), "h", "Song", 1);
+
+        let report = find_missing_file_candidates(&c, &s(&gone)).unwrap();
+
+        assert!(!report.search_root_exists);
+        assert_eq!(report.files_scanned, 0);
+        assert_eq!(report.entries.len(), 1);
+        assert!(report.entries[0].candidates.is_empty());
+    }
+
+    #[test]
+    fn candidate_owned_by_other_entry_is_flagged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = tmp.path().join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        let song = lib.join("song.opus");
+        std::fs::write(&song, b"data").unwrap();
+        let c = test_container();
+        add_entry(&c, &s(&song), "h1", "Other", 4);
+        add_entry(&c, &s(&tmp.path().join("old").join("song.mp3")), "h2", "Mine", 1);
+
+        let report = find_missing_file_candidates(&c, &s(&lib)).unwrap();
+
+        assert_eq!(report.entries.len(), 1);
+        let cand = &report.entries[0].candidates[0];
+        assert_eq!(cand.used_by_entry_name.as_deref(), Some("Other"));
+    }
+
+    #[test]
+    fn zero_byte_candidates_are_dropped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = tmp.path().join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join("song.opus"), b"").unwrap();
+        std::fs::write(lib.join("song.flac"), b"data").unwrap();
+        let c = test_container();
+        add_entry(&c, &s(&tmp.path().join("old").join("song.mp3")), "h", "Song", 1);
+
+        let report = find_missing_file_candidates(&c, &s(&lib)).unwrap();
+
+        let rels: Vec<&str> = report.entries[0].candidates.iter().map(|c| c.relative_path.as_str()).collect();
+        assert_eq!(rels, vec!["song.flac"]);
+    }
+
+    #[test]
+    fn entry_with_symbol_only_name_does_not_panic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = tmp.path().join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join("song.opus"), b"data").unwrap();
+        let c = test_container();
+        add_entry(&c, &s(&tmp.path().join("old").join("---.mp3")), "h", "---", 1);
+
+        let report = find_missing_file_candidates(&c, &s(&lib)).unwrap();
+
+        assert_eq!(report.entries.len(), 1);
+        assert!(report.entries[0].candidates.is_empty());
     }
 }

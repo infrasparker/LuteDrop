@@ -22,10 +22,6 @@
 //! characters, so tiny names like "ab" do not match everything), and Similar
 //! (word overlap of at least `MIN_SIMILARITY`).
 
-// Nothing calls this module yet (the Tauri commands that use it come in a
-// later step), so silence "never used" warnings until then.
-#![allow(dead_code)]
-
 use crate::models::{MatchKind, RelinkCandidate};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -78,6 +74,8 @@ pub struct ScannedFile {
     pub file_path: String,
     pub relative_path: String,
     pub norm_stem: String,
+    /// The words of `norm_stem`, built once so matching does not rebuild them per comparison.
+    pub words: HashSet<String>,
 }
 
 /// Prepares a list of file paths for matching: computes each file's path
@@ -91,11 +89,9 @@ pub fn index_files(root: &Path, file_paths: &[String]) -> Vec<ScannedFile> {
                 .strip_prefix(root)
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|_| file_path.clone());
-            ScannedFile {
-                file_path: file_path.clone(),
-                relative_path,
-                norm_stem: normalize_stem(&file_stem_of(file_path)),
-            }
+            let norm_stem = normalize_stem(&file_stem_of(file_path));
+            let words = norm_stem.split_whitespace().map(str::to_string).collect();
+            ScannedFile { file_path: file_path.clone(), relative_path, norm_stem, words }
         })
         .collect()
 }
@@ -114,18 +110,18 @@ pub fn needles_for(file_path: &str, name: &str) -> Vec<String> {
 }
 
 /// Word-overlap score: shared words divided by total distinct words.
-fn jaccard(a: &str, b: &str) -> f64 {
-    let a_words: HashSet<&str> = a.split_whitespace().collect();
-    let b_words: HashSet<&str> = b.split_whitespace().collect();
-    let union = a_words.union(&b_words).count();
+fn jaccard(a_words: &HashSet<&str>, b_words: &HashSet<String>) -> f64 {
+    let shared = a_words.iter().filter(|w| b_words.contains(**w)).count();
+    let union = a_words.len() + b_words.len() - shared;
     if union == 0 {
         return 0.0;
     }
-    a_words.intersection(&b_words).count() as f64 / union as f64
+    shared as f64 / union as f64
 }
 
 /// How one needle matches one file name, if at all.
-fn classify(needle: &str, stem: &str) -> Option<(MatchKind, f64)> {
+fn classify(needle: &str, needle_words: &HashSet<&str>, file: &ScannedFile) -> Option<(MatchKind, f64)> {
+    let stem = file.norm_stem.as_str();
     if needle == stem {
         return Some((MatchKind::Exact, 1.0));
     }
@@ -136,7 +132,7 @@ fn classify(needle: &str, stem: &str) -> Option<(MatchKind, f64)> {
         let longer = needle_len.max(stem_len);
         return Some((MatchKind::Contains, shorter as f64 / longer as f64));
     }
-    let score = jaccard(needle, stem);
+    let score = jaccard(needle_words, &file.words);
     if score >= MIN_SIMILARITY {
         return Some((MatchKind::Similar, score));
     }
@@ -163,10 +159,13 @@ pub fn match_candidates(
     used: &HashMap<String, String>,
 ) -> Vec<RelinkCandidate> {
     let mut out: Vec<RelinkCandidate> = Vec::new();
+    // Each needle's word set is built once, not once per file.
+    let needle_words: Vec<HashSet<&str>> =
+        needles.iter().map(|n| n.split_whitespace().collect()).collect();
     for file in files {
         let mut best: Option<(MatchKind, f64)> = None;
-        for needle in needles {
-            if let Some((kind, score)) = classify(needle, &file.norm_stem) {
+        for (needle, needle_words) in needles.iter().zip(&needle_words) {
+            if let Some((kind, score)) = classify(needle, needle_words, file) {
                 let better = match best {
                     None => true,
                     Some((best_kind, best_score)) => {
@@ -206,7 +205,8 @@ pub fn match_candidates(
 pub fn common_root(paths: &[String]) -> Option<PathBuf> {
     let mut shared: Option<Vec<Component>> = None;
     for path in paths {
-        let parent = Path::new(path).parent()?;
+        // A path with no parent (e.g. a bare drive root) is skipped, not fatal.
+        let Some(parent) = Path::new(path).parent() else { continue };
         let components: Vec<Component> = parent.components().collect();
         shared = Some(match shared {
             None => components,
@@ -367,6 +367,13 @@ mod tests {
     fn common_root_none_for_empty_or_different_drives() {
         assert!(common_root(&[]).is_none());
         assert!(common_root(&[r"C:\a\1.mp3".into(), r"Z:\b\2.mp3".into()]).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn common_root_skips_paths_without_a_parent() {
+        let r = common_root(&[r"Z:\media\a\1.opus".into(), "C:\\".into()]);
+        assert_eq!(r, Some(PathBuf::from(r"Z:\media\a")));
     }
 
     #[cfg(windows)]
