@@ -204,7 +204,7 @@ async function relocateEntry(entryId: string): Promise<void> {
 </script>
 
 <template>
-  <div class="d-flex flex-column pa-3" style="height: 100%;">
+  <div class="d-flex flex-column pa-3" style="height: 100%; position: relative;">
     <Teleport to="#app-bar-main">
       <VTextField
         v-model="searchQuery"
@@ -276,56 +276,6 @@ async function relocateEntry(entryId: string): Promise<void> {
       </span>
     </div>
 
-    <!-- Bulk tag bar: appears once anything is checked -->
-    <VSlideYTransition>
-      <div v-if="selectedIds.length > 0" class="bulk-bar d-flex align-center ga-2 px-3 py-2 mb-2">
-        <VIcon size="small" color="primary">mdi-checkbox-multiple-marked</VIcon>
-        <span class="text-body-2 font-weight-medium" style="white-space: nowrap;">
-          {{ selectedIds.length }} selected
-        </span>
-        <VCombobox
-          v-model="bulkTags"
-          :items="tags"
-          placeholder="Tags to add or remove"
-          variant="outlined"
-          density="compact"
-          hide-details
-          hide-no-data
-          multiple
-          chips
-          closable-chips
-          class="flex-grow-1"
-          style="min-width: 200px;"
-        />
-        <VBtn
-          prepend-icon="mdi-tag-plus"
-          color="primary"
-          variant="tonal"
-          size="small"
-          :disabled="bulkBusy || cleanBulkTags().length === 0"
-          :loading="bulkBusy"
-          @click="applyBulkTags('add')"
-        >
-          Add
-        </VBtn>
-        <VBtn
-          prepend-icon="mdi-tag-minus"
-          variant="tonal"
-          size="small"
-          :disabled="bulkBusy || cleanBulkTags().length === 0"
-          @click="applyBulkTags('remove')"
-        >
-          Remove
-        </VBtn>
-        <VBtn
-          icon="mdi-close"
-          variant="text"
-          size="small"
-          title="Clear selection"
-          @click="clearSelection"
-        />
-      </div>
-    </VSlideYTransition>
 
     <VDataTableVirtual
       v-if="filteredEntries.length > 0"
@@ -411,6 +361,58 @@ async function relocateEntry(entryId: string): Promise<void> {
       <span>Import some audio files</span>
     </div>
 
+    <!-- Bulk tag bar: floats over the bottom of the table so the rows
+         never shift when it appears -->
+    <VFadeTransition>
+      <div v-if="selectedIds.length > 0" class="bulk-bar elevation-8 d-flex align-center ga-2 px-3 py-2">
+        <VIcon size="small" color="primary">mdi-checkbox-multiple-marked</VIcon>
+        <span class="text-body-2 font-weight-medium" style="white-space: nowrap;">
+          {{ selectedIds.length }} selected
+        </span>
+        <VCombobox
+          v-model="bulkTags"
+          :items="tags"
+          placeholder="Tags to add or remove"
+          variant="outlined"
+          density="compact"
+          hide-details
+          hide-no-data
+          multiple
+          chips
+          closable-chips
+          class="flex-grow-1"
+          style="min-width: 240px;"
+        />
+        <VBtn
+          prepend-icon="mdi-tag-plus"
+          color="primary"
+          variant="tonal"
+          size="small"
+          :disabled="bulkBusy || cleanBulkTags().length === 0"
+          :loading="bulkBusy"
+          @click="applyBulkTags('add')"
+        >
+          Add
+        </VBtn>
+        <VBtn
+          prepend-icon="mdi-tag-minus"
+          variant="tonal"
+          size="small"
+          :disabled="bulkBusy || cleanBulkTags().length === 0"
+          @click="applyBulkTags('remove')"
+        >
+          Remove
+        </VBtn>
+        <VBtn
+          icon="mdi-close"
+          variant="text"
+          size="small"
+          title="Clear selection"
+          @click="clearSelection"
+        />
+      </div>
+    </VFadeTransition>
+
     <ImportDialog
       v-model="showImportDialog"
       :paths="pendingImportPaths"
@@ -450,9 +452,15 @@ async function relocateEntry(entryId: string): Promise<void> {
 
 <style scoped>
 .bulk-bar {
-  background: rgba(var(--v-theme-primary), 0.08);
-  border: 1px solid rgba(var(--v-theme-primary), 0.3);
-  border-radius: 8px;
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  width: min(720px, calc(100% - 32px));
+  z-index: 2;
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-theme-primary), 0.5);
+  border-radius: 10px;
 }
 
 :deep(.preview-active) {
