@@ -10,6 +10,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "build:remote": "vue-tsc --noEmit && vite build --config vite.remote.config.ts",
     "lint": "eslint .",
+    "test": "node --test foundry-module/tests/*.test.js",
     "check:generated": "node scripts/check-generated.mjs",
     "package:release": "node scripts/package-release.mjs",
     "tauri": "tauri"
