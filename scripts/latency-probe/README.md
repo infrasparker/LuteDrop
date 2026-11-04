@@ -21,6 +21,19 @@ anything after the **Give-up (s)** time (default 8) shows `n/a`. The plain `<aud
 element can need 10-30 s to start playing a live stream on first use, so raise
 Give-up (e.g. 30) when measuring it.
 
+## Trigger mode
+
+- **stop/play** (default): each trial stops the track and plays it from the start. This
+  shows the full press-to-hear time, including LuteDrop opening and decoding the file
+  (slow on a network drive) and any quiet intro in the track.
+- **pause/resume**: before trial 1 the track plays for **Warm-up (s)** (default 8) so it
+  is past its intro, then is paused. Each trial resumes it (`play_track` resumes a paused
+  track) and pauses again afterwards; the track is stopped at the end. This gives a hard
+  onset with no file-open time, so use it for pipeline numbers. Pick a track that is loud
+  at the warm-up point.
+
+The browser console also logs how long each listener's start-up took.
+
 ## Columns
 
 All times are milliseconds after T0, the moment the page sends `play_track`.
