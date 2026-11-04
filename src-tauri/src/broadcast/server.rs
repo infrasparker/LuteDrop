@@ -26,6 +26,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
+use axum::serve::ListenerExt;
 use axum::{
     body::Body,
     extract::{Path, State},
@@ -145,6 +146,20 @@ impl ListenerServer {
                     // every open response to finish, and a listener's stream
                     // never finishes, so `stop` would hang while anyone is
                     // listening.
+                    //
+                    // TCP_NODELAY is set on every accepted connection.
+                    // Nagle's algorithm holds a small write back while an
+                    // earlier one is still unacknowledged; with a page every
+                    // ~40 ms over the internet that would cost a round trip
+                    // (and on Windows up to 200 ms of delayed ACK) for
+                    // nothing. `axum::serve` has no option for it, so we
+                    // tap each accepted socket. A failure is harmless, we
+                    // just lose the latency win, so it is only logged.
+                    let listener = listener.tap_io(|tcp| {
+                        if let Err(e) = tcp.set_nodelay(true) {
+                            log::debug!("broadcast server: cannot set TCP_NODELAY: {e}");
+                        }
+                    });
                     tokio::spawn(async move {
                         if let Err(e) = axum::serve(listener, router).await {
                             log::error!("broadcast server error: {e}");
@@ -193,7 +208,16 @@ async fn stream(Path(key): Path<String>, State(state): State<ServerState>) -> Re
         Ok::<Bytes, Infallible>(bytes)
     });
     (
-        [(header::CONTENT_TYPE, "audio/ogg"), (header::CACHE_CONTROL, "no-store")],
+        [
+            (header::CONTENT_TYPE, "audio/ogg"),
+            (header::CACHE_CONTROL, "no-store"),
+            // A script on the Foundry page's origin may only read a
+            // cross-origin `fetch` response if the server explicitly allows
+            // it (the old `<audio>` element was exempt). `*` is safe here:
+            // the key in the URL is the only secret and no cookies are
+            // involved.
+            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+        ],
         Body::from_stream(body),
     )
         .into_response()
@@ -372,6 +396,18 @@ mod tests {
         let srv = ListenerServer::start(port, "new".into(), fake_source()).unwrap();
         assert_eq!(http_get(port, "/listen/old", 0).0, 404);
         assert_eq!(http_get(port, "/listen/new", 0).0, 200);
+        srv.stop();
+    }
+
+    #[test]
+    fn stream_allows_cross_origin_reads_but_page_does_not() {
+        let port = free_port();
+        let srv = ListenerServer::start(port, "k7".into(), fake_source()).unwrap();
+        let (st, headers, _) = http_get(port, "/listen/k7", 0);
+        assert_eq!(st, 200);
+        assert!(headers.to_ascii_lowercase().contains("access-control-allow-origin: *"));
+        let (_, headers, _) = http_get(port, "/listen/k7/page", 0);
+        assert!(!headers.to_ascii_lowercase().contains("access-control-allow-origin"));
         srv.stop();
     }
 

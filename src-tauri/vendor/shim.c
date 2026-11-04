@@ -569,7 +569,7 @@ void ld_sound_destroy(ld_sound* s) {
 #define LD_ENC_CHANNELS    2
 #define LD_ENC_FRAME       960      // 20 ms at 48 kHz, per channel
 #define LD_ENC_MAX_PACKET  4000     // bytes; a 20 ms packet at 128 kbps is ~320
-#define LD_ENC_FLUSH_EVERY 5        // force a page every 5 packets (~100 ms)
+#define LD_ENC_FLUSH_EVERY 2        // force a page every 2 packets (~40 ms)
 #define LD_ENC_TAP_CHUNK   4096     // frames per ld_tap_read call while draining
 
 // A growable buffer of interleaved f32 frames (malloc'd; encoder thread only).
@@ -918,9 +918,12 @@ static int ld_enc_encode_staged(ld_encoder* enc) {
         // e_o_s stays 0: a live stream never ends.
         if (ogg_stream_packetin(&enc->os, &op) != 0) { rc = -1; break; }
 
-        // pageout only emits a page once enough data has built up (~4 KB, i.e.
-        // hundreds of ms of audio); forcing a flush every 5th packet caps each
-        // page at ~100 ms so listeners are not kept waiting.
+        // pageout alone only emits a page once ~4 KB has built up, which is
+        // hundreds of ms of audio. Forcing a flush every 2nd packet caps each
+        // page at ~40 ms. Each page costs ~28 bytes of header against ~640
+        // bytes of audio (about 4 %), a fair price: the player's buffer has
+        // to cover at least one page interval, so shorter pages let it be
+        // smaller and the listener hears things sooner.
         ogg_page og;
         if (++enc->since_flush >= LD_ENC_FLUSH_EVERY) {
             enc->since_flush = 0;

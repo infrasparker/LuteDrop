@@ -24,11 +24,12 @@ use crate::audio::ffi::Encoder;
 use server::{ListenerServer, PageSource};
 
 /// How many page batches the channel keeps for listeners that are briefly
-/// behind. Anyone further back than this has lagged and is dropped.
+/// behind. Anyone further back than this has lagged and is dropped. 256
+/// batches is about 10 s at one ~40 ms page per batch.
 const PAGE_CAPACITY: usize = 256;
 
 /// How long the encoder thread naps when the encoder has nothing ready. Opus
-/// pages arrive every few tens of milliseconds, so 10 ms adds no audible
+/// pages arrive every ~40 ms, so 10 ms adds no audible
 /// delay and keeps the thread from spinning on empty `pump` calls.
 const IDLE_SLEEP: Duration = Duration::from_millis(10);
 
