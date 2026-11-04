@@ -44,6 +44,37 @@ stream drops (for example LuteDrop restarts), the module reconnects by itself.
   Settings. They are per device, so the GM can mute the stream locally without
   affecting players.
 
+## Latency
+
+Expect to hear a change about a quarter of a second after LuteDrop makes it (measured
+with LuteDrop and the browser on one PC). Over the internet add a little for network
+jitter.
+
+Most of that is a cushion of audio the player keeps in hand so a late network packet
+does not cause a gap. It starts at 0.2 s, grows by 0.1 s each time the stream runs dry
+(up to 0.6 s on a bad link), and jumps forward if it ever falls more than 0.4 s behind.
+
+This fast path needs the browser's `AudioDecoder`, which only exists on an `https://`
+page or on `localhost`. A browser without it gets the older `<audio>` player, which
+works but runs several seconds behind. Browsers that have it: Chrome and Edge 94+,
+Safari 16.4+, Firefox 130+ on desktop, and the Foundry desktop app.
+
+In practice: if Foundry is reached over plain `http://` from another machine, remote
+players get the slow player. Serve Foundry over `https://` (for example behind a reverse
+proxy such as Caddy, with Foundry's `proxySSL` and `proxyPort` options set) to give them
+the fast one.
+
+To see which player a client got, open the browser console (F12) and look for
+`lutedrop-stream | using the low-latency WebCodecs player` or
+`lutedrop-stream | WebCodecs Opus unavailable; using the <audio> player`.
+
+If the stream server never sends a byte and the browser refuses three connections in a
+row, the client switches to the `<audio>` player for that session and logs
+`lutedrop-stream | falling back to the <audio> player (stream server sent no CORS header, or network down)`.
+That is what a LuteDrop older than this change causes, because it sends no CORS header.
+A 502 (LuteDrop is not broadcasting yet) does not count, so players who join early keep
+the fast path. Reloading the page starts over.
+
 ## Mixed content
 
 Browsers block insecure content on secure pages. A Foundry served over

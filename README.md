@@ -120,6 +120,11 @@ hear the full-level mix regardless. The stream is Ogg/Opus at 128 kbps.
    play button, handy for a phone browser. The Foundry module plays the raw link instead.
 4. The badge in the transport bar and the dialog show how many people are listening.
 
+The stream route (`/listen/<key>`) sends `Access-Control-Allow-Origin: *` so the Foundry module
+can read it with `fetch()` from its own page. The key in the URL stays the only secret, and no
+cookies are involved. The `/page` listening page does not send it. The server also sends 40 ms
+Ogg pages with `TCP_NODELAY` to keep the stream low-latency.
+
 The stream is served on **port 5883** by default. You can change the port in the dialog,
 but only while Broadcast is off. Settings live in the database's `meta` table under
 `broadcast_enabled`, `broadcast_port`, `broadcast_key` and `broadcast_public_base`; if
