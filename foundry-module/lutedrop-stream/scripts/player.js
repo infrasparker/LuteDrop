@@ -247,3 +247,527 @@ export class LiveClock {
     this._next = null;
   }
 }
+
+// Shared log prefix. It lives here (not in main.js) because main.js is the
+// entry file Foundry loads and imports this one; importing back from main.js
+// would make the two files depend on each other. main.js re-exports it.
+export const MODULE_ID = "lutedrop-stream";
+
+// Third piece: ReconnectPolicy.
+//
+// Both players lose the stream sometimes (LuteDrop restarted, Wi-Fi blip) and
+// must try again without hammering the server. The policy holds the numbers:
+// wait BACKOFF_START_MS, then double each time up to BACKOFF_MAX_MS. Once
+// playback has run STABLE_AFTER_MS without trouble, the next failure starts
+// from the short delay again. STALL_TIMEOUT_MS is how long the WebCodecs
+// player waits with no bytes at all before treating the connection as dead.
+//
+// Giving up (WebCodecs player only): the WebCodecs player reads the stream with
+// fetch(), which the browser only allows when the stream server sends a CORS
+// header; the <audio> element needs no such header. If a URL has never
+// delivered a single byte and GIVE_UP_AFTER connects in a row fail, the likely
+// cause is a missing CORS header (or no network), so the caller switches to
+// the <audio> player. Why "never received a byte": once any data has arrived,
+// we know fetch() works against this server, so later failures are ordinary
+// outages (LuteDrop restarting). Falling back then would downgrade this
+// client for the rest of the session over something temporary.
+export const BACKOFF_START_MS = 1000;
+export const BACKOFF_MAX_MS = 15000;
+export const STABLE_AFTER_MS = 10000;
+export const GIVE_UP_AFTER = 3;
+export const STALL_TIMEOUT_MS = 5000;
+
+export class ReconnectPolicy {
+  constructor({ giveUpAfter = GIVE_UP_AFTER } = {}) {
+    this._giveUpAfter = giveUpAfter;
+    this.reset();
+  }
+
+  /** The delay to wait before the next attempt; the one after it is doubled (capped). */
+  nextDelayMs() {
+    const delay = this._delayMs;
+    this._delayMs = Math.min(this._delayMs * 2, BACKOFF_MAX_MS);
+    return delay;
+  }
+
+  /** Playback has been healthy for a while: forget earlier failures' backoff. */
+  markStable() {
+    this._delayMs = BACKOFF_START_MS;
+  }
+
+  /** This URL has delivered data at least once, so giving up is off the table. */
+  markBytesReceived() {
+    this._gotBytes = true;
+  }
+
+  /** Count a failed connect. Returns true when the caller should give up. */
+  markFailure() {
+    this._failures++;
+    return !this._gotBytes && this._failures >= this._giveUpAfter;
+  }
+
+  /** New URL: start over completely. */
+  reset() {
+    this._delayMs = BACKOFF_START_MS;
+    this._failures = 0;
+    this._gotBytes = false;
+  }
+}
+
+/** Append a throwaway query value so the browser never reuses a dead cached response. */
+function cacheBusted(url) {
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}t=${Date.now()}`;
+}
+
+// Fourth piece: ElementPlayer (the fallback).
+//
+// Keeps one HTMLAudioElement playing the stream and reconnects when it drops.
+// It needs no CORS header from the stream server, which is why it is the
+// fallback; but the browser decides how much to buffer, so it runs seconds
+// behind live. It never gives up.
+//
+// "Listen off" sets volume to 0 instead of pausing, so the stream stays live
+// and un-muting resumes at the current position.
+export class ElementPlayer {
+  #audio = new Audio();
+  #url = "";
+  #listening = true;
+  #volume = 0.8;
+  #started = false;
+  #policy = new ReconnectPolicy();
+  #retryTimer = null; // at most one pending reconnect at any time
+  #stableTimer = null;
+
+  constructor() {
+    this.#audio.preload = "none";
+    // Do not set crossOrigin: that would require CORS headers on the stream.
+    for (const name of ["error", "stalled", "ended"]) {
+      this.#audio.addEventListener(name, () => this.#reconnect());
+    }
+    this.#audio.addEventListener("playing", () => {
+      this.#policy.markBytesReceived();
+      this.#watchForStability();
+    });
+  }
+
+  /** Begin playback. Call only after Foundry's audio-unlock gesture. */
+  start() {
+    this.#started = true;
+    this.#applyVolume();
+    this.#connect();
+  }
+
+  setUrl(url) {
+    this.#url = String(url ?? "").trim();
+    this.#policy.reset();
+    if (this.#started) this.#connect();
+  }
+
+  setListening(on) {
+    this.#listening = Boolean(on);
+    this.#applyVolume();
+  }
+
+  setVolume(v) {
+    this.#volume = Math.min(1, Math.max(0, Number(v) || 0));
+    this.#applyVolume();
+  }
+
+  #applyVolume() {
+    this.#audio.volume = this.#listening ? this.#volume : 0;
+  }
+
+  #clearTimers() {
+    clearTimeout(this.#retryTimer);
+    clearTimeout(this.#stableTimer);
+    this.#retryTimer = null;
+    this.#stableTimer = null;
+  }
+
+  /** Point the element at the stream (fresh connection) and play. */
+  #connect() {
+    this.#clearTimers();
+    if (!this.#url) {
+      this.#stop();
+      return;
+    }
+    this.#audio.src = cacheBusted(this.#url);
+    this.#audio.play().catch((err) => this.#onPlayRejected(err));
+  }
+
+  #stop() {
+    this.#audio.src = "";
+    this.#audio.pause();
+    console.info(`${MODULE_ID} | no stream URL set; staying silent`);
+  }
+
+  #onPlayRejected(err) {
+    // AbortError: a newer connect() replaced this one, which is expected.
+    if (err?.name === "AbortError") return;
+    console.warn(`${MODULE_ID} | play() rejected`, err);
+    // NotAllowedError means the browser still blocks autoplay; retrying cannot help.
+    if (err?.name === "NotAllowedError") return;
+    this.#reconnect();
+  }
+
+  /** Retry after the policy's current backoff delay (it doubles up to the cap). */
+  #reconnect() {
+    clearTimeout(this.#stableTimer);
+    this.#stableTimer = null;
+    // Blank URL (an empty src also raises "error") or already waiting: do nothing.
+    if (!this.#started || !this.#url || this.#retryTimer !== null) return;
+    this.#retryTimer = setTimeout(() => this.#connect(), this.#policy.nextDelayMs());
+  }
+
+  /** After STABLE_AFTER_MS of uninterrupted playback, forget earlier failures. */
+  #watchForStability() {
+    if (this.#stableTimer !== null) return;
+    this.#stableTimer = setTimeout(() => {
+      this.#stableTimer = null;
+      this.#policy.markStable();
+    }, STABLE_AFTER_MS);
+  }
+}
+
+// Fifth piece: WebCodecsPlayer (the low-latency player).
+//
+// Why not just an <audio> element: the element owns its buffer and fills it as
+// it sees fit, typically several seconds on a live stream, and it reacts
+// unpredictably to a stream that never "ends". Here we do every step
+// ourselves: fetch() hands us the raw bytes as they arrive, OggDemuxer cuts
+// them into Opus packets, the browser's WebCodecs AudioDecoder turns each
+// packet into PCM samples, and Web Audio plays each chunk at a time LiveClock
+// chooses. We control the buffer, so we hold it at ~0.2 s instead of seconds.
+//
+// The cost: fetch() of another origin needs the server's CORS header (LuteDrop
+// sends one), and WebCodecs only exists in secure contexts (https, or
+// localhost). createPlayer() checks support; giving up falls back.
+//
+// Every connection gets a "generation" number. Anything asynchronous (a read,
+// a decoder callback, a timer) remembers the generation it belongs to and does
+// nothing if a newer connection (or a stop) has happened since. That keeps a
+// dying connection from interfering with its replacement.
+const OPUS_HEAD = "OpusHead";
+const OPUS_TAGS = "OpusTags";
+const OPUS_SAMPLE_RATE = 48000;
+const PACKET_US = 20000; // each Opus packet LuteDrop sends is 20 ms (in microseconds)
+
+function startsWithAscii(bytes, text) {
+  if (bytes.length < text.length) return false;
+  for (let i = 0; i < text.length; i++) {
+    if (bytes[i] !== text.charCodeAt(i)) return false;
+  }
+  return true;
+}
+
+export class WebCodecsPlayer {
+  #ctx;
+  #gain; // every chunk plays through this; it carries volume and listen-off
+  #demuxer = new OggDemuxer();
+  #clock = new LiveClock(() => this.#ctx.currentTime);
+  #policy = new ReconnectPolicy();
+  #decoder = null;
+  #abort = null; // AbortController of the current fetch
+  #sources = new Set(); // scheduled AudioBufferSourceNodes not yet finished
+  #stallTimer = null;
+  #retryTimer = null;
+  #stableTimer = null;
+  #packetIndex = 0;
+  #skipTags = false; // true between OpusHead and the OpusTags packet after it
+  #scheduledAny = false; // has this connection scheduled a chunk yet?
+  #generation = 0;
+  #onGiveUp;
+  #url = "";
+  #listening = true;
+  #volume = 0.8;
+  #started = false;
+  #gaveUp = false; // once true this player stays silent; the caller replaces it
+
+  /**
+   * @param {object} opts
+   * @param {AudioContext} opts.audioContext
+   * @param {() => void} [opts.onGiveUp]  called once if the URL never works (see ReconnectPolicy)
+   * @param {AudioNode} [opts.output]  where the sound goes; the latency probe passes a detector here
+   */
+  constructor({ audioContext, onGiveUp, output = audioContext.destination }) {
+    this.#ctx = audioContext;
+    this.#onGiveUp = onGiveUp;
+    this.#gain = audioContext.createGain();
+    this.#gain.connect(output);
+    this.#applyVolume();
+  }
+
+  /** Begin playback. Call only after Foundry's audio-unlock gesture. */
+  start() {
+    this.#started = true;
+    this.#applyVolume();
+    // A context created before the user's first click starts "suspended".
+    this.#ctx.resume().catch(() => {});
+    if (this.#url) this.#connect();
+  }
+
+  setUrl(url) {
+    this.#url = String(url ?? "").trim();
+    this.#policy.reset();
+    if (this.#started) this.#connect();
+  }
+
+  setListening(on) {
+    this.#listening = Boolean(on);
+    this.#applyVolume();
+  }
+
+  setVolume(v) {
+    this.#volume = Math.min(1, Math.max(0, Number(v) || 0));
+    this.#applyVolume();
+  }
+
+  // Listen-off is gain 0, not "stop reading". If we stopped, un-muting would
+  // need a fresh connection and a fresh decoder (a noticeable pause); keeping
+  // the stream flowing silently means un-muting is instant and already at the
+  // live edge. The <audio> player does the same, so both behave alike.
+  #applyVolume() {
+    this.#gain.gain.value = this.#listening ? this.#volume : 0;
+  }
+
+  /**
+   * End the current connection: invalidate its callbacks, clear every timer,
+   * abort the fetch, close the decoder. With `stopSources`, also silence audio
+   * already scheduled (otherwise its last ~0.2 s is left to play out).
+   */
+  #halt(stopSources) {
+    this.#generation++;
+    clearTimeout(this.#stallTimer);
+    clearTimeout(this.#retryTimer);
+    clearTimeout(this.#stableTimer);
+    this.#stallTimer = null;
+    this.#retryTimer = null;
+    this.#stableTimer = null;
+    this.#abort?.abort();
+    this.#abort = null;
+    if (this.#decoder && this.#decoder.state !== "closed") this.#decoder.close();
+    this.#decoder = null;
+    if (stopSources) this.#stopSources();
+  }
+
+  #stopSources() {
+    for (const source of this.#sources) source.stop();
+    this.#sources.clear();
+  }
+
+  /** Open a fresh connection to the current URL (or go silent if there is none). */
+  #connect() {
+    this.#halt(true);
+    this.#demuxer.reset();
+    this.#clock.reset();
+    this.#packetIndex = 0;
+    this.#skipTags = false;
+    this.#scheduledAny = false;
+    if (!this.#url) {
+      console.info(`${MODULE_ID} | no stream URL set; staying silent`);
+      return;
+    }
+    if (this.#gaveUp) return;
+    const gen = this.#generation;
+    this.#abort = new AbortController();
+    this.#armStallTimer(gen); // also covers a server that accepts but never answers
+    this.#read(gen, this.#abort.signal);
+  }
+
+  async #read(gen, signal) {
+    try {
+      const res = await fetch(cacheBusted(this.#url), { cache: "no-store", signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const reader = res.body.getReader();
+      let first = true;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (gen !== this.#generation) return;
+        if (done) throw new Error("stream ended");
+        if (first) {
+          first = false;
+          console.info(`${MODULE_ID} | connected; receiving the stream`);
+          this.#stableTimer = setTimeout(() => {
+            this.#stableTimer = null;
+            this.#policy.markStable();
+          }, STABLE_AFTER_MS);
+        }
+        this.#policy.markBytesReceived();
+        this.#armStallTimer(gen);
+        for (const packet of this.#demuxer.feed(value)) {
+          if (gen !== this.#generation) return; // a decode failure already reconnected
+          this.#onPacket(packet, gen);
+        }
+      }
+    } catch (err) {
+      // Our own abort (setUrl, reconnect, stall) lands here too; ignore it.
+      if (gen !== this.#generation || err?.name === "AbortError") return;
+      this.#reconnect(gen, err?.message ?? String(err));
+    }
+  }
+
+  #armStallTimer(gen) {
+    clearTimeout(this.#stallTimer);
+    this.#stallTimer = setTimeout(
+      () => this.#reconnect(gen, `no data for ${STALL_TIMEOUT_MS / 1000} s`),
+      STALL_TIMEOUT_MS,
+    );
+  }
+
+  #onPacket(packet, gen) {
+    if (!this.#decoder) {
+      // Until OpusHead arrives there is nothing we can decode; anything
+      // before it (there should be nothing) is dropped.
+      if (packet.bos && startsWithAscii(packet.data, OPUS_HEAD)) this.#openDecoder(packet.data, gen);
+      return;
+    }
+    if (this.#skipTags) {
+      // OpusTags is metadata (encoder name, comments), not audio.
+      this.#skipTags = false;
+      if (startsWithAscii(packet.data, OPUS_TAGS)) return;
+    }
+    if (this.#decoder.state !== "configured") return;
+    // The decoder insists on a timestamp, so we give it a simple count of
+    // 20 ms packets. We do NOT use these timestamps (or the Ogg granule
+    // positions) to decide when to play: over TCP no packet can be lost or
+    // reordered, so each decoded chunk belongs right after the previous one,
+    // and its decoded length is the truth about how long it lasts. LiveClock
+    // schedules from that length.
+    const chunk = new EncodedAudioChunk({
+      type: "key",
+      timestamp: this.#packetIndex * PACKET_US,
+      data: packet.data,
+    });
+    this.#packetIndex++;
+    try {
+      this.#decoder.decode(chunk);
+    } catch (err) {
+      this.#reconnect(gen, `decode failed: ${err?.message ?? err}`);
+    }
+  }
+
+  #openDecoder(opusHead, gen) {
+    const decoder = new AudioDecoder({
+      output: (audioData) => this.#onDecoded(audioData, gen),
+      error: (err) => this.#reconnect(gen, `decoder error: ${err?.message ?? err}`),
+    });
+    try {
+      // `description` is the OpusHead packet itself, as WebCodecs' Opus rules
+      // require. It tells the decoder the channel count, the channel layout,
+      // and the "pre-skip" (encoder warm-up samples at the stream's start).
+      decoder.configure({
+        codec: "opus",
+        sampleRate: OPUS_SAMPLE_RATE,
+        numberOfChannels: 2,
+        description: opusHead,
+      });
+    } catch (err) {
+      decoder.close();
+      this.#reconnect(gen, `decoder setup failed: ${err?.message ?? err}`);
+      return;
+    }
+    this.#decoder = decoder;
+    this.#skipTags = true;
+  }
+
+  /** One decoded chunk (20 ms of PCM): copy it into an AudioBuffer and schedule it. */
+  #onDecoded(audioData, gen) {
+    try {
+      if (gen !== this.#generation) return;
+      const channels = audioData.numberOfChannels;
+      const frames = audioData.numberOfFrames;
+      const buffer = this.#ctx.createBuffer(channels, frames, audioData.sampleRate);
+      if (audioData.format === "f32") {
+        // Interleaved (L R L R ...): copy once, then split into channels.
+        const interleaved = new Float32Array(frames * channels);
+        audioData.copyTo(interleaved, { planeIndex: 0, format: "f32" });
+        for (let ch = 0; ch < channels; ch++) {
+          const out = buffer.getChannelData(ch);
+          for (let i = 0; i < frames; i++) out[i] = interleaved[i * channels + ch];
+        }
+      } else {
+        // Planar, or another sample format the browser converts for us.
+        for (let ch = 0; ch < channels; ch++) {
+          audioData.copyTo(buffer.getChannelData(ch), { planeIndex: ch, format: "f32-planar" });
+        }
+      }
+      this.#schedule(buffer, audioData.duration / 1e6);
+    } finally {
+      // AudioData holds memory outside JavaScript; release it once copied.
+      audioData.close();
+    }
+  }
+
+  #schedule(buffer, durationS) {
+    const { at, restart, catchUp } = this.#clock.place(durationS);
+    const leadMs = Math.round(this.#clock.lead * 1000);
+    if (restart && this.#scheduledAny) {
+      console.info(`${MODULE_ID} | ran out of audio (underrun); restarting with a ${leadMs} ms cushion`);
+    }
+    if (catchUp) {
+      // Far behind live: drop what is queued and jump back to the live edge.
+      this.#stopSources();
+      console.info(`${MODULE_ID} | fell behind live; jumped ahead (cushion ${leadMs} ms)`);
+    }
+    this.#scheduledAny = true;
+    const source = this.#ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(this.#gain);
+    source.addEventListener("ended", () => {
+      this.#sources.delete(source);
+      source.disconnect();
+    });
+    source.start(at);
+    this.#sources.add(source);
+  }
+
+  /**
+   * The connection failed (fetch error, HTTP error, stream ended, decoder
+   * error, or stall). Either give up (see ReconnectPolicy) or retry later.
+   */
+  #reconnect(gen, reason) {
+    if (gen !== this.#generation) return; // this connection is already gone
+    this.#halt(false); // let the last scheduled audio play out while we wait
+    if (this.#policy.markFailure()) {
+      this.#gaveUp = true;
+      this.#stopSources();
+      console.warn(
+        `${MODULE_ID} | WebCodecs player giving up: ${GIVE_UP_AFTER} connects failed and no data ever arrived (${reason})`,
+      );
+      this.#onGiveUp?.();
+      return;
+    }
+    const delay = this.#policy.nextDelayMs();
+    console.info(`${MODULE_ID} | stream lost (${reason}); reconnecting in ${delay} ms`);
+    this.#retryTimer = setTimeout(() => {
+      this.#retryTimer = null;
+      this.#connect();
+    }, delay);
+  }
+}
+
+/** True when this browser can decode Opus with WebCodecs (needs a secure context). */
+export async function isWebCodecsOpusSupported() {
+  if (typeof AudioDecoder === "undefined" || typeof EncodedAudioChunk === "undefined") return false;
+  try {
+    const { supported } = await AudioDecoder.isConfigSupported({
+      codec: "opus",
+      sampleRate: OPUS_SAMPLE_RATE,
+      numberOfChannels: 2,
+    });
+    return supported === true;
+  } catch {
+    return false;
+  }
+}
+
+/** The WebCodecs player when this browser supports it, else the <audio> player. */
+export async function createPlayer({ audioContext, onGiveUp, output }) {
+  if (await isWebCodecsOpusSupported()) {
+    console.info(`${MODULE_ID} | using the low-latency WebCodecs player`);
+    return new WebCodecsPlayer({ audioContext, onGiveUp, output });
+  }
+  console.info(`${MODULE_ID} | WebCodecs Opus unavailable; using the <audio> player`);
+  return new ElementPlayer();
+}

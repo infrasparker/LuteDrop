@@ -41,6 +41,9 @@ background tab still measures; only timers are throttled there, which just makes
 <table id="results"></table>
 
 <script type="module">
+// serve.mjs exposes foundry-module/lutedrop-stream/scripts/ at /module/.
+import { WebCodecsPlayer } from '/module/player.js';
+
 // ---------------------------------------------------------------- helpers
 const $ = (id) => document.getElementById(id);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -188,11 +191,39 @@ const detectorSource = `
   registerProcessor('loudness-detector', LoudnessDetector);
 `;
 
+// Builds detector -> mute -> speakers on `ctx` and returns { input, dispose }:
+// connect whatever you want to measure to `input`; call dispose() when done.
+// Calls onLoud(performance.now()) whenever a block is louder than the threshold.
+async function attachDetector(ctx, onLoud) {
+  const mute = ctx.createGain();
+  mute.gain.value = 0;
+  mute.connect(ctx.destination);
+  if (ctx.audioWorklet) {
+    const url = URL.createObjectURL(new Blob([detectorSource], { type: 'text/javascript' }));
+    await ctx.audioWorklet.addModule(url);
+    URL.revokeObjectURL(url);
+    const node = new AudioWorkletNode(ctx, 'loudness-detector');
+    node.port.onmessage = () => onLoud(performance.now());
+    const sendThreshold = () => node.port.postMessage({ threshold: getThreshold() });
+    sendThreshold();
+    $('threshold').addEventListener('input', sendThreshold);
+    node.connect(mute);
+    return { input: node, dispose: () => $('threshold').removeEventListener('input', sendThreshold) };
+  }
+  // Older browsers: ScriptProcessorNode does the same job (deprecated, but it works).
+  const node = ctx.createScriptProcessor(256, 1, 1);
+  node.onaudioprocess = (e) => {
+    if (rms(e.inputBuffer.getChannelData(0)) > getThreshold()) onLoud(performance.now());
+  };
+  node.connect(mute);
+  return { input: node, dispose: () => {} };
+}
+
 function makeElementConsumer() {
   let heard = () => {};
   let ctx = null;
   let audio = null;
-  let sendThreshold = null;
+  let detector = null;
   return {
     name: 'element',
     onHeard(cb) { heard = cb; },
@@ -207,32 +238,14 @@ function makeElementConsumer() {
         console.error('audio element error', audio?.error);
         setStatus('Audio element error: ' + (audio?.error?.message || 'stream failed to load'));
       };
-      const mute = ctx.createGain();
-      mute.gain.value = 0;
       const source = ctx.createMediaElementSource(audio);
-      if (ctx.audioWorklet) {
-        const url = URL.createObjectURL(new Blob([detectorSource], { type: 'text/javascript' }));
-        await ctx.audioWorklet.addModule(url);
-        URL.revokeObjectURL(url);
-        const node = new AudioWorkletNode(ctx, 'loudness-detector');
-        node.port.onmessage = () => heard(performance.now());
-        sendThreshold = () => node.port.postMessage({ threshold: getThreshold() });
-        sendThreshold();
-        $('threshold').addEventListener('input', sendThreshold);
-        source.connect(node).connect(mute).connect(ctx.destination);
-      } else {
-        // Older browsers: ScriptProcessorNode does the same job (deprecated, but it works).
-        const node = ctx.createScriptProcessor(256, 1, 1);
-        node.onaudioprocess = (e) => {
-          if (rms(e.inputBuffer.getChannelData(0)) > getThreshold()) heard(performance.now());
-        };
-        source.connect(node).connect(mute).connect(ctx.destination);
-      }
+      detector = await attachDetector(ctx, (t) => heard(t));
+      source.connect(detector.input);
       await audio.play();
     },
     stop() {
-      if (sendThreshold) $('threshold').removeEventListener('input', sendThreshold);
-      sendThreshold = null;
+      detector?.dispose();
+      detector = null;
       audio?.pause();
       audio?.removeAttribute('src');
       audio?.load(); // releases the network connection
@@ -243,11 +256,44 @@ function makeElementConsumer() {
   };
 }
 
-// ---- SLOT FOR TASK 5 ---------------------------------------------------
-// Add a fourth consumer named "webcodecs" here (it imports /module/player.js)
-// and push it into this array. Column names in the table follow consumer names.
-const consumers = [makeArrivalConsumer(), makeElementConsumer()];
-// -------------------------------------------------------------------------
+// "webcodecs": the Foundry module's new low-latency player (fetch + WebCodecs +
+// scheduled Web Audio), loaded straight from the module folder. Its `output`
+// option lets us send its sound into the same detector the element uses,
+// instead of to the speakers.
+function makeWebCodecsConsumer() {
+  let heard = () => {};
+  let ctx = null;
+  let player = null;
+  let detector = null;
+  return {
+    name: 'webcodecs',
+    onHeard(cb) { heard = cb; },
+    async start() {
+      ctx = new AudioContext();
+      await ctx.resume();
+      detector = await attachDetector(ctx, (t) => heard(t));
+      player = new WebCodecsPlayer({
+        audioContext: ctx,
+        output: detector.input,
+        onGiveUp: () => setStatus('WebCodecs player gave up (no CORS header, or the stream URL fails).'),
+      });
+      player.setVolume(1); // full level into the detector, like the element's default
+      // ?webcodecs=<url> on the page URL points this consumer elsewhere (README: fallback test).
+      player.setUrl(new URLSearchParams(location.search).get('webcodecs') || '/stream');
+      player.start();
+    },
+    stop() {
+      player?.setUrl(''); // aborts the fetch, closes the decoder, stops scheduled audio
+      detector?.dispose();
+      ctx?.close();
+      player = null;
+      detector = null;
+      ctx = null;
+    },
+  };
+}
+
+const consumers = [makeArrivalConsumer(), makeElementConsumer(), makeWebCodecsConsumer()];
 
 // ------------------------------------------------------- WebSocket (remote)
 let ws = null;

@@ -42,7 +42,8 @@ All times are milliseconds after T0, the moment the page sends `play_track`.
   network and decoded at once. This is the earliest any listener could hear it.
 - **mixing**: LuteDrop reports the track playing with a position above zero.
 - **element**: a plain `<audio>` element on the stream (today's Foundry behaviour).
-- **webcodecs**: the new player (appears once that consumer is added).
+- **webcodecs**: the Foundry module's `WebCodecsPlayer`, loaded from
+  `foundry-module/lutedrop-stream/scripts/player.js` and watched by the same detector.
 - `element-arrival`, `webcodecs-arrival`: extra delay a player adds over the bare minimum.
   This is the number to compare before and after.
 
@@ -52,6 +53,16 @@ Sound is detected in network and audio callbacks (the `<audio>` element is watch
 AudioWorklet on the audio thread), so the tab need not be visible. Hidden tabs throttle
 timers to about once a second; that only makes the page's waits (the quiet check, the
 give-up) coarser, not the recorded times. Keeping the tab visible is still the safest.
+
+## Testing the fallback
+
+Two `serve.mjs` switches exercise the WebCodecs player's give-up path:
+
+- `--fail`: `/stream` answers 404. After 3 failed connects (about 3 s) the console shows
+  `WebCodecs player giving up`. The other consumers fail too, so watch the console.
+- `--no-cors`: `/stream` is sent without `Access-Control-Allow-Origin`. The probe page
+  itself is same-origin, so point the webcodecs consumer at another origin:
+  open `http://127.0.0.1:8790/?webcodecs=http://localhost:8790/stream`.
 
 ## Caveat
 
