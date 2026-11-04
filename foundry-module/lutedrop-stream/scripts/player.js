@@ -168,6 +168,105 @@ export class OggDemuxer {
   }
 }
 
+// First piece in reverse: OggOpusMuxer.
+//
+// The decodeAudioData player (further down) needs the opposite of the demuxer:
+// it has loose Opus packets and must hand the browser a *complete* Ogg Opus
+// file, because decodeAudioData only decodes whole files, never a stream.
+// So for every small group of packets we build a tiny file: the OpusHead page,
+// the OpusTags page, then the audio packets. That is the smallest thing every
+// browser's Ogg reader accepts as "a valid Ogg Opus file".
+//
+// Granule position for Opus counts 48 kHz samples from the start of the file,
+// including the "pre-skip" (encoder warm-up samples the decoder throws away).
+// Each LuteDrop packet is 20 ms = 960 samples, so after n packets the granule
+// is preSkip + 960 * n. Writing it exactly like that tells the decoder "do not
+// trim anything off the end", so every sample of the last packet comes out.
+const OGG_SERIAL = 0x4c757465; // any constant works; "Lute" in ASCII
+const SAMPLES_PER_PACKET = 960; // 20 ms at 48 kHz
+const MAX_LACING = 255; // a page's lacing table holds at most 255 values
+
+/** Lacing values for one packet: a 255 for each full 255 bytes, then the rest (0 included). */
+function lacingFor(packet) {
+  const values = new Array(Math.floor(packet.length / 255)).fill(255);
+  values.push(packet.length % 255);
+  return values;
+}
+
+/** One finished Ogg page holding whole `packets`, with its CRC filled in. */
+function writePage(headerType, granule, seq, packets) {
+  const lacing = packets.flatMap(lacingFor);
+  const bodyLen = packets.reduce((n, p) => n + p.length, 0);
+  const page = new Uint8Array(HEADER_LEN + lacing.length + bodyLen);
+  const view = new DataView(page.buffer);
+  page.set(CAPTURE, 0);
+  page[4] = 0; // version
+  page[5] = headerType;
+  view.setBigInt64(6, BigInt(granule), true);
+  view.setUint32(14, OGG_SERIAL, true);
+  view.setUint32(18, seq, true);
+  page[26] = lacing.length;
+  page.set(lacing, HEADER_LEN);
+  let at = HEADER_LEN + lacing.length;
+  for (const p of packets) {
+    page.set(p, at);
+    at += p.length;
+  }
+  view.setUint32(22, pageCrc(page), true); // pageCrc ignores the (still zero) CRC field
+  return page;
+}
+
+export class OggOpusMuxer {
+  /**
+   * @param {Uint8Array} opusHead  the stream's OpusHead packet
+   * @param {Uint8Array} opusTags  the stream's OpusTags packet
+   */
+  constructor(opusHead, opusTags) {
+    this._head = opusHead;
+    this._tags = opusTags;
+    // Bytes 10-11 of OpusHead: pre-skip, little-endian.
+    this.preSkip = opusHead.length >= 12 ? opusHead[10] | (opusHead[11] << 8) : 0;
+  }
+
+  /**
+   * A complete Ogg Opus file holding `packets` (20 ms each).
+   * Pages: OpusHead (bos, seq 0), OpusTags (seq 1), then the audio (eos on the
+   * last page). The audio normally fits one page; only a burst large enough to
+   * overflow a page's 255 lacing values spills onto more pages.
+   * @param {Uint8Array[]} packets
+   * @returns {Uint8Array}
+   */
+  file(packets) {
+    const pages = [writePage(0x02, 0, 0, [this._head]), writePage(0x00, 0, 1, [this._tags])];
+    let seq = 2;
+    let done = 0; // packets already written, for the granule
+    let group = [];
+    let lacingCount = 0;
+    const flush = (last) => {
+      done += group.length;
+      const granule = this.preSkip + SAMPLES_PER_PACKET * done;
+      pages.push(writePage(last ? 0x04 : 0x00, granule, seq++, group));
+      group = [];
+      lacingCount = 0;
+    };
+    for (const packet of packets) {
+      const n = Math.floor(packet.length / 255) + 1;
+      if (group.length > 0 && lacingCount + n > MAX_LACING) flush(false);
+      group.push(packet);
+      lacingCount += n;
+    }
+    flush(true);
+
+    const out = new Uint8Array(pages.reduce((n, p) => n + p.length, 0));
+    let at = 0;
+    for (const p of pages) {
+      out.set(p, at);
+      at += p.length;
+    }
+    return out;
+  }
+}
+
 // Second piece: LiveClock.
 //
 // The decoder hands us chunks of PCM audio; Web Audio plays a chunk at a time
@@ -259,16 +358,16 @@ export const MODULE_ID = "lutedrop-stream";
 // must try again without hammering the server. The policy holds the numbers:
 // wait BACKOFF_START_MS, then double each time up to BACKOFF_MAX_MS. Once
 // playback has run STABLE_AFTER_MS without trouble, the next failure starts
-// from the short delay again. STALL_TIMEOUT_MS is how long the WebCodecs
-// player waits with no bytes at all before treating the connection as dead.
+// from the short delay again. STALL_TIMEOUT_MS is how long the low-latency
+// players wait with no bytes at all before treating the connection as dead.
 //
-// Giving up (WebCodecs player only): the WebCodecs player reads the stream with
+// Giving up (low-latency players only): those players read the stream with
 // fetch(), which the browser only allows when the stream server sends a CORS
 // header; the <audio> element needs no such header. If a URL has never
 // delivered a single byte and fetch() itself has been refused GIVE_UP_AFTER
 // times, the likely cause is a missing CORS header (or no network), so the
 // caller switches to the <audio> player. The player only reports those
-// refusals as failures here (see WebCodecsPlayer#reconnect): an HTTP error
+// refusals as failures here (see StreamPlayerBase _reconnect): an HTTP error
 // such as 502 means the server did answer and we were allowed to read it
 // (e.g. Caddy while LuteDrop is not broadcasting yet), so that is a reason
 // to wait and retry, not to fall back. Why "never received a byte": once any data has arrived,
@@ -596,19 +695,30 @@ export class ElementPlayer {
   }
 }
 
-// Sixth piece: WebCodecsPlayer (the low-latency player).
+// Sixth piece: the low-latency players.
 //
 // Why not just an <audio> element: the element owns its buffer and fills it as
 // it sees fit, typically several seconds on a live stream, and it reacts
 // unpredictably to a stream that never "ends". Here we do every step
 // ourselves: fetch() hands us the raw bytes as they arrive, OggDemuxer cuts
-// them into Opus packets, the browser's WebCodecs AudioDecoder turns each
-// packet into PCM samples, and Web Audio plays each chunk at a time LiveClock
-// chooses. We control the buffer, so we hold it at ~0.2 s instead of seconds.
+// them into Opus packets, a decoder turns the packets into PCM samples, and Web
+// Audio plays each chunk at a time LiveClock chooses. We control the buffer, so
+// we hold it at ~0.2 s instead of seconds.
 //
-// The cost: fetch() of another origin needs the server's CORS header (LuteDrop
-// sends one), and WebCodecs only exists in secure contexts (https, or
-// localhost). createPlayer() checks support; giving up falls back.
+// There are two of these players, which differ only in the decoder:
+// - WebCodecsPlayer uses the browser's AudioDecoder (WebCodecs). It decodes a
+//   continuous stream packet by packet, but only exists in secure contexts
+//   (https, or localhost).
+// - DecodeAudioDataPlayer uses AudioContext.decodeAudioData, which also works
+//   on plain http. It decodes whole files only, so it wraps packets in tiny
+//   files (see OggOpusMuxer and the player's own notes below).
+// Everything else (fetching, demuxing, reconnecting, giving up, the stall
+// timer, scheduling with LiveClock, volume) is the same, so it lives once in
+// StreamPlayerBase and each player only supplies its decoder.
+//
+// The cost of both: fetch() of another origin needs the server's CORS header
+// (LuteDrop sends one). createPlayer() checks what the browser supports;
+// giving up falls back to the <audio> element.
 //
 // Every connection gets a "generation" number. Anything asynchronous (a read,
 // a decoder callback, a timer) remembers the generation it belongs to and does
@@ -627,20 +737,31 @@ function startsWithAscii(bytes, text) {
   return true;
 }
 
-export class WebCodecsPlayer {
+/**
+ * Shared plumbing of the two low-latency players. Not exported: a subclass
+ * supplies the decoder through these hooks:
+ * - `_onHeader(opusHead, opusTags, gen)`: the stream's two setup packets
+ *   arrived (opusTags is null if the stream skipped it). Set up the decoder.
+ * - `_onPackets(packets, gen)`: the audio packets from one network read, in
+ *   order. Decode them and pass the PCM to `_schedule`.
+ * - `_onHalt()`: the connection ended; drop all decoder state.
+ * And uses these helpers: `_ctx`, `_isCurrent(gen)`, `_reconnect(gen, reason)`,
+ * `_schedule(planes, sampleRate, gen)`.
+ */
+class StreamPlayerBase {
   #ctx;
   #gain; // every chunk plays through this; it carries volume and listen-off
+  #name; // "WebCodecs player" etc., for the give-up message
   #demuxer = new OggDemuxer();
   #clock = new LiveClock(() => this.#ctx.currentTime);
   #policy = new ReconnectPolicy();
-  #decoder = null;
   #abort = null; // AbortController of the current fetch
   #sources = new Set(); // scheduled AudioBufferSourceNodes not yet finished
   #stallTimer = null;
   #retryTimer = null;
   #stableTimer = null;
-  #packetIndex = 0;
-  #skipTags = false; // true between OpusHead and the OpusTags packet after it
+  #headerState = "head"; // "head" (want OpusHead) | "tags" (want OpusTags) | "audio"
+  #opusHead = null;
   #scheduledAny = false; // has this connection scheduled a chunk yet?
   #generation = 0;
   #onGiveUp;
@@ -655,10 +776,12 @@ export class WebCodecsPlayer {
    * @param {AudioContext} opts.audioContext
    * @param {() => void} [opts.onGiveUp]  called once if the URL never works (see ReconnectPolicy)
    * @param {AudioNode} [opts.output]  where the sound goes; the latency probe passes a detector here
+   * @param {string} name  how log lines name this player
    */
-  constructor({ audioContext, onGiveUp, output = audioContext.destination }) {
+  constructor({ audioContext, onGiveUp, output = audioContext.destination }, name) {
     this.#ctx = audioContext;
     this.#onGiveUp = onGiveUp;
+    this.#name = name;
     this.#gain = audioContext.createGain();
     this.#gain.connect(output);
     this.#applyVolume();
@@ -689,6 +812,22 @@ export class WebCodecsPlayer {
     this.#applyVolume();
   }
 
+  // ---- for subclasses ----
+
+  get _ctx() {
+    return this.#ctx;
+  }
+
+  /** True while `gen` is still the live connection. */
+  _isCurrent(gen) {
+    return gen === this.#generation;
+  }
+
+  // Hooks; the subclasses replace these.
+  _onHeader() {}
+  _onPackets() {}
+  _onHalt() {}
+
   // Listen-off is gain 0, not "stop reading". If we stopped, un-muting would
   // need a fresh connection and a fresh decoder (a noticeable pause); keeping
   // the stream flowing silently means un-muting is instant and already at the
@@ -699,7 +838,7 @@ export class WebCodecsPlayer {
 
   /**
    * End the current connection: invalidate its callbacks, clear every timer,
-   * abort the fetch, close the decoder. With `stopSources`, also silence audio
+   * abort the fetch, drop the decoder. With `stopSources`, also silence audio
    * already scheduled (otherwise its last ~0.2 s is left to play out).
    */
   #halt(stopSources) {
@@ -712,8 +851,7 @@ export class WebCodecsPlayer {
     this.#stableTimer = null;
     this.#abort?.abort();
     this.#abort = null;
-    if (this.#decoder && this.#decoder.state !== "closed") this.#decoder.close();
-    this.#decoder = null;
+    this._onHalt();
     if (stopSources) this.#stopSources();
   }
 
@@ -727,8 +865,8 @@ export class WebCodecsPlayer {
     this.#halt(true);
     this.#demuxer.reset();
     this.#clock.reset();
-    this.#packetIndex = 0;
-    this.#skipTags = false;
+    this.#headerState = "head";
+    this.#opusHead = null;
     this.#scheduledAny = false;
     if (!this.#url) {
       console.info(`${MODULE_ID} | no stream URL set; staying silent`);
@@ -750,7 +888,7 @@ export class WebCodecsPlayer {
       // connection refused). This is the only kind of failure that counts
       // toward giving up; see ReconnectPolicy.
       if (gen !== this.#generation || err?.name === "AbortError") return;
-      this.#reconnect(gen, err?.message ?? String(err), { countsTowardGiveUp: true });
+      this._reconnect(gen, err?.message ?? String(err), { countsTowardGiveUp: true });
       return;
     }
     try {
@@ -773,121 +911,62 @@ export class WebCodecsPlayer {
         }
         this.#policy.markBytesReceived();
         this.#armStallTimer(gen);
+        const audio = [];
         for (const packet of this.#demuxer.feed(value)) {
-          if (gen !== this.#generation) return; // a decode failure already reconnected
-          this.#onPacket(packet, gen);
+          if (gen !== this.#generation) return; // a decoder setup failure already reconnected
+          this.#sortPacket(packet, gen, audio);
         }
+        if (gen !== this.#generation) return;
+        if (audio.length > 0) this._onPackets(audio, gen);
       }
     } catch (err) {
       // Our own abort (setUrl, reconnect, stall) lands here too; ignore it.
       if (gen !== this.#generation || err?.name === "AbortError") return;
-      this.#reconnect(gen, err?.message ?? String(err));
+      this._reconnect(gen, err?.message ?? String(err));
     }
   }
 
   #armStallTimer(gen) {
     clearTimeout(this.#stallTimer);
     this.#stallTimer = setTimeout(
-      () => this.#reconnect(gen, `no data for ${STALL_TIMEOUT_MS / 1000} s`),
+      () => this._reconnect(gen, `no data for ${STALL_TIMEOUT_MS / 1000} s`),
       STALL_TIMEOUT_MS,
     );
   }
 
-  #onPacket(packet, gen) {
-    if (!this.#decoder) {
+  /** Header packets go to `_onHeader`; audio packets are collected in `audio`. */
+  #sortPacket(packet, gen, audio) {
+    if (this.#headerState === "head") {
       // Until OpusHead arrives there is nothing we can decode; anything
       // before it (there should be nothing) is dropped.
-      if (packet.bos && startsWithAscii(packet.data, OPUS_HEAD)) this.#openDecoder(packet.data, gen);
+      if (packet.bos && startsWithAscii(packet.data, OPUS_HEAD)) {
+        this.#opusHead = packet.data;
+        this.#headerState = "tags";
+      }
       return;
     }
-    if (this.#skipTags) {
-      // OpusTags is metadata (encoder name, comments), not audio.
-      this.#skipTags = false;
-      if (startsWithAscii(packet.data, OPUS_TAGS)) return;
+    if (this.#headerState === "tags") {
+      // OpusTags is metadata (encoder name, comments), not audio. It always
+      // follows OpusHead; if it is missing, this packet is already audio.
+      this.#headerState = "audio";
+      const isTags = startsWithAscii(packet.data, OPUS_TAGS);
+      this._onHeader(this.#opusHead, isTags ? packet.data : null, gen);
+      if (isTags) return;
     }
-    if (this.#decoder.state !== "configured") return;
-    // The decoder insists on a timestamp, so we give it a simple count of
-    // 20 ms packets. We do NOT use these timestamps (or the Ogg granule
-    // positions) to decide when to play: over TCP no packet can be lost or
-    // reordered, so each decoded chunk belongs right after the previous one,
-    // and its decoded length is the truth about how long it lasts. LiveClock
-    // schedules from that length.
-    const chunk = new EncodedAudioChunk({
-      type: "key",
-      timestamp: this.#packetIndex * PACKET_US,
-      data: packet.data,
-    });
-    this.#packetIndex++;
-    try {
-      this.#decoder.decode(chunk);
-    } catch (err) {
-      this.#reconnect(gen, `decode failed: ${err?.message ?? err}`);
-    }
+    audio.push(packet.data);
   }
 
-  #openDecoder(opusHead, gen) {
-    const decoder = new AudioDecoder({
-      output: (audioData) => this.#onDecoded(audioData, gen),
-      error: (err) => this.#reconnect(gen, `decoder error: ${err?.message ?? err}`),
-    });
-    try {
-      // `description` is the OpusHead packet itself, as WebCodecs' Opus rules
-      // require. It tells the decoder the channel count, the channel layout,
-      // and the "pre-skip" (encoder warm-up samples at the stream's start).
-      decoder.configure({
-        codec: "opus",
-        sampleRate: OPUS_SAMPLE_RATE,
-        numberOfChannels: 2,
-        description: opusHead,
-      });
-    } catch (err) {
-      decoder.close();
-      this.#reconnect(gen, `decoder setup failed: ${err?.message ?? err}`);
-      return;
-    }
-    this.#decoder = decoder;
-    this.#skipTags = true;
-  }
-
-  /** One decoded chunk (20 ms of PCM): copy it into an AudioBuffer and schedule it. */
-  #onDecoded(audioData, gen) {
-    try {
-      if (gen !== this.#generation) return;
-      this.#copyAndSchedule(audioData);
-    } catch (err) {
-      // An exception here would otherwise escape the decoder callback as an
-      // uncaught error and leave the stream silently broken; reconnect instead.
-      this.#reconnect(gen, `playing decoded audio failed: ${err?.message ?? err}`);
-    } finally {
-      // AudioData holds memory outside JavaScript; release it once copied.
-      audioData.close();
-    }
-  }
-
-  /** Copy one decoded chunk (20 ms of PCM) into an AudioBuffer and schedule it. */
-  #copyAndSchedule(audioData) {
-    const channels = audioData.numberOfChannels;
-    const frames = audioData.numberOfFrames;
-    const buffer = this.#ctx.createBuffer(channels, frames, audioData.sampleRate);
-    if (audioData.format === "f32") {
-      // Interleaved (L R L R ...): copy once, then split into channels.
-      const interleaved = new Float32Array(frames * channels);
-      audioData.copyTo(interleaved, { planeIndex: 0, format: "f32" });
-      for (let ch = 0; ch < channels; ch++) {
-        const out = buffer.getChannelData(ch);
-        for (let i = 0; i < frames; i++) out[i] = interleaved[i * channels + ch];
-      }
-    } else {
-      // Planar, or another sample format the browser converts for us.
-      for (let ch = 0; ch < channels; ch++) {
-        audioData.copyTo(buffer.getChannelData(ch), { planeIndex: ch, format: "f32-planar" });
-      }
-    }
-    this.#schedule(buffer, audioData.duration / 1e6);
-  }
-
-  #schedule(buffer, durationS) {
-    const { at, restart, catchUp } = this.#clock.place(durationS);
+  /**
+   * Play one chunk of decoded audio: `planes` holds one Float32Array per
+   * channel, all the same length. It starts where LiveClock says.
+   */
+  _schedule(planes, sampleRate, gen) {
+    if (gen !== this.#generation) return;
+    const frames = planes[0]?.length ?? 0;
+    if (frames === 0) return;
+    const buffer = this.#ctx.createBuffer(planes.length, frames, sampleRate);
+    planes.forEach((plane, ch) => buffer.copyToChannel(plane, ch));
+    const { at, restart, catchUp } = this.#clock.place(frames / sampleRate);
     const leadMs = Math.round(this.#clock.lead * 1000);
     if (restart && this.#scheduledAny) {
       console.info(`${MODULE_ID} | ran out of audio (underrun); restarting with a ${leadMs} ms cushion`);
@@ -915,7 +994,7 @@ export class WebCodecsPlayer {
    * refused fetch() passes `countsTowardGiveUp`: everything else means the
    * server is reachable and readable, so we keep retrying with backoff.
    */
-  #reconnect(gen, reason, { countsTowardGiveUp = false } = {}) {
+  _reconnect(gen, reason, { countsTowardGiveUp = false } = {}) {
     if (gen !== this.#generation) return; // this connection is already gone
     this.#halt(false); // let the last scheduled audio play out while we wait
     if (countsTowardGiveUp && this.#policy.markFailure()) {
@@ -924,7 +1003,7 @@ export class WebCodecsPlayer {
       // Detach from the output so nothing of this player stays in the graph.
       this.#gain.disconnect();
       console.warn(
-        `${MODULE_ID} | WebCodecs player giving up: fetch refused ${GIVE_UP_AFTER} times and no data ever arrived (${reason})`,
+        `${MODULE_ID} | ${this.#name} giving up: fetch refused ${GIVE_UP_AFTER} times and no data ever arrived (${reason})`,
       );
       this.#onGiveUp?.();
       return;
@@ -935,6 +1014,245 @@ export class WebCodecsPlayer {
       this.#retryTimer = null;
       this.#connect();
     }, delay);
+  }
+}
+
+// WebCodecsPlayer: the stream player for secure pages (https or localhost),
+// decoding with the browser's AudioDecoder one packet at a time.
+export class WebCodecsPlayer extends StreamPlayerBase {
+  #decoder = null;
+  #packetIndex = 0;
+
+  /**
+   * @param {object} opts
+   * @param {AudioContext} opts.audioContext
+   * @param {() => void} [opts.onGiveUp]  called once if the URL never works (see ReconnectPolicy)
+   * @param {AudioNode} [opts.output]  where the sound goes; the latency probe passes a detector here
+   */
+  constructor(opts) {
+    super(opts, "WebCodecs player");
+  }
+
+  _onHalt() {
+    if (this.#decoder && this.#decoder.state !== "closed") this.#decoder.close();
+    this.#decoder = null;
+    this.#packetIndex = 0;
+  }
+
+  _onHeader(opusHead, _opusTags, gen) {
+    const decoder = new AudioDecoder({
+      output: (audioData) => this.#onDecoded(audioData, gen),
+      error: (err) => this._reconnect(gen, `decoder error: ${err?.message ?? err}`),
+    });
+    try {
+      // `description` is the OpusHead packet itself, as WebCodecs' Opus rules
+      // require. It tells the decoder the channel count, the channel layout,
+      // and the "pre-skip" (encoder warm-up samples at the stream's start).
+      decoder.configure({
+        codec: "opus",
+        sampleRate: OPUS_SAMPLE_RATE,
+        numberOfChannels: 2,
+        description: opusHead,
+      });
+    } catch (err) {
+      decoder.close();
+      this._reconnect(gen, `decoder setup failed: ${err?.message ?? err}`);
+      return;
+    }
+    this.#decoder = decoder;
+  }
+
+  _onPackets(packets, gen) {
+    for (const data of packets) {
+      if (!this._isCurrent(gen)) return; // a decode failure already reconnected
+      if (!this.#decoder || this.#decoder.state !== "configured") return;
+      // The decoder insists on a timestamp, so we give it a simple count of
+      // 20 ms packets. We do NOT use these timestamps (or the Ogg granule
+      // positions) to decide when to play: over TCP no packet can be lost or
+      // reordered, so each decoded chunk belongs right after the previous one,
+      // and its decoded length is the truth about how long it lasts. LiveClock
+      // schedules from that length.
+      const chunk = new EncodedAudioChunk({
+        type: "key",
+        timestamp: this.#packetIndex * PACKET_US,
+        data,
+      });
+      this.#packetIndex++;
+      try {
+        this.#decoder.decode(chunk);
+      } catch (err) {
+        this._reconnect(gen, `decode failed: ${err?.message ?? err}`);
+      }
+    }
+  }
+
+  /** One decoded chunk (20 ms of PCM): copy it out and schedule it. */
+  #onDecoded(audioData, gen) {
+    try {
+      if (!this._isCurrent(gen)) return;
+      this._schedule(copyPlanes(audioData), audioData.sampleRate, gen);
+    } catch (err) {
+      // An exception here would otherwise escape the decoder callback as an
+      // uncaught error and leave the stream silently broken; reconnect instead.
+      this._reconnect(gen, `playing decoded audio failed: ${err?.message ?? err}`);
+    } finally {
+      // AudioData holds memory outside JavaScript; release it once copied.
+      audioData.close();
+    }
+  }
+}
+
+/** Copy an AudioData's samples into one Float32Array per channel. */
+function copyPlanes(audioData) {
+  const channels = audioData.numberOfChannels;
+  const frames = audioData.numberOfFrames;
+  const planes = [];
+  for (let ch = 0; ch < channels; ch++) planes.push(new Float32Array(frames));
+  if (audioData.format === "f32") {
+    // Interleaved (L R L R ...): copy once, then split into channels.
+    const interleaved = new Float32Array(frames * channels);
+    audioData.copyTo(interleaved, { planeIndex: 0, format: "f32" });
+    for (let ch = 0; ch < channels; ch++) {
+      const out = planes[ch];
+      for (let i = 0; i < frames; i++) out[i] = interleaved[i * channels + ch];
+    }
+  } else {
+    // Planar, or another sample format the browser converts for us.
+    for (let ch = 0; ch < channels; ch++) {
+      audioData.copyTo(planes[ch], { planeIndex: ch, format: "f32-planar" });
+    }
+  }
+  return planes;
+}
+
+// DecodeAudioDataPlayer: the stream player for plain-http pages.
+//
+// decodeAudioData decodes a complete file and nothing smaller. So for every
+// network read (normally one Ogg page = two 20 ms packets) we build a tiny but
+// complete Ogg Opus file with OggOpusMuxer, decode it, and schedule the result
+// exactly like the WebCodecs player schedules its chunks.
+//
+// Why pre-roll: every tiny file starts a brand-new decoder with no memory of
+// the audio before it, and Opus leans on that memory. Besides blending the end
+// of one frame into the next, it sends each frequency band's loudness as a
+// *change* from the previous frame. A cold decoder starts from a wrong
+// guess, and the error only halves or so with each frame. Played as is, every
+// chunk would be a little too loud or too quiet in some bands, 25 times a
+// second: a rough, warbling sound and clicks at the joins. So each file starts
+// with the last PREROLL_PACKETS packets we already played: the decoder "warms
+// up" on them, and by the time it reaches the new packets its state matches a
+// decoder that had been running all along.
+//
+// Why 16 packets (320 ms): measured in Chrome against a continuous decoder,
+// the largest sample error was 0.14 with 4 packets of pre-roll (clearly
+// audible), 0.011 with 8, 0.0007 with 12, and 0.00004 with 16. 16 leaves a
+// wide margin under the 0.001 we accept. It costs only decoding time (under
+// 1 ms per chunk), never latency: the pre-roll is audio we already have.
+// At the start of a connection there is less history than that; then the
+// file simply holds every packet so far, which is exactly what a continuous
+// decoder started at the same moment would have seen.
+//
+// Why the tail slice: the decoded file holds the pre-roll audio (already
+// played) followed by the new packets. Each packet is 960 samples, so the new
+// audio is exactly the last 960 * (new packets) samples of every channel. We
+// keep those and throw the rest away. (The decoder also drops the OpusHead
+// "pre-skip" from the start of each file; with pre-roll in front, that only
+// eats into pre-roll we discard anyway.)
+//
+// Why an OfflineAudioContext at 48 kHz: decodeAudioData resamples its output
+// to its context's sample rate. The main context may run at 44.1 kHz, and a
+// resampled chunk would no longer be exactly 960 samples per packet, so the
+// slice would land in the wrong place. A private 48 kHz context decodes at
+// Opus's own rate; the source nodes resample when they play, if they must.
+//
+// Decoding is asynchronous and two decodes could finish out of order, so each
+// connection keeps a promise chain: a chunk is scheduled only after the one
+// before it. Every step checks the generation, so audio from a connection
+// that has since ended is dropped, and nothing is decoded after setUrl("").
+export const PREROLL_PACKETS = 16;
+
+// An OpusTags packet with an empty vendor string and no comments, for streams
+// that skip OpusTags (the file we hand the decoder must have one).
+const EMPTY_OPUS_TAGS = new Uint8Array([
+  0x4f, 0x70, 0x75, 0x73, 0x54, 0x61, 0x67, 0x73, 0, 0, 0, 0, 0, 0, 0, 0,
+]);
+
+export class DecodeAudioDataPlayer extends StreamPlayerBase {
+  #offline = null; // private 48 kHz context, used only for decoding
+  #muxer = null;
+  #preroll = []; // the last PREROLL_PACKETS audio packets of this connection
+  #chain = Promise.resolve(); // decodes of this connection, in order
+  #warnedShort = false;
+
+  /**
+   * @param {object} opts
+   * @param {AudioContext} opts.audioContext
+   * @param {() => void} [opts.onGiveUp]  called once if the URL never works (see ReconnectPolicy)
+   * @param {AudioNode} [opts.output]  where the sound goes; the latency probe passes a detector here
+   */
+  constructor(opts) {
+    super(opts, "decodeAudioData player");
+  }
+
+  _onHalt() {
+    this.#muxer = null;
+    this.#preroll = [];
+    this.#chain = Promise.resolve(); // the old chain's steps see a stale generation and stop
+    this.#warnedShort = false;
+  }
+
+  _onHeader(opusHead, opusTags) {
+    this.#muxer = new OggOpusMuxer(opusHead, opusTags ?? EMPTY_OPUS_TAGS);
+  }
+
+  _onPackets(packets, gen) {
+    if (!this.#muxer) return;
+    const prerollCount = this.#preroll.length;
+    const file = this.#muxer.file([...this.#preroll, ...packets]);
+    const preSkip = this.#muxer.preSkip;
+    this.#preroll = [...this.#preroll, ...packets].slice(-PREROLL_PACKETS);
+    this.#offline ??= new OfflineAudioContext(2, 1, OPUS_SAMPLE_RATE);
+    // Start decoding at once (several files may decode side by side), but
+    // schedule strictly in arrival order through the chain. decodeAudioData
+    // takes ownership of (detaches) the buffer; `file` was built for this one
+    // call, so nothing else needs it. The result is wrapped so a failure is a
+    // value the chain handles, never an unhandled rejection.
+    const decoding = this.#offline.decodeAudioData(file.buffer).then(
+      (audio) => ({ audio }),
+      (error) => ({ error }),
+    );
+    this.#chain = this.#chain.then(() => this.#play(decoding, prerollCount, packets.length, preSkip, gen));
+  }
+
+  /** Wait for one file's decode, cut out the new packets' samples, schedule them. */
+  async #play(decoding, prerollCount, count, preSkip, gen) {
+    const { audio, error } = await decoding;
+    if (!this._isCurrent(gen)) return; // this connection ended meanwhile
+    if (error) {
+      this._reconnect(gen, `decodeAudioData failed: ${error?.message ?? error}`);
+      return;
+    }
+    try {
+      const wanted = SAMPLES_PER_PACKET * count;
+      // Without enough pre-roll (the first chunk of a connection) the
+      // pre-skip comes off the new packets, so a shorter result is expected
+      // then; anything shorter than that is worth a warning.
+      const expected = Math.max(0, Math.min(wanted, SAMPLES_PER_PACKET * (prerollCount + count) - preSkip));
+      if (audio.length < expected && !this.#warnedShort) {
+        this.#warnedShort = true;
+        console.warn(
+          `${MODULE_ID} | decodeAudioData returned ${audio.length} samples, expected at least ${expected}; playing what there is`,
+        );
+      }
+      const take = Math.min(wanted, audio.length);
+      const planes = [];
+      for (let ch = 0; ch < audio.numberOfChannels; ch++) {
+        planes.push(audio.getChannelData(ch).subarray(audio.length - take));
+      }
+      this._schedule(planes, audio.sampleRate, gen);
+    } catch (err) {
+      this._reconnect(gen, `playing decoded audio failed: ${err?.message ?? err}`);
+    }
   }
 }
 
@@ -953,12 +1271,55 @@ export async function isWebCodecsOpusSupported() {
   }
 }
 
-/** The WebCodecs player when this browser supports it, else the <audio> player. */
+// One 20 ms stereo Opus packet of silence (CELT, fullband): a TOC byte 0xFC
+// then two bytes that decode to silence.
+const SILENT_OPUS_PACKET = new Uint8Array([0xfc, 0xff, 0xfe]);
+const DECODE_PROBE_TIMEOUT_MS = 2000;
+
+/**
+ * True when decodeAudioData can decode an Ogg Opus file in this browser
+ * (Chrome, Edge and Firefox can; Safari cannot). We simply try: mux one silent
+ * packet into a tiny file and decode it. Never throws; any failure is "no".
+ */
+export async function isOggOpusDecodable(audioContext) {
+  let timer = null;
+  try {
+    if (typeof OfflineAudioContext === "undefined") return false;
+    if (typeof audioContext?.decodeAudioData !== "function") return false;
+    // OpusHead: version 1, 2 channels, pre-skip 0, 48 kHz, gain 0, mapping 0.
+    const head = new Uint8Array(19);
+    for (let i = 0; i < OPUS_HEAD.length; i++) head[i] = OPUS_HEAD.charCodeAt(i);
+    head[8] = 1;
+    head[9] = 2;
+    new DataView(head.buffer).setUint32(12, OPUS_SAMPLE_RATE, true);
+    const file = new OggOpusMuxer(head, EMPTY_OPUS_TAGS).file([SILENT_OPUS_PACKET]);
+    const ctx = new OfflineAudioContext(2, 1, OPUS_SAMPLE_RATE);
+    // A browser that neither resolves nor rejects must not hold up startup.
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("timed out")), DECODE_PROBE_TIMEOUT_MS);
+    });
+    const decoded = await Promise.race([ctx.decodeAudioData(file.buffer), timeout]);
+    return decoded.length > 0;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * The best player this browser supports: WebCodecs (secure pages), else
+ * decodeAudioData (plain http in Chrome, Edge, Firefox), else the <audio> player.
+ */
 export async function createPlayer({ audioContext, onGiveUp, output }) {
   if (await isWebCodecsOpusSupported()) {
     console.info(`${MODULE_ID} | using the low-latency WebCodecs player`);
     return new WebCodecsPlayer({ audioContext, onGiveUp, output });
   }
-  console.info(`${MODULE_ID} | WebCodecs Opus unavailable; using the <audio> player`);
+  if (await isOggOpusDecodable(audioContext)) {
+    console.info(`${MODULE_ID} | WebCodecs Opus unavailable; using the low-latency decodeAudioData player`);
+    return new DecodeAudioDataPlayer({ audioContext, onGiveUp, output });
+  }
+  console.info(`${MODULE_ID} | WebCodecs Opus and decodeAudioData Ogg Opus unavailable; using the <audio> player`);
   return new ElementPlayer();
 }
