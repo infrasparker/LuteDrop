@@ -33,6 +33,13 @@ All times are milliseconds after T0, the moment the page sends `play_track`.
 - `element-arrival`, `webcodecs-arrival`: extra delay a player adds over the bare minimum.
   This is the number to compare before and after.
 
+## Background tabs
+
+Sound is detected in network and audio callbacks (the `<audio>` element is watched by an
+AudioWorklet on the audio thread), so the tab need not be visible. Hidden tabs throttle
+timers to about once a second; that only makes the page's waits (the quiet check, the
+give-up) coarser, not the recorded times. Keeping the tab visible is still the safest.
+
 ## Caveat
 
 T0 includes LuteDrop's own time from receiving the command to mixing the sound, so

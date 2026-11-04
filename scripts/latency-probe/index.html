@@ -17,8 +17,8 @@
 </head>
 <body>
 <h1>LuteDrop latency probe</h1>
-<p>Dev tool. See README.md. Keep this tab in the foreground while measuring: browsers pause
-animation frames (used by the "element" listener) in background tabs.</p>
+<p>Dev tool. See README.md. All listeners are detected on audio or network callbacks, so a
+background tab still measures; only timers are throttled there, which just makes waits coarser.</p>
 
 <div>
   <label>WebSocket URL <input id="ws" value="ws://127.0.0.1:3333/ws?token="></label>
@@ -157,14 +157,40 @@ function makeArrivalConsumer() {
   };
 }
 
-// "element": today's behaviour: a plain <audio> element. We tap its output with an
-// AnalyserNode to see when sound actually comes out. The gain of 0 keeps the room
-// quiet while still letting the browser pull audio through the graph.
+// "element": today's behaviour: a plain <audio> element. We tap its output with a
+// small detector node to see when sound actually comes out. The gain of 0 keeps the
+// room quiet while still letting the browser pull audio through the graph.
+//
+// The detector runs on the audio rendering thread (an AudioWorklet), not on
+// requestAnimationFrame, because browsers pause animation frames in background tabs
+// but keep audio running. The worklet checks the loudness of every 128-sample block
+// and messages the page when it is above the threshold; we stamp the time on arrival.
+const detectorSource = `
+  class LoudnessDetector extends AudioWorkletProcessor {
+    constructor() {
+      super();
+      this.threshold = 0.02;
+      this.port.onmessage = (e) => { this.threshold = e.data.threshold; };
+    }
+    process(inputs) {
+      const channel = inputs[0][0];
+      if (channel) {
+        let sum = 0;
+        for (let i = 0; i < channel.length; i++) sum += channel[i] * channel[i];
+        const level = Math.sqrt(sum / channel.length);
+        if (level > this.threshold) this.port.postMessage({ rms: level });
+      }
+      return true; // keep running
+    }
+  }
+  registerProcessor('loudness-detector', LoudnessDetector);
+`;
+
 function makeElementConsumer() {
   let heard = () => {};
   let ctx = null;
   let audio = null;
-  let raf = 0;
+  let sendThreshold = null;
   return {
     name: 'element',
     onHeard(cb) { heard = cb; },
@@ -179,23 +205,32 @@ function makeElementConsumer() {
         console.error('audio element error', audio?.error);
         setStatus('Audio element error: ' + (audio?.error?.message || 'stream failed to load'));
       };
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 1024;
       const mute = ctx.createGain();
       mute.gain.value = 0;
-      ctx.createMediaElementSource(audio).connect(analyser);
-      analyser.connect(mute).connect(ctx.destination);
-      const frame = new Float32Array(analyser.fftSize);
-      const poll = () => {
-        analyser.getFloatTimeDomainData(frame);
-        if (rms(frame) > getThreshold()) heard(performance.now());
-        raf = requestAnimationFrame(poll);
-      };
+      const source = ctx.createMediaElementSource(audio);
+      if (ctx.audioWorklet) {
+        const url = URL.createObjectURL(new Blob([detectorSource], { type: 'text/javascript' }));
+        await ctx.audioWorklet.addModule(url);
+        URL.revokeObjectURL(url);
+        const node = new AudioWorkletNode(ctx, 'loudness-detector');
+        node.port.onmessage = () => heard(performance.now());
+        sendThreshold = () => node.port.postMessage({ threshold: getThreshold() });
+        sendThreshold();
+        $('threshold').addEventListener('input', sendThreshold);
+        source.connect(node).connect(mute).connect(ctx.destination);
+      } else {
+        // Older browsers: ScriptProcessorNode does the same job (deprecated, but it works).
+        const node = ctx.createScriptProcessor(256, 1, 1);
+        node.onaudioprocess = (e) => {
+          if (rms(e.inputBuffer.getChannelData(0)) > getThreshold()) heard(performance.now());
+        };
+        source.connect(node).connect(mute).connect(ctx.destination);
+      }
       await audio.play();
-      poll();
     },
     stop() {
-      cancelAnimationFrame(raf);
+      if (sendThreshold) $('threshold').removeEventListener('input', sendThreshold);
+      sendThreshold = null;
       audio?.pause();
       audio?.removeAttribute('src');
       audio?.load(); // releases the network connection
@@ -297,7 +332,7 @@ async function runTrial() {
   armed = true;
   sendCommand('play_track');
   while (!cancelled && performance.now() - t0 < giveUpMs() && expected.some((n) => !(n in stamps))) {
-    await sleep(10);
+    await sleep(50);
   }
   armed = false;
   armedMixing = null;
