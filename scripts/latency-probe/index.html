@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LuteDrop latency probe</title>
+<style>
+  body { font: 14px system-ui, sans-serif; margin: 1.5rem; max-width: 60rem; }
+  label { display: inline-block; margin: 0 1rem 0.5rem 0; }
+  input, select, button { font: inherit; padding: 0.25rem 0.5rem; }
+  #ws { width: 24rem; }
+  table { border-collapse: collapse; margin-top: 1rem; }
+  th, td { border: 1px solid #8884; padding: 0.25rem 0.6rem; text-align: right; }
+  tfoot td { font-weight: bold; }
+  #status { margin-top: 0.75rem; color: #666; }
+</style>
+</head>
+<body>
+<h1>LuteDrop latency probe</h1>
+<p>Dev tool. See README.md. Keep this tab in the foreground while measuring: browsers pause
+animation frames (used by the "element" listener) in background tabs.</p>
+
+<div>
+  <label>WebSocket URL <input id="ws" value="ws://127.0.0.1:3333/ws?token="></label>
+  <button id="connect">Connect WS</button>
+</div>
+<div>
+  <label>Track <select id="track"><option value="">(connect first)</option></select></label>
+  <label>Trials <input id="trials" type="number" value="5" min="1" style="width:4rem"></label>
+  <label>RMS threshold <input id="threshold" type="number" value="0.02" step="0.005" style="width:5rem"></label>
+</div>
+<div>
+  <button id="run" disabled>Run trials</button>
+  <button id="stop" disabled>Stop</button>
+  <button id="copy">Copy as Markdown</button>
+</div>
+<div id="status"></div>
+<table id="results"></table>
+
+<script type="module">
+// ---------------------------------------------------------------- helpers
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const getThreshold = () => Number($('threshold').value);
+const rms = (samples) => {
+  let sum = 0;
+  for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+  return Math.sqrt(sum / samples.length);
+};
+const setStatus = (text) => { $('status').textContent = text; };
+
+// ------------------------------------------------- Ogg page / packet walker
+// An Ogg file is a series of "pages": 27-byte header ("OggS", ..., byte 26 = number
+// of lacing values), then the lacing table, then the body. Each lacing value is a
+// segment length; a value of 255 means "the packet continues in the next segment",
+// so a packet ends at the first value below 255 (possibly on a later page).
+function createOggPacketReader(onPacket) {
+  let buf = new Uint8Array(0);
+  let partial = []; // pieces of a packet that has not ended yet
+  return function push(chunk) {
+    const joined = new Uint8Array(buf.length + chunk.length);
+    joined.set(buf);
+    joined.set(chunk, buf.length);
+    buf = joined;
+    for (;;) {
+      if (buf.length < 27) return;
+      const segCount = buf[26];
+      if (buf.length < 27 + segCount) return;
+      let bodyLen = 0;
+      for (let i = 0; i < segCount; i++) bodyLen += buf[27 + i];
+      const total = 27 + segCount + bodyLen;
+      if (buf.length < total) return; // wait for the rest of the page
+      let pos = 27 + segCount;
+      for (let i = 0; i < segCount; i++) {
+        const len = buf[27 + i];
+        partial.push(buf.subarray(pos, pos + len));
+        pos += len;
+        if (len < 255) {
+          const packet = new Uint8Array(partial.reduce((n, p) => n + p.length, 0));
+          let at = 0;
+          for (const p of partial) { packet.set(p, at); at += p.length; }
+          partial = [];
+          onPacket(packet);
+        }
+      }
+      buf = buf.slice(total);
+    }
+  };
+}
+
+// ------------------------------------------------------------- consumers
+// Each consumer is { name, start(), stop(), onHeard(cb) }. While running it calls
+// cb(performance.now()) every time it hears sound louder than the threshold; the
+// trial runner only keeps the first call after the trial starts.
+
+// "arrival": reads the stream and decodes each packet right away, with no playback
+// and no scheduling. This is the earliest moment a listener could possibly hear it.
+function makeArrivalConsumer() {
+  let heard = () => {};
+  let abort = null;
+  let decoder = null;
+  return {
+    name: 'arrival',
+    onHeard(cb) { heard = cb; },
+    async start() {
+      abort = new AbortController();
+      let packetIndex = 0;
+      const samples = new Float32Array(960); // 20 ms at 48 kHz
+      decoder = new AudioDecoder({
+        output: (data) => {
+          const buf = samples.length >= data.numberOfFrames ? samples : new Float32Array(data.numberOfFrames);
+          data.copyTo(buf, { planeIndex: 0, format: 'f32-planar' });
+          const level = rms(buf.subarray(0, data.numberOfFrames));
+          data.close();
+          if (level > getThreshold()) heard(performance.now());
+        },
+        error: (e) => console.error('arrival decoder error', e),
+      });
+      const push = createOggPacketReader((packet) => {
+        if (packetIndex === 0) {
+          // First packet is OpusHead; the decoder needs it as its "description".
+          decoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 2, description: packet });
+        } else if (packetIndex >= 2) { // packet 1 is OpusTags (metadata), skip it
+          decoder.decode(new EncodedAudioChunk({ type: 'key', timestamp: (packetIndex - 2) * 20000, data: packet }));
+        }
+        packetIndex++;
+      });
+      const res = await fetch('/stream?t=' + Date.now(), { signal: abort.signal });
+      const reader = res.body.getReader();
+      (async () => {
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            push(value);
+          }
+        } catch { /* aborted by stop() */ }
+      })();
+    },
+    stop() {
+      abort?.abort();
+      if (decoder && decoder.state !== 'closed') decoder.close();
+      decoder = null;
+    },
+  };
+}
+
+// "element": today's behaviour: a plain <audio> element. We tap its output with an
+// AnalyserNode to see when sound actually comes out. The gain of 0 keeps the room
+// quiet while still letting the browser pull audio through the graph.
+function makeElementConsumer() {
+  let heard = () => {};
+  let ctx = null;
+  let audio = null;
+  let raf = 0;
+  return {
+    name: 'element',
+    onHeard(cb) { heard = cb; },
+    async start() {
+      ctx = new AudioContext();
+      await ctx.resume();
+      audio = new Audio();
+      audio.crossOrigin = 'anonymous';
+      audio.src = '/stream?t=' + Date.now();
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 1024;
+      const mute = ctx.createGain();
+      mute.gain.value = 0;
+      ctx.createMediaElementSource(audio).connect(analyser);
+      analyser.connect(mute).connect(ctx.destination);
+      const frame = new Float32Array(analyser.fftSize);
+      const poll = () => {
+        analyser.getFloatTimeDomainData(frame);
+        if (rms(frame) > getThreshold()) heard(performance.now());
+        raf = requestAnimationFrame(poll);
+      };
+      await audio.play();
+      poll();
+    },
+    stop() {
+      cancelAnimationFrame(raf);
+      audio?.pause();
+      audio?.removeAttribute('src');
+      audio?.load(); // releases the network connection
+      ctx?.close();
+      audio = null;
+      ctx = null;
+    },
+  };
+}
+
+// ---- SLOT FOR TASK 5 ---------------------------------------------------
+// Add a fourth consumer named "webcodecs" here (it imports /module/player.js)
+// and push it into this array. Column names in the table follow consumer names.
+const consumers = [makeArrivalConsumer(), makeElementConsumer()];
+// -------------------------------------------------------------------------
+
+// ------------------------------------------------------- WebSocket (remote)
+let ws = null;
+let selectedTrack = '';
+let armedMixing = null; // set during a trial: (time) => void
+
+function connect() {
+  ws?.close();
+  ws = new WebSocket($('ws').value);
+  ws.onopen = () => setStatus('WebSocket connected, waiting for state...');
+  ws.onclose = () => { setStatus('WebSocket closed'); $('run').disabled = true; };
+  ws.onerror = () => setStatus('WebSocket error (check URL and token)');
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === 'state') fillTracks(msg);
+    else if (msg.type === 'playback' && armedMixing) {
+      // "Mixing" = LuteDrop says our track is playing and has moved past 0.
+      const st = msg.playbackStates.find((s) => s.trackId === selectedTrack);
+      if (st && st.isPlaying && st.currentTime > 0) armedMixing(performance.now());
+    }
+  };
+}
+
+function fillTracks(msg) {
+  const playing = new Set(msg.playbackStates.filter((s) => s.isPlaying).map((s) => s.trackId));
+  const select = $('track');
+  select.replaceChildren();
+  for (const g of msg.appState.groups) {
+    for (const c of g.comps) {
+      for (const t of c.tracks) {
+        if (playing.has(t.id)) continue;
+        select.add(new Option(`${g.name} / ${c.name} / ${t.name}`, t.id));
+      }
+    }
+  }
+  $('run').disabled = select.options.length === 0;
+  setStatus(`Connected. ${select.options.length} tracks available.`);
+}
+
+const sendCommand = (command) => ws.send(JSON.stringify({ command, trackId: selectedTrack }));
+
+// ----------------------------------------------------------------- trials
+const sourceNames = () => ['arrival', 'mixing', ...consumers.map((c) => c.name).filter((n) => n !== 'arrival')];
+let cancelled = false;
+const trials = []; // each: { arrival, mixing, element, webcodecs, t0 } in performance.now() ms
+
+async function runTrial() {
+  const stamps = {};
+  const expected = sourceNames();
+  let armed = false;
+  const record = (name) => (t) => { if (armed && !(name in stamps)) stamps[name] = t; };
+  for (const c of consumers) c.onHeard(record(c.name));
+  armedMixing = record('mixing');
+
+  sendCommand('stop_track');
+  await sleep(1500); // let everything fall silent
+  armed = true;
+  const t0 = performance.now(); // as close to the send as possible
+  sendCommand('play_track');
+  while (!cancelled && performance.now() - t0 < 8000 && expected.some((n) => !(n in stamps))) {
+    await sleep(10);
+  }
+  armed = false;
+  armedMixing = null;
+  sendCommand('stop_track');
+  await sleep(2000);
+  return { t0, ...stamps };
+}
+
+async function runAll() {
+  cancelled = false;
+  selectedTrack = $('track').value;
+  trials.length = 0;
+  $('run').disabled = true;
+  $('stop').disabled = false;
+  try {
+    // Consumers run for the whole session so each trial sees a steady-state stream.
+    for (const c of consumers) await c.start();
+    await sleep(1000);
+    const count = Number($('trials').value);
+    for (let i = 0; i < count && !cancelled; i++) {
+      setStatus(`Trial ${i + 1} of ${count}...`);
+      trials.push(await runTrial());
+      render();
+    }
+    setStatus(cancelled ? 'Stopped.' : 'Done.');
+  } catch (e) {
+    setStatus('Error: ' + e.message);
+  } finally {
+    for (const c of consumers) c.stop();
+    $('run').disabled = false;
+    $('stop').disabled = true;
+  }
+}
+
+// ---------------------------------------------------------------- results
+const diff = (a, b) => (a != null && b != null ? a - b : null);
+const columns = () => {
+  const cols = [
+    { label: 'arrival−T0', get: (t) => diff(t.arrival, t.t0) },
+    { label: 'mixing−T0', get: (t) => diff(t.mixing, t.t0) },
+    { label: 'element−T0', get: (t) => diff(t.element, t.t0) },
+    { label: 'element−arrival', get: (t) => diff(t.element, t.arrival) },
+  ];
+  if (consumers.some((c) => c.name === 'webcodecs')) {
+    cols.push(
+      { label: 'webcodecs−T0', get: (t) => diff(t.webcodecs, t.t0) },
+      { label: 'webcodecs−arrival', get: (t) => diff(t.webcodecs, t.arrival) },
+    );
+  }
+  return cols;
+};
+const fmt = (v) => (v == null ? 'n/a' : Math.round(v).toString());
+function summarize(values) {
+  const v = values.filter((x) => x != null).sort((a, b) => a - b);
+  if (!v.length) return 'n/a';
+  const mid = Math.floor(v.length / 2);
+  const median = v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2;
+  return `${fmt(median)} (${fmt(v[0])}–${fmt(v[v.length - 1])})`;
+}
+
+// Returns rows of strings: header, one per trial, then the summary row.
+function tableRows() {
+  const cols = columns();
+  return [
+    ['trial', ...cols.map((c) => c.label)],
+    ...trials.map((t, i) => [String(i + 1), ...cols.map((c) => fmt(c.get(t)))]),
+    ['median (min–max)', ...cols.map((c) => summarize(trials.map(c.get)))],
+  ];
+}
+
+function render() {
+  const rows = tableRows();
+  const table = $('results');
+  table.replaceChildren();
+  rows.forEach((row, i) => {
+    const tr = document.createElement('tr');
+    for (const cell of row) {
+      const td = document.createElement(i === 0 ? 'th' : 'td');
+      td.textContent = cell;
+      tr.append(td);
+    }
+    (i === rows.length - 1 && i > 0 ? table.createTFoot() : table).append(tr);
+  });
+}
+
+function copyMarkdown() {
+  const rows = tableRows();
+  const line = (r) => `| ${r.join(' | ')} |`;
+  const md = [line(rows[0]), line(rows[0].map(() => '---')), ...rows.slice(1).map(line)].join('\n');
+  navigator.clipboard.writeText(md).then(() => setStatus('Copied table to clipboard.'));
+}
+
+$('connect').onclick = connect;
+$('run').onclick = runAll;
+$('stop').onclick = () => { cancelled = true; };
+$('copy').onclick = copyMarkdown;
+</script>
+</body>
+</html>
