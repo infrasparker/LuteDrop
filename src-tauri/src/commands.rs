@@ -195,7 +195,7 @@ pub async fn get_waveform_data(
     entry_id: Option<String>,
 ) -> Result<WaveformData, String> {
     // Check file exists
-    if !std::path::Path::new(&file_path).exists() {
+    if !crate::audio::util::is_file_usable(&file_path) {
         if let Some(ref eid) = entry_id {
             state.mark_entry_missing(eid);
         }
@@ -327,12 +327,31 @@ pub fn bulk_import_library_entries(
 }
 
 #[tauri::command]
-pub fn relocate_library_entry(
+// Async on purpose: relocating hashes the whole new file and probes its length,
+// which is slow on a network share. A plain command would block the UI.
+pub async fn relocate_library_entry(
     state: State<'_, Arc<AppStateContainer>>,
     entry_id: String,
     new_file_path: String,
 ) -> Result<AppState, String> {
-    actions::relocate_library_entry(&state, &entry_id, new_file_path)
+    let container = state.inner().clone();
+    tokio::task::spawn_blocking(move || actions::relocate_library_entry(&container, &entry_id, new_file_path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Async on purpose: the search folder may be a network share, and a plain
+/// (non-async) command runs on the main thread, which would freeze the window
+/// during the scan. `spawn_blocking` moves the work to a worker thread.
+#[tauri::command]
+pub async fn find_missing_file_candidates(
+    state: State<'_, Arc<AppStateContainer>>,
+    folder: String,
+) -> Result<crate::models::FixMissingReport, String> {
+    let container = state.inner().clone();
+    tokio::task::spawn_blocking(move || actions::find_missing_file_candidates(&container, &folder))
+        .await
+        .map_err(|e| format!("Scan task failed: {e}"))?
 }
 
 #[tauri::command]

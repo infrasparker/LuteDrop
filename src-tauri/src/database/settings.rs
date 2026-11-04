@@ -1,5 +1,6 @@
-//! Persisted Broadcast (live stream) settings, stored as plain key/value
-//! rows in the `meta` table.
+//! Persisted app settings, stored as plain key/value rows in the `meta`
+//! table. This covers the Broadcast (live stream) settings and the folder
+//! the "Fix missing files" search starts in.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
@@ -8,6 +9,7 @@ const KEY_ENABLED: &str = "broadcast_enabled";
 const KEY_PORT: &str = "broadcast_port";
 const KEY_KEY: &str = "broadcast_key";
 const KEY_PUBLIC_BASE: &str = "broadcast_public_base";
+const KEY_FIX_MISSING_ROOT: &str = "fix_missing_search_root";
 
 /// Port the stream server listens on until the user picks another one.
 /// 5883 spells L-U-T-E on a phone keypad. We avoid 333x because other dev
@@ -103,6 +105,18 @@ pub fn save_broadcast(conn: &Connection, s: &BroadcastSettings) -> Result<(), St
     Ok(())
 }
 
+/// Loads the folder the "Fix missing files" search starts in. Returns `None`
+/// if the user never picked one, or if the stored value is empty.
+pub fn load_fix_missing_root(conn: &Connection) -> Result<Option<String>, String> {
+    Ok(read_meta(conn, KEY_FIX_MISSING_ROOT)?.filter(|root| !root.is_empty()))
+}
+
+/// Saves the folder the "Fix missing files" search starts in. Passing an
+/// empty string clears it, so the next load returns `None`.
+pub fn save_fix_missing_root(conn: &Connection, root: &str) -> Result<(), String> {
+    write_meta(conn, KEY_FIX_MISSING_ROOT, root)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +162,15 @@ mod tests {
             let b = load_broadcast(&conn).unwrap();
             assert_eq!(a.key, b.key, "replacement key must be persisted");
         }
+    }
+
+    #[test]
+    fn fix_missing_root_defaults_to_none_and_round_trips() {
+        let conn = Connection::open_in_memory().unwrap(); init_schema(&conn).unwrap();
+        assert_eq!(load_fix_missing_root(&conn).unwrap(), None);
+        save_fix_missing_root(&conn, r"Z:\media\audio\music").unwrap();
+        assert_eq!(load_fix_missing_root(&conn).unwrap().as_deref(), Some(r"Z:\media\audio\music"));
+        save_fix_missing_root(&conn, "").unwrap();
+        assert_eq!(load_fix_missing_root(&conn).unwrap(), None);
     }
 }

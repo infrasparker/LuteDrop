@@ -34,6 +34,7 @@ installer fetches it automatically, the portable build assumes it's present).
   - Adjust volume/gain
   - Set trim points (start/end)
   - Set loop points (start/end)
+- **Fix missing files** (next to Import) walks through entries whose audio file has moved or been deleted, searches a folder for files with a matching name (your library's folder by default), and relinks each with one click. Skipping an entry leaves it for next time.
 
 ## Building Soundscapes
 

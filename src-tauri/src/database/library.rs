@@ -229,6 +229,39 @@ pub fn update_library_entry_file_path(
     Ok(())
 }
 
+/// Finds the entry (if any) that already owns `file_path`. Returns (id, name).
+/// `file_path` is UNIQUE, so at most one entry can match.
+pub fn find_entry_name_by_file_path(
+    conn: &Connection,
+    file_path: &str,
+) -> Result<Option<(String, String)>, String> {
+    conn.query_row(
+        "SELECT id, name FROM library_entries WHERE file_path = ?1",
+        params![file_path],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    )
+    .optional()
+    .map_err(|e| format!("Failed to look up file_path owner: {e}"))
+}
+
+/// Refreshes the facts about a file after a relink. Hash and size are always
+/// written; the duration is only written when we managed to measure one
+/// (`COALESCE` keeps the old value when `duration` is None).
+pub fn update_library_entry_file_info(
+    conn: &Connection,
+    id: &str,
+    content_hash: &str,
+    file_size: i64,
+    duration: Option<f64>,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE library_entries SET content_hash = ?1, file_size = ?2, duration = COALESCE(?3, duration) WHERE id = ?4",
+        params![content_hash, file_size, duration, id],
+    )
+    .map_err(|e| format!("Failed to update file info: {e}"))?;
+    Ok(())
+}
+
 /// Returns every clip that references the given library entry, with the
 /// enclosing comp and track names for display. Empty vec when unreferenced.
 pub fn get_entry_usage(
