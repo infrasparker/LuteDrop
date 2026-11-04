@@ -114,7 +114,10 @@ function makeArrivalConsumer() {
           data.close();
           if (level > getThreshold()) heard(performance.now());
         },
-        error: (e) => console.error('arrival decoder error', e),
+        error: (e) => {
+          console.error('arrival decoder error', e);
+          setStatus('Arrival decoder error: ' + e.message);
+        },
       });
       const push = createOggPacketReader((packet) => {
         if (packetIndex === 0) {
@@ -126,6 +129,7 @@ function makeArrivalConsumer() {
         packetIndex++;
       });
       const res = await fetch('/stream?t=' + Date.now(), { signal: abort.signal });
+      if (!res.ok) throw new Error(`stream proxy returned HTTP ${res.status}`);
       const reader = res.body.getReader();
       (async () => {
         try {
@@ -134,7 +138,12 @@ function makeArrivalConsumer() {
             if (done) break;
             push(value);
           }
-        } catch { /* aborted by stop() */ }
+        } catch (e) {
+          // stop() aborts the fetch on purpose; anything else is a real failure.
+          if (e.name === 'AbortError') return;
+          console.error('arrival reader failed', e);
+          setStatus('Arrival stream failed: ' + e.message);
+        }
       })();
     },
     stop() {
@@ -162,6 +171,11 @@ function makeElementConsumer() {
       audio = new Audio();
       audio.crossOrigin = 'anonymous';
       audio.src = '/stream?t=' + Date.now();
+      // An <audio> element cannot show us the HTTP status, but it does report failures here.
+      audio.onerror = () => {
+        console.error('audio element error', audio?.error);
+        setStatus('Audio element error: ' + (audio?.error?.message || 'stream failed to load'));
+      };
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 1024;
       const mute = ctx.createGain();
@@ -202,11 +216,17 @@ let armedMixing = null; // set during a trial: (time) => void
 
 function connect() {
   ws?.close();
-  ws = new WebSocket($('ws').value);
-  ws.onopen = () => setStatus('WebSocket connected, waiting for state...');
-  ws.onclose = () => { setStatus('WebSocket closed'); $('run').disabled = true; };
-  ws.onerror = () => setStatus('WebSocket error (check URL and token)');
-  ws.onmessage = (ev) => {
+  const sock = new WebSocket($('ws').value);
+  ws = sock;
+  sock.onopen = () => setStatus('WebSocket connected, waiting for state...');
+  // The old socket's close event can arrive after a new one exists; ignore it then.
+  sock.onclose = () => {
+    if (ws !== sock) return;
+    setStatus('WebSocket closed');
+    $('run').disabled = true;
+  };
+  sock.onerror = () => { if (ws === sock) setStatus('WebSocket error (check URL and token)'); };
+  sock.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === 'state') fillTracks(msg);
     else if (msg.type === 'playback' && armedMixing) {
@@ -244,14 +264,34 @@ async function runTrial() {
   const stamps = {};
   const expected = sourceNames();
   let armed = false;
-  const record = (name) => (t) => { if (armed && !(name in stamps)) stamps[name] = t; };
+  // Every sound we hear updates lastLoud, even before the trial is armed, so we can
+  // tell when the previous trial's tail (e.g. audio buffered in the <audio> element)
+  // has really died away. Only sounds heard after arming count as the result.
+  const lastLoud = {};
+  const record = (name) => (t) => {
+    lastLoud[name] = t;
+    if (armed && !(name in stamps)) stamps[name] = t;
+  };
   for (const c of consumers) c.onHeard(record(c.name));
   armedMixing = record('mixing');
 
   sendCommand('stop_track');
-  await sleep(1500); // let everything fall silent
-  armed = true;
+  // Wait until every listener has been quiet for 1.5 s, but give up after 15 s.
+  const waitStart = performance.now();
+  for (;;) {
+    const now = performance.now();
+    const quietSince = Math.max(waitStart, ...Object.values(lastLoud));
+    if (now - quietSince >= 1500) break;
+    if (now - waitStart > 15000) {
+      setStatus('Warning: room never went quiet, results for this trial may be wrong.');
+      break;
+    }
+    if (cancelled) break;
+    await sleep(50);
+  }
+  if (cancelled) { armedMixing = null; return null; }
   const t0 = performance.now(); // as close to the send as possible
+  armed = true;
   sendCommand('play_track');
   while (!cancelled && performance.now() - t0 < 8000 && expected.some((n) => !(n in stamps))) {
     await sleep(10);
@@ -260,6 +300,10 @@ async function runTrial() {
   armedMixing = null;
   sendCommand('stop_track');
   await sleep(2000);
+  // A stamp before T0 cannot be a reaction to our play command; drop it.
+  for (const [name, t] of Object.entries(stamps)) {
+    if (t - t0 < 0) { console.warn(`discarding ${name} stamp before T0`); delete stamps[name]; }
+  }
   return { t0, ...stamps };
 }
 
@@ -276,7 +320,9 @@ async function runAll() {
     const count = Number($('trials').value);
     for (let i = 0; i < count && !cancelled; i++) {
       setStatus(`Trial ${i + 1} of ${count}...`);
-      trials.push(await runTrial());
+      const trial = await runTrial();
+      if (!trial) break;
+      trials.push(trial);
       render();
     }
     setStatus(cancelled ? 'Stopped.' : 'Done.');

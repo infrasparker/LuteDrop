@@ -47,6 +47,9 @@ function proxyStream(req, res) {
       'Cache-Control': 'no-store',
     });
     up.pipe(res);
+    // If LuteDrop dies mid-stream, pipe() would leave the response open forever.
+    up.on('error', () => res.destroy());
+    up.on('aborted', () => res.destroy());
   });
   upstream.on('error', (e) => {
     if (!res.headersSent) res.writeHead(502);
