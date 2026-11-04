@@ -9,6 +9,7 @@ import { useAudio } from '../composables/useAudio';
 import { useToast } from '../composables/useToast';
 import TagFilter from '../components/TagFilter.vue';
 import ImportDialog from '../components/ImportDialog.vue';
+import FixMissingDialog from '../components/FixMissingDialog.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import type { LibraryEntry, LibraryEntryUsage } from '@generated/index';
 import { AUDIO_EXTENSIONS } from '../constants';
@@ -114,6 +115,10 @@ async function handleImportConfirm(payload: { paths: string[]; tags: string[]; e
   await runImport(payload.paths, payload.tags, payload.entryType);
 }
 
+// --- Fix missing files flow ---
+
+const showFixMissing = ref(false);
+
 // --- Delete flow ---
 
 const showDeleteConfirm = ref(false);
@@ -187,6 +192,22 @@ async function relocateEntry(entryId: string): Promise<void> {
         <VBtn value="ambiance" size="small" prepend-icon="mdi-weather-fog">Ambiance</VBtn>
       </VBtnToggle>
       <VSpacer />
+      <VBadge
+        color="warning"
+        :content="store.missingEntryIds.size"
+        :model-value="store.missingEntryIds.size > 0"
+      >
+        <VBtn
+          prepend-icon="mdi-wrench"
+          variant="tonal"
+          size="small"
+          rounded="xl"
+          class="mr-2"
+          @click="showFixMissing = true"
+        >
+          Fix missing files
+        </VBtn>
+      </VBadge>
       <VMenu :disabled="!!store.importProgress">
         <template #activator="{ props: menuProps }">
           <VBtn
@@ -309,6 +330,8 @@ async function relocateEntry(entryId: string): Promise<void> {
       :paths="pendingImportPaths"
       @import="handleImportConfirm"
     />
+
+    <FixMissingDialog v-model="showFixMissing" />
 
     <ConfirmDialog
       v-model="showDeleteConfirm"

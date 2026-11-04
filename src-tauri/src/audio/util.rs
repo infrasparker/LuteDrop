@@ -13,6 +13,17 @@ pub fn is_audio_path(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+/// The one definition of "this library file is there": it exists, is a
+/// regular file (not a folder) and is not empty. A zero-byte file is treated
+/// as missing because it is what a failed copy or cloud-sync stub leaves
+/// behind, and it can never play. The missing badge, playback and the
+/// fix-missing dialog all call this so they always agree.
+pub fn is_file_usable(path: &str) -> bool {
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.len() > 0)
+        .unwrap_or(false)
+}
+
 /// Quickly probe an audio file for its duration in seconds.
 ///
 /// Uses the miniaudio shim's cheap length probe first (inits a decoder and reads
