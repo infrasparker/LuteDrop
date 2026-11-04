@@ -337,6 +337,17 @@ pub fn update_library_entry_tags(
     mutate_and_reload(container, |conn| library::set_entry_tags(conn, entry_id, &tags))
 }
 
+pub fn bulk_edit_library_entry_tags(
+    container: &AppStateContainer,
+    entry_ids: Vec<String>,
+    add: Vec<String>,
+    remove: Vec<String>,
+) -> Result<AppState, String> {
+    mutate_and_reload(container, |conn| {
+        library::bulk_edit_entry_tags(conn, &entry_ids, &add, &remove)
+    })
+}
+
 pub fn update_library_entry_type(
     container: &AppStateContainer,
     entry_id: &str,

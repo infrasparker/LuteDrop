@@ -5,7 +5,8 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { useAppStore } from '../stores/appStore';
 import { useToast } from '../composables/useToast';
 import { AUDIO_EXTENSIONS } from '../constants';
-import type { FixMissingReport, MatchKind } from '@generated/index';
+import ConfirmDialog from './ConfirmDialog.vue';
+import type { FixMissingReport, LibraryEntryUsage, MatchKind } from '@generated/index';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -36,6 +37,7 @@ const loadError = ref<string | null>(null);
 // Running totals for the summary screen at the end.
 const relinked = ref(0);
 const skipped = ref(0);
+const removed = ref(0);
 
 // Human-readable labels for the match-quality chip on each candidate.
 // Bumped every time the dialog closes or a new scan/relink starts. A backend call
@@ -65,6 +67,7 @@ watch(
     }
     relinked.value = 0;
     skipped.value = 0;
+    removed.value = 0;
     index.value = 0;
     selectedPath.value = null;
     void load('');
@@ -83,6 +86,7 @@ async function load(folder: string): Promise<void> {
     // A fresh report starts a fresh pass, so the counters start over too.
     relinked.value = 0;
     skipped.value = 0;
+    removed.value = 0;
     index.value = 0;
     selectedPath.value = null;
     preselect();
@@ -168,6 +172,57 @@ function skip(): void {
   advance();
 }
 
+// --- Removing an entry ---
+
+// Shown while the user is being asked to confirm removing an entry that
+// clips still use.
+const showRemoveConfirm = ref(false);
+const removeUsage = ref<LibraryEntryUsage[]>([]);
+
+// Delete the current entry from the library instead of relinking it. If any
+// clips use it, ask first, because deleting the entry deletes those clips too
+// (same rule as the Library view's delete button).
+async function remove(): Promise<void> {
+  const entryId = current.value?.entry.id;
+  if (!entryId || relinking.value) return;
+  let usage: LibraryEntryUsage[];
+  try {
+    usage = await invoke<LibraryEntryUsage[]>('get_library_entry_usage', { entryId });
+  } catch (e) {
+    toast.showError(`Could not check whether "${current.value?.entry.name}" is in use: ${e}`);
+    return;
+  }
+  if (usage.length === 0) {
+    await performRemove();
+    return;
+  }
+  removeUsage.value = usage;
+  showRemoveConfirm.value = true;
+}
+
+async function performRemove(): Promise<void> {
+  const entryId = current.value?.entry.id;
+  if (!entryId) return;
+  const id = ++requestId;
+  relinking.value = true; // reuse the busy flag so the other buttons lock too
+  try {
+    await store.command('delete_library_entry', { entryId });
+  } finally {
+    relinking.value = false;
+  }
+  removeUsage.value = [];
+  if (id !== requestId) return;
+  if (store.findLibraryEntry(entryId)) return; // delete failed; stay here
+  removed.value++;
+  // Drop the entry from the report so "Entry X of N" stays truthful; the
+  // next entry slides into the current index.
+  if (report.value) {
+    report.value.entries = report.value.entries.filter((e) => e.entry.id !== entryId);
+  }
+  selectedPath.value = null;
+  preselect();
+}
+
 // Move to the next missing entry and pre-select its best match.
 function advance(): void {
   index.value++;
@@ -229,7 +284,7 @@ function close(): void {
 
         <!-- Finished going through every entry: summary -->
         <div v-else-if="!current" class="pa-4 text-center">
-          Relinked {{ relinked }}, skipped {{ skipped }}, {{ store.missingEntryIds.size }} still missing.
+          Relinked {{ relinked }}, removed {{ removed }}, skipped {{ skipped }}, {{ store.missingEntryIds.size }} still missing.
         </div>
 
         <!-- One missing entry and its candidate replacement files -->
@@ -288,6 +343,16 @@ function close(): void {
           prepend-icon="mdi-file-search"
           @click="browse"
         />
+        <VBtn
+          v-if="current && !loading"
+          text="Remove"
+          variant="plain"
+          color="error"
+          :disabled="relinking"
+          prepend-icon="mdi-delete"
+          title="Delete this entry from the library"
+          @click="remove"
+        />
         <VSpacer />
         <VBtn v-if="current && !loading" text="Skip" variant="plain" :disabled="relinking" @click="skip" />
         <VBtn
@@ -303,6 +368,29 @@ function close(): void {
       </VCardActions>
     </VCard>
   </VDialog>
+
+  <ConfirmDialog
+    v-model="showRemoveConfirm"
+    title="Remove library entry?"
+    confirm-label="Remove"
+    confirm-color="error"
+    @confirm="performRemove"
+  >
+    <div class="mb-2">
+      <strong>{{ current?.entry.name }}</strong> is used in
+      {{ removeUsage.length }} clip{{ removeUsage.length === 1 ? '' : 's' }}:
+    </div>
+    <VList density="compact" class="candidate-list pa-0 mb-2" max-height="220">
+      <VListItem v-for="usage in removeUsage" :key="usage.clipId" density="compact">
+        <VListItemTitle>
+          {{ usage.compName }} <VIcon size="x-small">mdi-chevron-right</VIcon> {{ usage.trackName }}
+        </VListItemTitle>
+      </VListItem>
+    </VList>
+    <div class="text-caption text-warning">
+      Removing will delete this entry and every clip that uses it.
+    </div>
+  </ConfirmDialog>
 </template>
 
 <style scoped>

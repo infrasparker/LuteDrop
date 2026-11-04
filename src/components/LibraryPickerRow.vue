@@ -47,6 +47,12 @@ async function removeTag(tag: string): Promise<void> {
 function handleClick(): void {
   emit('select', props.entry.id);
 }
+
+/// Opens the full waveform editor on top of the picker so the file can be
+/// scrubbed and auditioned before deciding to add it.
+function openEditor(): void {
+  store.editEntryId = props.entry.id;
+}
 </script>
 
 <template>
@@ -91,6 +97,13 @@ function handleClick(): void {
         variant="text"
         size="small"
         @click.stop="togglePreview"
+      />
+      <VBtn
+        icon="mdi-waveform"
+        variant="text"
+        size="small"
+        title="Open in editor (scrub, trim, loop)"
+        @click.stop="openEditor"
       />
     </template>
   </VListItem>

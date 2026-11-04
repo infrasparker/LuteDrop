@@ -8,6 +8,7 @@ import { useLibraryImport } from '../composables/useLibraryImport';
 import { useAudio } from '../composables/useAudio';
 import { useToast } from '../composables/useToast';
 import TagFilter from '../components/TagFilter.vue';
+import TagCellEditor from '../components/TagCellEditor.vue';
 import ImportDialog from '../components/ImportDialog.vue';
 import FixMissingDialog from '../components/FixMissingDialog.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
@@ -84,11 +85,43 @@ function openEditor(entryId: string): void {
   store.editEntryId = entryId;
 }
 
-async function removeTag(entryId: string, tag: string): Promise<void> {
-  const entry = libraryEntries.value.find((e) => e.id === entryId);
-  if (!entry) return;
-  const newTags = entry.tags.filter((t) => t !== tag);
-  await store.command('update_library_entry_tags', { entryId, tags: newTags });
+// --- Multi-select + bulk tagging ---
+
+const selectedIds = ref<string[]>([]);
+const bulkTags = ref<string[]>([]);
+const bulkBusy = ref(false);
+
+// Drop selections for entries that no longer exist (deleted, etc.).
+watch(libraryEntries, (entries) => {
+  const ids = new Set(entries.map((e) => e.id));
+  if (selectedIds.value.some((id) => !ids.has(id))) {
+    selectedIds.value = selectedIds.value.filter((id) => ids.has(id));
+  }
+});
+
+function clearSelection(): void {
+  selectedIds.value = [];
+  bulkTags.value = [];
+}
+
+function cleanBulkTags(): string[] {
+  return bulkTags.value.map((t) => t.trim()).filter((t) => t.length > 0);
+}
+
+async function applyBulkTags(mode: 'add' | 'remove'): Promise<void> {
+  const tags = cleanBulkTags();
+  if (tags.length === 0 || selectedIds.value.length === 0) return;
+  bulkBusy.value = true;
+  try {
+    await store.command('bulk_edit_library_entry_tags', {
+      entryIds: selectedIds.value,
+      add: mode === 'add' ? tags : [],
+      remove: mode === 'remove' ? tags : [],
+    });
+    bulkTags.value = [];
+  } finally {
+    bulkBusy.value = false;
+  }
 }
 
 // --- Import flow ---
@@ -171,7 +204,7 @@ async function relocateEntry(entryId: string): Promise<void> {
 </script>
 
 <template>
-  <div class="d-flex flex-column pa-3" style="height: 100%;">
+  <div class="d-flex flex-column pa-3" style="height: 100%; position: relative;">
     <Teleport to="#app-bar-main">
       <VTextField
         v-model="searchQuery"
@@ -243,8 +276,11 @@ async function relocateEntry(entryId: string): Promise<void> {
       </span>
     </div>
 
+
     <VDataTableVirtual
       v-if="filteredEntries.length > 0"
+      v-model="selectedIds"
+      show-select
       :headers="headers"
       :items="filteredEntries"
       item-value="id"
@@ -262,6 +298,16 @@ async function relocateEntry(entryId: string): Promise<void> {
         onClick: () => openEditor(item.id),
       })"
     >
+      <!-- Stop the checkbox click from also opening the editor -->
+      <template #item.data-table-select="{ internalItem, isSelected, toggleSelect }">
+        <VCheckboxBtn
+          :model-value="isSelected(internalItem)"
+          density="compact"
+          @click.stop
+          @update:model-value="toggleSelect(internalItem)"
+        />
+      </template>
+
       <template #item.status="{ item }">
         <VBtn
           v-if="store.isEntryMissing(item.id)"
@@ -288,17 +334,7 @@ async function relocateEntry(entryId: string): Promise<void> {
       </template>
 
       <template #item.tags="{ item }">
-        <VChip
-          v-for="tag in item.tags"
-          :key="tag"
-          size="small"
-          class="mr-1"
-          closable
-          @click:close.stop="removeTag(item.id, tag)"
-          @click.stop
-        >
-          {{ tag }}
-        </VChip>
+        <TagCellEditor :entry-id="item.id" :tags="item.tags" />
       </template>
 
       <template #item.duration="{ item }">
@@ -324,6 +360,58 @@ async function relocateEntry(entryId: string): Promise<void> {
       <VIcon size="64" class="mb-4">mdi-music-box-multiple-outline</VIcon>
       <span>Import some audio files</span>
     </div>
+
+    <!-- Bulk tag bar: floats over the bottom of the table so the rows
+         never shift when it appears -->
+    <VFadeTransition>
+      <div v-if="selectedIds.length > 0" class="bulk-bar elevation-8 d-flex align-center ga-2 px-3 py-2">
+        <VIcon size="small" color="primary">mdi-checkbox-multiple-marked</VIcon>
+        <span class="text-body-2 font-weight-medium" style="white-space: nowrap;">
+          {{ selectedIds.length }} selected
+        </span>
+        <VCombobox
+          v-model="bulkTags"
+          :items="tags"
+          placeholder="Tags to add or remove"
+          variant="outlined"
+          density="compact"
+          hide-details
+          hide-no-data
+          multiple
+          chips
+          closable-chips
+          class="flex-grow-1"
+          style="min-width: 240px;"
+        />
+        <VBtn
+          prepend-icon="mdi-tag-plus"
+          color="primary"
+          variant="tonal"
+          size="small"
+          :disabled="bulkBusy || cleanBulkTags().length === 0"
+          :loading="bulkBusy"
+          @click="applyBulkTags('add')"
+        >
+          Add
+        </VBtn>
+        <VBtn
+          prepend-icon="mdi-tag-minus"
+          variant="tonal"
+          size="small"
+          :disabled="bulkBusy || cleanBulkTags().length === 0"
+          @click="applyBulkTags('remove')"
+        >
+          Remove
+        </VBtn>
+        <VBtn
+          icon="mdi-close"
+          variant="text"
+          size="small"
+          title="Clear selection"
+          @click="clearSelection"
+        />
+      </div>
+    </VFadeTransition>
 
     <ImportDialog
       v-model="showImportDialog"
@@ -363,6 +451,18 @@ async function relocateEntry(entryId: string): Promise<void> {
 </template>
 
 <style scoped>
+.bulk-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  width: min(720px, calc(100% - 32px));
+  z-index: 2;
+  background: rgb(var(--v-theme-surface));
+  border: 1px solid rgba(var(--v-theme-primary), 0.5);
+  border-radius: 10px;
+}
+
 :deep(.preview-active) {
   background: rgba(240, 168, 48, 0.08) !important;
   border-left: 3px solid #F0A830;
