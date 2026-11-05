@@ -79,10 +79,11 @@ pub fn update_library_entry_name(
 }
 
 /// Updates the `entry_type` column for the given entry. Only music entries
-/// are auto-tagged, so when an entry stops being music its auto tags and auto
-/// role are deleted in the same transaction (without rejections, since the
-/// user never judged them) and orphaned tag rows are swept. User tags,
-/// rejections, and roles the user set or cleared are left alone.
+/// are auto-tagged and roles only apply to music, so when an entry stops being
+/// music its auto tags are deleted in the same transaction (without
+/// rejections, since the user never judged them), orphaned tag rows are swept,
+/// and its role is cleared entirely regardless of source (changing the type is
+/// itself a user action). User tags and rejections are left alone.
 ///
 /// Returns true if the entry was not music before and is music now.
 pub fn update_library_entry_type(
@@ -119,10 +120,10 @@ pub fn update_library_entry_type(
         sweep_orphan_tags(conn)?;
         conn.execute(
             "UPDATE library_entries SET role = NULL, role_source = NULL, role_score = NULL
-             WHERE id = ?1 AND role_source = ?2",
-            params![id, TagSource::Auto.as_str()],
+             WHERE id = ?1",
+            params![id],
         )
-        .map_err(|e| format!("Failed to clear auto role: {e}"))?;
+        .map_err(|e| format!("Failed to clear role: {e}"))?;
     }
 
     tx.commit()
@@ -1799,7 +1800,7 @@ mod tests {
     }
 
     #[test]
-    fn leaving_music_clears_only_auto_role() {
+    fn leaving_music_clears_role() {
         let conn = open_memory_db();
         let auto = music_entry(&conn, "/a.mp3");
         let user = music_entry(&conn, "/b.mp3");
@@ -1813,7 +1814,7 @@ mod tests {
         }
 
         assert_eq!(role_row(&conn, &auto), (None, None, None));
-        assert_eq!(role_row(&conn, &user), (Some("non_combat".into()), Some("user".into()), None));
-        assert_eq!(role_row(&conn, &cleared), (None, Some("user".into()), None));
+        assert_eq!(role_row(&conn, &user), (None, None, None));
+        assert_eq!(role_row(&conn, &cleared), (None, None, None));
     }
 }
