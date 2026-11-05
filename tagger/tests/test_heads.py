@@ -87,3 +87,23 @@ def test_single_negative_not_trusted(rng):
     assert r.trusted is False
     assert r.neg == 1
     assert len(r.scores) == 3
+
+
+def test_scaled_head_handles_unscaled_features():
+    rng = np.random.default_rng(1)
+    n = 12
+    scales = np.array([1.0, 1e-3, 1e3])
+
+    def make(shift):
+        # Only the tiny-scale column carries the class signal.
+        X = rng.normal(0, 1, size=(n, 3)) * scales
+        X[:, 1] += shift * 1e-3
+        return X
+
+    pos, neg = make(+2.0), make(-2.0)
+    targets = np.vstack([make(+2.0)[:1], make(-2.0)[:1]])
+    plain = fit_and_score(pos, neg, targets)
+    scaled = fit_and_score(pos, neg, targets, scale=True)
+    assert not plain.trusted or plain.auc < 0.9
+    assert scaled.auc >= 0.9
+    assert scaled.scores[0] > scaled.scores[1]

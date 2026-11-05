@@ -32,7 +32,7 @@ token rejects all requests.
 |---|---|---|
 | `GET /health` | none | `{model, cache_count, ready, error}`; `error` is null unless the model failed to load |
 | `POST /embed` | `{items: [{hash, path}]}`, at most 32 items | `{results: [{hash, ok, error?}]}`; cached hashes return immediately; 503 while the model is loading or if it failed to load |
-| `POST /score` | `{gate: {positives, negatives}, tags: {name: {positives, negatives}}, targets}`; an optional `scene` field is accepted and ignored | `{model, gate, tags}`, each head with `quality {auc, pos, neg}`, `trusted`, `threshold` and `scores` keyed by hash |
+| `POST /score` | `{gate: {positives, negatives}, tags: {name: {positives, negatives}}, pace?: {positives, negatives}, targets}`; an optional `scene` field is accepted and ignored | `{model, gate, tags, pace?, mood}`, each head with `quality {auc, pos, neg}`, `trusted`, `threshold` and `scores` keyed by hash; `pace` is present only when requested; `mood` maps each target hash to `{bright, light}` |
 | `POST /similar` | `{query: [hash], candidates: [hash], limit}` | `{results: [{hash, score}]}`; cosine similarity to the normalized centroid of the query vectors, query hashes excluded, best first |
 | `POST /search` | `{text, candidates: [hash], limit}` | `{results: [{hash, score}]}`; cosine similarity of the text embedding with each candidate's mean audio embedding; 503 while the model is loading |
 | `POST /map` | `{hashes: [hash]}` | `{points: [{hash, x, y}]}`; 2D layout normalized to [0, 1] (t-SNE with cosine metric, PCA below 5 items), cached in memory by the sorted hash set |
@@ -42,6 +42,14 @@ token rejects all requests.
 with the classes swapped. It is null when no cutoff reaches the target
 precision, including when a class has fewer than two examples, so consumers
 check `trusted` before using it.
+
+`pace` is a head trained on the cached rhythm features (standardized, in the
+fixed `rhythm.FEATURES` order) instead of embeddings. Its examples and targets
+need rhythm features, so hashes without them are ignored and receive no pace
+score. `mood` scores are raw, not z-scored: `bright` is the mean cosine of the
+track's mean embedding with the bright prompts minus the dark prompts, and
+`light` is the light prompts minus the heavy ones. The prompt embeddings are
+computed once, the first time `/score` needs them.
 
 Hashes with no cached embedding are ignored as examples and receive no score
 as targets.

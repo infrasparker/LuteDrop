@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import threading
@@ -8,6 +9,8 @@ from typing import Protocol
 import numpy as np
 
 from . import config
+
+log = logging.getLogger(__name__)
 
 _SAFE_HASH = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -163,10 +166,17 @@ def load_windows(path: str) -> np.ndarray:
     return _cut_windows(_decode(path))
 
 
-def decode_track(path: str) -> tuple[np.ndarray, dict[str, float]]:
+def decode_track(path: str) -> tuple[np.ndarray, dict[str, float] | None]:
     """One decode, two products: the embedding windows and the track's rhythm
-    features. Runs in a worker process."""
+    features. Runs in a worker process. A rhythm failure must not cost the
+    embedding, so it is logged and the features come back as None."""
     from . import rhythm
 
     y = _decode(path)
-    return _cut_windows(y), rhythm.track_features(y, config.SAMPLE_RATE)
+    windows = _cut_windows(y)
+    try:
+        feats = rhythm.track_features(y, config.SAMPLE_RATE)
+    except Exception:
+        log.exception("Rhythm features failed for %s", path)
+        feats = None
+    return windows, feats

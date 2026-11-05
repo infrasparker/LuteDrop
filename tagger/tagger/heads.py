@@ -4,6 +4,8 @@ import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import LeaveOneOut
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 from . import config
 
@@ -21,15 +23,18 @@ class HeadResult:
     scores: np.ndarray
 
 
-def _new_model() -> LogisticRegression:
-    return LogisticRegression(C=config.LR_C, class_weight="balanced", max_iter=5000)
+def _new_model(scale: bool = False):
+    model = LogisticRegression(C=config.LR_C, class_weight="balanced", max_iter=5000)
+    # The scaler lives in the pipeline so every fit (each LOO fold and the
+    # final model) learns its own mean and variance from its training rows.
+    return make_pipeline(StandardScaler(), model) if scale else model
 
 
-def loo_scores(X: np.ndarray, y: np.ndarray) -> np.ndarray:
+def loo_scores(X: np.ndarray, y: np.ndarray, scale: bool = False) -> np.ndarray:
     """Leave-one-out positive-class probability for every example."""
     out = np.zeros(len(y))
     for train, test in LeaveOneOut().split(X):
-        model = _new_model().fit(X[train], y[train])
+        model = _new_model(scale).fit(X[train], y[train])
         out[test] = model.predict_proba(X[test])[:, 1]
     return out
 
@@ -46,13 +51,16 @@ def _precision_threshold(scores: np.ndarray, y: np.ndarray) -> float | None:
 
 
 def fit_and_score(
-    X_pos: np.ndarray, X_neg: np.ndarray, X_targets: np.ndarray
+    X_pos: np.ndarray, X_neg: np.ndarray, X_targets: np.ndarray, scale: bool = False
 ) -> HeadResult:
     """Fit a logistic head and score the targets.
 
     With fewer than two examples in either class, leave-one-out cannot train
     on both classes, so the result is untrusted (auc and thresholds None) and
     the scores are all 0.0.
+
+    `scale` standardizes each feature first (for inputs on different scales,
+    such as rhythm features); embeddings are already comparable and skip it.
     """
     n_pos, n_neg = len(X_pos), len(X_neg)
     if min(n_pos, n_neg) < 2:
@@ -61,7 +69,7 @@ def fit_and_score(
     X = np.vstack([X_pos, X_neg])
     y = np.array([1] * n_pos + [0] * n_neg)
 
-    loo = loo_scores(X, y)
+    loo = loo_scores(X, y, scale)
     auc = float(roc_auc_score(y, loo))
     threshold = _precision_threshold(loo, y)
     neg_threshold = _precision_threshold(1 - loo, 1 - y)
@@ -71,5 +79,5 @@ def fit_and_score(
         and auc >= config.MIN_AUC
         and threshold is not None
     )
-    scores = _new_model().fit(X, y).predict_proba(X_targets)[:, 1]
+    scores = _new_model(scale).fit(X, y).predict_proba(X_targets)[:, 1]
     return HeadResult(auc, n_pos, n_neg, trusted, threshold, neg_threshold, scores)

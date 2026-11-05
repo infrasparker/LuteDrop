@@ -11,7 +11,7 @@ import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from . import heads, vibe
+from . import heads, moods, rhythm, vibe
 from .embed import Embedder, EmbeddingCache, MuqEmbedder, decode_track
 
 MAX_EMBED_ITEMS = 32
@@ -45,6 +45,7 @@ class ScoreRequest(BaseModel):
     scene: str = ""
     gate: Examples
     tags: dict[str, Examples] = {}
+    pace: Examples | None = None
     targets: list[str] = []
 
 
@@ -68,7 +69,7 @@ def _limit(n: int) -> int:
     return min(max(n, 0), MAX_RESULTS)
 
 
-def _decode(path: str):
+def _decode(path: str) -> tuple[np.ndarray, dict[str, float] | None]:
     # Module-level so a process pool can pickle it by reference.
     return decode_track(path)
 
@@ -155,7 +156,8 @@ def create_app(
                 windows, feats = future.result()
                 if not cache.has(hash):
                     cache.put(hash, embedder.embed_windows(windows))
-                cache.put_rhythm(hash, feats)
+                if feats is not None:
+                    cache.put_rhythm(hash, feats)
                 results[hash] = {"hash": hash, "ok": True}
             except BrokenProcessPool as e:
                 replace_pool(pool)
@@ -174,13 +176,23 @@ def create_app(
                 rows.append(v)
         return found, (np.vstack(rows) if rows else np.empty((0, 0)))
 
-    def score_head(examples: Examples, target_hashes, X_targets):
-        _, X_pos = vectors(examples.positives)
-        _, X_neg = vectors(examples.negatives)
+    def rhythm_vectors(hashes: list[str]) -> tuple[list[str], np.ndarray]:
+        """Rhythm feature rows (FEATURES order) for the hashes that have them."""
+        found, rows = [], []
+        for h in dict.fromkeys(hashes):
+            feats = cache.get_rhythm(h)
+            if feats is not None:
+                found.append(h)
+                rows.append([feats[k] for k in rhythm.FEATURES])
+        return found, (np.array(rows) if rows else np.empty((0, len(rhythm.FEATURES))))
+
+    def score_head(examples: Examples, target_hashes, X_targets, get=vectors, scale=False):
+        _, X_pos = get(examples.positives)
+        _, X_neg = get(examples.negatives)
         # fit_and_score cannot predict on an empty array; score one example
         # row instead and drop the result when there are no targets.
         probe = X_targets if len(target_hashes) else (X_pos[:1] if len(X_pos) else X_neg[:1])
-        r = heads.fit_and_score(X_pos, X_neg, probe)
+        r = heads.fit_and_score(X_pos, X_neg, probe, scale)
         return {
             "quality": {"auc": r.auc, "pos": r.pos, "neg": r.neg},
             "trusted": r.trusted,
@@ -191,10 +203,42 @@ def create_app(
             else {},
         }
 
+    # Unit-length mood prompt vectors per pole, embedded the first time /score
+    # needs them (the model must be loaded) and reused after that.
+    mood_vecs: dict[str, np.ndarray] = {}
+    mood_lock = threading.Lock()
+
+    def mood_poles() -> dict[str, np.ndarray]:
+        with mood_lock:
+            if not mood_vecs:
+                if not loaded.wait(LOAD_WAIT_SECONDS):
+                    raise HTTPException(status_code=503, detail="model is still loading")
+                if load_error:
+                    raise HTTPException(
+                        status_code=503, detail=f"model failed to load: {load_error[0]}"
+                    )
+                for name, texts in moods.POLES.items():
+                    vecs = np.asarray(embedder.embed_text(texts), dtype=np.float64)
+                    norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+                    mood_vecs[name] = vecs / np.where(norms == 0, 1, norms)
+            return dict(mood_vecs)
+
+    def mood_scores(target_hashes: list[str], X_targets: np.ndarray) -> dict[str, dict]:
+        if not target_hashes:
+            return {}
+        poles = mood_poles()
+        sims = {name: (X_targets @ v.T).mean(axis=1) for name, v in poles.items()}
+        bright = sims["bright"] - sims["dark"]
+        light = sims["light"] - sims["heavy"]
+        return {
+            h: {"bright": float(b), "light": float(li)}
+            for h, b, li in zip(target_hashes, bright, light)
+        }
+
     @app.post("/score")
     def score(req: ScoreRequest):
         target_hashes, X_targets = vectors(req.targets)
-        return {
+        out = {
             "model": embedder.name,
             "gate": score_head(req.gate, target_hashes, X_targets),
             "tags": {
@@ -202,6 +246,11 @@ def create_app(
                 for tag, ex in req.tags.items()
             },
         }
+        if req.pace is not None:
+            r_hashes, R_targets = rhythm_vectors(req.targets)
+            out["pace"] = score_head(req.pace, r_hashes, R_targets, rhythm_vectors, scale=True)
+        out["mood"] = mood_scores(target_hashes, X_targets)
+        return out
 
     @app.post("/similar")
     def similar(req: SimilarRequest):

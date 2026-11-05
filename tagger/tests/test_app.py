@@ -419,3 +419,100 @@ def test_embed_stores_rhythm_for_new_files(tmp_path, monkeypatch):
     c, cache = _rhythm_client(tmp_path, monkeypatch, [])
     assert embed(c, [("h2", "hi-1")]).json()["results"] == [{"hash": "h2", "ok": True}]
     assert cache.has("h2") and cache.has_rhythm("h2")
+
+
+def test_embed_skips_rhythm_when_features_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), None))
+    cache = EmbeddingCache(tmp_path)
+    app = create_app(FakeEmbedder(), cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2))
+    c = TestClient(app)
+    assert embed(c, [("h3", "hi-1")]).json()["results"] == [{"hash": "h3", "ok": True}]
+    assert cache.has("h3") and not cache.has_rhythm("h3")
+
+
+def _rhythm_scored(client, cache, n=6):
+    """Seed embeddings plus rhythm vectors where positives have high perc_ratio."""
+    hashes = seed(client, n)
+    rng = np.random.default_rng(3)
+    for h in hashes:
+        feats = {k: float(rng.normal(0, 1)) for k in rhythm.FEATURES}
+        feats["perc_ratio"] = (5.0 if h.startswith("hi") else -5.0) + float(rng.normal(0, 0.3))
+        cache.put_rhythm(h, feats)
+    return hashes
+
+
+@pytest.fixture
+def scored(tmp_path, monkeypatch):
+    def fake_decode(path):
+        kind, idx = path.split("-")
+        return synthetic(1.0 if kind == "hi" else -1.0, int(idx)), FEATS
+
+    monkeypatch.setattr(app_module, "decode_track", fake_decode)
+    cache = EmbeddingCache(tmp_path)
+    app = create_app(FakeEmbedder(), cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2))
+    return TestClient(app), cache
+
+
+def test_score_returns_pace_head_on_rhythm(scored):
+    client, cache = scored
+    hashes = _rhythm_scored(client, cache)
+    pos = [h for h in hashes if h.startswith("hi")]
+    neg = [h for h in hashes if h.startswith("lo")]
+    cache._rhythm_path("lo0").unlink()  # one target without rhythm
+    body = {
+        "gate": {"positives": pos, "negatives": neg},
+        "pace": {"positives": pos, "negatives": neg[1:]},
+        "targets": hashes,
+    }
+    data = client.post("/score", json=body, headers=HEADERS).json()
+    pace = data["pace"]
+    assert set(pace) == {"quality", "trusted", "threshold", "neg_threshold", "scores"}
+    assert pace["trusted"] is True
+    assert set(pace["scores"]) == set(hashes) - {"lo0"}
+    assert all(pace["scores"][h] > 0.5 for h in pos)
+    assert all(pace["scores"][h] < 0.5 for h in neg[1:])
+
+
+def test_score_without_pace_has_no_pace_key(client):
+    hashes = seed(client)
+    pos = [h for h in hashes if h.startswith("hi")]
+    neg = [h for h in hashes if h.startswith("lo")]
+    body = {"gate": {"positives": pos, "negatives": neg}, "targets": hashes}
+    assert "pace" not in client.post("/score", json=body, headers=HEADERS).json()
+
+
+def test_score_returns_raw_mood_for_targets(tmp_path, monkeypatch):
+    from tagger import moods
+
+    dirs = {}
+    for i, text in enumerate(moods.BRIGHT + moods.DARK + moods.LIGHT + moods.HEAVY):
+        v = np.zeros(DIM)
+        v[i % DIM] = 1.0
+        dirs[text] = v
+
+    class MoodEmbedder(FakeEmbedder):
+        calls = 0
+
+        def embed_text(self, texts):
+            MoodEmbedder.calls += 1
+            return np.vstack([dirs[t] for t in texts])
+
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), FEATS))
+    cache = EmbeddingCache(tmp_path)
+    app = create_app(MoodEmbedder(), cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2))
+    c = TestClient(app)
+    embed(c, [("a", "x-1"), ("b", "x-2")])
+    body = {"gate": {}, "targets": ["a", "b", "ghost"]}
+    data = c.post("/score", json=body, headers=HEADERS).json()
+    c.post("/score", json=body, headers=HEADERS)
+    assert MoodEmbedder.calls == 4  # one embed_text per pole, computed once
+    assert set(data["mood"]) == {"a", "b"}
+
+    mean = cache.get("a")
+
+    def pole(texts):
+        return float(np.mean([mean @ dirs[t] for t in texts]))
+
+    assert data["mood"]["a"]["bright"] == pytest.approx(pole(moods.BRIGHT) - pole(moods.DARK))
+    assert data["mood"]["a"]["light"] == pytest.approx(pole(moods.LIGHT) - pole(moods.HEAVY))
+    assert data["mood"]["a"]["bright"] != 0
