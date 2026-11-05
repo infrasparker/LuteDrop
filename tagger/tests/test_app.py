@@ -22,6 +22,11 @@ class FakeEmbedder:
     def load(self):
         pass
 
+    def embed_text(self, texts):
+        # Points along the direction of the "hi" tracks.
+        v = np.linspace(1, 2, DIM)
+        return np.tile(v / np.linalg.norm(v), (len(texts), 1))
+
     def embed_windows(self, wavs):
         out = np.zeros((len(wavs), DIM), dtype=np.float32)
         for i, w in enumerate(wavs):
@@ -250,3 +255,133 @@ def test_score_with_no_cached_targets(client):
         assert data["tags"]["brass"]["scores"] == {}
         assert data["gate"]["quality"]["pos"] == 6
         assert data["tags"]["brass"]["trusted"] is True
+
+
+def test_score_gate_has_neg_threshold(client):
+    hashes = seed(client)
+    pos = [h for h in hashes if h.startswith("hi")]
+    neg = [h for h in hashes if h.startswith("lo")]
+    body = {"gate": {"positives": pos, "negatives": neg}, "tags": {}, "targets": hashes}
+    data = client.post("/score", json=body, headers=HEADERS).json()
+    assert data["gate"]["neg_threshold"] is not None
+    assert 0.0 < data["gate"]["neg_threshold"] <= 1.0
+
+
+def test_score_untrusted_gate_has_null_neg_threshold(client):
+    hashes = seed(client)
+    body = {
+        "gate": {"positives": hashes[:1], "negatives": hashes[-1:]},
+        "tags": {},
+        "targets": hashes,
+    }
+    assert client.post("/score", json=body, headers=HEADERS).json()["gate"]["neg_threshold"] is None
+
+
+def test_similar_ranks_by_centroid_and_excludes_query(client):
+    hashes = seed(client)
+    his = [h for h in hashes if h.startswith("hi")]
+    body = {"query": his[:2], "candidates": hashes, "limit": 50}
+    r = client.post("/similar", json=body, headers=HEADERS)
+    assert r.status_code == 200
+    results = r.json()["results"]
+    got = [x["hash"] for x in results]
+    assert not set(got) & set(his[:2])
+    assert set(got[: len(his) - 2]) == set(his[2:])
+    scores = [x["score"] for x in results]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_similar_limit(client):
+    hashes = seed(client)
+    body = {"query": ["hi0"], "candidates": hashes, "limit": 3}
+    assert len(client.post("/similar", json=body, headers=HEADERS).json()["results"]) == 3
+
+
+def test_similar_limit_is_capped(client):
+    hashes = seed(client)
+    body = {"query": ["hi0"], "candidates": hashes, "limit": 100000}
+    assert client.post("/similar", json=body, headers=HEADERS).status_code == 200
+
+
+def test_similar_empty_inputs(client):
+    hashes = seed(client)
+    for body in (
+        {"query": [], "candidates": hashes},
+        {"query": ["hi0"], "candidates": []},
+        {"query": ["ghost"], "candidates": hashes},
+        {"query": ["hi0"], "candidates": ["ghost"]},
+    ):
+        r = client.post("/similar", json=body, headers=HEADERS)
+        assert r.status_code == 200
+        assert r.json() == {"results": []}
+
+
+def test_search_uses_text_embedding(client):
+    hashes = seed(client)
+    body = {"text": "bright and heroic", "candidates": hashes, "limit": 6}
+    r = client.post("/search", json=body, headers=HEADERS)
+    assert r.status_code == 200
+    got = [x["hash"] for x in r.json()["results"]]
+    assert len(got) == 6
+    assert all(h.startswith("hi") for h in got)
+
+
+def test_search_empty_text_or_candidates(client):
+    hashes = seed(client)
+    for body in ({"text": "  ", "candidates": hashes}, {"text": "x", "candidates": []}):
+        r = client.post("/search", json=body, headers=HEADERS)
+        assert r.json() == {"results": []}
+
+
+def test_map_shape_range_and_cache(client, monkeypatch):
+    hashes = seed(client)
+    n_calls = []
+    real = app_module.vibe.layout_2d
+    monkeypatch.setattr(
+        app_module.vibe, "layout_2d", lambda v: (n_calls.append(1), real(v))[1]
+    )
+    first = client.post("/map", json={"hashes": hashes}, headers=HEADERS).json()["points"]
+    second = client.post(
+        "/map", json={"hashes": list(reversed(hashes))}, headers=HEADERS
+    ).json()["points"]
+    assert len(n_calls) == 1
+    assert {p["hash"] for p in first} == set(hashes)
+    assert all(0.0 <= p["x"] <= 1.0 and 0.0 <= p["y"] <= 1.0 for p in first)
+    by = lambda pts: {p["hash"]: (p["x"], p["y"]) for p in pts}
+    assert by(first) == by(second)
+
+
+def test_map_tiny_inputs(client):
+    hashes = seed(client, n=3)
+    for n in (0, 1, 2, 4):
+        r = client.post("/map", json={"hashes": hashes[:n]}, headers=HEADERS)
+        assert r.status_code == 200
+        pts = r.json()["points"]
+        assert len(pts) == n
+    one = client.post("/map", json={"hashes": hashes[:1]}, headers=HEADERS).json()["points"]
+    assert (one[0]["x"], one[0]["y"]) == (0.5, 0.5)
+
+
+def test_endpoints_drop_uncached_hashes(client):
+    hashes = seed(client)
+    r = client.post("/map", json={"hashes": hashes + ["ghost"]}, headers=HEADERS)
+    assert {p["hash"] for p in r.json()["points"]} == set(hashes)
+    r = client.post(
+        "/similar", json={"query": ["hi0"], "candidates": hashes + ["ghost"]}, headers=HEADERS
+    )
+    assert "ghost" not in {x["hash"] for x in r.json()["results"]}
+    r = client.post("/search", json={"text": "x", "candidates": hashes + ["ghost"]}, headers=HEADERS)
+    assert "ghost" not in {x["hash"] for x in r.json()["results"]}
+
+
+@pytest.mark.parametrize(
+    "path,body",
+    [
+        ("/similar", {"query": [], "candidates": []}),
+        ("/search", {"text": "x", "candidates": []}),
+        ("/map", {"hashes": []}),
+    ],
+)
+def test_vibe_endpoints_require_token(client, path, body):
+    assert client.post(path, json=body).status_code == 401
+    assert client.post(path, json=body, headers={"X-LuteDrop-Token": "nope"}).status_code == 401

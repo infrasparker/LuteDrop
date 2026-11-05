@@ -59,6 +59,9 @@ def layout_2d(vectors: np.ndarray) -> np.ndarray:
         return np.empty((0, 2))
     if n == 1:
         return np.array([[0.5, 0.5]])
+    if np.ptp(v, axis=0).max() < 1e-12:
+        # No spread to lay out (identical or all-zero vectors).
+        return np.full((n, 2), 0.5)
     if n < 5:
         pts = PCA(n_components=min(2, n, v.shape[1])).fit_transform(v)
         if pts.shape[1] < 2:
