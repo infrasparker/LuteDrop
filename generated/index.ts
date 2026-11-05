@@ -1,4 +1,5 @@
 export type { AppState } from "./AppState";
+export type { AutoTag } from "./AutoTag";
 export type { BroadcastStatus } from "./BroadcastStatus";
 export type { BulkImportProgress } from "./BulkImportProgress";
 export type { Clip } from "./Clip";

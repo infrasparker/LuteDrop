@@ -5,11 +5,13 @@ import { storeToRefs } from 'pinia';
 const props = defineProps<{
   selectedTags: string[];
   untagged?: boolean;
+  hasAuto?: boolean;
 }>();
 
 const emit = defineEmits<{
   'update:selectedTags': [tags: string[]];
   'update:untagged': [value: boolean];
+  'update:hasAuto': [value: boolean];
 }>();
 
 const store = useAppStore();
@@ -25,6 +27,10 @@ function toggleTag(tag: string): void {
   } else {
     emit('update:selectedTags', [...current, tag]);
   }
+}
+
+function toggleHasAuto(): void {
+  emit('update:hasAuto', !props.hasAuto);
 }
 
 function toggleUntagged(): void {
@@ -47,6 +53,16 @@ function toggleUntagged(): void {
       @click="toggleUntagged"
     >
       Untagged
+    </VChip>
+    <VChip
+      :color="hasAuto ? 'primary' : undefined"
+      :variant="hasAuto ? 'flat' : 'outlined'"
+      size="small"
+      clickable
+      prepend-icon="mdi-creation"
+      @click="toggleHasAuto"
+    >
+      Has auto tags
     </VChip>
     <VChip
       v-for="tag in tags"

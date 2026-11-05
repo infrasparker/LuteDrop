@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
 import WaveformEditor from './WaveformEditor.vue';
+import TagChip from './TagChip.vue';
 import { open } from '@tauri-apps/plugin-dialog';
 import { AUDIO_EXTENSIONS } from '../constants';
 import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
@@ -55,6 +56,9 @@ async function toggleLoop(): Promise<void> {
 // Local editable fields
 const editName = ref('');
 const editTags = ref<string[]>([]);
+// Auto tag names shown when the dialog opened; sent with each save so only
+// auto tags removed in this dialog are rejected.
+const seenAutoTags = ref<string[]>([]);
 const editEntryType = ref('music');
 const { local: localGain } = useLocalVolume(() => entry.value?.volume);
 
@@ -80,6 +84,7 @@ watch(() => props.modelValue, (open) => {
   if (open && entry.value) {
     editName.value = entry.value.name;
     editTags.value = [...entry.value.tags];
+    seenAutoTags.value = entry.value.autoTags.map((a) => a.tag);
     editEntryType.value = entry.value.entryType;
     localGain.value = entry.value.volume;
   }
@@ -95,6 +100,11 @@ async function saveName(): Promise<void> {
 }
 
 // --- Tags ---
+function removeEditTag(index: number): void {
+  editTags.value = editTags.value.filter((_, i) => i !== index);
+  saveTags();
+}
+
 async function saveTags(): Promise<void> {
   if (!entry.value) return;
   const tags = editTags.value
@@ -103,6 +113,7 @@ async function saveTags(): Promise<void> {
   await store.command('update_library_entry_tags', {
     entryId: props.entryId,
     tags,
+    seenAutoTags: seenAutoTags.value,
   });
 }
 
@@ -267,7 +278,17 @@ async function relocateFile(): Promise<void> {
           closable-chips
           class="mb-3"
           @update:model-value="saveTags"
-        />
+        >
+          <template #chip="{ index }">
+            <TagChip
+              :tag="editTags[index]"
+              :auto="entry?.autoTags.find((a) => a.tag === editTags[index]) ?? null"
+              :entry-id="props.entryId"
+              closable
+              @remove="removeEditTag(index)"
+            />
+          </template>
+        </VCombobox>
 
         <!-- Volume -->
         <div class="d-flex align-center ga-3 mb-4">

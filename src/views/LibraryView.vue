@@ -26,6 +26,7 @@ const toast = useToast();
 const searchQuery = ref('');
 const selectedTags = ref<string[]>([]);
 const untagged = ref(false);
+const hasAuto = ref(false);
 const selectedType = ref<string>('all');
 
 watch(tags, (current) => {
@@ -40,13 +41,15 @@ const filteredEntries = computed(() => {
     const matchesSearch =
       searchQuery.value === '' ||
       entry.name.toLowerCase().includes(searchQuery.value.toLowerCase());
+    // Auto tags are part of `tags`, so "untagged" means no user tags.
     const matchesTags = untagged.value
-      ? entry.tags.length === 0
+      ? entry.tags.length === entry.autoTags.length
       : selectedTags.value.length === 0 ||
         selectedTags.value.every((tag) => entry.tags.includes(tag));
     const matchesType =
       selectedType.value === 'all' || entry.entryType === selectedType.value;
-    return matchesSearch && matchesTags && matchesType;
+    const matchesAuto = !hasAuto.value || entry.autoTags.length > 0;
+    return matchesSearch && matchesTags && matchesType && matchesAuto;
   });
 });
 
@@ -119,6 +122,20 @@ async function applyBulkTags(mode: 'add' | 'remove'): Promise<void> {
       remove: mode === 'remove' ? tags : [],
     });
     bulkTags.value = [];
+  } finally {
+    bulkBusy.value = false;
+  }
+}
+
+const selectedHaveAuto = computed(() =>
+  libraryEntries.value.some((e) => selectedIds.value.includes(e.id) && e.autoTags.length > 0),
+);
+
+async function applyAutoDecision(cmd: 'keep_auto_tags' | 'reject_auto_tags'): Promise<void> {
+  if (selectedIds.value.length === 0) return;
+  bulkBusy.value = true;
+  try {
+    await store.command(cmd, { entryIds: selectedIds.value, tags: null });
   } finally {
     bulkBusy.value = false;
   }
@@ -269,7 +286,7 @@ async function relocateEntry(entryId: string): Promise<void> {
 
     <div class="d-flex align-end mb-2 ga-2">
       <div class="d-flex flex-wrap ga-1 flex-grow-1" style="min-width: 0;">
-        <TagFilter v-model:selected-tags="selectedTags" v-model:untagged="untagged" />
+        <TagFilter v-model:selected-tags="selectedTags" v-model:untagged="untagged" v-model:has-auto="hasAuto" />
       </div>
       <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
         {{ filteredEntries.length }} {{ filteredEntries.length === 1 ? 'entry' : 'entries' }}
@@ -334,7 +351,7 @@ async function relocateEntry(entryId: string): Promise<void> {
       </template>
 
       <template #item.tags="{ item }">
-        <TagCellEditor :entry-id="item.id" :tags="item.tags" />
+        <TagCellEditor :entry-id="item.id" :tags="item.tags" :auto-tags="item.autoTags" />
       </template>
 
       <template #item.duration="{ item }">
@@ -402,6 +419,24 @@ async function relocateEntry(entryId: string): Promise<void> {
           @click="applyBulkTags('remove')"
         >
           Remove
+        </VBtn>
+        <VBtn
+          prepend-icon="mdi-check"
+          variant="tonal"
+          size="small"
+          :disabled="bulkBusy || !selectedHaveAuto"
+          @click="applyAutoDecision('keep_auto_tags')"
+        >
+          Keep auto tags
+        </VBtn>
+        <VBtn
+          prepend-icon="mdi-creation"
+          variant="tonal"
+          size="small"
+          :disabled="bulkBusy || !selectedHaveAuto"
+          @click="applyAutoDecision('reject_auto_tags')"
+        >
+          Remove auto tags
         </VBtn>
         <VBtn
           icon="mdi-close"
