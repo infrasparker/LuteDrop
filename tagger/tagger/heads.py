@@ -45,8 +45,14 @@ def _precision_threshold(scores: np.ndarray, y: np.ndarray) -> float | None:
 def fit_and_score(
     X_pos: np.ndarray, X_neg: np.ndarray, X_targets: np.ndarray
 ) -> HeadResult:
+    """Fit a logistic head and score the targets.
+
+    With fewer than two examples in either class, leave-one-out cannot train
+    on both classes, so the result is untrusted (auc and threshold None) and
+    the scores are all 0.0.
+    """
     n_pos, n_neg = len(X_pos), len(X_neg)
-    if n_pos == 0 or n_neg == 0:
+    if min(n_pos, n_neg) < 2:
         return HeadResult(None, n_pos, n_neg, False, None, np.zeros(len(X_targets)))
 
     X = np.vstack([X_pos, X_neg])

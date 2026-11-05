@@ -71,3 +71,19 @@ def test_threshold_meets_precision(rng):
     sel = loo >= r.threshold
     assert sel.sum() > 0
     assert labels[sel].mean() >= 0.8
+
+
+def test_single_positive_not_trusted(rng):
+    neg = _cluster(rng, -1, 10)
+    r = fit_and_score(_cluster(rng, +1, 1), neg, rng.normal(size=(3, DIM)))
+    assert r.trusted is False
+    assert r.pos == 1
+    assert len(r.scores) == 3
+
+
+def test_single_negative_not_trusted(rng):
+    pos = _cluster(rng, +1, 10)
+    r = fit_and_score(pos, _cluster(rng, -1, 1), rng.normal(size=(3, DIM)))
+    assert r.trusted is False
+    assert r.neg == 1
+    assert len(r.scores) == 3
