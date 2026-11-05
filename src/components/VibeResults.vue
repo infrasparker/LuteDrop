@@ -210,8 +210,8 @@ onBeforeUnmount(() => {
         <VIcon
           v-if="entry.role"
           size="small"
-          :color="entry.roleSource === 'auto' ? undefined : 'primary'"
-          :title="roleLabel(entry.role) + (entry.roleSource === 'auto' ? ' · Auto' : '')"
+          :color="entry.roleUser === null ? undefined : 'primary'"
+          :title="roleLabel(entry.role) + (entry.roleUser === null ? ' · Auto' : '')"
         >
           {{ entry.role === 'combat' ? 'mdi-sword-cross' : 'mdi-music-note' }}
         </VIcon>

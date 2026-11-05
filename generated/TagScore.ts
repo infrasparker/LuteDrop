@@ -6,6 +6,8 @@ import type { TagSource } from "./TagSource";
  */
 export type TagScore = { tag: string, score: number, threshold: number | null, trusted: boolean, 
 /**
- * Who currently has this tag on the entry, if anyone.
+ * Why the entry shows this tag: `User` when the user voted yes, `Auto`
+ * when only the analyzer put it there, `None` when it is not shown
+ * (absent, or the user voted no).
  */
 applied: TagSource | null, };

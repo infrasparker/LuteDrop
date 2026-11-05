@@ -305,38 +305,30 @@ async function relocateFile(): Promise<void> {
           </template>
         </VCombobox>
 
-        <!-- Role (music only) -->
-        <div v-if="editEntryType === 'music'" class="d-flex align-center ga-3 mb-3">
-          <span class="text-caption text-medium-emphasis" style="min-width: 90px;">Role</span>
+        <!-- Role, pace and mood (music only): label | options | status grid -->
+        <div v-if="editEntryType === 'music'" class="facet-grid mb-3">
+          <span class="text-caption text-medium-emphasis">Role</span>
           <RoleControl
             :entry-ids="[props.entryId]"
-            :role="entry.role"
-            :role-source="entry.roleSource"
-            :role-score="entry.roleScore"
+            :role-auto="entry.roleAuto"
+            :role-auto-score="entry.roleAutoScore"
+            :role-user="entry.roleUser"
           />
-        </div>
-
-        <!-- Pace and mood (music only) -->
-        <div v-if="editEntryType === 'music'" class="d-flex align-center ga-3 mb-3">
-          <span class="text-caption text-medium-emphasis" style="min-width: 90px;">Pace</span>
+          <span class="text-caption text-medium-emphasis">Pace</span>
           <PaceControl
             :entry-ids="[props.entryId]"
-            :pace="entry.pace"
-            :pace-source="entry.paceSource"
-            :pace-score="entry.paceScore"
+            :pace-auto="entry.paceAuto"
+            :pace-auto-score="entry.paceAutoScore"
+            :pace-user="entry.paceUser"
           />
-        </div>
-        <div v-if="editEntryType === 'music'" class="d-flex align-center ga-3 mb-3">
-          <span class="text-caption text-medium-emphasis" style="min-width: 90px;">Bright ↔ Dark</span>
+          <span class="text-caption text-medium-emphasis">Bright ↔ Dark</span>
           <MoodScaleControl
             :entry-ids="[props.entryId]"
             scale="bright"
             :z="entry.moodBright"
             :user="entry.moodBrightUser"
           />
-        </div>
-        <div v-if="editEntryType === 'music'" class="d-flex align-center ga-3 mb-3">
-          <span class="text-caption text-medium-emphasis" style="min-width: 90px;">Light ↔ Heavy</span>
+          <span class="text-caption text-medium-emphasis">Light ↔ Heavy</span>
           <MoodScaleControl
             :entry-ids="[props.entryId]"
             scale="light"
@@ -466,3 +458,15 @@ async function relocateFile(): Promise<void> {
     </VCard>
   </VDialog>
 </template>
+
+<style scoped>
+/* Label | options | status. Each facet control renders its options and status
+   as two cells (display: contents), so the columns line up across rows. */
+.facet-grid {
+  display: grid;
+  grid-template-columns: 90px max-content 1fr;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 12px;
+}
+</style>

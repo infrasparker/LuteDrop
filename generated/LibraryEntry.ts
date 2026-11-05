@@ -5,46 +5,59 @@ import type { EntryType } from "./EntryType";
 import type { MoodStep } from "./MoodStep";
 import type { Pace } from "./Pace";
 import type { Role } from "./Role";
-import type { TagSource } from "./TagSource";
 
 export type LibraryEntry = { id: string, filePath: string, contentHash: string | null, name: string, duration: number | null, sampleRate: number | null, fileSize: bigint | null, volume: number, trimStart: number | null, trimEnd: number | null, loopStart: number | null, loopEnd: number | null, createdAt: string, 
 /**
- * Names of every tag on the entry, both user-applied and auto-applied.
+ * The tags the entry shows: those the user voted yes on, plus the
+ * analyzer's tags the user has not voted on.
  */
 tags: Array<string>, entryType: EntryType, 
 /**
- * The auto-applied tags with the score that earned each one.
+ * The tags shown because of the analyzer (the user has not voted on
+ * them), each with the analyzer's score.
  */
 autoTags: Array<AutoTag>, 
+/**
+ * Tags the user voted no on. They are not shown, whatever the analyzer
+ * says.
+ */
+rejectedTags: Array<string>, 
 /**
  * Analyzer state for this entry; `None` if it was never submitted.
  */
 analysis: EntryAnalysis | null, 
 /**
- * Combat or non-combat; `None` when unset or when the user cleared it.
+ * The role shown: `role_user` if set, otherwise `role_auto`.
  */
 role: Role | null, 
 /**
- * Who set `role`. `Some(User)` with `role: None` means the user cleared
- * it, so the analyzer leaves it empty.
+ * The analyzer's role, written by every analysis run.
  */
-roleSource: TagSource | null, 
+roleAuto: Role | null, 
 /**
- * The analyzer's Combat probability, kept while `role_source` is auto.
+ * The analyzer's Combat probability behind `role_auto`.
  */
-roleScore: number | null, 
+roleAutoScore: number | null, 
 /**
- * Still or moving; `None` when unset or when the user cleared it.
+ * The user's role. When set it is shown instead of `role_auto`.
+ */
+roleUser: Role | null, 
+/**
+ * The pace shown: `pace_user` if set, otherwise `pace_auto`.
  */
 pace: Pace | null, 
 /**
- * Who set `pace`, with the same meaning as `role_source`.
+ * The analyzer's pace, written by every analysis run.
  */
-paceSource: TagSource | null, 
+paceAuto: Pace | null, 
 /**
- * The analyzer's Moving probability, kept while `pace_source` is auto.
+ * The analyzer's Moving probability behind `pace_auto`.
  */
-paceScore: number | null, 
+paceAutoScore: number | null, 
+/**
+ * The user's pace. When set it is shown instead of `pace_auto`.
+ */
+paceUser: Pace | null, 
 /**
  * The analyzer's Bright ↔ Dark position as a z-score across the
  * library's analyzed music; positive is Bright.

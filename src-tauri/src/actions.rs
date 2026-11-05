@@ -395,8 +395,22 @@ pub fn reject_auto_tags(
     Ok(state)
 }
 
-/// Sets (or, with `None`, clears) the role on the given entries as a user
-/// decision.
+/// Clears the user's yes or no vote on the named tags of the given entries,
+/// so the analyzer decides them again.
+pub fn reset_entry_tag_votes(
+    container: &AppStateContainer,
+    entry_ids: Vec<String>,
+    tags: Vec<String>,
+) -> Result<AppState, String> {
+    let state = mutate_and_reload(container, |conn| {
+        library::reset_entry_tag_votes(conn, &entry_ids, &tags)
+    })?;
+    request_rescore_if_enabled(container);
+    Ok(state)
+}
+
+/// Sets the user's role on the given entries. `None` clears it ("use auto"),
+/// so the analyzer's role shows.
 pub fn set_entry_role(
     container: &AppStateContainer,
     entry_ids: Vec<String>,
@@ -409,8 +423,8 @@ pub fn set_entry_role(
     Ok(state)
 }
 
-/// Sets (or, with `None`, clears) the pace on the given entries as a user
-/// decision.
+/// Sets the user's pace on the given entries. `None` clears it ("use auto"),
+/// so the analyzer's pace shows.
 pub fn set_entry_pace(
     container: &AppStateContainer,
     entry_ids: Vec<String>,
@@ -423,7 +437,7 @@ pub fn set_entry_pace(
     Ok(state)
 }
 
-/// Turns the entries' auto paces into user paces.
+/// Makes the analyzer's pace the user's, on each entry that has one.
 pub fn keep_auto_pace(
     container: &AppStateContainer,
     entry_ids: Vec<String>,
@@ -450,7 +464,7 @@ pub fn set_entry_mood_step(
     Ok(state)
 }
 
-/// Turns the entries' auto roles into user roles.
+/// Makes the analyzer's role the user's, on each entry that has one.
 pub fn keep_auto_role(
     container: &AppStateContainer,
     entry_ids: Vec<String>,

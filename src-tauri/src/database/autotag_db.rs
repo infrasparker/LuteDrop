@@ -20,70 +20,41 @@ pub struct RunEntry {
     pub analysis: Option<(AnalysisStatus, Option<String>)>,
 }
 
-/// Loads every library entry with its user tags, rejected tags, user role and
-/// pace, file path and analysis status. Auto tags are left out of `user_tags`,
-/// auto roles out of `user_role` and auto paces out of `user_pace`, so the analyzer never trains on its own
-/// guesses.
+/// Loads every library entry with the user's layer only (yes and no tag
+/// votes, user role and user pace), its file path and analysis status. The
+/// analyzer's own layer is left out, so it never trains on its own guesses.
 pub fn load_run_entries(conn: &Connection) -> Result<Vec<RunEntry>, String> {
-    // Tag names per entry, split into user tags and rejections.
+    // Voted tag names per entry: yes votes and no votes.
     let mut user_tags: HashMap<String, Vec<String>> = HashMap::new();
+    let mut rejected: HashMap<String, Vec<String>> = HashMap::new();
     {
         let mut stmt = conn
             .prepare(
-                "SELECT lt.library_entry_id, t.name, lt.source FROM library_entry_tags lt
+                "SELECT lt.library_entry_id, t.name, lt.user_vote FROM library_entry_tags lt
                  JOIN tags t ON t.id = lt.tag_id
+                 WHERE lt.user_vote IS NOT NULL
                  ORDER BY t.name",
             )
             .map_err(|e| format!("Failed to prepare entry tag query: {e}"))?;
         let rows = stmt
             .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
             })
             .map_err(|e| format!("Failed to query entry tags: {e}"))?;
         for row in rows {
-            let (entry_id, name, source) = row.map_err(|e| format!("Failed to read entry tag: {e}"))?;
-            if TagSource::from_str(&source) == TagSource::User {
-                user_tags.entry(entry_id).or_default().push(name);
-            }
+            let (entry_id, name, vote) = row.map_err(|e| format!("Failed to read entry tag: {e}"))?;
+            let list = if vote == 1 { &mut user_tags } else { &mut rejected };
+            list.entry(entry_id).or_default().push(name);
         }
     }
 
-    let mut rejected: HashMap<String, Vec<String>> = HashMap::new();
-    {
-        let mut stmt = conn
-            .prepare(
-                "SELECT r.library_entry_id, t.name FROM tag_rejections r
-                 JOIN tags t ON t.id = r.tag_id
-                 ORDER BY t.name",
-            )
-            .map_err(|e| format!("Failed to prepare rejection query: {e}"))?;
-        let rows = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
-            .map_err(|e| format!("Failed to query rejections: {e}"))?;
-        for row in rows {
-            let (entry_id, name) = row.map_err(|e| format!("Failed to read rejection: {e}"))?;
-            rejected.entry(entry_id).or_default().push(name);
-        }
-    }
-
-    /// One `library_entries` row: id, name, file path, hash, type, role, role
-    /// source, pace, pace source.
-    type EntryRow = (
-        String,
-        String,
-        String,
-        Option<String>,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    );
+    /// One `library_entries` row: id, name, file path, hash, type, user
+    /// role, user pace.
+    type EntryRow = (String, String, String, Option<String>, String, Option<String>, Option<String>);
     let entries: Vec<EntryRow> = {
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, file_path, content_hash, entry_type, role, role_source,
-                        pace, pace_source
+                "SELECT id, name, file_path, content_hash, entry_type, role_user, pace_user
                  FROM library_entries ORDER BY name",
             )
             .map_err(|e| format!("Failed to prepare entry query: {e}"))?;
@@ -97,8 +68,6 @@ pub fn load_run_entries(conn: &Connection) -> Result<Vec<RunEntry>, String> {
                     row.get(4)?,
                     row.get(5)?,
                     row.get(6)?,
-                    row.get(7)?,
-                    row.get(8)?,
                 ))
             })
             .map_err(|e| format!("Failed to query entries: {e}"))?
@@ -108,30 +77,15 @@ pub fn load_run_entries(conn: &Connection) -> Result<Vec<RunEntry>, String> {
     };
 
     let mut out = Vec::with_capacity(entries.len());
-    for (id, name, file_path, hash, entry_type, role, role_source, pace, pace_source) in entries {
+    for (id, name, file_path, hash, entry_type, role_user, pace_user) in entries {
         let analysis = get_analysis(conn, &id)?.map(|(a, stored_hash)| (a.status, stored_hash));
-        let role_user_set = role_source.as_deref().map(TagSource::from_str) == Some(TagSource::User);
-        // Only a user role is a fact; an auto role is the analyzer's own guess.
-        let user_role = if role_user_set {
-            role.as_deref().and_then(Role::from_db_str)
-        } else {
-            None
-        };
-        let pace_user_set = pace_source.as_deref().map(TagSource::from_str) == Some(TagSource::User);
-        let user_pace = if pace_user_set {
-            pace.as_deref().and_then(Pace::from_db_str)
-        } else {
-            None
-        };
         out.push(RunEntry {
             facts: EntryFacts {
                 user_tags: user_tags.remove(&id).unwrap_or_default(),
                 rejected: rejected.remove(&id).unwrap_or_default(),
                 is_music: matches!(EntryType::from_str(&entry_type), EntryType::Music),
-                user_role,
-                role_user_set,
-                user_pace,
-                pace_user_set,
+                user_role: role_user.as_deref().and_then(Role::from_db_str),
+                user_pace: pace_user.as_deref().and_then(Pace::from_db_str),
                 hash,
                 id,
             },
@@ -225,17 +179,24 @@ pub fn load_scores(conn: &Connection, entry_id: &str) -> Result<Option<EntryTagS
     let mut scores: EntryTagScores =
         serde_json::from_str(&json).map_err(|e| format!("Failed to decode scores: {e}"))?;
 
+    // The layer each shown tag comes from: a yes vote is the user's, an
+    // analyzer tag with no vote is the analyzer's. A no vote shows nothing.
     let mut stmt = conn
         .prepare(
-            "SELECT t.name, let.source
-             FROM library_entry_tags let
-             JOIN tags t ON t.id = let.tag_id
-             WHERE let.library_entry_id = ?1",
+            "SELECT t.name, lt.user_vote
+             FROM library_entry_tags lt
+             JOIN tags t ON t.id = lt.tag_id
+             WHERE lt.library_entry_id = ?1
+               AND (lt.user_vote = 1 OR (lt.user_vote IS NULL AND lt.auto_score IS NOT NULL))",
         )
         .map_err(|e| format!("Failed to prepare applied-tag query: {e}"))?;
-    let applied: std::collections::HashMap<String, TagSource> = stmt
+    let applied: HashMap<String, TagSource> = stmt
         .query_map(params![entry_id], |row| {
-            Ok((row.get::<_, String>(0)?, TagSource::from_str(&row.get::<_, String>(1)?)))
+            let source = match row.get::<_, Option<i64>>(1)? {
+                Some(_) => TagSource::User,
+                None => TagSource::Auto,
+            };
+            Ok((row.get::<_, String>(0)?, source))
         })
         .map_err(|e| format!("Failed to query applied tags: {e}"))?
         .collect::<Result<_, _>>()
@@ -244,18 +205,19 @@ pub fn load_scores(conn: &Connection, entry_id: &str) -> Result<Option<EntryTagS
     let fill = |score: &mut TagScore| score.applied = applied.get(&score.tag).copied();
     scores.tags.iter_mut().for_each(fill);
 
-    // The gate scores the role, so its `applied` is the role's source. A
-    // user-cleared role has a source but no role, and counts as not applied.
+    // The gate scores the role, so its `applied` is the layer the shown role
+    // comes from.
     let role: Option<(Option<String>, Option<String>)> = conn
         .query_row(
-            "SELECT role, role_source FROM library_entries WHERE id = ?1",
+            "SELECT role_user, role_auto FROM library_entries WHERE id = ?1",
             params![entry_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
         .map_err(|e| format!("Failed to read role: {e}"))?;
     scores.gate.applied = match role {
-        Some((Some(_), Some(source))) => Some(TagSource::from_str(&source)),
+        Some((Some(_), _)) => Some(TagSource::User),
+        Some((None, Some(_))) => Some(TagSource::Auto),
         _ => None,
     };
     Ok(Some(scores))
@@ -266,7 +228,7 @@ mod tests {
     use super::*;
     use crate::autotag::plan::build_score_request;
     use crate::database::{library, open_memory_db};
-    use crate::models::SceneConfig;
+    use crate::models::{AutoTag, SceneConfig};
 
     fn score(tag: &str, value: f64) -> TagScore {
         TagScore { tag: tag.into(), score: value, threshold: Some(0.5), trusted: true, applied: None }
@@ -274,6 +236,10 @@ mod tests {
 
     fn new_entry(conn: &Connection) -> String {
         library::insert_library_entry(conn, "/a.mp3", None, "A", None, None, None, "music").unwrap()
+    }
+
+    fn auto(tag: &str, score: f64) -> AutoTag {
+        AutoTag { tag: tag.into(), score }
     }
 
     #[test]
@@ -299,28 +265,40 @@ mod tests {
     }
 
     #[test]
-    fn scores_round_trip_marks_applied_source() {
+    fn scores_round_trip_marks_applied_layer() {
         let conn = open_memory_db();
         let id = new_entry(&conn);
         assert!(load_scores(&conn, &id).unwrap().is_none());
 
         let scores = EntryTagScores {
             gate: score("encounter", 0.9),
-            tags: vec![score("folk", 0.8), score("brass", 0.7), score("choir", 0.2)],
+            tags: vec![
+                score("folk", 0.8),
+                score("brass", 0.7),
+                score("choir", 0.2),
+                score("dark", 0.6),
+                score("drums", 0.6),
+            ],
         };
         save_scores(&conn, &id, &scores).unwrap();
         library::add_tag_to_entry(&conn, &id, "folk").unwrap();
-        library::add_tag_to_entry(&conn, &id, "brass").unwrap();
-        conn.execute(
-            "UPDATE library_entry_tags SET source = 'auto', score = 0.7
-             WHERE tag_id = (SELECT id FROM tags WHERE name = 'brass')",
-            [],
-        )
-        .unwrap();
+        library::apply_auto_tags(&conn, &id, &[auto("brass", 0.7), auto("dark", 0.6), auto("drums", 0.6)])
+            .unwrap();
+        library::reject_auto_tags(&conn, std::slice::from_ref(&id), Some(&["dark".to_string()])).unwrap();
+        library::keep_auto_tags(&conn, std::slice::from_ref(&id), Some(&["drums".to_string()])).unwrap();
 
         let loaded = load_scores(&conn, &id).unwrap().unwrap();
-        let applied: Vec<_> = loaded.tags.iter().map(|t| t.applied).collect();
-        assert_eq!(applied, vec![Some(TagSource::User), Some(TagSource::Auto), None]);
+        let applied: Vec<_> = loaded.tags.iter().map(|t| (t.tag.as_str(), t.applied)).collect();
+        assert_eq!(
+            applied,
+            vec![
+                ("folk", Some(TagSource::User)),
+                ("brass", Some(TagSource::Auto)),
+                ("choir", None),
+                ("dark", None),
+                ("drums", Some(TagSource::User)),
+            ]
+        );
         assert_eq!(loaded.gate.applied, None);
         assert_eq!(loaded.tags[0].score, 0.8);
 
@@ -330,29 +308,16 @@ mod tests {
     }
 
     #[test]
-    fn facts_loader_excludes_auto_tags() {
+    fn facts_loader_reads_votes_not_analyzer_tags() {
         let conn = open_memory_db();
         let id = library::insert_library_entry(&conn, "/a.mp3", Some("h-a"), "A", None, None, None, "music")
             .unwrap();
         let amb = library::insert_library_entry(&conn, "/b.mp3", None, "B", None, None, None, "ambiance")
             .unwrap();
         library::add_tag_to_entry(&conn, &id, "brass").unwrap();
-        library::add_tag_to_entry(&conn, &id, "encounter").unwrap();
-        library::add_tag_to_entry(&conn, &id, "dark").unwrap();
-        conn.execute(
-            "UPDATE library_entry_tags SET source = 'auto', score = 0.9
-             WHERE tag_id = (SELECT id FROM tags WHERE name = 'encounter')",
-            [],
-        )
-        .unwrap();
-        // Rejecting through the full-list save records a rejection for `dark`.
-        conn.execute(
-            "UPDATE library_entry_tags SET source = 'auto', score = 0.6
-             WHERE tag_id = (SELECT id FROM tags WHERE name = 'dark')",
-            [],
-        )
-        .unwrap();
-        library::reject_auto_tags(&conn, &[id.clone()], Some(&["dark".to_string()])).unwrap();
+        library::apply_auto_tags(&conn, &id, &[auto("encounter", 0.9), auto("dark", 0.6), auto("brass", 0.8)])
+            .unwrap();
+        library::reject_auto_tags(&conn, std::slice::from_ref(&id), Some(&["dark".to_string()])).unwrap();
         set_analysis(&conn, &id, Some("h-old"), AnalysisStatus::Embedded, None).unwrap();
 
         let entries = load_run_entries(&conn).unwrap();
@@ -367,10 +332,10 @@ mod tests {
         assert!(!b.facts.is_music);
         assert_eq!(b.analysis, None);
 
-        // The auto `encounter` row is not a user tag, so it trains nothing,
-        // while the user's `brass` is a positive.
+        // The analyzer's `encounter` has no vote, so it trains nothing, while
+        // the user's yes on `brass` is a positive.
         let scene = SceneConfig { vocabulary: vec!["encounter".into(), "brass".into()] };
-        let req = build_score_request(&[a.facts.clone()], &scene, &Default::default());
+        let req = build_score_request(std::slice::from_ref(&a.facts), &scene, &Default::default());
         assert!(req.tags["encounter"].positives.is_empty());
         assert_eq!(req.tags["brass"].positives, vec!["h-a"]);
     }
@@ -381,18 +346,17 @@ mod tests {
         let new = |path: &str| {
             library::insert_library_entry(&conn, path, None, path, None, None, None, "music").unwrap()
         };
-        let (user, cleared, auto, unset) = (new("/u.mp3"), new("/c.mp3"), new("/a.mp3"), new("/n.mp3"));
-        library::set_user_role(&conn, &[user.clone()], Some(Role::NonCombat)).unwrap();
-        library::set_user_role(&conn, &[cleared.clone()], None).unwrap();
+        let (user, both, auto, unset) = (new("/u.mp3"), new("/b.mp3"), new("/a.mp3"), new("/n.mp3"));
+        library::set_user_role(&conn, &[user.clone(), both.clone()], Some(Role::NonCombat)).unwrap();
+        library::apply_auto_role(&conn, &both, Some(Role::Combat), 0.9).unwrap();
         library::apply_auto_role(&conn, &auto, Some(Role::Combat), 0.9).unwrap();
 
         let entries = load_run_entries(&conn).unwrap();
-        let facts = |id: &str| entries.iter().find(|e| e.facts.id == id).unwrap().facts.clone();
-        let role = |id: &str| (facts(id).user_role, facts(id).role_user_set);
-        assert_eq!(role(&user), (Some(Role::NonCombat), true));
-        assert_eq!(role(&cleared), (None, true));
-        assert_eq!(role(&auto), (None, false), "an auto role is never a user role");
-        assert_eq!(role(&unset), (None, false));
+        let role = |id: &str| entries.iter().find(|e| e.facts.id == id).unwrap().facts.user_role;
+        assert_eq!(role(&user), Some(Role::NonCombat));
+        assert_eq!(role(&both), Some(Role::NonCombat), "the user layer, not the analyzer's");
+        assert_eq!(role(&auto), None, "an auto role is never a user role");
+        assert_eq!(role(&unset), None);
     }
 
     #[test]
@@ -401,22 +365,20 @@ mod tests {
         let new = |path: &str| {
             library::insert_library_entry(&conn, path, None, path, None, None, None, "music").unwrap()
         };
-        let (user, cleared, auto, unset) = (new("/u.mp3"), new("/c.mp3"), new("/a.mp3"), new("/n.mp3"));
-        library::set_user_pace(&conn, &[user.clone()], Some(Pace::Moving)).unwrap();
-        library::set_user_pace(&conn, &[cleared.clone()], None).unwrap();
+        let (user, auto, unset) = (new("/u.mp3"), new("/a.mp3"), new("/n.mp3"));
+        library::set_user_pace(&conn, std::slice::from_ref(&user), Some(Pace::Moving)).unwrap();
+        library::apply_auto_pace(&conn, &user, Some(Pace::Still), 0.1).unwrap();
         library::apply_auto_pace(&conn, &auto, Some(Pace::Still), 0.1).unwrap();
 
         let entries = load_run_entries(&conn).unwrap();
-        let facts = |id: &str| entries.iter().find(|e| e.facts.id == id).unwrap().facts.clone();
-        let pace = |id: &str| (facts(id).user_pace, facts(id).pace_user_set);
-        assert_eq!(pace(&user), (Some(Pace::Moving), true));
-        assert_eq!(pace(&cleared), (None, true));
-        assert_eq!(pace(&auto), (None, false), "an auto pace is never a user pace");
-        assert_eq!(pace(&unset), (None, false));
+        let pace = |id: &str| entries.iter().find(|e| e.facts.id == id).unwrap().facts.user_pace;
+        assert_eq!(pace(&user), Some(Pace::Moving));
+        assert_eq!(pace(&auto), None, "an auto pace is never a user pace");
+        assert_eq!(pace(&unset), None);
     }
 
     #[test]
-    fn gate_score_applied_follows_role_source() {
+    fn gate_score_applied_follows_role_layer() {
         let conn = open_memory_db();
         let id = new_entry(&conn);
         // A user tag named "combat" must not be mistaken for the role.
@@ -428,11 +390,11 @@ mod tests {
         library::apply_auto_role(&conn, &id, Some(Role::Combat), 0.9).unwrap();
         assert_eq!(load_scores(&conn, &id).unwrap().unwrap().gate.applied, Some(TagSource::Auto));
 
-        library::set_user_role(&conn, &[id.clone()], Some(Role::NonCombat)).unwrap();
+        library::set_user_role(&conn, std::slice::from_ref(&id), Some(Role::NonCombat)).unwrap();
         assert_eq!(load_scores(&conn, &id).unwrap().unwrap().gate.applied, Some(TagSource::User));
 
-        // A user-cleared role holds no role, so nothing is applied.
-        library::set_user_role(&conn, &[id.clone()], None).unwrap();
-        assert_eq!(load_scores(&conn, &id).unwrap().unwrap().gate.applied, None);
+        // "Use auto" shows the analyzer's role again.
+        library::set_user_role(&conn, std::slice::from_ref(&id), None).unwrap();
+        assert_eq!(load_scores(&conn, &id).unwrap().unwrap().gate.applied, Some(TagSource::Auto));
     }
 }

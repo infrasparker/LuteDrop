@@ -3,18 +3,22 @@ import { computed } from 'vue';
 import type { AutoTag } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 
-/// One tag on a library entry. A user tag is a plain chip. An auto tag is
-/// outlined with a creation icon and a score tooltip, and clicking it opens a
-/// Keep / Remove menu: Keep turns it into a normal tag, Remove rejects it so
-/// later runs don't re-add it.
+/// One tag on a library entry. Your tag is a plain chip. An auto tag (shown
+/// only because the analyzer suggested it) is outlined with a sparkle and a
+/// score tooltip, and offers ✓ (vote yes: make it yours) next to its ✕.
+/// ✕ on any chip votes no, so later analysis runs don't bring it back: with
+/// `closable` the parent removes it from the list (and saves the list), else
+/// an auto chip rejects itself directly. The auto chip sets `closable` to false
+/// explicitly: inside a VCombobox with `closable-chips`, Vuetify would otherwise
+/// add its own close button, which hides the chip without saving anything.
 const props = withDefaults(defineProps<{
   tag: string;
   auto?: AutoTag | null;
   entryId: string;
   closable?: boolean;
-  /** Show the Keep / Remove menu on click (auto chips only). */
-  menu?: boolean;
-}>(), { auto: null, menu: true });
+  /** Show the ✓ button on auto chips. */
+  confirmable?: boolean;
+}>(), { auto: null, confirmable: true });
 
 const emit = defineEmits<{
   remove: [];
@@ -29,7 +33,8 @@ function keep(): void {
 }
 
 function reject(): void {
-  store.command('reject_auto_tags', { entryIds: [props.entryId], tags: [props.tag] });
+  if (props.closable) emit('remove');
+  else store.command('reject_auto_tags', { entryIds: [props.entryId], tags: [props.tag] });
 }
 </script>
 
@@ -38,6 +43,7 @@ function reject(): void {
     v-if="!auto"
     size="small"
     :closable="closable"
+    close-label="Remove tag (vote no)"
     @click:close.stop="emit('remove')"
   >
     {{ tag }}
@@ -47,24 +53,35 @@ function reject(): void {
     size="small"
     variant="outlined"
     prepend-icon="mdi-creation"
-    class="auto-chip"
-    :closable="closable"
+    :closable="false"
     @click.stop
-    @click:close.stop="emit('remove')"
   >
     {{ tag }}
     <VTooltip activator="parent" location="top" open-delay="300">{{ scoreLabel }}</VTooltip>
-    <VMenu v-if="menu" activator="parent" :close-on-content-click="true">
-      <VList density="compact">
-        <VListItem prepend-icon="mdi-check" title="Keep" @click="keep" />
-        <VListItem prepend-icon="mdi-close" title="Remove" @click="reject" />
-      </VList>
-    </VMenu>
+    <VIcon
+      v-if="confirmable"
+      size="small"
+      class="chip-action ml-1"
+      title="Yes: keep this tag as yours"
+      @mousedown.stop.prevent
+      @click.stop="keep"
+    >mdi-check</VIcon>
+    <VIcon
+      size="small"
+      class="chip-action"
+      title="No: remove this tag"
+      @mousedown.stop.prevent
+      @click.stop="reject"
+    >mdi-close</VIcon>
   </VChip>
 </template>
 
 <style scoped>
-.auto-chip {
+.chip-action {
   cursor: pointer;
+  opacity: 0.7;
+}
+.chip-action:hover {
+  opacity: 1;
 }
 </style>

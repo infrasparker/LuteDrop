@@ -1,31 +1,38 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import type { Pace, TagSource } from '@generated/index';
+import type { Pace } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
+import FacetStatus from './FacetStatus.vue';
 
-/// Still / Moving toggle for one or more entries. An auto pace is outlined with
-/// a creation icon and a score tooltip, and offers Keep (turns it into the
-/// user's choice). Clear stores "no pace" as the user's decision, so later
-/// analyzer runs leave the entry unset.
+/// Still / Moving toggle for one or more entries, plus its status column.
+/// The shown pace is yours if set, else the analyzer's. Clicking an option
+/// makes it yours; the status column offers Confirm (yours = the analyzer's)
+/// or Use auto (clear yours).
+///
+/// The root uses `display: contents`, so inside a grid the options and the
+/// status are two cells that line up with the other facet rows.
 const props = defineProps<{
   entryIds: string[];
-  pace: Pace | null;
-  paceSource: TagSource | null;
-  paceScore: number | null;
+  paceAuto: Pace | null;
+  paceAutoScore: number | null;
+  paceUser: Pace | null;
 }>();
 
 const store = useAppStore();
 const busy = ref(false);
 
-const isAuto = computed(() => props.pace !== null && props.paceSource === 'auto');
-const scoreLabel = computed(() =>
-  props.paceScore === null ? 'Auto' : `Auto · ${props.paceScore.toFixed(2)}`,
-);
-
 const options: { value: Pace; label: string; icon: string }[] = [
   { value: 'still', label: 'Still', icon: 'mdi-pause' },
   { value: 'moving', label: 'Moving', icon: 'mdi-play' },
 ];
+
+const labelOf = (pace: Pace | null): string | null =>
+  options.find((o) => o.value === pace)?.label ?? null;
+
+const shown = computed(() => props.paceUser ?? props.paceAuto);
+const autoHint = computed(() =>
+  props.paceAutoScore === null ? null : `Moving probability ${props.paceAutoScore.toFixed(2)}`,
+);
 
 async function run(cmd: string, args: Record<string, unknown>): Promise<void> {
   if (busy.value || props.entryIds.length === 0) return;
@@ -38,23 +45,14 @@ async function run(cmd: string, args: Record<string, unknown>): Promise<void> {
 }
 
 function choose(pace: Pace): void {
-  // Clicking the auto pace itself confirms it.
-  if (isAuto.value && props.pace === pace) {
-    void run('keep_auto_pace', {});
-  } else if (props.pace !== pace || props.paceSource !== 'user') {
-    void run('set_entry_pace', { pace });
-  }
-}
-
-function clear(): void {
-  void run('set_entry_pace', { pace: null });
+  if (props.paceUser !== pace) void run('set_entry_pace', { pace });
 }
 </script>
 
 <template>
-  <div class="d-flex align-center ga-2">
+  <div class="facet-control">
     <VBtnToggle
-      :model-value="pace"
+      :model-value="shown"
       density="compact"
       variant="outlined"
       divided
@@ -67,39 +65,25 @@ function clear(): void {
         :key="opt.value"
         :value="opt.value"
         size="small"
-        :prepend-icon="isAuto && pace === opt.value ? 'mdi-creation' : opt.icon"
-        :variant="isAuto && pace === opt.value ? 'outlined' : undefined"
+        :prepend-icon="opt.icon"
         @click.prevent="choose(opt.value)"
       >
         {{ opt.label }}
-        <VTooltip
-          v-if="isAuto && pace === opt.value"
-          activator="parent"
-          location="top"
-          open-delay="300"
-        >{{ scoreLabel }}</VTooltip>
       </VBtn>
     </VBtnToggle>
-    <VBtn
-      v-if="isAuto"
-      prepend-icon="mdi-check"
-      size="small"
-      variant="tonal"
+    <FacetStatus
+      :auto-label="labelOf(paceAuto)"
+      :user-label="labelOf(paceUser)"
+      :auto-hint="autoHint"
       :disabled="busy"
-      @click="run('keep_auto_pace', {})"
-    >
-      Keep
-    </VBtn>
-    <span v-if="pace === null && paceSource === 'user'" class="text-caption text-medium-emphasis">
-      No pace (yours)
-    </span>
-    <VBtn
-      icon="mdi-close"
-      size="small"
-      variant="text"
-      title="Clear pace"
-      :disabled="busy || (pace === null && paceSource === 'user')"
-      @click="clear"
+      @confirm="run('keep_auto_pace', {})"
+      @use-auto="run('set_entry_pace', { pace: null })"
     />
   </div>
 </template>
+
+<style scoped>
+.facet-control {
+  display: contents;
+}
+</style>

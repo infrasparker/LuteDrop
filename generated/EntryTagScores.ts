@@ -7,6 +7,7 @@ import type { TagScore } from "./TagScore";
 export type EntryTagScores = { 
 /**
  * The Combat probability, with `tag` `"combat"`. Its `applied` is the
- * source of the entry's role, or `None` when the entry has no role.
+ * layer the shown role comes from (`User` when the user set one, else
+ * `Auto` when the analyzer did), or `None` when the entry shows no role.
  */
 gate: TagScore, tags: Array<TagScore>, };
