@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Ranked Scry results with Role, mood and Pace filters. Each row has a checkbox,
+// Ranked Scry results with Role and mood filters. Each row has a checkbox,
 // a preview button, the track name, its game tags, Role, the score as a short
 // bar, and an "Add as seed" action. Clicking the row itself opens the entry's
 // details.
@@ -43,6 +43,9 @@ const rows = computed<Row[]>(() => {
   }
   return out;
 });
+
+// The pad's counts are over every result, before the Role and mood filters.
+const rowEntries = computed(() => rows.value.map((r) => r.entry));
 
 const visibleRows = computed(() =>
   rows.value.filter(({ entry }) => {
@@ -163,7 +166,7 @@ onBeforeUnmount(() => {
         <VBtn value="nonCombat" size="x-small" prepend-icon="mdi-music-note">Non-combat</VBtn>
         <VBtn value="unset" size="x-small">Unset</VBtn>
       </VBtnToggle>
-      <SoundFilters v-model="soundFilters" size="x-small" />
+      <SoundFilters v-model="soundFilters" size="x-small" :entries="rowEntries" />
       <VSpacer />
       <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
         {{ visibleRows.length }} of {{ rows.length }}

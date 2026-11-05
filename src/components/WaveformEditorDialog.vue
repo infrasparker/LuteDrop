@@ -6,9 +6,9 @@ import WaveformEditor from './WaveformEditor.vue';
 import TagChip from './TagChip.vue';
 import TagScoresPanel from './TagScoresPanel.vue';
 import RoleControl from './RoleControl.vue';
-import PaceControl from './PaceControl.vue';
 import MoodScaleControl from './MoodScaleControl.vue';
-import MoodMapPicker from './MoodMapPicker.vue';
+import MoodPadPicker from './MoodPadPicker.vue';
+import { MOOD_SCALES, SCALE_NAMES, scaleValues } from '../utils/mood';
 import { open } from '@tauri-apps/plugin-dialog';
 import { AUDIO_EXTENSIONS } from '../constants';
 import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
@@ -306,7 +306,7 @@ async function relocateFile(): Promise<void> {
           </template>
         </VCombobox>
 
-        <!-- Role, pace and mood (music only): label | options | status grid -->
+        <!-- Role and mood (music only): label | options | status grid -->
         <div v-if="editEntryType === 'music'" class="facet-grid mb-3">
           <span class="text-caption text-medium-emphasis">Role</span>
           <RoleControl
@@ -315,36 +315,18 @@ async function relocateFile(): Promise<void> {
             :role-auto-score="entry.roleAutoScore"
             :role-user="entry.roleUser"
           />
-          <span class="text-caption text-medium-emphasis">Pace</span>
-          <PaceControl
-            :entry-ids="[props.entryId]"
-            :pace-auto="entry.paceAuto"
-            :pace-auto-score="entry.paceAutoScore"
-            :pace-user="entry.paceUser"
-          />
           <span class="text-caption text-medium-emphasis">Mood</span>
-          <MoodMapPicker
-            :entry-ids="[props.entryId]"
-            :bright-z="entry.moodBright"
-            :bright-user="entry.moodBrightUser"
-            :light-z="entry.moodLight"
-            :light-user="entry.moodLightUser"
-          />
+          <MoodPadPicker :entries="[entry]" />
           <span />
-          <span class="text-caption text-medium-emphasis mood-sub">Bright ↔ Dark</span>
-          <MoodScaleControl
-            :entry-ids="[props.entryId]"
-            scale="bright"
-            :z="entry.moodBright"
-            :user="entry.moodBrightUser"
-          />
-          <span class="text-caption text-medium-emphasis mood-sub">Airy ↔ Heavy</span>
-          <MoodScaleControl
-            :entry-ids="[props.entryId]"
-            scale="light"
-            :z="entry.moodLight"
-            :user="entry.moodLightUser"
-          />
+          <template v-for="scale in MOOD_SCALES" :key="scale">
+            <span class="text-caption text-medium-emphasis mood-sub">{{ SCALE_NAMES[scale] }}</span>
+            <MoodScaleControl
+              :entry-ids="[props.entryId]"
+              :scale="scale"
+              :z="scaleValues(entry, scale).z"
+              :user="scaleValues(entry, scale).user"
+            />
+          </template>
         </div>
 
         <!-- Volume -->

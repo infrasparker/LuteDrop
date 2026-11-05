@@ -5,8 +5,8 @@ import { useAppStore } from '../stores/appStore';
 import { effectiveStep, STEP_LABELS, STEPS } from '../utils/mood';
 import FacetStatus from './FacetStatus.vue';
 
-/// Three-step toggle for one mood scale (Dark/Neutral/Bright or
-/// Heavy/Neutral/Airy), plus its status column. The shown step is yours if
+/// Three-step toggle for one mood scale (Dark/Neutral/Bright,
+/// Intimate/Moderate/Grand or Calm/Steady/Energetic), plus its status column. The shown step is yours if
 /// set, else the step for the analyzer's z-score. Clicking a step makes it
 /// yours; Confirm stores the analyzer's step as yours; Use auto clears yours.
 ///

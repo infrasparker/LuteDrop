@@ -14,8 +14,9 @@ import ImportDialog from '../components/ImportDialog.vue';
 import FixMissingDialog from '../components/FixMissingDialog.vue';
 import AutoTaggingDialog from '../components/AutoTaggingDialog.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
-import type { LibraryEntry, LibraryEntryUsage, Pace, Role } from '@generated/index';
+import type { LibraryEntry, LibraryEntryUsage, Role } from '@generated/index';
 import SoundFilters from '../components/SoundFilters.vue';
+import MoodPadPicker from '../components/MoodPadPicker.vue';
 import { emptySoundFilters, matchesSoundFilters, type SoundFilters as SoundFilterState } from '../utils/mood';
 import { AUDIO_EXTENSIONS } from '../constants';
 import { formatDuration } from '../shared/format';
@@ -35,7 +36,7 @@ const hasAuto = ref(false);
 const selectedType = ref<string>('all');
 const roleFilter = ref<'all' | Role | 'unset'>('all');
 const soundFilters = ref<SoundFilterState>(emptySoundFilters());
-// Role, mood and pace apply to music only and are hidden for ambiance, so their filters must not keep applying there.
+// Role and mood apply to music only and are hidden for ambiance, so their filters must not keep applying there.
 watch(selectedType, (type) => {
   if (type === 'ambiance') {
     roleFilter.value = 'all';
@@ -64,6 +65,11 @@ watch(tags, (current) => {
     selectedTags.value = selectedTags.value.filter((t) => current.includes(t));
   }
 });
+
+// Entries of the selected type: the population the mood pad counts.
+const typeEntries = computed(() =>
+  libraryEntries.value.filter((e) => selectedType.value === 'all' || e.entryType === selectedType.value),
+);
 
 const filteredEntries = computed(() => {
   return libraryEntries.value.filter((entry) => {
@@ -168,7 +174,7 @@ async function applyBulkTags(mode: 'add' | 'remove'): Promise<void> {
 }
 
 async function applyBulkMusic(cmd: string, args: Record<string, unknown>): Promise<void> {
-  // Role and pace apply to music only.
+  // Role applies to music only.
   const ids = libraryEntries.value
     .filter((e) => selectedIds.value.includes(e.id) && e.entryType === 'music')
     .map((e) => e.id);
@@ -182,7 +188,10 @@ async function applyBulkMusic(cmd: string, args: Record<string, unknown>): Promi
 }
 
 const applyBulkRole = (role: Role | null) => applyBulkMusic('set_entry_role', { role });
-const applyBulkPace = (pace: Pace | null) => applyBulkMusic('set_entry_pace', { pace });
+// "Set mood…" acts on the selected music entries; mood does not apply to ambiance.
+const selectedMusic = computed(() =>
+  libraryEntries.value.filter((e) => selectedIds.value.includes(e.id) && e.entryType === 'music'),
+);
 
 const selectedHaveAuto = computed(() =>
   libraryEntries.value.some((e) => selectedIds.value.includes(e.id) && e.autoTags.length > 0),
@@ -314,7 +323,13 @@ async function relocateEntry(entryId: string): Promise<void> {
         <VBtn value="nonCombat" size="small" prepend-icon="mdi-music-note">Non-combat</VBtn>
         <VBtn value="unset" size="small">Unset</VBtn>
       </VBtnToggle>
-      <SoundFilters v-if="selectedType !== 'ambiance'" v-model="soundFilters" size="small" class="ml-3" />
+      <SoundFilters
+        v-if="selectedType !== 'ambiance'"
+        v-model="soundFilters"
+        size="small"
+        :entries="typeEntries"
+        class="ml-3"
+      />
       <VSpacer />
       <VBadge
         color="warning"
@@ -547,25 +562,19 @@ async function relocateEntry(entryId: string): Promise<void> {
             <VListItem prepend-icon="mdi-restore" title="Use auto" subtitle="Remove your choice" @click="applyBulkRole(null)" />
           </VList>
         </VMenu>
-        <VMenu>
+        <MoodPadPicker :entries="selectedMusic">
           <template #activator="{ props: menuProps }">
             <VBtn
               v-bind="menuProps"
-              prepend-icon="mdi-play-pause"
-              append-icon="mdi-menu-down"
+              prepend-icon="mdi-grid"
               variant="tonal"
               size="small"
-              :disabled="bulkBusy"
+              :disabled="bulkBusy || selectedMusic.length === 0"
             >
-              Set pace
+              Set mood…
             </VBtn>
           </template>
-          <VList density="compact">
-            <VListItem prepend-icon="mdi-pause" title="Still" @click="applyBulkPace('still')" />
-            <VListItem prepend-icon="mdi-play" title="Moving" @click="applyBulkPace('moving')" />
-            <VListItem prepend-icon="mdi-restore" title="Use auto" subtitle="Remove your choice" @click="applyBulkPace(null)" />
-          </VList>
-        </VMenu>
+        </MoodPadPicker>
         <VBtn
           prepend-icon="mdi-check"
           variant="tonal"
