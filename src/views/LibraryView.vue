@@ -32,6 +32,10 @@ const untagged = ref(false);
 const hasAuto = ref(false);
 const selectedType = ref<string>('all');
 const roleFilter = ref<'all' | Role | 'unset'>('all');
+// The role toggle is hidden for ambiance, so a role filter must not keep applying there.
+watch(selectedType, (type) => {
+  if (type === 'ambiance') roleFilter.value = 'all';
+});
 
 // Search text also matches the album folder (parent) and artist folder
 // (grandparent) of the file path, so a game is findable by soundtrack folder.
@@ -285,6 +289,21 @@ async function relocateEntry(entryId: string): Promise<void> {
         <VBtn value="music" size="small" prepend-icon="mdi-music-note">Music</VBtn>
         <VBtn value="ambiance" size="small" prepend-icon="mdi-weather-fog">Ambiance</VBtn>
       </VBtnToggle>
+      <!-- Role applies to music only, so it is hidden while browsing ambiance. -->
+      <VBtnToggle
+        v-if="selectedType !== 'ambiance'"
+        v-model="roleFilter"
+        mandatory
+        density="compact"
+        variant="outlined"
+        divided
+        class="ml-3"
+      >
+        <VBtn value="all" size="small">Any role</VBtn>
+        <VBtn value="combat" size="small" prepend-icon="mdi-sword-cross">Combat</VBtn>
+        <VBtn value="nonCombat" size="small" prepend-icon="mdi-music-note">Non-combat</VBtn>
+        <VBtn value="unset" size="small">Unset</VBtn>
+      </VBtnToggle>
       <VSpacer />
       <VBadge
         color="warning"
@@ -342,12 +361,6 @@ async function relocateEntry(entryId: string): Promise<void> {
       <div class="d-flex flex-wrap ga-1 flex-grow-1" style="min-width: 0;">
         <TagFilter v-model:selected-tags="selectedTags" v-model:untagged="untagged" v-model:has-auto="hasAuto" />
       </div>
-      <VBtnToggle v-model="roleFilter" mandatory density="compact" variant="outlined" divided>
-        <VBtn value="all" size="x-small">All roles</VBtn>
-        <VBtn value="combat" size="x-small" prepend-icon="mdi-sword-cross">Combat</VBtn>
-        <VBtn value="nonCombat" size="x-small" prepend-icon="mdi-music-note">Non-combat</VBtn>
-        <VBtn value="unset" size="x-small">Unset</VBtn>
-      </VBtnToggle>
       <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
         {{ filteredEntries.length }} {{ filteredEntries.length === 1 ? 'entry' : 'entries' }}
       </span>
