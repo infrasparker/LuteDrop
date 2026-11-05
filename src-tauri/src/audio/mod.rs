@@ -665,4 +665,81 @@ mod tests {
         assert!(peak(&drain_tap(&audio)) > 0.01, "master volume 0 silenced the tap");
         audio.engine_for_test().tap_set_enabled(false);
     }
+
+    // Pause → resume must keep the clip's scheduled stop at trim_end. The
+    // shim's resume clears miniaudio's stop time (it has to, to undo the
+    // pause fade), which used to wipe the trim-end stop too, so a resumed
+    // clip played on past its end point. These tests never call `poll`, so
+    // only the scheduled stop itself can end the sound.
+
+    /// Clip window used below: 10.0 s → 10.8 s of the ~120 s fixture.
+    const TRIM_START: f64 = 10.0;
+    const TRIM_END: f64 = 10.8;
+
+    #[test]
+    fn library_preview_resume_keeps_trim_end_stop() {
+        let mut audio = AudioEngine::new().expect("engine");
+        audio
+            .play_library_sound(super::sound::PlayParams {
+                file_path: fixture(),
+                start_position: TRIM_START,
+                volume: 1.0,
+                trim_start: Some(TRIM_START),
+                trim_end: Some(TRIM_END),
+                loop_region: None,
+                fade_in: None,
+                fade_out: None,
+            })
+            .expect("play preview");
+        std::thread::sleep(Duration::from_millis(200));
+        audio.pause_all();
+        std::thread::sleep(Duration::from_millis(300));
+        audio.resume_all();
+        // ~0.6 s of the window is left; give it well over that.
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(
+            matches!(audio.library.state(), super::PlaybackState::Stopped),
+            "preview kept playing past trim_end after resume (position {:.2} s)",
+            audio.library.position()
+        );
+        audio.stop_library_sound();
+    }
+
+    #[test]
+    fn track_clip_resume_keeps_trim_end_stop() {
+        let mut audio = AudioEngine::new().expect("engine");
+        let track = Track {
+            id: "t1".into(),
+            name: "Track".into(),
+            clips: vec![Clip {
+                id: "c1".into(),
+                name: "Clip".into(),
+                file_path: fixture(),
+                volume: 1.0,
+                library_entry_id: "e1".into(),
+                library_volume: 1.0,
+                trim_start: Some(TRIM_START),
+                trim_end: Some(TRIM_END),
+            }],
+            volume: 1.0,
+            // Gapless: the clip's end comes only from the scheduled stop.
+            mode: TrackMode::Sequence { repeat: false, transition: TrackTransition::Gapless },
+            fade_in: 0.0,
+            fade_out: 0.0,
+        };
+        audio.setup_track(&track).expect("setup track");
+        audio.play_track("t1").expect("play track");
+        std::thread::sleep(Duration::from_millis(200));
+        audio.pause_track("t1").expect("pause");
+        std::thread::sleep(Duration::from_millis(300));
+        audio.resume_track("t1").expect("resume");
+        std::thread::sleep(Duration::from_millis(1500));
+        let voice = &audio.tracks["t1"].voice;
+        assert!(
+            matches!(voice.state(), super::PlaybackState::Stopped),
+            "track clip kept playing past trim_end after resume (position {:.2} s)",
+            voice.position()
+        );
+        audio.stop_all();
+    }
 }
