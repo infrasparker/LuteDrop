@@ -659,7 +659,7 @@ fn is_music(entry_type: &str) -> bool {
 
 /// True if auto-tagging is turned on. A settings read error counts as off.
 fn autotag_enabled(container: &AppStateContainer) -> bool {
-    with_db(container, |conn| autotag_settings::load_autotag(conn))
+    with_db(container, autotag_settings::load_autotag)
         .map(|s| s.enabled)
         .unwrap_or(false)
 }
@@ -680,7 +680,7 @@ pub fn queue_unanalyzed_on_startup(container: &AppStateContainer) {
 }
 
 pub fn get_autotag_settings(container: &AppStateContainer) -> Result<AutoTagSettings, String> {
-    with_db(container, |conn| autotag_settings::load_autotag(conn))
+    with_db(container, autotag_settings::load_autotag)
 }
 
 /// Saves the connection settings. Turning auto-tagging on starts analyzing
@@ -695,7 +695,7 @@ pub fn save_autotag_settings(container: &AppStateContainer, settings: AutoTagSet
 }
 
 pub fn get_scene_config(container: &AppStateContainer) -> Result<SceneConfig, String> {
-    with_db(container, |conn| autotag_settings::load_scene_config(conn))
+    with_db(container, autotag_settings::load_scene_config)
 }
 
 /// Saves the scene config and re-scores, since the vocabulary or gate may
