@@ -1,21 +1,26 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 import { MOOD_SQUARES, type MoodSquare } from '../utils/mood';
 
 /// The 3×3 mood map: Bright → Dark down the rows, Airy → Heavy across the
 /// columns, each square named with a few words of feel and a scene.
 ///
 /// Used two ways:
-/// - as a key (`current` / `auto` set): the track's shown square is
-///   highlighted, and the analyzer's square gets a sparkle when it differs;
+/// - for one track (`current` / `auto` set): the track's shown square is
+///   pinned, and the analyzer's square gets a sparkle when it differs; with
+///   `pickable`, clicking a square emits `pick`;
 /// - as a filter (`selectable`): clicking a square toggles it in `selected`.
 const props = withDefaults(defineProps<{
   current?: string | null;
   auto?: string | null;
   selected?: string[];
   selectable?: boolean;
-}>(), { current: null, auto: null, selected: () => [], selectable: false });
+  pickable?: boolean;
+}>(), { current: null, auto: null, selected: () => [], selectable: false, pickable: false });
 
-const emit = defineEmits<{ toggle: [key: string] }>();
+const emit = defineEmits<{ toggle: [key: string]; pick: [square: MoodSquare] }>();
+
+const clickable = computed(() => props.selectable || props.pickable);
 
 function isOn(sq: MoodSquare): boolean {
   return props.selectable ? props.selected.includes(sq.key) : props.current === sq.key;
@@ -23,6 +28,7 @@ function isOn(sq: MoodSquare): boolean {
 
 function click(sq: MoodSquare): void {
   if (props.selectable) emit('toggle', sq.key);
+  else if (props.pickable) emit('pick', sq);
 }
 </script>
 
@@ -35,12 +41,12 @@ function click(sq: MoodSquare): void {
     <template v-for="(row, r) in [0, 1, 2]" :key="row">
       <span class="axis axis-row">{{ ['Bright', 'Neutral', 'Dark'][r] }}</span>
       <component
-        :is="selectable ? 'button' : 'div'"
+        :is="clickable ? 'button' : 'div'"
         v-for="sq in MOOD_SQUARES.slice(r * 3, r * 3 + 3)"
         :key="sq.key"
-        :type="selectable ? 'button' : undefined"
+        :type="clickable ? 'button' : undefined"
         class="square"
-        :class="{ on: isOn(sq), clickable: selectable }"
+        :class="{ on: isOn(sq), clickable }"
         :aria-pressed="selectable ? isOn(sq) : undefined"
         @click="click(sq)"
       >
