@@ -13,6 +13,7 @@ use crate::models::{AnalysisStatus, EntryAnalysis, EntryTagScores, EntryType, Ta
 #[derive(Debug, Clone)]
 pub struct RunEntry {
     pub facts: EntryFacts,
+    pub name: String,
     pub file_path: String,
     /// The stored analysis status and the hash it was recorded under, or
     /// `None` if the entry has never been analyzed.
@@ -64,12 +65,12 @@ pub fn load_run_entries(conn: &Connection) -> Result<Vec<RunEntry>, String> {
         }
     }
 
-    let entries: Vec<(String, String, Option<String>, String)> = {
+    let entries: Vec<(String, String, String, Option<String>, String)> = {
         let mut stmt = conn
-            .prepare("SELECT id, file_path, content_hash, entry_type FROM library_entries ORDER BY name")
+            .prepare("SELECT id, name, file_path, content_hash, entry_type FROM library_entries ORDER BY name")
             .map_err(|e| format!("Failed to prepare entry query: {e}"))?;
         let rows = stmt
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
             .map_err(|e| format!("Failed to query entries: {e}"))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("Failed to read entries: {e}"))?;
@@ -77,7 +78,7 @@ pub fn load_run_entries(conn: &Connection) -> Result<Vec<RunEntry>, String> {
     };
 
     let mut out = Vec::with_capacity(entries.len());
-    for (id, file_path, hash, entry_type) in entries {
+    for (id, name, file_path, hash, entry_type) in entries {
         let analysis = get_analysis(conn, &id)?.map(|(a, stored_hash)| (a.status, stored_hash));
         out.push(RunEntry {
             facts: EntryFacts {
@@ -87,6 +88,7 @@ pub fn load_run_entries(conn: &Connection) -> Result<Vec<RunEntry>, String> {
                 hash,
                 id,
             },
+            name,
             file_path,
             analysis,
         });

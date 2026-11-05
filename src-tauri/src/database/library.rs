@@ -2,6 +2,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use crate::database::now_millis;
+use crate::database::settings;
 use crate::database::DbError;
 use crate::models::{AutoTag, LibraryEntryUsage, TagSource};
 
@@ -410,7 +411,7 @@ const SWEEP_ORPHAN_TAGS: &str = "DELETE FROM tags
      WHERE id NOT IN (SELECT tag_id FROM library_entry_tags)
        AND id NOT IN (SELECT tag_id FROM tag_rejections)";
 
-fn sweep_orphan_tags(conn: &Connection) -> Result<(), String> {
+pub fn sweep_orphan_tags(conn: &Connection) -> Result<(), String> {
     conn.execute(SWEEP_ORPHAN_TAGS, [])
         .map_err(|e| format!("Failed to sweep orphaned tags: {e}"))?;
     Ok(())
@@ -475,6 +476,36 @@ fn remove_tag_row(conn: &Connection, entry_id: &str, tag_id: &str) -> Result<(),
     Ok(())
 }
 
+/// The id of the scene's gate tag (e.g. "encounter"), or None if no tag row
+/// has that name.
+fn gate_tag_id(conn: &Connection) -> Result<Option<String>, String> {
+    let gate_tag = settings::load_scene_config(conn)?.gate_tag.trim().to_lowercase();
+    conn.query_row("SELECT id FROM tags WHERE name = ?1", params![gate_tag], |row| row.get(0))
+        .optional()
+        .map_err(|e| format!("Failed to query gate tag: {e}"))
+}
+
+/// True if the entry has the gate tag, from either source.
+fn has_gate(conn: &Connection, entry_id: &str, gate_id: Option<&str>) -> Result<bool, String> {
+    match gate_id {
+        Some(gate_id) => Ok(stored_source(conn, entry_id, gate_id)?.is_some()),
+        None => Ok(false),
+    }
+}
+
+/// Deletes every auto tag left on the entry, without recording rejections.
+/// Called when a user action removes the entry's gate tag: the scene's auto
+/// tags only belong on entries that carry the gate tag, and the user never
+/// judged these ones.
+fn remove_dependent_auto_tags(conn: &Connection, entry_id: &str) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM library_entry_tags WHERE library_entry_id = ?1 AND source = ?2",
+        params![entry_id, TagSource::Auto.as_str()],
+    )
+    .map_err(|e| format!("Failed to remove dependent auto tags: {e}"))?;
+    Ok(())
+}
+
 /// Atomically saves the full tag list for an entry as a diff against the
 /// stored rows, in one transaction:
 /// - a listed tag that is stored as auto stays auto, score unchanged;
@@ -487,6 +518,9 @@ fn remove_tag_row(conn: &Connection, entry_id: &str, tag_id: &str) -> Result<(),
 /// rejected if it is in that list; an auto tag added after the editor loaded
 /// (by a background run) is left alone. With `None`, every missing auto tag
 /// is removed and rejected.
+///
+/// If the save removes the entry's gate tag, the entry's remaining auto tags
+/// are deleted as well, without rejections.
 pub fn set_entry_tags(
     conn: &Connection,
     entry_id: &str,
@@ -528,6 +562,9 @@ pub fn set_entry_tags(
         rows
     };
 
+    let gate_id = gate_tag_id(conn)?;
+    let had_gate = has_gate(conn, entry_id, gate_id.as_deref())?;
+
     for (tag_id, name, source) in &stored {
         if wanted_ids.contains(tag_id) {
             continue;
@@ -538,8 +575,20 @@ pub fn set_entry_tags(
             remove_tag_row(conn, entry_id, tag_id)?;
         }
     }
+    if had_gate && !has_gate(conn, entry_id, gate_id.as_deref())? {
+        remove_dependent_auto_tags(conn, entry_id)?;
+    }
+
     for tag_id in &wanted_ids {
-        add_new_user_tag(conn, entry_id, tag_id)?;
+        // A listed tag stored as auto is left as stored. If it was just
+        // removed along with the gate tag, it stays removed rather than
+        // coming back as a user tag.
+        let stored_as_auto = stored
+            .iter()
+            .any(|(id, _, source)| id == tag_id && *source == TagSource::Auto);
+        if !stored_as_auto {
+            add_new_user_tag(conn, entry_id, tag_id)?;
+        }
     }
 
     sweep_orphan_tags(conn)?;
@@ -551,8 +600,9 @@ pub fn set_entry_tags(
 /// Adds `add` to and removes `remove` from every entry in `entry_ids`, in
 /// one transaction. Applies the same rules as `set_entry_tags`: removing an
 /// auto tag rejects it, adding a tag the entry already has leaves it as
-/// stored, and adding a new tag inserts it as a user tag. Orphaned tag rows
-/// are swept at the end.
+/// stored, and adding a new tag inserts it as a user tag. Removing the gate
+/// tag from an entry also deletes that entry's remaining auto tags, without
+/// rejections. Orphaned tag rows are swept at the end.
 pub fn bulk_edit_entry_tags(
     conn: &Connection,
     entry_ids: &[String],
@@ -563,7 +613,10 @@ pub fn bulk_edit_entry_tags(
         .unchecked_transaction()
         .map_err(|e| format!("Failed to begin bulk tag transaction: {e}"))?;
 
+    let gate_id = gate_tag_id(conn)?;
+
     for entry_id in entry_ids {
+        let had_gate = has_gate(conn, entry_id, gate_id.as_deref())?;
         for tag_name in remove {
             let normalised = tag_name.trim().to_lowercase();
             let tag_id: Option<String> = conn
@@ -577,6 +630,9 @@ pub fn bulk_edit_entry_tags(
             if let Some(tag_id) = tag_id {
                 remove_tag_row(conn, entry_id, &tag_id)?;
             }
+        }
+        if had_gate && !has_gate(conn, entry_id, gate_id.as_deref())? {
+            remove_dependent_auto_tags(conn, entry_id)?;
         }
         for tag_name in add {
             let tag_id = ensure_tag(conn, tag_name)?;
@@ -650,7 +706,9 @@ pub fn keep_auto_tags(
 
 /// Removes the entry's matching auto tags and records a rejection for each,
 /// so they aren't suggested again. `tags: None` rejects every auto tag on
-/// the entries. User tags are never touched.
+/// the entries. User tags are never touched. Rejecting an auto gate tag also
+/// deletes the entry's other auto tags; those not named in `tags` get no
+/// rejection.
 pub fn reject_auto_tags(
     conn: &Connection,
     entry_ids: &[String],
@@ -660,9 +718,15 @@ pub fn reject_auto_tags(
         .unchecked_transaction()
         .map_err(|e| format!("Failed to begin reject transaction: {e}"))?;
 
+    let gate_id = gate_tag_id(conn)?;
+
     for entry_id in entry_ids {
+        let had_gate = has_gate(conn, entry_id, gate_id.as_deref())?;
         for tag_id in auto_tag_ids(conn, entry_id, tags)? {
             remove_tag_row(conn, entry_id, &tag_id)?;
+        }
+        if had_gate && !has_gate(conn, entry_id, gate_id.as_deref())? {
+            remove_dependent_auto_tags(conn, entry_id)?;
         }
     }
 
@@ -691,7 +755,9 @@ pub fn is_rejected(conn: &Connection, entry_id: &str, tag_name: &str) -> Result<
 ///
 /// This does not open its own transaction. It reads the entry's current rows
 /// on the connection it is given, so it sees whatever the caller's open
-/// transaction has already written and must be called inside one.
+/// transaction has already written and must be called inside one. It does
+/// not sweep orphaned tag rows; the caller runs `sweep_orphan_tags` once
+/// after its last call.
 pub fn apply_auto_tags(
     conn: &Connection,
     entry_id: &str,
@@ -765,7 +831,6 @@ pub fn apply_auto_tags(
         }
     }
 
-    sweep_orphan_tags(conn)?;
     Ok((added, removed))
 }
 
@@ -1445,9 +1510,72 @@ mod tests {
         // A kept name gets its new score.
         assert_eq!(row_of(&conn, &e, "same"), Some(("auto".into(), Some(0.9))));
         assert_eq!(row_of(&conn, &e, "fresh"), Some(("auto".into(), Some(0.8))));
-        // The dropped tag was not a user rejection and no longer has any row.
+        // The dropped tag was not a user rejection and, once the caller
+        // sweeps, no longer has any row.
         assert!(!is_rejected(&conn, &e, "old").unwrap());
+        sweep_orphan_tags(&conn).unwrap();
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM tags WHERE name = 'old'"), 0);
+    }
+
+    #[test]
+    fn rejecting_auto_gate_removes_dependent_auto_tags() {
+        let conn = open_memory_db();
+        let e = new_entry(&conn, "/a.mp3");
+        add_auto(&conn, &e, "encounter", 0.9);
+        add_auto(&conn, &e, "brass", 0.8);
+        add_auto(&conn, &e, "dark", 0.7);
+        add_tag_to_entry(&conn, &e, "night").unwrap();
+
+        reject_auto_tags(&conn, &[e.clone()], Some(&["Encounter".to_string()])).unwrap();
+
+        assert_eq!(row_of(&conn, &e, "encounter"), None);
+        assert!(is_rejected(&conn, &e, "encounter").unwrap());
+        assert_eq!(row_of(&conn, &e, "brass"), None);
+        assert_eq!(row_of(&conn, &e, "dark"), None);
+        // The dependents were never judged, so they are not rejections.
+        assert!(!is_rejected(&conn, &e, "brass").unwrap());
+        assert!(!is_rejected(&conn, &e, "dark").unwrap());
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tag_rejections"), 1);
+        // User tags on the entry are untouched.
+        assert_eq!(row_of(&conn, &e, "night"), Some(("user".into(), None)));
+    }
+
+    #[test]
+    fn removing_user_gate_removes_dependent_auto_tags() {
+        let conn = open_memory_db();
+
+        // A full-list save drops the user gate but still lists the auto tags.
+        let a = new_entry(&conn, "/a.mp3");
+        add_tag_to_entry(&conn, &a, "encounter").unwrap();
+        add_tag_to_entry(&conn, &a, "night").unwrap();
+        add_auto(&conn, &a, "brass", 0.8);
+        add_auto(&conn, &a, "dark", 0.7);
+        set_entry_tags(&conn, &a, &["night".into(), "brass".into(), "dark".into()], None).unwrap();
+        assert_eq!(row_of(&conn, &a, "encounter"), None);
+        assert_eq!(row_of(&conn, &a, "brass"), None, "a listed auto tag does not come back as a user tag");
+        assert_eq!(row_of(&conn, &a, "dark"), None);
+        assert_eq!(row_of(&conn, &a, "night"), Some(("user".into(), None)));
+
+        // A bulk remove of the user gate.
+        let b = new_entry(&conn, "/b.mp3");
+        add_tag_to_entry(&conn, &b, "encounter").unwrap();
+        add_tag_to_entry(&conn, &b, "night").unwrap();
+        add_auto(&conn, &b, "brass", 0.8);
+        bulk_edit_entry_tags(&conn, &[b.clone()], &[], &["encounter".into()]).unwrap();
+        assert_eq!(row_of(&conn, &b, "encounter"), None);
+        assert_eq!(row_of(&conn, &b, "brass"), None);
+        assert_eq!(row_of(&conn, &b, "night"), Some(("user".into(), None)));
+
+        // Removing a user tag records no rejection, and neither do the dependents.
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tag_rejections"), 0);
+
+        // Removing some other tag leaves the auto tags alone.
+        let c = new_entry(&conn, "/c.mp3");
+        add_tag_to_entry(&conn, &c, "encounter").unwrap();
+        add_tag_to_entry(&conn, &c, "night").unwrap();
+        add_auto(&conn, &c, "brass", 0.8);
+        bulk_edit_entry_tags(&conn, &[c.clone()], &[], &["night".into()]).unwrap();
+        assert_eq!(row_of(&conn, &c, "brass"), Some(("auto".into(), Some(0.8))));
     }
 
     #[test]

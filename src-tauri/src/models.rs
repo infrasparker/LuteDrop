@@ -195,6 +195,9 @@ pub struct AutoTagReport {
     pub gate: Option<TagQuality>,
     pub tags: Vec<TagQuality>,
     pub error: Option<String>,
+    /// Up to 5 "entry name: error" lines from entries that failed or could
+    /// not be reached in this run.
+    pub sample_errors: Vec<String>,
 }
 
 /// Emitted to the frontend while an auto-tagging run is in progress.

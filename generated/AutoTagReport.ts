@@ -4,4 +4,9 @@ import type { TagQuality } from "./TagQuality";
 /**
  * Summary of the most recent auto-tagging run.
  */
-export type AutoTagReport = { finishedAt: string | null, analyzed: number, added: number, removed: number, failed: number, unreachable: number, gate: TagQuality | null, tags: Array<TagQuality>, error: string | null, };
+export type AutoTagReport = { finishedAt: string | null, analyzed: number, added: number, removed: number, failed: number, unreachable: number, gate: TagQuality | null, tags: Array<TagQuality>, error: string | null, 
+/**
+ * Up to 5 "entry name: error" lines from entries that failed or could
+ * not be reached in this run.
+ */
+sampleErrors: Array<string>, };

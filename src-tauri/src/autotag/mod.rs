@@ -25,6 +25,9 @@ use plan::{EntryFacts, ScoreSet};
 /// Most files sent to the analyzer in one `/embed` call.
 const EMBED_BATCH: usize = 32;
 
+/// Most per-entry errors a report lists in `sample_errors`.
+const MAX_SAMPLE_ERRORS: usize = 5;
+
 /// How long a re-score waits after the last tag edit. Edits made in quick
 /// succession lead to a single `/score` call.
 const RESCORE_DELAY: Duration = Duration::from_secs(5);
@@ -240,19 +243,38 @@ impl Worker {
         }
 
         let client = HttpAnalyzer::new(&settings.analyzer_url, &settings.token);
-        let report = run_once(&container.db, &client, &self.queued, &|progress| {
+        let mut report = run_once(&container.db, &client, &self.queued, &|progress| {
             container.emit(PROGRESS_EVENT, progress)
         });
         match &report.error {
             None => self.queued.clear(),
             Some(e) => log::warn!("Auto-tag run failed: {e}"),
         }
+        keep_previous_quality(&container.autotag.last_report(), &mut report);
 
         container.autotag.set_report(report.clone());
         // Remotes pick up the new tags on their next snapshot; the desktop
         // frontend reloads app state when it receives the complete event.
         container.mark_state_dirty();
         container.emit(COMPLETE_EVENT, report);
+    }
+}
+
+/// A failed run measures no tag quality. So that the quality table stays
+/// visible next to the error, a failed report takes the `gate` and `tags`
+/// of the previous report. A successful report is left as it is.
+fn keep_previous_quality(previous: &AutoTagReport, report: &mut AutoTagReport) {
+    if report.error.is_some() {
+        report.gate = previous.gate.clone();
+        report.tags = previous.tags.clone();
+    }
+}
+
+/// Adds "entry name: error" to the report's sample errors, up to
+/// `MAX_SAMPLE_ERRORS` of them.
+fn note_error(report: &mut AutoTagReport, name: &str, error: &str) {
+    if report.sample_errors.len() < MAX_SAMPLE_ERRORS {
+        report.sample_errors.push(format!("{name}: {error}"));
     }
 }
 
@@ -355,8 +377,8 @@ fn run_steps(
 
     // Step 2: pick the entries to embed and map their paths.
     let queued: HashSet<&str> = queued.iter().map(String::as_str).collect();
-    // (entry id, hash, path on the analyzer host)
-    let mut to_embed: Vec<(&str, String, String)> = Vec::new();
+    // (entry id, entry name, hash, path on the analyzer host)
+    let mut to_embed: Vec<(&str, &str, String, String)> = Vec::new();
     {
         let conn = lock(db)?;
         for entry in entries.iter().filter(|e| e.facts.is_music) {
@@ -365,17 +387,23 @@ fn run_steps(
                 continue;
             }
             let Some(hash) = entry.facts.hash.clone() else {
-                let error = Some("File has no content hash");
-                autotag_db::set_analysis(&conn, id, None, AnalysisStatus::Failed, error)?;
+                let error = "File has no content hash";
+                autotag_db::set_analysis(&conn, id, None, AnalysisStatus::Failed, Some(error))?;
                 report.failed += 1;
+                note_error(report, &entry.name, error);
                 continue;
             };
             match plan::map_path(&entry.file_path, &settings.local_prefix, &settings.remote_prefix) {
-                Some(remote) => to_embed.push((id, hash, remote)),
+                Some(remote) => to_embed.push((id, &entry.name, hash, remote)),
                 None => {
                     autotag_db::set_analysis(&conn, id, Some(&hash), AnalysisStatus::UnreachablePath, None)?;
                     embedded.remove(&hash);
                     report.unreachable += 1;
+                    let error = format!(
+                        "{} is not under the local prefix \"{}\"",
+                        entry.file_path, settings.local_prefix
+                    );
+                    note_error(report, &entry.name, &error);
                 }
             }
         }
@@ -390,13 +418,13 @@ fn run_steps(
     for batch in to_embed.chunks(EMBED_BATCH) {
         let items: Vec<(String, String)> = batch
             .iter()
-            .map(|(_, hash, remote)| (hash.clone(), remote.clone()))
+            .map(|(_, _, hash, remote)| (hash.clone(), remote.clone()))
             .collect();
         let results = client.embed(&items)?;
         let by_hash: HashMap<&str, _> = results.iter().map(|r| (r.hash.as_str(), r)).collect();
 
         let conn = lock(db)?;
-        for (id, hash, _) in batch {
+        for (id, name, hash, _) in batch {
             let error = match by_hash.get(hash.as_str()) {
                 Some(result) if result.ok => None,
                 Some(result) => Some(result.error.clone().unwrap_or_else(|| "Embedding failed".into())),
@@ -411,6 +439,7 @@ fn run_steps(
                     autotag_db::set_analysis(&conn, id, Some(hash), AnalysisStatus::Failed, Some(&error))?;
                     embedded.remove(hash);
                     report.failed += 1;
+                    note_error(report, name, &error);
                 }
             }
         }
@@ -461,6 +490,8 @@ fn run_steps(
             }
             analyzed += 1;
         }
+        // Auto tags dropped above may have left tag rows no entry uses.
+        library::sweep_orphan_tags(&conn)?;
         tx.commit()
             .map_err(|e| format!("Failed to commit auto-tag transaction: {e}"))?;
     }
@@ -728,6 +759,8 @@ mod tests {
 
         assert_eq!(report.unreachable, 1);
         assert_eq!(report.error, None);
+        assert_eq!(report.sample_errors.len(), 1);
+        assert!(report.sample_errors[0].starts_with("x: D:\\other\\x.opus is not under the local prefix"));
         assert_eq!(status_of(&db, &outside).map(|s| s.0), Some(AnalysisStatus::UnreachablePath));
         assert!(fake.embedded_hashes().is_empty());
     }
@@ -748,12 +781,52 @@ mod tests {
         assert_eq!(report.error, None);
         assert_eq!(report.failed, 1);
         assert_eq!(report.analyzed, 1);
+        assert_eq!(report.sample_errors, vec!["b: decode failed".to_string()]);
         assert_eq!(
             status_of(&db, &b),
             Some((AnalysisStatus::Failed, Some("decode failed".to_string())))
         );
         assert_eq!(row_of(&db, &a, "encounter"), Some((TagSource::Auto, Some(0.9))));
         assert_eq!(row_of(&db, &b, "encounter"), None);
+    }
+
+    #[test]
+    fn sample_errors_stop_at_five() {
+        let db = setup();
+        let names = ["a", "b", "c", "d", "e", "f", "g"];
+        let ids: Vec<String> = names.iter().map(|n| add(&db, n, "music")).collect();
+        let fake = FakeAnalyzer {
+            embed_failures: names.iter().map(|n| (format!("h-{n}"), "decode failed".to_string())).collect(),
+            ..Default::default()
+        };
+
+        let report = run_once(&db, &fake, &ids, &no_progress);
+
+        assert_eq!(report.failed, 7);
+        assert_eq!(report.sample_errors.len(), 5);
+    }
+
+    #[test]
+    fn failed_report_keeps_previous_tag_quality() {
+        let db = setup();
+        let a = add(&db, "a", "music");
+        let ok = FakeAnalyzer { gate: scores(&[("h-a", 0.9)]), ..Default::default() };
+        let good = run_once(&db, &ok, &[a.clone()], &no_progress);
+        assert!(good.gate.is_some());
+
+        let down = FakeAnalyzer { down: Some("connection refused".into()), ..Default::default() };
+        let mut failed = run_once(&db, &down, &[a.clone()], &no_progress);
+        assert_eq!(failed.gate, None);
+        keep_previous_quality(&good, &mut failed);
+        assert_eq!(failed.gate, good.gate);
+        assert_eq!(failed.tags, good.tags);
+        assert!(failed.error.is_some());
+
+        // A successful report keeps its own figures.
+        let mut next = run_once(&db, &ok, &[], &no_progress);
+        let before = next.clone();
+        keep_previous_quality(&failed, &mut next);
+        assert_eq!(next, before);
     }
 
     #[test]
