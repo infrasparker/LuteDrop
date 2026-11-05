@@ -6,9 +6,12 @@ import { useAudio } from '../composables/useAudio';
 import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
 import { formatDuration } from '../shared/format';
 
-// Scrubber for the one thing that is playing or paused: a library preview or
-// a single track. Hidden when several tracks are active (a comp), where one
-// position bar would be ambiguous.
+// Now-playing + scrubber for the one thing that is playing or paused: a
+// library preview or a single track. It always renders at the same size so
+// the footer never changes height: when there is nothing to scrub (nothing
+// active, several tracks active — a comp, where one position bar would be
+// ambiguous — or a gap between clips) it shows a muted status line and a
+// disabled slider instead.
 
 const store = useAppStore();
 const audio = useAudio();
@@ -220,29 +223,48 @@ const totalLabel = computed(() => {
   return tg && tg.end !== null ? formatDuration(Math.max(0, tg.end - tg.start)) : '--:--';
 });
 
+/// Status shown in place of a name when there is nothing to scrub.
+const placeholder = computed(() => {
+  let playing = 0;
+  let paused = 0;
+  for (const s of store.playbackStates.values()) {
+    if (s.isPlaying) playing++;
+    else if (s.isPaused) paused++;
+  }
+  if (playing === 0 && paused === 0) return 'Nothing playing';
+  if (playing === 0) return paused === 1 ? '1 clip paused' : `${paused} clips paused`;
+  return playing === 1 ? '1 clip playing' : `${playing} clips playing`;
+});
+
 function openDetails(): void {
   if (target.value) store.editEntryId = target.value.entryId;
 }
 </script>
 
 <template>
-  <div v-if="target" class="scrubber">
-    <button
-      type="button"
-      class="scrubber-name text-primary"
-      :title="`${target.name} — open details`"
-      @click="openDetails"
-    >
-      {{ target.name }}
-    </button>
-    <span class="scrubber-time">{{ elapsedLabel }}</span>
+  <div class="scrubber">
+    <div class="scrubber-info">
+      <button
+        v-if="target"
+        type="button"
+        class="scrubber-name text-primary"
+        :title="`${target.name} — open details`"
+        @click="openDetails"
+      >
+        {{ target.name }}
+      </button>
+      <span v-else class="scrubber-name text-medium-emphasis">{{ placeholder }}</span>
+      <span class="scrubber-time" :class="{ 'scrubber-time--idle': !target }">
+        {{ target ? elapsedLabel : '--:--' }} / {{ totalLabel }}
+      </span>
+    </div>
     <div class="scrubber-slider" @pointerdown.capture="onPointerDown">
       <VSlider
-        :model-value="sliderValue"
-        :min="target.start"
-        :max="target.end ?? target.start + 1"
+        :model-value="target ? sliderValue : 0"
+        :min="target?.start ?? 0"
+        :max="target ? (target.end ?? target.start + 1) : 1"
         :step="0"
-        :disabled="target.end === null"
+        :disabled="!target || target.end === null"
         hide-details
         density="compact"
         color="primary"
@@ -250,19 +272,26 @@ function openDetails(): void {
         @end="onSliderEnd"
       />
     </div>
-    <span class="scrubber-time">{{ totalLabel }}</span>
   </div>
 </template>
 
 <style scoped>
+/* Fixed footprint: the name column has a fixed width and both text lines
+   ellipsize / use tabular digits, so nothing here reflows with playback. */
 .scrubber {
   display: grid;
-  grid-template-columns: minmax(0, 160px) auto 1fr auto;
+  grid-template-columns: 180px minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   width: 100%;
-  max-width: 600px;
-  font-size: 0.85rem;
+  min-width: 0;
+}
+
+.scrubber-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.25;
 }
 
 .scrubber-name {
@@ -274,17 +303,28 @@ function openDetails(): void {
   border: none;
   padding: 0;
   font: inherit;
+  font-size: 0.875rem;
+}
+
+button.scrubber-name {
   cursor: pointer;
 }
 
-.scrubber-name:hover {
+button.scrubber-name:hover {
   text-decoration: underline;
 }
 
 .scrubber-time {
+  font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
   color: rgba(255, 255, 255, 0.72);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scrubber-time--idle {
+  color: rgba(255, 255, 255, 0.38);
 }
 
 .scrubber-slider {
