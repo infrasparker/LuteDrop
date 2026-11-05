@@ -30,6 +30,22 @@ async function remove(): Promise<void> {
   await store.command('delete_clip', { trackId: props.trackId, clipId: props.clip.id });
 }
 
+// A press that starts on a control (e.g. a slider drag released elsewhere in
+// the row) makes the browser fire `click` on the row; ignore that click.
+let pressStartedOnControl = false;
+
+function onRowPointerDown(e: PointerEvent): void {
+  pressStartedOnControl = !!(e.target as Element).closest('.v-slider, button, .v-btn, .drag-handle, input');
+}
+
+function onRowClick(): void {
+  if (pressStartedOnControl) {
+    pressStartedOnControl = false;
+    return;
+  }
+  editLibraryEntry();
+}
+
 function editLibraryEntry(): void {
   store.editEntryId = props.clip.libraryEntryId;
 }
@@ -59,7 +75,8 @@ function toggleMute(): void {
   <div
     class="clip-row d-flex align-center ga-2 py-2 px-1"
     :class="{ 'clip-active': isCurrentClip, 'clip-missing': isMissing }"
-    @click="editLibraryEntry"
+    @pointerdown="onRowPointerDown"
+    @click="onRowClick"
   >
     <VIcon size="small" class="text-medium-emphasis drag-handle" style="cursor: grab;" @click.stop>mdi-drag</VIcon>
     <VBtn

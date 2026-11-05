@@ -54,6 +54,15 @@ const target = computed(() => {
   return null;
 });
 
+// If the target track is deleted while the page is open, leave target mode.
+watch(target, (now, before) => {
+  if (before && !now && route.query.target) {
+    toast.showError('That track no longer exists');
+    const { target: _gone, ...rest } = route.query;
+    void router.replace({ query: rest });
+  }
+});
+
 const targetEntryIds = computed(() => new Set(target.value?.track.clips.map((c) => c.libraryEntryId) ?? []));
 // A seamless track plays a single clip, so results are not added to it.
 const targetIsSeamless = computed(() => target.value?.track.mode.type === 'seamless');
@@ -453,7 +462,7 @@ const showAutoTagging = ref(false);
       <div v-if="selectedIds.length > 0" class="selection-bar elevation-8 d-flex flex-wrap align-center ga-2 px-3 py-2">
         <VIcon size="small" color="primary">mdi-checkbox-multiple-marked</VIcon>
         <span class="text-body-2 font-weight-medium" style="white-space: nowrap;">
-          {{ selectedIds.length }} selected
+          {{ target ? addableIds.length : selectedIds.length }} selected
         </span>
         <VSpacer />
         <VBtn
