@@ -15,22 +15,16 @@ pub struct EntryFacts {
     pub id: String,
     /// SHA-256 of the file; `None` until the entry has been hashed.
     pub hash: Option<String>,
-    /// Tags the user put on the entry (auto tags are not included).
+    /// Tags the user voted yes on (the analyzer's tags are not included).
     pub user_tags: Vec<String>,
-    /// Tags the user removed from the entry after the analyzer suggested them.
+    /// Tags the user voted no on.
     pub rejected: Vec<String>,
     pub is_music: bool,
-    /// The role the user set. `None` when the role is unset, auto, or cleared
-    /// by the user.
+    /// The user's role (`role_user`); `None` when the user has not set one,
+    /// whatever the analyzer says.
     pub user_role: Option<Role>,
-    /// True when the user decided the role (`role_source` is user), including
-    /// a role the user cleared.
-    pub role_user_set: bool,
-    /// The pace the user set, with the same meaning as `user_role`.
+    /// The user's pace (`pace_user`), with the same meaning as `user_role`.
     pub user_pace: Option<Pace>,
-    /// True when the user decided the pace (`pace_source` is user), including
-    /// a pace the user cleared.
-    pub pace_user_set: bool,
 }
 
 /// Hashes of the entries that are examples for one tag (or for the gate).
@@ -126,20 +120,21 @@ pub fn mood_zscores(raw: &HashMap<String, MoodRaw>) -> HashMap<String, (f64, f64
         .collect()
 }
 
-/// What one scored entry should carry after a run.
+/// The analyzer layer one scored entry should carry after a run. It is
+/// decided from the scores alone, whatever the user's layer holds.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decision {
     /// The auto role and the Combat probability it is stored with. `None`
-    /// clears an auto role; the writer never changes a role the user decided.
+    /// clears the auto role.
     pub role: Option<(Role, f64)>,
     /// The auto pace and the Moving probability it is stored with. `None`
-    /// means no pace is earned (or the user decided it); the run clears an
-    /// auto pace on `None` only when the response has a pace head.
+    /// means no pace is earned; the run clears the auto pace on `None` only
+    /// when the response has a pace head.
     pub pace: Option<(Pace, f64)>,
     /// Mood z-scores (Bright, Light), when the analyzer sent raw mood scores
     /// for the entry.
     pub mood: Option<(f64, f64)>,
-    /// The auto tags the entry should have; the rest of its auto tags go.
+    /// The tags the analyzer gives the entry; its other auto scores go.
     pub tags: Vec<AutoTag>,
 }
 
@@ -192,15 +187,15 @@ pub fn map_path(local: &str, local_prefix: &str, remote_prefix: &str) -> Option<
     Some(format!("{remote}/{rest}"))
 }
 
-/// Builds the `/score` request from the user's own roles and tags.
+/// Builds the `/score` request from the user's layer only.
 ///
 /// Only music entries with a hash take part. The gate's positives are entries
 /// the user set to Combat and its negatives those set to Non-combat. For each
-/// vocabulary tag, positives are entries with the user tag; negatives are
-/// entries with a user role but without the tag, plus entries where the user
-/// rejected the tag. Auto roles and auto tags never appear in `EntryFacts`,
-/// so the analyzer cannot train on its own guesses. Targets are every music
-/// entry whose hash is in `embedded`.
+/// vocabulary tag, positives are entries the user voted yes on; negatives are
+/// entries the user voted no on, plus entries with a user role but no yes
+/// vote for the tag. The analyzer's layer never appears in `EntryFacts`, so
+/// it cannot train on its own guesses. Targets are every music entry whose
+/// hash is in `embedded`.
 pub fn build_score_request(
     entries: &[EntryFacts],
     scene: &SceneConfig,
@@ -287,14 +282,15 @@ fn pace_for(head: &ScoreSet, p: f64) -> Option<(Pace, f64)> {
     }
 }
 
-/// Decides the auto role and auto tags of each scored entry.
+/// Decides the analyzer layer (role, pace, mood and tags) of each scored
+/// entry.
 ///
 /// Only entries the analyzer scored (music with a hash found in the gate's
 /// scores) appear in the result, so callers can tell them apart from entries
-/// that were not scored. An entry whose role the user decided gets no role.
-/// A tag is earned when its classifier is trusted, the score reaches its
-/// threshold, and the user has neither put the tag on the entry nor rejected
-/// it.
+/// that were not scored. The decision depends on the scores alone: entries
+/// the user has set get an analyzer layer too, shown beside the user's. A tag
+/// is earned when its classifier is trusted and the score reaches its
+/// threshold.
 pub fn decide(
     entries: &[EntryFacts],
     scene: &SceneConfig,
@@ -310,19 +306,11 @@ pub fn decide(
             continue;
         };
 
-        let role = if entry.role_user_set {
-            None
-        } else {
-            role_for(&resp.gate, gate_score)
-        };
-
-        let pace = if entry.pace_user_set {
-            None
-        } else {
-            resp.pace
-                .as_ref()
-                .and_then(|head| pace_for(head, *head.scores.get(hash)?))
-        };
+        let role = role_for(&resp.gate, gate_score);
+        let pace = resp
+            .pace
+            .as_ref()
+            .and_then(|head| pace_for(head, *head.scores.get(hash)?));
 
         let mut tags = Vec::new();
         for vocab_tag in &vocabulary {
@@ -332,11 +320,7 @@ pub fn decide(
             let Some(&score) = set.scores.get(hash) else {
                 continue;
             };
-            let earned = set.trusted
-                && set.threshold.is_some_and(|t| score >= t)
-                && !has_tag(&entry.user_tags, vocab_tag)
-                && !has_tag(&entry.rejected, vocab_tag);
-            if earned {
+            if set.trusted && set.threshold.is_some_and(|t| score >= t) {
                 tags.push(AutoTag {
                     tag: vocab_tag.clone(),
                     score,
@@ -403,16 +387,13 @@ mod tests {
             rejected: vec![],
             is_music: true,
             user_role: None,
-            role_user_set: false,
             user_pace: None,
-            pace_user_set: false,
         }
     }
 
-    /// The entry with a role the user set (`None` = the user cleared it).
-    fn with_role(mut e: EntryFacts, role: Option<Role>) -> EntryFacts {
-        e.user_role = role;
-        e.role_user_set = true;
+    /// The entry with the user's role.
+    fn with_role(mut e: EntryFacts, role: Role) -> EntryFacts {
+        e.user_role = Some(role);
         e
     }
 
@@ -536,7 +517,7 @@ mod tests {
         // `EntryFacts` holds user tags and user roles only: an entry whose
         // tags and role are all auto has none, so it is no example at all.
         let entries = vec![
-            with_role(entry("a", &["brass"]), Some(Role::Combat)),
+            with_role(entry("a", &["brass"]), Role::Combat),
             entry("auto-only", &[]),
         ];
         let req = build_score_request(&entries, &scene(), &HashSet::new());
@@ -549,12 +530,11 @@ mod tests {
 
     #[test]
     fn request_uses_user_roles_for_gate() {
-        let mut not_music = with_role(entry("n", &[]), Some(Role::Combat));
+        let mut not_music = with_role(entry("n", &[]), Role::Combat);
         not_music.is_music = false;
         let entries = vec![
-            with_role(entry("a", &[]), Some(Role::Combat)),
-            with_role(entry("b", &[]), Some(Role::NonCombat)),
-            with_role(entry("cleared", &[]), None),
+            with_role(entry("a", &[]), Role::Combat),
+            with_role(entry("b", &[]), Role::NonCombat),
             entry("unset", &[]),
             not_music,
         ];
@@ -567,12 +547,11 @@ mod tests {
     fn request_tag_negatives_require_user_role() {
         let mut rejected = entry("rej", &[]);
         rejected.rejected = vec!["brass".into()];
-        let mut not_music = with_role(entry("n", &[]), Some(Role::NonCombat));
+        let mut not_music = with_role(entry("n", &[]), Role::NonCombat);
         not_music.is_music = false;
         let entries = vec![
-            with_role(entry("a", &["brass"]), Some(Role::Combat)),
-            with_role(entry("b", &["Dark "]), Some(Role::NonCombat)),
-            with_role(entry("cleared", &[]), None),
+            with_role(entry("a", &["brass"]), Role::Combat),
+            with_role(entry("b", &["Dark "]), Role::NonCombat),
             entry("unset", &[]),
             // A user tag is a positive with or without a role.
             entry("tagged", &["brass"]),
@@ -621,23 +600,16 @@ mod tests {
     }
 
     #[test]
-    fn decide_skips_user_set_role() {
-        let entries = vec![
-            with_role(entry("a", &[]), Some(Role::NonCombat)),
-            with_role(entry("cleared", &[]), None),
-        ];
-        let resp = response(
-            gate(true, Some(0.6), Some(0.6), &[("h-a", 0.95), ("h-cleared", 0.95)]),
-            &[],
-        );
+    fn decide_gives_user_set_entries_an_auto_role_too() {
+        let entries = vec![with_role(entry("a", &[]), Role::NonCombat)];
+        let resp = response(gate(true, Some(0.6), Some(0.6), &[("h-a", 0.95)]), &[]);
         let out = decide(&entries, &scene(), &resp);
-        assert_eq!(out["a"].role, None);
-        assert_eq!(out["cleared"].role, None);
+        assert_eq!(out["a"].role, Some((Role::Combat, 0.95)));
     }
 
     #[test]
     fn decide_tags_need_no_gate() {
-        let entries = vec![entry("a", &[]), with_role(entry("b", &[]), Some(Role::NonCombat))];
+        let entries = vec![entry("a", &[]), with_role(entry("b", &[]), Role::NonCombat)];
         // The gate is untrusted and scores low; tags are decided on their own.
         let resp = response(
             gate(false, None, None, &[("h-a", 0.1), ("h-b", 0.1)]),
@@ -664,18 +636,18 @@ mod tests {
     }
 
     #[test]
-    fn decide_respects_rejection_and_user_tags() {
+    fn decide_scores_tags_whatever_the_user_voted() {
         let mut rejected_tag = entry("b", &[]);
         rejected_tag.rejected = vec!["brass".into()];
         let user_has_tag = entry("c", &["Brass"]);
-        let hashes = [("h-b", 0.9), ("h-c", 0.9)];
+        let hashes = [("h-b", 0.9), ("h-c", 0.8)];
         let resp = response(
             gate(true, Some(0.6), None, &hashes),
             &[("brass", set(true, Some(0.5), &hashes))],
         );
         let out = decide(&[rejected_tag, user_has_tag], &scene(), &resp);
-        assert!(out["b"].tags.is_empty());
-        assert!(out["c"].tags.is_empty());
+        assert_eq!(out["b"].tags, vec![AutoTag { tag: "brass".into(), score: 0.9 }]);
+        assert_eq!(out["c"].tags, vec![AutoTag { tag: "brass".into(), score: 0.8 }]);
     }
 
     #[test]
@@ -710,18 +682,16 @@ mod tests {
         assert_eq!(resp.tags["dark"].quality.auc, None);
     }
 
-    fn with_pace(mut e: EntryFacts, pace: Option<Pace>) -> EntryFacts {
-        e.user_pace = pace;
-        e.pace_user_set = true;
+    fn with_pace(mut e: EntryFacts, pace: Pace) -> EntryFacts {
+        e.user_pace = Some(pace);
         e
     }
 
     #[test]
     fn request_includes_user_pace_examples_only() {
         let entries = vec![
-            with_pace(entry("m", &[]), Some(Pace::Moving)),
-            with_pace(entry("s", &[]), Some(Pace::Still)),
-            with_pace(entry("cleared", &[]), None),
+            with_pace(entry("m", &[]), Pace::Moving),
+            with_pace(entry("s", &[]), Pace::Still),
             entry("unset", &[]),
         ];
         let req = build_score_request(&entries, &scene(), &HashSet::new());
@@ -737,12 +707,12 @@ mod tests {
     }
 
     #[test]
-    fn decide_sets_pace_only_when_trusted_and_not_user_set() {
+    fn decide_sets_pace_when_trusted_even_if_user_set() {
         let entries = vec![
             entry("a", &[]),
             entry("b", &[]),
             entry("c", &[]),
-            with_pace(entry("u", &[]), Some(Pace::Still)),
+            with_pace(entry("u", &[]), Pace::Still),
             entry("norhythm", &[]),
         ];
         let all = [("h-a", 0.9), ("h-b", 0.2), ("h-c", 0.4), ("h-u", 0.9), ("h-norhythm", 0.9)];
@@ -757,7 +727,7 @@ mod tests {
         assert_eq!(out["a"].pace, Some((Pace::Moving, 0.9)));
         assert_eq!(out["b"].pace, Some((Pace::Still, 0.2)));
         assert_eq!(out["c"].pace, None);
-        assert_eq!(out["u"].pace, None, "user-set pace is left alone");
+        assert_eq!(out["u"].pace, Some((Pace::Moving, 0.9)), "the analyzer layer ignores the user's");
         assert_eq!(out["norhythm"].pace, None);
 
         let out = decide(&entries, &scene(), &head(false));

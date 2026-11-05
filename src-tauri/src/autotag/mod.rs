@@ -358,8 +358,9 @@ fn progress_update(phase: &str, processed: u32, total: u32, message: Option<Stri
 ///    changed since it was embedded); unmappable ones become `UnreachablePath`;
 /// 3. embed them in batches of 32, marking each `Embedded` or `Failed`;
 /// 4. call `/score` once for every embedded music entry;
-/// 5. decide each scored entry's auto role and auto tags;
-/// 6. write those roles and tags and the scores in one transaction.
+/// 5. decide each scored entry's analyzer layer (role, pace, mood, tags);
+/// 6. write that layer and the scores in one transaction. The user's layer
+///    is never written, so the run can't undo an edit made meanwhile.
 ///
 /// The database lock is released while the analyzer works, so the app stays
 /// usable. An analyzer or database error stops the run before step 6 commits,
@@ -509,8 +510,8 @@ fn run_steps(
             if !entry_is_music(&conn, id)? {
                 continue;
             }
-            // Both writers re-read the entry here, so a role or tag the user
-            // set while the analyzer worked is kept.
+            // Only the analyzer layer is written; the user's choices live in
+            // their own columns, so edits made while the analyzer worked stay.
             let (role, role_score) = match decision.role {
                 Some((role, score)) => (Some(role), score),
                 None => (None, 0.0),
@@ -532,6 +533,7 @@ fn run_steps(
             if let Some((bright, light)) = decision.mood {
                 library::apply_auto_mood(&conn, id, Some(bright), Some(light))?;
             }
+            // Counts changes to the tags the entry shows (see apply_auto_tags).
             let (a, r) = library::apply_auto_tags(&conn, id, &decision.tags)?;
             added += a;
             removed += r;
@@ -754,16 +756,16 @@ pub(crate) mod tests {
         .unwrap()
     }
 
-    /// Returns (source, score) of the entry's row for `tag`, if any.
-    fn row_of(db: &Mutex<Connection>, entry: &str, tag: &str) -> Option<(TagSource, Option<f64>)> {
+    /// Returns (auto_score, user_vote) of the entry's row for `tag`, if any.
+    fn row_of(db: &Mutex<Connection>, entry: &str, tag: &str) -> Option<(Option<f64>, Option<i64>)> {
         db.lock()
             .unwrap()
             .query_row(
-                "SELECT lt.source, lt.score FROM library_entry_tags lt
+                "SELECT lt.auto_score, lt.user_vote FROM library_entry_tags lt
                  JOIN tags t ON t.id = lt.tag_id
                  WHERE lt.library_entry_id = ?1 AND t.name = ?2",
                 params![entry, tag],
-                |r| Ok((TagSource::from_str(&r.get::<_, String>(0)?), r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
             .unwrap()
@@ -773,24 +775,31 @@ pub(crate) mod tests {
         library::set_user_role(&db.lock().unwrap(), &[entry.to_string()], role).unwrap();
     }
 
-    /// Returns the entry's (role, role_source, role_score) as stored.
-    fn role_of(db: &Mutex<Connection>, entry: &str) -> (Option<String>, Option<String>, Option<f64>) {
+    /// A facet as stored: (auto value, auto score, user value).
+    type FacetRow = (Option<String>, Option<f64>, Option<String>);
+
+    /// Returns the entry's (role_auto, role_auto_score, role_user).
+    fn role_of(db: &Mutex<Connection>, entry: &str) -> FacetRow {
         db.lock()
             .unwrap()
             .query_row(
-                "SELECT role, role_source, role_score FROM library_entries WHERE id = ?1",
+                "SELECT role_auto, role_auto_score, role_user FROM library_entries WHERE id = ?1",
                 params![entry],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap()
     }
 
-    fn auto_combat(score: f64) -> (Option<String>, Option<String>, Option<f64>) {
-        (Some("combat".into()), Some("auto".into()), Some(score))
+    fn auto_combat(score: f64) -> FacetRow {
+        (Some("combat".into()), Some(score), None)
     }
 
-    fn no_role() -> (Option<String>, Option<String>, Option<f64>) {
+    fn no_role() -> FacetRow {
         (None, None, None)
+    }
+
+    fn s(v: &str) -> Option<String> {
+        Some(v.to_string())
     }
 
     fn status_of(db: &Mutex<Connection>, entry: &str) -> Option<(AnalysisStatus, Option<String>)> {
@@ -826,18 +835,19 @@ pub(crate) mod tests {
         assert_eq!(report.removed, 0);
         assert!(report.finished_at.is_some());
         assert_eq!(report.gate.as_ref().unwrap().tag, "combat");
-        // The user's role stays; the others get auto roles scored with p(Combat).
-        assert_eq!(role_of(&db, &a), (Some("non_combat".into()), Some("user".into()), None));
+        // Every entry gets an analyzer role scored with p(Combat), including
+        // the one the user set; the user's role stays beside it.
+        assert_eq!(role_of(&db, &a), (s("combat"), Some(0.9), s("non_combat")));
         assert_eq!(role_of(&db, &b), auto_combat(0.8));
-        assert_eq!(role_of(&db, &c), (Some("non_combat".into()), Some("auto".into()), Some(0.1)));
-        assert_eq!(row_of(&db, &a, "brass"), Some((TagSource::Auto, Some(0.7))));
-        assert_eq!(row_of(&db, &b, "brass"), Some((TagSource::Auto, Some(0.9))));
+        assert_eq!(role_of(&db, &c), (s("non_combat"), Some(0.1), None));
+        assert_eq!(row_of(&db, &a, "brass"), Some((Some(0.7), None)));
+        assert_eq!(row_of(&db, &b, "brass"), Some((Some(0.9), None)));
         assert_eq!(row_of(&db, &c, "brass"), None);
         assert_eq!(status_of(&db, &a), Some((AnalysisStatus::Embedded, None)));
 
         let saved = autotag_db::load_scores(&db.lock().unwrap(), &b).unwrap().unwrap();
         assert_eq!(saved.gate.tag, "combat");
-        assert_eq!(saved.gate.applied, Some(TagSource::Auto), "gate applied follows the role source");
+        assert_eq!(saved.gate.applied, Some(TagSource::Auto), "gate applied follows the role layer");
         assert_eq!(saved.tags[0].tag, "brass");
     }
 
@@ -846,7 +856,7 @@ pub(crate) mod tests {
         let db = setup();
         let a = add(&db, "a", "music");
         let fake = FakeAnalyzer { gate: scores(&[("h-a", 0.9)]), ..Default::default() };
-        run_once(&db, &fake, &[a.clone()], &no_progress);
+        run_once(&db, &fake, std::slice::from_ref(&a), &no_progress);
         assert_eq!(fake.embedded_hashes(), vec!["h-a"]);
 
         let report = run_once(&db, &fake, &[], &no_progress);
@@ -860,12 +870,12 @@ pub(crate) mod tests {
         let db = setup();
         let a = add(&db, "a", "music");
         let ok = FakeAnalyzer { gate: scores(&[("h-a", 0.9)]), ..Default::default() };
-        run_once(&db, &ok, &[a.clone()], &no_progress);
+        run_once(&db, &ok, std::slice::from_ref(&a), &no_progress);
         assert_eq!(role_of(&db, &a), auto_combat(0.9));
 
         let down = FakeAnalyzer { down: Some("connection refused".into()), ..Default::default() };
         let phases = Mutex::new(Vec::new());
-        let report = run_once(&db, &down, &[a.clone()], &|p: AutoTagProgress| {
+        let report = run_once(&db, &down, std::slice::from_ref(&a), &|p: AutoTagProgress| {
             phases.lock().unwrap().push(p.phase)
         });
 
@@ -884,7 +894,7 @@ pub(crate) mod tests {
         };
         let fake = FakeAnalyzer::default();
 
-        let report = run_once(&db, &fake, &[outside.clone()], &no_progress);
+        let report = run_once(&db, &fake, std::slice::from_ref(&outside), &no_progress);
 
         assert_eq!(report.unreachable, 1);
         assert_eq!(report.error, None);
@@ -940,11 +950,11 @@ pub(crate) mod tests {
         let db = setup();
         let a = add(&db, "a", "music");
         let ok = FakeAnalyzer { gate: scores(&[("h-a", 0.9)]), ..Default::default() };
-        let good = run_once(&db, &ok, &[a.clone()], &no_progress);
+        let good = run_once(&db, &ok, std::slice::from_ref(&a), &no_progress);
         assert!(good.gate.is_some());
 
         let down = FakeAnalyzer { down: Some("connection refused".into()), ..Default::default() };
-        let mut failed = run_once(&db, &down, &[a.clone()], &no_progress);
+        let mut failed = run_once(&db, &down, std::slice::from_ref(&a), &no_progress);
         assert_eq!(failed.gate, None);
         keep_previous_quality(&good, &mut failed);
         assert_eq!(failed.gate, good.gate);
@@ -977,7 +987,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn user_tag_added_during_scoring_is_not_overwritten() {
+    fn user_tag_added_during_scoring_keeps_its_vote() {
         let db = setup();
         let a = add(&db, "a", "music");
         let hook_db = db.clone();
@@ -993,11 +1003,44 @@ pub(crate) mod tests {
             ..Default::default()
         };
 
-        let report = run_once(&db, &fake, &[a.clone()], &no_progress);
+        let report = run_once(&db, &fake, std::slice::from_ref(&a), &no_progress);
 
         assert_eq!(report.error, None);
-        assert_eq!(row_of(&db, &a, "brass"), Some((TagSource::User, None)));
-        assert_eq!(report.added, 0);
+        // The analyzer's score lands beside the user's yes vote.
+        assert_eq!(row_of(&db, &a, "brass"), Some((Some(0.9), Some(1))));
+        assert_eq!(report.added, 0, "the entry already showed the tag");
+    }
+
+    #[test]
+    fn run_scores_tags_the_user_voted_on() {
+        let db = setup();
+        let a = add(&db, "a", "music");
+        {
+            let conn = db.lock().unwrap();
+            library::add_tag_to_entry(&conn, &a, "brass").unwrap();
+            library::add_tag_to_entry(&conn, &a, "dark").unwrap();
+            library::set_entry_tags(&conn, &a, &["brass".to_string()], None).unwrap();
+        }
+        let fake = FakeAnalyzer {
+            gate: scores(&[("h-a", 0.9)]),
+            tags: HashMap::from([
+                ("brass".to_string(), scores(&[("h-a", 0.8)])),
+                ("dark".to_string(), scores(&[("h-a", 0.7)])),
+            ]),
+            ..Default::default()
+        };
+
+        let report = run_once(&db, &fake, std::slice::from_ref(&a), &no_progress);
+
+        assert_eq!(report.error, None);
+        assert_eq!(row_of(&db, &a, "brass"), Some((Some(0.8), Some(1))));
+        assert_eq!(row_of(&db, &a, "dark"), Some((Some(0.7), Some(0))));
+        // Neither changed what the entry shows.
+        assert_eq!((report.added, report.removed), (0, 0));
+        // The yes and no votes are what the analyzer trains on.
+        let request = fake.last_score.lock().unwrap().clone().unwrap();
+        assert_eq!(request.tags["brass"].positives, vec!["h-a".to_string()]);
+        assert_eq!(request.tags["dark"].negatives, vec!["h-a".to_string()]);
     }
 
     #[test]
@@ -1016,7 +1059,7 @@ pub(crate) mod tests {
             ..Default::default()
         };
 
-        let report = run_once(&db, &fake, &[a.clone()], &no_progress);
+        let report = run_once(&db, &fake, std::slice::from_ref(&a), &no_progress);
 
         assert_eq!(report.error, None);
         assert_eq!(row_of(&db, &a, "brass"), None);
@@ -1028,33 +1071,29 @@ pub(crate) mod tests {
     fn run_does_not_overwrite_role_set_during_scoring() {
         let db = setup();
         let a = add(&db, "a", "music");
-        let b = add(&db, "b", "music");
         let hook_db = db.clone();
-        let (hook_a, hook_b) = (a.clone(), b.clone());
+        let hook_a = a.clone();
         let fake = FakeAnalyzer {
-            gate: scores(&[("h-a", 0.9), ("h-b", 0.9)]),
+            gate: scores(&[("h-a", 0.9)]),
             on_score: Some(Box::new(move || {
                 let conn = hook_db.try_lock().expect("database is free during /score");
-                library::set_user_role(&conn, &[hook_a.clone()], Some(Role::NonCombat)).unwrap();
-                // A cleared role is a user decision too.
-                library::set_user_role(&conn, &[hook_b.clone()], None).unwrap();
+                library::set_user_role(&conn, std::slice::from_ref(&hook_a), Some(Role::NonCombat)).unwrap();
             })),
             ..Default::default()
         };
 
-        let report = run_once(&db, &fake, &[a.clone(), b.clone()], &no_progress);
+        let report = run_once(&db, &fake, std::slice::from_ref(&a), &no_progress);
 
         assert_eq!(report.error, None);
-        assert_eq!(role_of(&db, &a), (Some("non_combat".into()), Some("user".into()), None));
-        assert_eq!(role_of(&db, &b), (None, Some("user".into()), None));
+        assert_eq!(role_of(&db, &a), (s("combat"), Some(0.9), s("non_combat")));
     }
 
-    /// The entry's stored (pace, pace_source, pace_score).
-    fn pace_of(db: &Mutex<Connection>, entry: &str) -> (Option<String>, Option<String>, Option<f64>) {
+    /// The entry's stored (pace_auto, pace_auto_score, pace_user).
+    fn pace_of(db: &Mutex<Connection>, entry: &str) -> FacetRow {
         db.lock()
             .unwrap()
             .query_row(
-                "SELECT pace, pace_source, pace_score FROM library_entries WHERE id = ?1",
+                "SELECT pace_auto, pace_auto_score, pace_user FROM library_entries WHERE id = ?1",
                 params![entry],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
@@ -1094,8 +1133,8 @@ pub(crate) mod tests {
 
         assert_eq!(report.error, None);
         assert_eq!(report.pace.as_ref().map(|q| q.tag.as_str()), Some("pace"));
-        assert_eq!(pace_of(&db, &a), (Some("moving".into()), Some("auto".into()), Some(0.9)));
-        assert_eq!(pace_of(&db, &b), (Some("still".into()), Some("auto".into()), Some(0.1)));
+        assert_eq!(pace_of(&db, &a), (s("moving"), Some(0.9), None));
+        assert_eq!(pace_of(&db, &b), (s("still"), Some(0.1), None));
         // c has no rhythm features: no pace.
         assert_eq!(pace_of(&db, &c), (None, None, None));
         let z = (3.0_f64 / 2.0).sqrt();
@@ -1116,7 +1155,7 @@ pub(crate) mod tests {
             mood: mood_scores(&[("h-a", 1.0, 1.0)]),
             ..Default::default()
         };
-        run_once(&db, &first, &[a.clone()], &no_progress);
+        run_once(&db, &first, std::slice::from_ref(&a), &no_progress);
         assert_eq!(pace_of(&db, &a).0.as_deref(), Some("moving"));
         assert_eq!(mood_of(&db, &a), (Some(0.0), Some(0.0)));
 
@@ -1143,26 +1182,22 @@ pub(crate) mod tests {
     fn run_does_not_overwrite_pace_set_during_scoring() {
         let db = setup();
         let a = add(&db, "a", "music");
-        let b = add(&db, "b", "music");
         let hook_db = db.clone();
-        let (hook_a, hook_b) = (a.clone(), b.clone());
+        let hook_a = a.clone();
         let fake = FakeAnalyzer {
-            gate: scores(&[("h-a", 0.9), ("h-b", 0.9)]),
-            pace: Some(scores(&[("h-a", 0.9), ("h-b", 0.9)])),
+            gate: scores(&[("h-a", 0.9)]),
+            pace: Some(scores(&[("h-a", 0.9)])),
             on_score: Some(Box::new(move || {
                 let conn = hook_db.try_lock().expect("database is free during /score");
-                library::set_user_pace(&conn, &[hook_a.clone()], Some(Pace::Still)).unwrap();
-                // A cleared pace is a user decision too.
-                library::set_user_pace(&conn, &[hook_b.clone()], None).unwrap();
+                library::set_user_pace(&conn, std::slice::from_ref(&hook_a), Some(Pace::Still)).unwrap();
             })),
             ..Default::default()
         };
 
-        let report = run_once(&db, &fake, &[a.clone(), b.clone()], &no_progress);
+        let report = run_once(&db, &fake, std::slice::from_ref(&a), &no_progress);
 
         assert_eq!(report.error, None);
-        assert_eq!(pace_of(&db, &a), (Some("still".into()), Some("user".into()), None));
-        assert_eq!(pace_of(&db, &b), (None, Some("user".into()), None));
+        assert_eq!(pace_of(&db, &a), (s("moving"), Some(0.9), s("still")));
     }
 
     #[test]
@@ -1170,8 +1205,8 @@ pub(crate) mod tests {
         let db = setup();
         let a = add(&db, "a", "music");
         let b = add(&db, "b", "music");
-        library::set_user_pace(&db.lock().unwrap(), &[a.clone()], Some(Pace::Moving)).unwrap();
-        library::set_user_pace(&db.lock().unwrap(), &[b.clone()], Some(Pace::Still)).unwrap();
+        library::set_user_pace(&db.lock().unwrap(), std::slice::from_ref(&a), Some(Pace::Moving)).unwrap();
+        library::set_user_pace(&db.lock().unwrap(), std::slice::from_ref(&b), Some(Pace::Still)).unwrap();
         let fake = FakeAnalyzer::default();
 
         run_once(&db, &fake, &[a, b], &no_progress);
@@ -1202,7 +1237,7 @@ pub(crate) mod tests {
         let db = setup();
         let a = add(&db, "a", "music");
         let client = Canned(response, FakeAnalyzer::default());
-        let report = run_once(&db, &client, &[a.clone()], &no_progress);
+        let report = run_once(&db, &client, std::slice::from_ref(&a), &no_progress);
 
         assert_eq!(report.error, None);
         assert_eq!(report.analyzed, 1);
@@ -1217,7 +1252,7 @@ pub(crate) mod tests {
         let db = setup();
         let a = add(&db, "a", "music");
         let first = FakeAnalyzer { gate: scores(&[("h-a", 0.9)]), ..Default::default() };
-        run_once(&db, &first, &[a.clone()], &no_progress);
+        run_once(&db, &first, std::slice::from_ref(&a), &no_progress);
         assert_eq!(role_of(&db, &a), auto_combat(0.9));
 
         let untrusted = FakeAnalyzer {

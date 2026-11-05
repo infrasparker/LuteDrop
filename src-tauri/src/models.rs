@@ -35,26 +35,34 @@ pub struct LibraryEntry {
     pub loop_start: Option<f64>,
     pub loop_end: Option<f64>,
     pub created_at: String,
-    /// Names of every tag on the entry, both user-applied and auto-applied.
+    /// The tags the entry shows: those the user voted yes on, plus the
+    /// analyzer's tags the user has not voted on.
     pub tags: Vec<String>,
     pub entry_type: EntryType,
-    /// The auto-applied tags with the score that earned each one.
+    /// The tags shown because of the analyzer (the user has not voted on
+    /// them), each with the analyzer's score.
     pub auto_tags: Vec<AutoTag>,
+    /// Tags the user voted no on. They are not shown, whatever the analyzer
+    /// says.
+    pub rejected_tags: Vec<String>,
     /// Analyzer state for this entry; `None` if it was never submitted.
     pub analysis: Option<EntryAnalysis>,
-    /// Combat or non-combat; `None` when unset or when the user cleared it.
+    /// The role shown: `role_user` if set, otherwise `role_auto`.
     pub role: Option<Role>,
-    /// Who set `role`. `Some(User)` with `role: None` means the user cleared
-    /// it, so the analyzer leaves it empty.
-    pub role_source: Option<TagSource>,
-    /// The analyzer's Combat probability, kept while `role_source` is auto.
-    pub role_score: Option<f64>,
-    /// Still or moving; `None` when unset or when the user cleared it.
+    /// The analyzer's role, written by every analysis run.
+    pub role_auto: Option<Role>,
+    /// The analyzer's Combat probability behind `role_auto`.
+    pub role_auto_score: Option<f64>,
+    /// The user's role. When set it is shown instead of `role_auto`.
+    pub role_user: Option<Role>,
+    /// The pace shown: `pace_user` if set, otherwise `pace_auto`.
     pub pace: Option<Pace>,
-    /// Who set `pace`, with the same meaning as `role_source`.
-    pub pace_source: Option<TagSource>,
-    /// The analyzer's Moving probability, kept while `pace_source` is auto.
-    pub pace_score: Option<f64>,
+    /// The analyzer's pace, written by every analysis run.
+    pub pace_auto: Option<Pace>,
+    /// The analyzer's Moving probability behind `pace_auto`.
+    pub pace_auto_score: Option<f64>,
+    /// The user's pace. When set it is shown instead of `pace_auto`.
+    pub pace_user: Option<Pace>,
     /// The analyzer's Bright ↔ Dark position as a z-score across the
     /// library's analyzed music; positive is Bright.
     pub mood_bright: Option<f64>,
@@ -169,31 +177,14 @@ impl MoodStep {
     }
 }
 
-/// Who put a tag on an entry.
+/// Which layer a shown value comes from: the user's, or the analyzer's.
+/// Used by `TagScore::applied`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
 pub enum TagSource {
     User,
     Auto,
-}
-
-impl TagSource {
-    /// The value stored in `library_entry_tags.source`.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            TagSource::User => "user",
-            TagSource::Auto => "auto",
-        }
-    }
-
-    /// Anything other than `"auto"` counts as a user tag.
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "auto" => TagSource::Auto,
-            _ => TagSource::User,
-        }
-    }
 }
 
 /// A tag applied by the analyzer, with the score that earned it.
@@ -361,7 +352,9 @@ pub struct TagScore {
     pub score: f64,
     pub threshold: Option<f64>,
     pub trusted: bool,
-    /// Who currently has this tag on the entry, if anyone.
+    /// Why the entry shows this tag: `User` when the user voted yes, `Auto`
+    /// when only the analyzer put it there, `None` when it is not shown
+    /// (absent, or the user voted no).
     pub applied: Option<TagSource>,
 }
 
@@ -371,7 +364,8 @@ pub struct TagScore {
 #[serde(rename_all = "camelCase")]
 pub struct EntryTagScores {
     /// The Combat probability, with `tag` `"combat"`. Its `applied` is the
-    /// source of the entry's role, or `None` when the entry has no role.
+    /// layer the shown role comes from (`User` when the user set one, else
+    /// `Auto` when the analyzer did), or `None` when the entry shows no role.
     pub gate: TagScore,
     pub tags: Vec<TagScore>,
 }
