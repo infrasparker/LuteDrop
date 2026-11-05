@@ -74,9 +74,27 @@ watch(
   },
 );
 
+const entry = computed(() => store.findLibraryEntry(props.entryId));
+
+// Tags you voted no on; ↺ clears the vote so the analyzer's opinion shows again.
+const rejected = computed(() => entry.value?.rejectedTags ?? []);
+const resetting = ref(false);
+
+async function resetVote(tag: string): Promise<void> {
+  if (resetting.value) return;
+  resetting.value = true;
+  try {
+    await store.command('reset_entry_tag_votes', { entryIds: [props.entryId], tags: [tag] });
+  } finally {
+    resetting.value = false;
+  }
+}
+
 // The panel has to exist before the first load so it can be expanded; once a
-// load comes back empty it hides.
-const visible = computed(() => !props.isAmbiance && !(loaded.value && scores.value === null));
+// load comes back empty it hides, unless there are "you said no" tags to list.
+const visible = computed(
+  () => !props.isAmbiance && !(loaded.value && scores.value === null && rejected.value.length === 0),
+);
 
 const trusted = computed<TagScore[]>(() => (scores.value?.tags ?? []).filter((t) => t.trusted));
 const untrusted = computed<TagScore[]>(() => (scores.value?.tags ?? []).filter((t) => !t.trusted));
@@ -85,7 +103,6 @@ const topRows = computed<TagScore[]>(() => (scores.value ? [scores.value.gate, .
 // The gate row is always the Combat probability, whatever tag name an old
 // saved score carries. Its `applied` is set for either role, so the chip shows
 // the entry's actual role.
-const entry = computed(() => store.findLibraryEntry(props.entryId));
 
 function rowName(row: TagScore): string {
   return row === scores.value?.gate ? 'Combat' : row.tag;
@@ -95,7 +112,7 @@ function gateLabel(): string | null {
   const e = entry.value;
   if (!e?.role) return null;
   const name = e.role === 'combat' ? 'Combat' : 'Non-combat';
-  return `${name} · ${e.roleSource === 'user' ? 'yours' : 'auto'}`;
+  return `${name} · ${e.roleUser !== null ? 'yours' : 'auto'}`;
 }
 
 function signed(z: number): string {
@@ -108,8 +125,13 @@ const soundRows = computed<{ label: string; value: string }[]>(() => {
   const rows: { label: string; value: string }[] = [];
   if (e.moodBright !== null) rows.push({ label: 'Bright ↔ Dark', value: `z = ${signed(e.moodBright)}` });
   if (e.moodLight !== null) rows.push({ label: 'Light ↔ Heavy', value: `z = ${signed(e.moodLight)}` });
-  if (e.paceSource === 'auto' && e.paceScore !== null) {
-    rows.push({ label: 'Moving', value: `p = ${e.paceScore.toFixed(2)}` });
+  if (e.paceAutoScore !== null) {
+    // The probability is the analyzer's; the label says which layer the shown
+    // pace comes from.
+    const shown = e.pace === null ? '' : ` · ${e.pace === 'moving' ? 'Moving' : 'Still'} (${e.paceUser !== null ? 'yours' : 'auto'})`;
+    rows.push({ label: 'Moving', value: `p = ${e.paceAutoScore.toFixed(2)}${shown}` });
+  } else if (e.paceUser !== null) {
+    rows.push({ label: 'Pace', value: `${e.paceUser === 'moving' ? 'Moving' : 'Still'} (yours)` });
   }
   return rows;
 });
@@ -174,6 +196,27 @@ function appliedLabel(s: TagScore): string | null {
               <span v-else class="score-chip" />
             </div>
           </template>
+        </template>
+        <template v-if="rejected.length > 0">
+          <VDivider class="my-2" />
+          <div class="text-caption text-medium-emphasis mb-1">You said no</div>
+          <div class="d-flex flex-wrap ga-1">
+            <VChip
+              v-for="tag in rejected"
+              :key="tag"
+              size="small"
+              variant="outlined"
+              class="text-medium-emphasis"
+              append-icon="mdi-restore"
+              :disabled="resetting"
+              @click="resetVote(tag)"
+            >
+              {{ tag }}
+              <VTooltip activator="parent" location="top" open-delay="300">
+                Clear your no; the analyzer decides this tag again
+              </VTooltip>
+            </VChip>
+          </div>
         </template>
         <template v-if="scores && soundRows.length > 0">
           <VDivider class="my-2" />
