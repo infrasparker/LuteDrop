@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // Canvas scatter of every analyzed music track. Points are colored by Role;
-// hovering shows the name, a click plays the track, and dragging draws a
-// lasso whose enclosed points are emitted for selection.
+// hovering shows the name, a click plays the track, a left-drag lasso adds the
+// enclosed points to the selection, and a right-click or right-drag lasso
+// removes them from it.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useTheme } from 'vuetify';
 import type { LibraryEntry, VibePoint } from '@generated/index';
@@ -13,11 +14,14 @@ const props = defineProps<{
   resultIds: string[];
   selectedIds: string[];
   playingId: string | null;
+  // Point to emphasize, e.g. the results row under the mouse.
+  highlightId?: string | null;
 }>();
 
 const emit = defineEmits<{
   play: [entryId: string];
   lasso: [entryIds: string[]];
+  deselect: [entryIds: string[]];
 }>();
 
 // Inset so points on the [0, 1] edges are not clipped.
@@ -27,6 +31,8 @@ const HIT_RADIUS = 6;
 // Movement beyond this many CSS pixels turns a press into a lasso drag.
 const DRAG_THRESHOLD = 4;
 const BASE_RADIUS = 3;
+const SEED_RADIUS = 9;
+const HIGHLIGHT_RADIUS = 12;
 
 const theme = useTheme();
 const wrapper = ref<HTMLDivElement | null>(null);
@@ -35,6 +41,8 @@ const size = ref({ width: 0, height: 0 });
 
 const hover = ref<{ id: string; x: number; y: number } | null>(null);
 const lasso = ref<{ x: number; y: number }[]>([]);
+// The mouse button that started the current press: 0 adds, 2 removes.
+let pressButton = -1;
 let pressStart: { x: number; y: number } | null = null;
 let lassoing = false;
 
@@ -49,6 +57,12 @@ const screenPoints = computed<ScreenPoint[]>(() => {
   const w = Math.max(0, size.value.width - 2 * PAD);
   const h = Math.max(0, size.value.height - 2 * PAD);
   return props.points.map((p) => ({ id: p.entryId, x: PAD + p.x * w, y: PAD + (1 - p.y) * h }));
+});
+
+const pointById = computed(() => {
+  const map = new Map<string, ScreenPoint>();
+  for (const pt of screenPoints.value) map.set(pt.id, pt);
+  return map;
 });
 
 // --- Colors from the active Vuetify theme ---
@@ -86,6 +100,8 @@ const palette = computed(() => {
     nonCombat: toRgb(c.secondary, [255, 109, 0]),
     unset: ink,
     ink,
+    // Dark outline behind light marks so they stand apart from warm points.
+    shade: toRgb(c.background, dark ? [10, 10, 12] : [255, 255, 255]),
     accent: toRgb(c.primary, [240, 168, 48]),
   };
 });
@@ -104,8 +120,14 @@ const legend = computed(() => [
 ]);
 
 // --- Drawing ---
+// Points, rings, and seeds change rarely and are cached in an offscreen
+// canvas; hover, highlight, playing, and lasso marks are drawn over a copy of
+// it, so moving the mouse never repaints every point.
 
 let frame = 0;
+let baseDirty = true;
+const baseCanvas = document.createElement('canvas');
+
 function scheduleDraw(): void {
   if (frame) return;
   frame = requestAnimationFrame(() => {
@@ -114,25 +136,43 @@ function scheduleDraw(): void {
   });
 }
 
-function draw(): void {
-  const el = canvas.value;
-  if (!el) return;
-  const ctx = el.getContext('2d');
-  if (!ctx) return;
-  const dpr = window.devicePixelRatio || 1;
-  const { width, height } = size.value;
-  if (el.width !== Math.round(width * dpr) || el.height !== Math.round(height * dpr)) {
-    el.width = Math.round(width * dpr);
-    el.height = Math.round(height * dpr);
-  }
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, width, height);
+function invalidateBase(): void {
+  baseDirty = true;
+  scheduleDraw();
+}
 
+function diamond(ctx: CanvasRenderingContext2D, x: number, y: number, r: number): void {
+  ctx.beginPath();
+  ctx.moveTo(x, y - r);
+  ctx.lineTo(x + r, y);
+  ctx.lineTo(x, y + r);
+  ctx.lineTo(x - r, y);
+  ctx.closePath();
+}
+
+// Seed: a large light diamond with a dark outline and a role-colored center,
+// unlike any role color or ring.
+function drawSeed(ctx: CanvasRenderingContext2D, pt: ScreenPoint): void {
+  const p = palette.value;
+  diamond(ctx, pt.x, pt.y, SEED_RADIUS);
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = rgba(p.shade, 0.95);
+  ctx.stroke();
+  ctx.fillStyle = rgba(p.ink);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(pt.x, pt.y, 2.5, 0, Math.PI * 2);
+  ctx.fillStyle = rgba(roleColor(props.entriesById.get(pt.id)));
+  ctx.fill();
+}
+
+function drawBase(ctx: CanvasRenderingContext2D): void {
   const p = palette.value;
   const focused = seedSet.value.size > 0 || resultSet.value.size > 0;
   const pts = screenPoints.value;
 
-  // Base layer: every point, dimmed while results or seeds are shown.
+  // Every point, dimmed while results or seeds are shown.
   for (const pt of pts) {
     const entry = props.entriesById.get(pt.id);
     const alpha = entry?.role ? 0.85 : 0.4;
@@ -163,27 +203,80 @@ function draw(): void {
     ctx.stroke();
   }
 
-  // Seeds: filled diamond with an outline.
+  // Seeds on top of everything else in the base layer.
   for (const pt of pts) {
-    if (!seedSet.value.has(pt.id)) continue;
-    const r = 7;
+    if (seedSet.value.has(pt.id)) drawSeed(ctx, pt);
+  }
+}
+
+// Highlighted point: soft light halo, the point enlarged in its role color,
+// and a light ring with a dark outline so it reads against orange and red.
+function drawHighlight(ctx: CanvasRenderingContext2D, pt: ScreenPoint): void {
+  const p = palette.value;
+  ctx.beginPath();
+  ctx.arc(pt.x, pt.y, HIGHLIGHT_RADIUS + 6, 0, Math.PI * 2);
+  ctx.fillStyle = rgba(p.ink, 0.16);
+  ctx.fill();
+
+  if (seedSet.value.has(pt.id)) {
+    drawSeed(ctx, pt);
+  } else {
     ctx.beginPath();
-    ctx.moveTo(pt.x, pt.y - r);
-    ctx.lineTo(pt.x + r, pt.y);
-    ctx.lineTo(pt.x, pt.y + r);
-    ctx.lineTo(pt.x - r, pt.y);
-    ctx.closePath();
+    ctx.arc(pt.x, pt.y, BASE_RADIUS + 2.5, 0, Math.PI * 2);
     ctx.fillStyle = rgba(roleColor(props.entriesById.get(pt.id)));
     ctx.fill();
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = rgba(p.ink);
-    ctx.stroke();
   }
+
+  ctx.beginPath();
+  ctx.arc(pt.x, pt.y, HIGHLIGHT_RADIUS, 0, Math.PI * 2);
+  ctx.lineWidth = 5;
+  ctx.strokeStyle = rgba(p.shade, 0.9);
+  ctx.stroke();
+  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = rgba(p.ink);
+  ctx.stroke();
+}
+
+function draw(): void {
+  const el = canvas.value;
+  if (!el) return;
+  const ctx = el.getContext('2d');
+  if (!ctx) return;
+  const dpr = window.devicePixelRatio || 1;
+  const { width, height } = size.value;
+  const pxWidth = Math.round(width * dpr);
+  const pxHeight = Math.round(height * dpr);
+  if (el.width !== pxWidth || el.height !== pxHeight) {
+    el.width = pxWidth;
+    el.height = pxHeight;
+  }
+  if (baseCanvas.width !== pxWidth || baseCanvas.height !== pxHeight) {
+    baseCanvas.width = pxWidth;
+    baseCanvas.height = pxHeight;
+    baseDirty = true;
+  }
+  if (pxWidth === 0 || pxHeight === 0) return;
+
+  if (baseDirty) {
+    const bctx = baseCanvas.getContext('2d');
+    if (!bctx) return;
+    bctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    bctx.clearRect(0, 0, width, height);
+    drawBase(bctx);
+    baseDirty = false;
+  }
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, pxWidth, pxHeight);
+  ctx.drawImage(baseCanvas, 0, 0);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const p = palette.value;
 
   // Playing and hovered points.
   for (const id of [props.playingId, hover.value?.id]) {
     if (!id) continue;
-    const pt = pts.find((q) => q.id === id);
+    const pt = pointById.value.get(id);
     if (!pt) continue;
     ctx.lineWidth = 2;
     ctx.strokeStyle = rgba(p.ink);
@@ -192,27 +285,30 @@ function draw(): void {
     ctx.stroke();
   }
 
-  // Lasso polygon while dragging.
+  if (props.highlightId) {
+    const pt = pointById.value.get(props.highlightId);
+    if (pt) drawHighlight(ctx, pt);
+  }
+
+  // Lasso polygon while dragging: accent to add, light to remove.
   if (lasso.value.length > 1) {
+    const color = pressButton === 2 ? p.ink : p.accent;
     ctx.beginPath();
     ctx.moveTo(lasso.value[0].x, lasso.value[0].y);
     for (const q of lasso.value.slice(1)) ctx.lineTo(q.x, q.y);
     ctx.closePath();
-    ctx.fillStyle = rgba(p.accent, 0.12);
+    ctx.fillStyle = rgba(color, pressButton === 2 ? 0.08 : 0.12);
     ctx.fill();
     ctx.setLineDash([5, 4]);
     ctx.lineWidth = 1.5;
-    ctx.strokeStyle = rgba(p.accent);
+    ctx.strokeStyle = rgba(color);
     ctx.stroke();
     ctx.setLineDash([]);
   }
 }
 
-watch(
-  [screenPoints, () => props.entriesById, seedSet, resultSet, selectedSet, () => props.playingId, hover, lasso, palette],
-  scheduleDraw,
-  { deep: false },
-);
+watch([screenPoints, () => props.entriesById, seedSet, resultSet, selectedSet, palette], invalidateBase);
+watch([() => props.playingId, () => props.highlightId, hover, lasso], scheduleDraw);
 
 // --- Hit testing ---
 
@@ -250,8 +346,9 @@ function localPos(e: PointerEvent): { x: number; y: number } {
 }
 
 function onPointerDown(e: PointerEvent): void {
-  if (e.button !== 0) return;
+  if (pressStart || (e.button !== 0 && e.button !== 2)) return;
   canvas.value?.setPointerCapture(e.pointerId);
+  pressButton = e.button;
   pressStart = localPos(e);
   lassoing = false;
   lasso.value = [];
@@ -276,8 +373,9 @@ function onPointerMove(e: PointerEvent): void {
 }
 
 function onPointerUp(e: PointerEvent): void {
-  if (!pressStart) return;
+  if (!pressStart || e.button !== pressButton) return;
   const start = pressStart;
+  const removing = pressButton === 2;
   pressStart = null;
   canvas.value?.releasePointerCapture(e.pointerId);
   if (lassoing) {
@@ -286,12 +384,16 @@ function onPointerUp(e: PointerEvent): void {
     lasso.value = [];
     if (poly.length >= 3) {
       const ids = screenPoints.value.filter((pt) => insidePolygon(pt.x, pt.y, poly)).map((pt) => pt.id);
-      if (ids.length > 0) emit('lasso', ids);
+      if (ids.length === 0) return;
+      if (removing) emit('deselect', ids);
+      else emit('lasso', ids);
     }
     return;
   }
   const hit = nearest(start.x, start.y);
-  if (hit) emit('play', hit.id);
+  if (!hit) return;
+  if (removing) emit('deselect', [hit.id]);
+  else emit('play', hit.id);
 }
 
 function onPointerCancel(): void {
@@ -321,6 +423,14 @@ const tooltipStyle = computed(() => {
   };
 });
 
+const ariaLabel = computed(() => {
+  const parts = [`Map of ${props.points.length} analyzed tracks by sound`];
+  if (props.seedIds.length > 0) parts.push(`${props.seedIds.length} seeds`);
+  if (props.resultIds.length > 0) parts.push(`${props.resultIds.length} results`);
+  if (props.selectedIds.length > 0) parts.push(`${props.selectedIds.length} selected`);
+  return parts.join(', ');
+});
+
 // --- Size tracking ---
 
 let observer: ResizeObserver | null = null;
@@ -339,7 +449,7 @@ function watchPixelRatio(): void {
   dprQuery?.removeEventListener('change', watchPixelRatio);
   dprQuery = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
   dprQuery.addEventListener('change', watchPixelRatio);
-  scheduleDraw();
+  invalidateBase();
 }
 
 onMounted(() => {
@@ -363,11 +473,14 @@ onBeforeUnmount(() => {
         ref="canvas"
         class="vibe-map-canvas"
         :class="{ 'is-hovering': !!hover }"
+        role="img"
+        :aria-label="ariaLabel"
         @pointerdown="onPointerDown"
         @pointermove="onPointerMove"
         @pointerup="onPointerUp"
         @pointercancel="onPointerCancel"
         @pointerleave="onPointerLeave"
+        @contextmenu.prevent
       />
       <div v-if="hover && hoverName" class="vibe-map-tooltip text-caption" :style="tooltipStyle">
         {{ hoverName }}
@@ -381,7 +494,7 @@ onBeforeUnmount(() => {
       <span class="d-inline-flex align-center ga-1"><span class="swatch-ring" />Result</span>
       <span class="d-inline-flex align-center ga-1"><span class="swatch-ring selected" />Selected</span>
       <VSpacer />
-      <span>Click to play · drag to lasso-select</span>
+      <span>Click to play · drag to select · right-click/right-drag to deselect</span>
     </div>
   </div>
 </template>
@@ -437,10 +550,12 @@ onBeforeUnmount(() => {
 
 .swatch-diamond {
   display: inline-block;
-  width: 9px;
-  height: 9px;
+  width: 10px;
+  height: 10px;
+  margin: 0 2px;
   transform: rotate(45deg);
-  border: 2px solid rgb(var(--v-theme-on-surface));
+  background: rgb(var(--v-theme-on-surface));
+  box-shadow: 0 0 0 1.5px rgb(var(--v-theme-background));
 }
 
 .swatch-ring {

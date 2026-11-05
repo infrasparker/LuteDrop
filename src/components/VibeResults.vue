@@ -2,7 +2,7 @@
 // Ranked Vibe results with Role and Pace filters. Each row has a checkbox,
 // a preview button, the track name, its game tags, Role, the score as a short
 // bar, and an "Add as seed" action.
-import { computed, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref } from 'vue';
 import type { LibraryEntry, Role, VibeHit } from '@generated/index';
 
 const props = defineProps<{
@@ -19,6 +19,8 @@ const emit = defineEmits<{
   'update:selectedIds': [ids: string[]];
   play: [entryId: string];
   addSeed: [entryId: string];
+  // The row under the mouse, or null when it leaves.
+  hover: [entryId: string | null];
 }>();
 
 const PACE_TAGS = ['slow', 'driving', 'frantic'] as const;
@@ -92,6 +94,37 @@ function roleLabel(role: Role | null): string {
   if (role === 'nonCombat') return 'Non-combat';
   return 'No role';
 }
+
+// --- Reveal a row (e.g. after a map click) ---
+
+const listEl = ref<HTMLDivElement | null>(null);
+const flashId = ref<string | null>(null);
+let flashTimer: ReturnType<typeof setTimeout> | undefined;
+
+// Scrolls the row into view and briefly highlights it. Returns false when the
+// track is not among the rows the filters currently show.
+async function reveal(entryId: string): Promise<boolean> {
+  if (!visibleRows.value.some((r) => r.entry.id === entryId)) return false;
+  // Restart the flash animation when the same row is revealed again.
+  flashId.value = null;
+  await nextTick();
+  const row = listEl.value?.querySelector<HTMLElement>(`[data-entry-id="${CSS.escape(entryId)}"]`);
+  if (!row) return false;
+  row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  flashId.value = entryId;
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => {
+    flashId.value = null;
+  }, 1600);
+  return true;
+}
+
+defineExpose({ reveal });
+
+onBeforeUnmount(() => {
+  clearTimeout(flashTimer);
+  emit('hover', null);
+});
 </script>
 
 <template>
@@ -104,6 +137,7 @@ function roleLabel(role: Role | null): string {
         density="compact"
         class="flex-grow-0"
         title="Select all shown"
+        aria-label="Select all shown results"
         @update:model-value="toggleAllVisible"
       />
       <VBtnToggle v-model="roleFilter" mandatory density="compact" variant="outlined" divided>
@@ -124,17 +158,24 @@ function roleLabel(role: Role | null): string {
       </span>
     </div>
 
-    <div class="vibe-results-list flex-grow-1">
+    <div ref="listEl" class="vibe-results-list flex-grow-1" @mouseleave="emit('hover', null)">
       <div
         v-for="{ entry, score } in visibleRows"
         :key="entry.id"
+        :data-entry-id="entry.id"
         class="vibe-row d-flex align-center ga-1 px-1"
-        :class="{ 'is-playing': playingId === entry.id, 'is-selected': selectedSet.has(entry.id) }"
+        :class="{
+          'is-playing': playingId === entry.id,
+          'is-selected': selectedSet.has(entry.id),
+          'is-flash': flashId === entry.id,
+        }"
+        @mouseenter="emit('hover', entry.id)"
       >
         <VCheckboxBtn
           :model-value="selectedSet.has(entry.id)"
           density="compact"
           class="flex-grow-0"
+          :aria-label="`Select ${entry.name}`"
           @update:model-value="toggle(entry.id)"
         />
         <VBtn
@@ -171,7 +212,10 @@ function roleLabel(role: Role | null): string {
           @click="emit('addSeed', entry.id)"
         />
       </div>
-      <div v-if="rows.length > 0 && visibleRows.length === 0" class="text-caption text-medium-emphasis pa-4 text-center">
+      <div v-if="rows.length === 0" class="text-body-2 text-medium-emphasis pa-6 text-center">
+        No results.
+      </div>
+      <div v-else-if="visibleRows.length === 0" class="text-caption text-medium-emphasis pa-4 text-center">
         No results match these filters.
       </div>
     </div>
@@ -199,8 +243,26 @@ function roleLabel(role: Role | null): string {
   background: rgba(var(--v-theme-primary), 0.06);
 }
 
+.vibe-row:hover {
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+
 .vibe-row.is-playing {
   border-left-color: rgb(var(--v-theme-primary));
+}
+
+.vibe-row.is-flash {
+  animation: row-flash 1.6s ease-out;
+}
+
+@keyframes row-flash {
+  0%,
+  30% {
+    background: rgba(var(--v-theme-primary), 0.28);
+  }
+  100% {
+    background: transparent;
+  }
 }
 
 .role-placeholder {

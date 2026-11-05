@@ -80,11 +80,8 @@ function clearResults(): void {
 
 function submitSearch(): void {
   const text = (searchText.value ?? '').trim();
+  if (!text) return;
   seeds.value = [];
-  if (!text) {
-    clearResults();
-    return;
-  }
   query.value = { kind: 'search', text };
   fetchResults('search_vibe', { text });
 }
@@ -108,6 +105,12 @@ function addSeed(entryId: string): void {
 function removeSeed(entryId: string): void {
   seeds.value = seeds.value.filter((id) => id !== entryId);
   runSeeds();
+}
+
+// The search field's clear button only clears text-search results; seed
+// results stay.
+function onSearchCleared(): void {
+  if (query.value?.kind === 'search') clearResults();
 }
 
 function retryResults(): void {
@@ -213,14 +216,40 @@ watch(entriesById, (map) => {
   if (selectedIds.value.some((id) => !map.has(id))) {
     selectedIds.value = selectedIds.value.filter((id) => map.has(id));
   }
+  // Seeds whose entries were deleted are dropped and the search re-run (or the
+  // results cleared when no seeds remain).
   if (seeds.value.some((id) => !map.has(id)) && map.size > 0) {
     seeds.value = seeds.value.filter((id) => map.has(id));
+    runSeeds();
   }
 });
 
 function addToSelection(ids: string[]): void {
   const current = new Set(selectedIds.value);
   selectedIds.value = [...selectedIds.value, ...ids.filter((id) => !current.has(id))];
+}
+
+function removeFromSelection(ids: string[]): void {
+  const drop = new Set(ids);
+  if (selectedIds.value.some((id) => drop.has(id))) {
+    selectedIds.value = selectedIds.value.filter((id) => !drop.has(id));
+  }
+}
+
+// --- Linking the results list and the map ---
+
+const resultsList = ref<InstanceType<typeof VibeResults> | null>(null);
+// Results row under the mouse; its map point is highlighted.
+const hoveredRowId = ref<string | null>(null);
+
+watch(hits, () => {
+  hoveredRowId.value = null;
+});
+
+// A map click plays the track and scrolls to its results row, if it has one.
+function onMapPlay(entryId: string): void {
+  togglePreview(entryId);
+  resultsList.value?.reveal(entryId);
 }
 
 const showPlaylistDialog = ref(false);
@@ -266,7 +295,7 @@ onMounted(async () => {
         style="max-width: 560px;"
         :disabled="analyzedCount === 0"
         @keydown.enter="submitSearch"
-        @click:clear="clearResults"
+        @click:clear="onSearchCleared"
       >
         <template #append-inner>
           <VBtn icon="mdi-magnify" size="x-small" variant="text" title="Search" @click="submitSearch" />
@@ -306,7 +335,7 @@ onMounted(async () => {
         </VChip>
       </div>
 
-      <div class="vibe-panes flex-grow-1">
+      <div class="vibe-panes flex-grow-1" :class="{ 'has-selection': selectedIds.length > 0 }">
         <section class="vibe-pane d-flex flex-column">
           <div v-if="resultsHeading" class="text-subtitle-2 mb-1 text-truncate">{{ resultsHeading }}</div>
 
@@ -331,16 +360,11 @@ onMounted(async () => {
               Library. Lasso tracks on the map to select them.
             </div>
           </div>
-          <div
-            v-else-if="!resultsError && hits.length === 0"
-            class="text-body-2 text-medium-emphasis pa-6 text-center"
-          >
-            No results.
-          </div>
           <VibeResults
-            v-else-if="hits.length > 0"
+            v-else-if="!resultsError"
+            ref="resultsList"
             v-model:selected-ids="selectedIds"
-            class="flex-grow-1"
+            class="vibe-results-host"
             :hits="hits"
             :entries-by-id="entriesById"
             :seed-ids="seeds"
@@ -348,6 +372,7 @@ onMounted(async () => {
             :vocabulary="vocabulary"
             @play="togglePreview"
             @add-seed="addSeed"
+            @hover="hoveredRowId = $event"
           />
         </section>
 
@@ -366,8 +391,10 @@ onMounted(async () => {
               :result-ids="resultIds"
               :selected-ids="selectedIds"
               :playing-id="playingId"
-              @play="togglePreview"
+              :highlight-id="hoveredRowId"
+              @play="onMapPlay"
               @lasso="addToSelection"
+              @deselect="removeFromSelection"
             />
             <div v-if="mapLoading" class="map-overlay d-flex align-center justify-center ga-3 text-medium-emphasis">
               <VProgressCircular indeterminate size="24" width="2" />
@@ -414,30 +441,43 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+/* Exactly the space between the app bar and the transport bar, so the page
+   never scrolls: the results list scrolls inside its pane instead. */
 .vibe-view {
-  height: 100%;
+  height: calc(100vh - var(--v-layout-top, 0px) - var(--v-layout-bottom, 0px));
   position: relative;
+  overflow: hidden;
 }
 
 .vibe-panes {
   display: grid;
   grid-template-columns: minmax(340px, 1fr) minmax(320px, 1.2fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 16px;
   min-height: 0;
-  /* Room for the floating selection bar. */
+}
+
+/* Room for the floating selection bar. */
+.vibe-panes.has-selection {
   padding-bottom: 56px;
 }
 
 @media (max-width: 900px) {
   .vibe-panes {
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(240px, 1fr) minmax(280px, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
   }
 }
 
 .vibe-pane {
   min-height: 0;
   min-width: 0;
+  overflow: hidden;
+}
+
+.vibe-results-host {
+  flex: 1 1 0;
+  min-height: 0;
 }
 
 .vibe-map-host {
