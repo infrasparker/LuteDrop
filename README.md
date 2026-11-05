@@ -61,12 +61,12 @@ Auto tags are learned from the tags the user applied by hand.
 - The Library's tag filter can show only entries with auto tags, and bulk actions can keep or remove auto tags on several entries at once.
 - In the entry editor, the **Tag scores** panel shows each tag's score against its threshold and whether the entry's tag was applied by hand or automatically.
 
-### Vibe view
+### Scry
 
-The **Vibe** view browses analyzed music by sound.
+**Scry** browses analyzed music by sound.
 
 - **Text search.** A description such as "tense strings building to a battle" returns the closest tracks, ranked by score.
-- **More like this.** The action on a Library row opens the Vibe view seeded with that track. Seeds are shown as removable chips, more can be added from the results, and the results are the tracks closest to the seeds together.
+- **More like this.** The action on a Library row opens Scry seeded with that track. Seeds are shown as removable chips, more can be added from the results, and the results are the tracks closest to the seeds together.
 - **Filters.** The results can be filtered by Role and by Pace (slow, driving, frantic).
 - **Map.** A scatter plot of every analyzed music track, colored by role. Hovering shows the track name and clicking plays it. Dragging draws a lasso that adds the enclosed tracks to the selection. Seeds and results are highlighted.
 - **Playlists.** The selection can become a playlist with **Create playlist**, which adds a composition with one shuffle track holding the selected tracks to a chosen group of the active configuration, or be appended to a track with **Add to existing track**.
