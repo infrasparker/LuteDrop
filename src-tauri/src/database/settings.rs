@@ -5,11 +5,22 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
+use crate::models::{AutoTagSettings, SceneConfig};
+
 const KEY_ENABLED: &str = "broadcast_enabled";
 const KEY_PORT: &str = "broadcast_port";
 const KEY_KEY: &str = "broadcast_key";
 const KEY_PUBLIC_BASE: &str = "broadcast_public_base";
 const KEY_FIX_MISSING_ROOT: &str = "fix_missing_search_root";
+const KEY_AUTOTAG_ENABLED: &str = "autotag_enabled";
+const KEY_AUTOTAG_URL: &str = "autotag_url";
+const KEY_AUTOTAG_TOKEN: &str = "autotag_token";
+const KEY_AUTOTAG_LOCAL_PREFIX: &str = "autotag_local_prefix";
+const KEY_AUTOTAG_REMOTE_PREFIX: &str = "autotag_remote_prefix";
+const KEY_AUTOTAG_SCENE: &str = "autotag_scene_encounter";
+
+/// Where the analyzer host mounts the audio folder until the user says otherwise.
+pub const DEFAULT_REMOTE_PREFIX: &str = "/media/audio";
 
 /// Port the stream server listens on until the user picks another one.
 /// 5883 spells L-U-T-E on a phone keypad. We avoid 333x because other dev
@@ -117,6 +128,47 @@ pub fn save_fix_missing_root(conn: &Connection, root: &str) -> Result<(), String
     write_meta(conn, KEY_FIX_MISSING_ROOT, root)
 }
 
+/// Loads the analyzer settings. Missing values fall back to: disabled, empty
+/// URL and token, empty local prefix, and `/media/audio` as the remote prefix.
+pub fn load_autotag(conn: &Connection) -> Result<AutoTagSettings, String> {
+    Ok(AutoTagSettings {
+        enabled: read_meta(conn, KEY_AUTOTAG_ENABLED)?.as_deref() == Some("1"),
+        analyzer_url: read_meta(conn, KEY_AUTOTAG_URL)?.unwrap_or_default(),
+        token: read_meta(conn, KEY_AUTOTAG_TOKEN)?.unwrap_or_default(),
+        local_prefix: read_meta(conn, KEY_AUTOTAG_LOCAL_PREFIX)?.unwrap_or_default(),
+        remote_prefix: read_meta(conn, KEY_AUTOTAG_REMOTE_PREFIX)?
+            .unwrap_or_else(|| DEFAULT_REMOTE_PREFIX.to_string()),
+    })
+}
+
+/// Saves all analyzer settings, replacing whatever was stored before.
+pub fn save_autotag(conn: &Connection, s: &AutoTagSettings) -> Result<(), String> {
+    write_meta(conn, KEY_AUTOTAG_ENABLED, if s.enabled { "1" } else { "0" })?;
+    write_meta(conn, KEY_AUTOTAG_URL, &s.analyzer_url)?;
+    write_meta(conn, KEY_AUTOTAG_TOKEN, &s.token)?;
+    write_meta(conn, KEY_AUTOTAG_LOCAL_PREFIX, &s.local_prefix)?;
+    write_meta(conn, KEY_AUTOTAG_REMOTE_PREFIX, &s.remote_prefix)?;
+    Ok(())
+}
+
+/// Loads the scene configuration, stored as JSON. A missing or unparseable
+/// value gives `SceneConfig::default()`.
+pub fn load_scene_config(conn: &Connection) -> Result<SceneConfig, String> {
+    let Some(text) = read_meta(conn, KEY_AUTOTAG_SCENE)? else {
+        return Ok(SceneConfig::default());
+    };
+    Ok(serde_json::from_str(&text).unwrap_or_else(|e| {
+        log::warn!("Invalid stored {KEY_AUTOTAG_SCENE}: {e}; using default scene config");
+        SceneConfig::default()
+    }))
+}
+
+/// Saves the scene configuration as JSON.
+pub fn save_scene_config(conn: &Connection, c: &SceneConfig) -> Result<(), String> {
+    let text = serde_json::to_string(c).map_err(|e| format!("Failed to encode scene config: {e}"))?;
+    write_meta(conn, KEY_AUTOTAG_SCENE, &text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,6 +214,46 @@ mod tests {
             let b = load_broadcast(&conn).unwrap();
             assert_eq!(a.key, b.key, "replacement key must be persisted");
         }
+    }
+
+    #[test]
+    fn autotag_settings_round_trip() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let defaults = load_autotag(&conn).unwrap();
+        assert!(!defaults.enabled);
+        assert_eq!(defaults.analyzer_url, "");
+        assert_eq!(defaults.local_prefix, "");
+        assert_eq!(defaults.remote_prefix, "/media/audio");
+
+        let s = AutoTagSettings {
+            enabled: true,
+            analyzer_url: "http://host:8765".into(),
+            token: "secret".into(),
+            local_prefix: r"Z:\media\audio".into(),
+            remote_prefix: "/mnt/audio".into(),
+        };
+        save_autotag(&conn, &s).unwrap();
+        assert_eq!(load_autotag(&conn).unwrap(), s);
+    }
+
+    #[test]
+    fn scene_config_defaults_when_missing_or_corrupt() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        assert_eq!(load_scene_config(&conn).unwrap(), SceneConfig::default());
+
+        write_meta(&conn, KEY_AUTOTAG_SCENE, "{not json").unwrap();
+        assert_eq!(load_scene_config(&conn).unwrap(), SceneConfig::default());
+
+        let custom = SceneConfig {
+            scene: "tavern".into(),
+            gate_tag: "tavern".into(),
+            negative_scene_tags: vec!["encounter".into()],
+            vocabulary: vec!["folk".into()],
+        };
+        save_scene_config(&conn, &custom).unwrap();
+        assert_eq!(load_scene_config(&conn).unwrap(), custom);
     }
 
     #[test]
