@@ -149,21 +149,6 @@ pub enum MoodScale {
 }
 
 impl MoodStep {
-    /// z-scores beyond this distance from the library mean leave the middle step.
-    pub const CUTOFF: f64 = 0.6;
-
-    /// The step for an auto z-score: below -0.6 is `Low`, above 0.6 is
-    /// `High`, anything in between (inclusive) is `Mid`.
-    pub fn from_z(z: f64) -> Self {
-        if z < -Self::CUTOFF {
-            MoodStep::Low
-        } else if z > Self::CUTOFF {
-            MoodStep::High
-        } else {
-            MoodStep::Mid
-        }
-    }
-
     /// The value stored in the `mood_*_user` columns.
     pub fn as_db_str(&self) -> &'static str {
         match self {
@@ -624,15 +609,6 @@ pub struct ClipRef {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn mood_step_from_z_uses_the_cutoffs() {
-        assert_eq!(MoodStep::from_z(-0.61), MoodStep::Low);
-        assert_eq!(MoodStep::from_z(-0.6), MoodStep::Mid);
-        assert_eq!(MoodStep::from_z(0.0), MoodStep::Mid);
-        assert_eq!(MoodStep::from_z(0.6), MoodStep::Mid);
-        assert_eq!(MoodStep::from_z(0.61), MoodStep::High);
-    }
 
     #[test]
     fn pace_and_mood_step_db_strings_round_trip() {

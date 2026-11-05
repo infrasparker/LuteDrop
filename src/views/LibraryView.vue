@@ -14,7 +14,9 @@ import ImportDialog from '../components/ImportDialog.vue';
 import FixMissingDialog from '../components/FixMissingDialog.vue';
 import AutoTaggingDialog from '../components/AutoTaggingDialog.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
-import type { LibraryEntry, LibraryEntryUsage, Role } from '@generated/index';
+import type { LibraryEntry, LibraryEntryUsage, Pace, Role } from '@generated/index';
+import SoundFilters from '../components/SoundFilters.vue';
+import { emptySoundFilters, matchesSoundFilters, type SoundFilters as SoundFilterState } from '../utils/mood';
 import { AUDIO_EXTENSIONS } from '../constants';
 import { formatDuration } from '../shared/format';
 import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
@@ -32,9 +34,13 @@ const untagged = ref(false);
 const hasAuto = ref(false);
 const selectedType = ref<string>('all');
 const roleFilter = ref<'all' | Role | 'unset'>('all');
-// The role toggle is hidden for ambiance, so a role filter must not keep applying there.
+const soundFilters = ref<SoundFilterState>(emptySoundFilters());
+// Role, mood and pace apply to music only and are hidden for ambiance, so their filters must not keep applying there.
 watch(selectedType, (type) => {
-  if (type === 'ambiance') roleFilter.value = 'all';
+  if (type === 'ambiance') {
+    roleFilter.value = 'all';
+    soundFilters.value = emptySoundFilters();
+  }
 });
 
 // Search text also matches the album folder (parent) and artist folder
@@ -77,7 +83,8 @@ const filteredEntries = computed(() => {
       (roleFilter.value === 'unset'
         ? entry.entryType === 'music' && entry.role === null
         : entry.role === roleFilter.value);
-    return matchesSearch && matchesTags && matchesType && matchesAuto && matchesRole;
+    const matchesSound = matchesSoundFilters(entry, soundFilters.value);
+    return matchesSearch && matchesTags && matchesType && matchesAuto && matchesRole && matchesSound;
   });
 });
 
@@ -160,19 +167,22 @@ async function applyBulkTags(mode: 'add' | 'remove'): Promise<void> {
   }
 }
 
-async function applyBulkRole(role: Role | null): Promise<void> {
-  // Roles apply to music only.
+async function applyBulkMusic(cmd: string, args: Record<string, unknown>): Promise<void> {
+  // Role and pace apply to music only.
   const ids = libraryEntries.value
     .filter((e) => selectedIds.value.includes(e.id) && e.entryType === 'music')
     .map((e) => e.id);
   if (ids.length === 0) return;
   bulkBusy.value = true;
   try {
-    await store.command('set_entry_role', { entryIds: ids, role });
+    await store.command(cmd, { entryIds: ids, ...args });
   } finally {
     bulkBusy.value = false;
   }
 }
+
+const applyBulkRole = (role: Role | null) => applyBulkMusic('set_entry_role', { role });
+const applyBulkPace = (pace: Pace | null) => applyBulkMusic('set_entry_pace', { pace });
 
 const selectedHaveAuto = computed(() =>
   libraryEntries.value.some((e) => selectedIds.value.includes(e.id) && e.autoTags.length > 0),
@@ -304,6 +314,7 @@ async function relocateEntry(entryId: string): Promise<void> {
         <VBtn value="nonCombat" size="small" prepend-icon="mdi-music-note">Non-combat</VBtn>
         <VBtn value="unset" size="small">Unset</VBtn>
       </VBtnToggle>
+      <SoundFilters v-if="selectedType !== 'ambiance'" v-model="soundFilters" size="small" class="ml-3" />
       <VSpacer />
       <VBadge
         color="warning"
@@ -534,6 +545,25 @@ async function relocateEntry(entryId: string): Promise<void> {
             <VListItem prepend-icon="mdi-sword-cross" title="Combat" @click="applyBulkRole('combat')" />
             <VListItem prepend-icon="mdi-music-note" title="Non-combat" @click="applyBulkRole('nonCombat')" />
             <VListItem prepend-icon="mdi-close" title="Clear" @click="applyBulkRole(null)" />
+          </VList>
+        </VMenu>
+        <VMenu>
+          <template #activator="{ props: menuProps }">
+            <VBtn
+              v-bind="menuProps"
+              prepend-icon="mdi-play-pause"
+              append-icon="mdi-menu-down"
+              variant="tonal"
+              size="small"
+              :disabled="bulkBusy"
+            >
+              Set pace
+            </VBtn>
+          </template>
+          <VList density="compact">
+            <VListItem prepend-icon="mdi-pause" title="Still" @click="applyBulkPace('still')" />
+            <VListItem prepend-icon="mdi-play" title="Moving" @click="applyBulkPace('moving')" />
+            <VListItem prepend-icon="mdi-close" title="Clear" @click="applyBulkPace(null)" />
           </VList>
         </VMenu>
         <VBtn

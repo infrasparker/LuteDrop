@@ -5,6 +5,8 @@
 // details.
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import type { LibraryEntry, Role, VibeHit } from '@generated/index';
+import SoundFilters from './SoundFilters.vue';
+import { emptySoundFilters, matchesSoundFilters, type SoundFilters as SoundFilterState } from '../utils/mood';
 
 const props = defineProps<{
   hits: VibeHit[];
@@ -28,10 +30,8 @@ const emit = defineEmits<{
 
 let hoveredId: string | null = null;
 
-const PACE_TAGS = ['slow', 'driving', 'frantic'] as const;
-
 const roleFilter = ref<'all' | Role | 'unset'>('all');
-const paceFilter = ref<'all' | (typeof PACE_TAGS)[number]>('all');
+const soundFilters = ref<SoundFilterState>(emptySoundFilters());
 
 interface Row { entry: LibraryEntry; score: number }
 
@@ -49,8 +49,7 @@ const visibleRows = computed(() =>
     const matchesRole =
       roleFilter.value === 'all' ||
       (roleFilter.value === 'unset' ? entry.role === null : entry.role === roleFilter.value);
-    const matchesPace = paceFilter.value === 'all' || entry.tags.includes(paceFilter.value);
-    return matchesRole && matchesPace;
+    return matchesRole && matchesSoundFilters(entry, soundFilters.value);
   }),
 );
 
@@ -164,12 +163,7 @@ onBeforeUnmount(() => {
         <VBtn value="nonCombat" size="x-small" prepend-icon="mdi-music-note">Non-combat</VBtn>
         <VBtn value="unset" size="x-small">Unset</VBtn>
       </VBtnToggle>
-      <VBtnToggle v-model="paceFilter" mandatory density="compact" variant="outlined" divided>
-        <VBtn value="all" size="x-small">Any pace</VBtn>
-        <VBtn v-for="pace in PACE_TAGS" :key="pace" :value="pace" size="x-small" class="text-capitalize">
-          {{ pace }}
-        </VBtn>
-      </VBtnToggle>
+      <SoundFilters v-model="soundFilters" size="x-small" />
       <VSpacer />
       <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
         {{ visibleRows.length }} of {{ rows.length }}

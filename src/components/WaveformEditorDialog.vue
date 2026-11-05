@@ -6,6 +6,8 @@ import WaveformEditor from './WaveformEditor.vue';
 import TagChip from './TagChip.vue';
 import TagScoresPanel from './TagScoresPanel.vue';
 import RoleControl from './RoleControl.vue';
+import PaceControl from './PaceControl.vue';
+import MoodScaleControl from './MoodScaleControl.vue';
 import { open } from '@tauri-apps/plugin-dialog';
 import { AUDIO_EXTENSIONS } from '../constants';
 import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
@@ -311,6 +313,35 @@ async function relocateFile(): Promise<void> {
             :role="entry.role"
             :role-source="entry.roleSource"
             :role-score="entry.roleScore"
+          />
+        </div>
+
+        <!-- Pace and mood (music only) -->
+        <div v-if="editEntryType === 'music'" class="d-flex align-center ga-3 mb-3">
+          <span class="text-caption text-medium-emphasis" style="min-width: 50px;">Pace</span>
+          <PaceControl
+            :entry-ids="[props.entryId]"
+            :pace="entry.pace"
+            :pace-source="entry.paceSource"
+            :pace-score="entry.paceScore"
+          />
+        </div>
+        <div v-if="editEntryType === 'music'" class="d-flex align-center ga-3 mb-3">
+          <span class="text-caption text-medium-emphasis" style="min-width: 50px;">Tone</span>
+          <MoodScaleControl
+            :entry-ids="[props.entryId]"
+            scale="bright"
+            :z="entry.moodBright"
+            :user="entry.moodBrightUser"
+          />
+        </div>
+        <div v-if="editEntryType === 'music'" class="d-flex align-center ga-3 mb-3">
+          <span class="text-caption text-medium-emphasis" style="min-width: 50px;">Weight</span>
+          <MoodScaleControl
+            :entry-ids="[props.entryId]"
+            scale="light"
+            :z="entry.moodLight"
+            :user="entry.moodLightUser"
           />
         </div>
 
