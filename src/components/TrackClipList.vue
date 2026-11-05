@@ -4,6 +4,7 @@ import type { Track } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import Sortable from 'sortablejs';
 import ClipRow from './ClipRow.vue';
+import FindSimilarDialog from './FindSimilarDialog.vue';
 
 const props = defineProps<{
   track: Track;
@@ -22,6 +23,19 @@ const seamlessClip = computed(() => props.track.clips[0] ?? null);
 function addClips(): void {
   emit('open-library-browser', props.track.id);
 }
+
+// --- Find similar ---
+
+const showFindSimilar = ref(false);
+// Distinct music entries behind the track's clips.
+const similarSeeds = computed(() => {
+  const ids = new Set<string>();
+  for (const clip of props.track.clips) {
+    const entry = store.libraryEntries.find((e) => e.id === clip.libraryEntryId);
+    if (entry?.entryType === 'music') ids.add(entry.id);
+  }
+  return [...ids];
+});
 
 // --- SortableJS for sequence/shuffle clip reordering ---
 
@@ -77,6 +91,21 @@ onUnmounted(() => {
     <div class="d-flex align-center mb-2">
       <span class="text-subtitle-2">Clip</span>
       <VSpacer />
+      <VTooltip :disabled="similarSeeds.length > 0" text="No music clips to find similar tracks for" location="top">
+        <template #activator="{ props: tipProps }">
+          <span v-bind="tipProps" class="mr-2">
+            <VBtn
+              prepend-icon="mdi-compass-outline"
+              variant="tonal"
+              rounded="xl"
+              :disabled="similarSeeds.length === 0"
+              @click="showFindSimilar = true"
+            >
+              Find similar
+            </VBtn>
+          </span>
+        </template>
+      </VTooltip>
       <VBtn
         v-if="!hasClips"
         prepend-icon="mdi-plus"
@@ -100,6 +129,21 @@ onUnmounted(() => {
     <div class="d-flex align-center mb-2">
       <span class="text-subtitle-2">Clips</span>
       <VSpacer />
+      <VTooltip :disabled="similarSeeds.length > 0" text="No music clips to find similar tracks for" location="top">
+        <template #activator="{ props: tipProps }">
+          <span v-bind="tipProps" class="mr-2">
+            <VBtn
+              prepend-icon="mdi-compass-outline"
+              variant="tonal"
+              rounded="xl"
+              :disabled="similarSeeds.length === 0"
+              @click="showFindSimilar = true"
+            >
+              Find similar
+            </VBtn>
+          </span>
+        </template>
+      </VTooltip>
       <VBtn prepend-icon="mdi-plus" variant="tonal" rounded="xl" @click="addClips">
         Add Clips
       </VBtn>
@@ -118,4 +162,6 @@ onUnmounted(() => {
       No clips yet.
     </div>
   </div>
+
+  <FindSimilarDialog v-model="showFindSimilar" :track-id="track.id" :seed-ids="similarSeeds" />
 </template>
