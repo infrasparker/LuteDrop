@@ -5,12 +5,14 @@ use crate::audio::util::{is_audio_path, is_file_usable};
 use crate::database;
 use crate::database::{configurations, hierarchy, library, DbError};
 use crate::autotag::client::{AnalyzerClient, HttpAnalyzer};
+use crate::autotag::vibe;
 use crate::database::autotag_db;
 use crate::database::settings::{self as broadcast_settings, BroadcastSettings};
 use crate::database::settings as autotag_settings;
 use crate::models::{
     AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
-    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, Role, SceneConfig, Track, TrackUpdates,
+    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, Role, SceneConfig, Track, TrackUpdates, VibeHit,
+    VibePoint,
 };
 use crate::relink;
 use crate::state::AppStateContainer;
@@ -756,6 +758,27 @@ pub fn analyze_library(container: &AppStateContainer) -> Result<(), String> {
 
 pub fn get_autotag_report(container: &AppStateContainer) -> AutoTagReport {
     container.autotag.last_report()
+}
+
+/// Music entries most like the selected ones. Blocks while the analyzer
+/// works, so callers run it off the UI thread.
+pub fn similar_entries(container: &AppStateContainer, entry_ids: &[String], limit: u32) -> Result<Vec<VibeHit>, String> {
+    let client = vibe::client_for(&container.db)?;
+    vibe::similar(&container.db, &client, entry_ids, limit)
+}
+
+/// Music entries ranked by how well they match a text description. Blocks
+/// while the analyzer works.
+pub fn search_vibe(container: &AppStateContainer, text: &str, limit: u32) -> Result<Vec<VibeHit>, String> {
+    let client = vibe::client_for(&container.db)?;
+    vibe::search(&container.db, &client, text, limit)
+}
+
+/// A 2D position for every analyzed music entry. Blocks while the analyzer
+/// works.
+pub fn vibe_map(container: &AppStateContainer) -> Result<Vec<VibePoint>, String> {
+    let client = vibe::client_for(&container.db)?;
+    vibe::map(&container.db, &client)
 }
 
 /// The entry's stored scores, or `None` if it has not been scored.

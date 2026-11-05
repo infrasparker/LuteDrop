@@ -25,5 +25,7 @@ export type { Track } from "./Track";
 export type { TrackMode } from "./TrackMode";
 export type { TrackPlaybackState } from "./TrackPlaybackState";
 export type { TrackTransition } from "./TrackTransition";
+export type { VibeHit } from "./VibeHit";
+export type { VibePoint } from "./VibePoint";
 
 export type CompStatus = "active" | "partial" | "paused" | "inactive";

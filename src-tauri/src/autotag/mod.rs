@@ -8,6 +8,7 @@
 
 pub mod client;
 pub mod plan;
+pub mod vibe;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -555,8 +556,8 @@ fn entry_is_music(conn: &Connection, id: &str) -> Result<bool, String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::client::{AnalyzerClient, EmbedResult};
+pub(crate) mod tests {
+    use super::client::{AnalyzerClient, EmbedResult, HashPoint, HashScore};
     use super::plan::{Quality, ScoreRequest, ScoreResponse, ScoreSet};
     use super::*;
     use crate::database::{autotag_db, library, open_memory_db, settings};
@@ -569,20 +570,36 @@ mod tests {
     /// is set for the gate), with threshold and Non-combat threshold 0.5;
     /// `/score` returns the configured score for each requested target.
     #[derive(Default)]
-    struct FakeAnalyzer {
+    pub(crate) struct FakeAnalyzer {
         /// When set, every call fails with this message.
-        down: Option<String>,
+        pub(crate) down: Option<String>,
         /// Hashes whose embed item fails, with the analyzer's error.
-        embed_failures: HashMap<String, String>,
-        gate: HashMap<String, f64>,
-        untrusted_gate: bool,
-        tags: HashMap<String, HashMap<String, f64>>,
+        pub(crate) embed_failures: HashMap<String, String>,
+        pub(crate) gate: HashMap<String, f64>,
+        pub(crate) untrusted_gate: bool,
+        pub(crate) tags: HashMap<String, HashMap<String, f64>>,
         /// Runs inside `score`, before it returns.
-        on_score: Option<Box<dyn Fn() + Send + Sync>>,
-        embedded: Mutex<Vec<String>>,
+        pub(crate) on_score: Option<Box<dyn Fn() + Send + Sync>>,
+        pub(crate) embedded: Mutex<Vec<String>>,
+        /// What `similar` and `search` return, whatever the request.
+        pub(crate) ranked: Vec<HashScore>,
+        /// What `map` returns, whatever the request.
+        pub(crate) points: Vec<HashPoint>,
+        /// The arguments of the last `similar`, `search` or `map` call: the
+        /// query (or text, or hashes), the candidates, and the limit.
+        pub(crate) last_call: Mutex<Option<(Vec<String>, Vec<String>, u32)>>,
     }
 
     impl FakeAnalyzer {
+        /// Notes the call for `last_call`, or fails if the analyzer is down.
+        fn record(&self, first: Vec<String>, candidates: &[String], limit: u32) -> Result<(), String> {
+            if let Some(e) = &self.down {
+                return Err(e.clone());
+            }
+            *self.last_call.lock().unwrap() = Some((first, candidates.to_vec(), limit));
+            Ok(())
+        }
+
         fn embedded_hashes(&self) -> Vec<String> {
             self.embedded.lock().unwrap().clone()
         }
@@ -644,9 +661,24 @@ mod tests {
                     .collect(),
             })
         }
+
+        fn similar(&self, query: &[String], candidates: &[String], limit: u32) -> Result<Vec<HashScore>, String> {
+            self.record(query.to_vec(), candidates, limit)?;
+            Ok(self.ranked.clone())
+        }
+
+        fn search(&self, text: &str, candidates: &[String], limit: u32) -> Result<Vec<HashScore>, String> {
+            self.record(vec![text.to_string()], candidates, limit)?;
+            Ok(self.ranked.clone())
+        }
+
+        fn map(&self, hashes: &[String]) -> Result<Vec<HashPoint>, String> {
+            self.record(hashes.to_vec(), &[], 0)?;
+            Ok(self.points.clone())
+        }
     }
 
-    fn setup() -> Arc<Mutex<Connection>> {
+    pub(crate) fn setup() -> Arc<Mutex<Connection>> {
         let conn = open_memory_db();
         settings::save_autotag(
             &conn,
@@ -670,7 +702,7 @@ mod tests {
     }
 
     /// Adds an entry at `Z:\media\audio\<name>.opus` with hash `h-<name>`.
-    fn add(db: &Mutex<Connection>, name: &str, entry_type: &str) -> String {
+    pub(crate) fn add(db: &Mutex<Connection>, name: &str, entry_type: &str) -> String {
         let conn = db.lock().unwrap();
         library::insert_library_entry(
             &conn,

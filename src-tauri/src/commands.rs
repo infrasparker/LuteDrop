@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::actions;
 use crate::models::{
     AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, Role,
-    SceneConfig, TrackUpdates,
+    SceneConfig, TrackUpdates, VibeHit, VibePoint,
 };
 use crate::state::AppStateContainer;
 use crate::waveform;
@@ -516,6 +516,41 @@ pub fn analyze_library(state: State<'_, Arc<AppStateContainer>>) -> Result<(), S
 #[tauri::command]
 pub fn get_autotag_report(state: State<'_, Arc<AppStateContainer>>) -> AutoTagReport {
     actions::get_autotag_report(&state)
+}
+
+/// The three Vibe commands are async for the same reason as
+/// `test_autotag_connection`: each waits on the analyzer. The database lock
+/// is taken only inside, to read entries.
+#[tauri::command]
+pub async fn similar_entries(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_ids: Vec<String>,
+    limit: u32,
+) -> Result<Vec<VibeHit>, String> {
+    let container = state.inner().clone();
+    tokio::task::spawn_blocking(move || actions::similar_entries(&container, &entry_ids, limit))
+        .await
+        .map_err(|e| format!("Similar search failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn search_vibe(
+    state: State<'_, Arc<AppStateContainer>>,
+    text: String,
+    limit: u32,
+) -> Result<Vec<VibeHit>, String> {
+    let container = state.inner().clone();
+    tokio::task::spawn_blocking(move || actions::search_vibe(&container, &text, limit))
+        .await
+        .map_err(|e| format!("Vibe search failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn vibe_map(state: State<'_, Arc<AppStateContainer>>) -> Result<Vec<VibePoint>, String> {
+    let container = state.inner().clone();
+    tokio::task::spawn_blocking(move || actions::vibe_map(&container))
+        .await
+        .map_err(|e| format!("Vibe map failed: {e}"))?
 }
 
 #[tauri::command]

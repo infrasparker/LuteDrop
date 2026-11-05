@@ -248,6 +248,26 @@ pub struct AutoTagProgress {
     pub message: Option<String>,
 }
 
+/// One entry in a Vibe ranking (similar tracks or text search), with the
+/// analyzer's similarity score.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct VibeHit {
+    pub entry_id: String,
+    pub score: f64,
+}
+
+/// One entry's position on the Vibe map. `x` and `y` are in [0, 1].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct VibePoint {
+    pub entry_id: String,
+    pub x: f64,
+    pub y: f64,
+}
+
 /// One tag's score for one entry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
