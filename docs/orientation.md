@@ -51,6 +51,17 @@ worker writes the resulting scores and auto tags to the database, emits
 `autotag-progress` while it works and `autotag-complete` when it finishes, and
 the Vue side reloads library state on that event.
 
+`src-tauri/src/autotag/vibe.rs` holds the vibe commands (`similar_entries`,
+`search_vibe`, `vibe_map`). Each one maps music entries to their content
+hashes, asks the analyzer's `/similar`, `/search` or `/map` endpoint, and maps
+the returned hashes back to entry ids; entries that share a hash all appear in
+the result. The Vibe view (`src/views/VibeView.vue`) combines the text search
+and seeds with `VibeResults.vue` (ranked list with Role and Pace filters),
+`VibeMap.vue` (canvas scatter with lasso selection) and
+`CreatePlaylistDialog.vue` (selection to a new shuffle track or an existing
+track). `RoleControl.vue` is the Combat / Non-combat control used by the entry
+editor and bulk bar.
+
 The split to keep in your head: **Vue decides *what* the user wants; Rust decides
 *how* to make it happen and actually does it.**
 

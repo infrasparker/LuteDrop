@@ -38,19 +38,48 @@ installer fetches it automatically, the portable build assumes it's present).
 
 ## Auto-tagging
 
-Auto-tagging suggests a role and tags for music entries by comparing how they sound with entries the user has already classified by hand. For each entry it scores the Combat probability, which sets the role (Combat or Non-combat), and scores the entry against each tag in the vocabulary. A role or tag that passes its threshold is applied automatically.
+Auto-tagging suggests a role and tags for music entries by comparing how they sound with entries that were classified by hand. It needs the analyzer service, a separate service that needs a GPU host; see [`tagger/README.md`](tagger/README.md) for how to run it. The **Auto-tagging** button in the Library toolbar opens the settings.
 
-- The role is Combat when the probability reaches the Combat threshold, Non-combat when one minus the probability reaches the Non-combat threshold, and otherwise left unset. Its examples are entries whose role was set by hand. A role set or cleared by hand is never changed by auto-tagging.
-- Auto tags are marked on their chip. Each one offers **Keep** (it becomes a normal tag) or **Remove** (it is taken off and not suggested again for that entry). Auto-tagging never overwrites or removes a tag applied by hand, and removing an auto tag stops it being applied to that entry again.
-- A role or tag is applied only once the analyzer can predict it reliably. A tag's positive examples are music entries that carry it; its negative examples are music entries with a hand-set role but without the tag, plus entries where it was removed as an auto tag. It needs at least 5 of each, and the tag must also separate them well enough when tested on these examples. Auto roles and auto tags never count as examples. The tag quality table in the dialog shows each tag's example counts, AUC and, for tags not yet trusted, what is missing.
-- The library's tag filter can show only entries with auto tags. Bulk actions can keep or remove the auto tags on several entries at once.
-- In the entry editor, the **Tag scores** panel shows each tag's score against its threshold and whether the entry's tag was applied by hand or by auto-tagging.
+### Role
 
-Audio is analyzed by a separate service that needs a GPU host; see [`tagger/README.md`](tagger/README.md) for how to run it. The **Auto-tagging** button in the Library toolbar opens the settings:
+Every music entry can have a role, **Combat** or **Non-combat**. The analyzer scores the Combat probability of each entry. The role is Combat when the probability reaches the Combat threshold, Non-combat when one minus the probability reaches the Non-combat threshold, and otherwise unset.
+
+- A role set by hand always wins. Auto-tagging never changes it.
+- Clearing a role is a decision too: the entry stays without a role and auto-tagging does not fill it again.
+- An auto role is shown with a sparkle and its score. **Keep** turns it into the user's own choice.
+- The Library has a Role column and a Role filter (All, Combat, Non-combat, Unset). The entry editor has a Combat / Non-combat control with a clear action, and the bulk bar can set or clear the role on several music entries at once.
+- Only entries whose role was set by hand count as examples. Auto roles never do.
+
+### Auto tags
+
+Auto tags are learned from the tags the user applied by hand.
+
+- A tag's positive examples are music entries that carry it. Its negative examples are music entries with a hand-set role but without the tag, plus entries where it was removed as an auto tag. Auto tags never count as examples.
+- A tag is applied only when the analyzer can predict it reliably (trusted): at least 5 positive and 5 negative examples, and good separation when tested on them. The tag quality table in the settings dialog shows each tag's example counts, AUC and, for tags not yet trusted, what is missing.
+- Auto tags are marked on their chip. **Keep** turns one into a normal tag. **Remove** takes it off and stops it being applied to that track again.
+- Auto-tagging never overwrites or removes a tag applied by hand.
+- The Library's tag filter can show only entries with auto tags, and bulk actions can keep or remove auto tags on several entries at once.
+- In the entry editor, the **Tag scores** panel shows each tag's score against its threshold and whether the entry's tag was applied by hand or automatically.
+
+### Vibe view
+
+The **Vibe** view browses analyzed music by sound.
+
+- **Text search.** A description such as "tense strings building to a battle" returns the closest tracks, ranked by score.
+- **More like this.** The action on a Library row opens the Vibe view seeded with that track. Seeds are shown as removable chips, more can be added from the results, and the results are the tracks closest to the seeds together.
+- **Filters.** The results can be filtered by Role and by Pace (slow, driving, frantic).
+- **Map.** A scatter plot of every analyzed music track, colored by role. Hovering shows the track name and clicking plays it. Dragging draws a lasso that adds the enclosed tracks to the selection. Seeds and results are highlighted.
+- **Playlists.** The selection can become a playlist with **Create playlist**, which adds a composition with one shuffle track holding the selected tracks to a chosen group of the active configuration, or be appended to a track with **Add to existing track**.
+
+### Library search
+
+The Library search box also matches the album and artist folder names of an entry, so a game can be found by its soundtrack folder.
+
+### Settings
 
 - **Enable auto-tagging.** Turning it on starts analyzing the library right away. New imports are analyzed as they arrive.
 - **Analyzer URL** and **Token** identify the service. **Test connection** reports the service's model, whether it has finished loading, and how many embeddings it has cached, or the error.
-- **Local path prefix** and **Analyzer path prefix** map the library folder on this machine to the same folder as the analyzer sees it. For example, a library shared from the analyzer host and opened here as `Z:\media\audio` uses local prefix `Z:\media\audio` and analyzer prefix `/media/audio`, matching the compose mount `/srv/media/audio:/media/audio:ro`. Entries outside the local prefix are counted as unreachable.
+- **Local path prefix** and **Analyzer path prefix** map the library folder on this machine to the same folder as the analyzer sees it. For example, a library opened here as `Z:\media\audio` that the analyzer sees as `/media/audio` uses local prefix `Z:\media\audio` and analyzer prefix `/media/audio`. Entries outside the local prefix are counted as unreachable.
 - **Analyze library** analyzes every entry that has no current analysis, with a progress bar and a summary of the last run. The summary lists up to five entries that failed or were unreachable, with the reason for each.
 - **Vocabulary** lists the tags that can be applied automatically.
 

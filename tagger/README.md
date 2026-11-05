@@ -32,7 +32,7 @@ token rejects all requests.
 |---|---|---|
 | `GET /health` | none | `{model, cache_count, ready, error}`; `error` is null unless the model failed to load |
 | `POST /embed` | `{items: [{hash, path}]}`, at most 32 items | `{results: [{hash, ok, error?}]}`; cached hashes return immediately; 503 while the model is loading or if it failed to load |
-| `POST /score` | `{scene, gate: {positives, negatives}, tags: {name: {positives, negatives}}, targets}` | `{model, gate, tags}`, each head with `quality {auc, pos, neg}`, `trusted`, `threshold` and `scores` keyed by hash |
+| `POST /score` | `{gate: {positives, negatives}, tags: {name: {positives, negatives}}, targets}`; an optional `scene` field is accepted and ignored | `{model, gate, tags}`, each head with `quality {auc, pos, neg}`, `trusted`, `threshold` and `scores` keyed by hash |
 | `POST /similar` | `{query: [hash], candidates: [hash], limit}` | `{results: [{hash, score}]}`; cosine similarity to the normalized centroid of the query vectors, query hashes excluded, best first |
 | `POST /search` | `{text, candidates: [hash], limit}` | `{results: [{hash, score}]}`; cosine similarity of the text embedding with each candidate's mean audio embedding; 503 while the model is loading |
 | `POST /map` | `{hashes: [hash]}` | `{points: [{hash, x, y}]}`; 2D layout normalized to [0, 1] (t-SNE with cosine metric, PCA below 5 items), cached in memory by the sorted hash set |
