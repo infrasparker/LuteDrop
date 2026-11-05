@@ -88,6 +88,15 @@ impl Handle {
         self.report.lock().map(|r| r.clone()).unwrap_or_default()
     }
 
+    /// Drains the requests still waiting for the worker and returns how many
+    /// were library analyses. Only meaningful before `Worker::spawn` runs.
+    #[cfg(test)]
+    pub fn pending_analyze_requests(&self) -> usize {
+        let receiver = self.receiver.lock().unwrap();
+        let receiver = receiver.as_ref().expect("worker not spawned");
+        receiver.try_iter().filter(|m| matches!(m, Message::AnalyzeLibrary)).count()
+    }
+
     fn set_report(&self, report: AutoTagReport) {
         if let Ok(mut stored) = self.report.lock() {
             *stored = report;

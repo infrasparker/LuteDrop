@@ -683,8 +683,15 @@ pub fn get_autotag_settings(container: &AppStateContainer) -> Result<AutoTagSett
     with_db(container, |conn| autotag_settings::load_autotag(conn))
 }
 
+/// Saves the connection settings. Turning auto-tagging on starts analyzing
+/// the library right away.
 pub fn save_autotag_settings(container: &AppStateContainer, settings: AutoTagSettings) -> Result<(), String> {
-    with_db(container, |conn| autotag_settings::save_autotag(conn, &settings))
+    let was_enabled = autotag_enabled(container);
+    with_db(container, |conn| autotag_settings::save_autotag(conn, &settings))?;
+    if settings.enabled && !was_enabled {
+        container.autotag.analyze_library();
+    }
+    Ok(())
 }
 
 pub fn get_scene_config(container: &AppStateContainer) -> Result<SceneConfig, String> {
@@ -1328,7 +1335,7 @@ pub fn restore_broadcast_on_startup(container: &AppStateContainer) {
 mod tests {
     use super::{
         find_missing_file_candidates, get_broadcast_status, hash_file, is_file_usable, public_url,
-        relocate_library_entry,
+        relocate_library_entry, get_autotag_settings, save_autotag_settings,
         restore_broadcast_on_startup, sanitize_volume, scan_missing_files, set_broadcast_enabled,
         set_broadcast_settings, with_db,
     };
@@ -1344,6 +1351,23 @@ mod tests {
         crate::database::ensure_default_configuration(&conn).unwrap();
         let dir = tempfile::tempdir().unwrap().keep();
         AppStateContainer::new(conn, crate::audio::AudioEngine::new().unwrap(), dir.join("peaks"), dir.join("db"))
+    }
+
+    #[test]
+    fn enabling_autotag_starts_library_analysis_once() {
+        let c = test_container();
+        let mut settings = get_autotag_settings(&c).unwrap();
+        assert!(!settings.enabled);
+
+        save_autotag_settings(&c, settings.clone()).unwrap();
+        assert_eq!(c.autotag.pending_analyze_requests(), 0, "saving while off starts nothing");
+
+        settings.enabled = true;
+        save_autotag_settings(&c, settings.clone()).unwrap();
+        assert_eq!(c.autotag.pending_analyze_requests(), 1, "turning on starts an analysis");
+
+        save_autotag_settings(&c, settings).unwrap();
+        assert_eq!(c.autotag.pending_analyze_requests(), 0, "saving while already on starts nothing");
     }
 
     #[test]

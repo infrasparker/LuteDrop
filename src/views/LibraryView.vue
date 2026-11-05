@@ -11,6 +11,7 @@ import TagFilter from '../components/TagFilter.vue';
 import TagCellEditor from '../components/TagCellEditor.vue';
 import ImportDialog from '../components/ImportDialog.vue';
 import FixMissingDialog from '../components/FixMissingDialog.vue';
+import AutoTaggingDialog from '../components/AutoTaggingDialog.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import type { LibraryEntry, LibraryEntryUsage } from '@generated/index';
 import { AUDIO_EXTENSIONS } from '../constants';
@@ -168,6 +169,7 @@ async function handleImportConfirm(payload: { paths: string[]; tags: string[]; e
 // --- Fix missing files flow ---
 
 const showFixMissing = ref(false);
+const showAutoTagging = ref(false);
 
 // --- Delete flow ---
 
@@ -258,6 +260,16 @@ async function relocateEntry(entryId: string): Promise<void> {
           Fix missing files
         </VBtn>
       </VBadge>
+      <VBtn
+        prepend-icon="mdi-creation"
+        variant="tonal"
+        size="small"
+        rounded="xl"
+        class="mr-2"
+        @click="showAutoTagging = true"
+      >
+        Auto-tagging
+      </VBtn>
       <VMenu :disabled="!!store.importProgress">
         <template #activator="{ props: menuProps }">
           <VBtn
@@ -455,6 +467,7 @@ async function relocateEntry(entryId: string): Promise<void> {
     />
 
     <FixMissingDialog v-model="showFixMissing" />
+    <AutoTaggingDialog v-model="showAutoTagging" />
 
     <ConfirmDialog
       v-model="showDeleteConfirm"

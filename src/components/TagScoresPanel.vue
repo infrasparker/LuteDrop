@@ -1,0 +1,167 @@
+<script setup lang="ts">
+import { computed, ref, watch } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
+import { useToast } from '../composables/useToast';
+import { useAutoTagEvents } from '../composables/useAutoTagEvents';
+import type { EntryTagScores, TagScore } from '@generated/index';
+
+// Expansion panel for the entry editor: how strongly the analyzer thinks each
+// vocabulary tag fits this entry. Scores load when the panel is opened, and
+// the panel is hidden for ambiance entries and for entries with no scores.
+const props = defineProps<{
+  entryId: string;
+  // Ambiance entries are never scored.
+  isAmbiance: boolean;
+}>();
+
+const toast = useToast();
+const { completedRuns } = useAutoTagEvents();
+
+const scores = ref<EntryTagScores | null>(null);
+const loading = ref(false);
+// True once a load has finished for the current entry.
+const loaded = ref(false);
+// v-model of the VExpansionPanels: the panel value while open, else undefined.
+const open = ref<string | undefined>(undefined);
+// Bumped on every request so a slow answer for a previous entry is dropped.
+let requestId = 0;
+
+async function load(): Promise<void> {
+  const id = ++requestId;
+  loading.value = true;
+  try {
+    const result = await invoke<EntryTagScores | null>('get_entry_tag_scores', { entryId: props.entryId });
+    if (id !== requestId) return;
+    scores.value = result;
+  } catch (e) {
+    if (id !== requestId) return;
+    scores.value = null;
+    toast.showError(`Could not load tag scores: ${e}`);
+  } finally {
+    if (id === requestId) {
+      loading.value = false;
+      loaded.value = true;
+    }
+  }
+}
+
+// Load on expand, and again when a run finishes while it is open.
+watch(open, (value) => {
+  if (value !== undefined) void load();
+});
+watch(completedRuns, () => {
+  if (open.value !== undefined) void load();
+  else loaded.value = false; // a hidden panel may have scores now
+});
+watch(
+  () => props.entryId,
+  () => {
+    requestId++;
+    scores.value = null;
+    loaded.value = false;
+    loading.value = false;
+    open.value = undefined;
+  },
+);
+
+// The panel has to exist before the first load so it can be expanded; once a
+// load comes back empty it hides.
+const visible = computed(() => !props.isAmbiance && !(loaded.value && scores.value === null));
+
+const trusted = computed<TagScore[]>(() => (scores.value?.tags ?? []).filter((t) => t.trusted));
+const untrusted = computed<TagScore[]>(() => (scores.value?.tags ?? []).filter((t) => !t.trusted));
+const topRows = computed<TagScore[]>(() => (scores.value ? [scores.value.gate, ...trusted.value] : []));
+
+function percent(score: number): number {
+  return Math.max(0, Math.min(1, score)) * 100;
+}
+
+function appliedLabel(s: TagScore): string | null {
+  if (s.applied === 'auto') return 'auto';
+  if (s.applied === 'user') return 'yours';
+  return null;
+}
+</script>
+
+<template>
+  <VExpansionPanels v-if="visible" v-model="open" variant="accordion" class="mt-4">
+    <VExpansionPanel value="scores" title="Tag scores">
+      <VExpansionPanelText>
+        <div v-if="loading && !scores" class="d-flex justify-center pa-3">
+          <VProgressCircular indeterminate size="24" />
+        </div>
+        <div v-else-if="!scores" class="text-caption text-medium-emphasis">No scores yet.</div>
+        <template v-else>
+          <div v-for="row in topRows" :key="row.tag" class="score-row">
+            <span class="score-name text-truncate" :title="row.tag">{{ row.tag }}</span>
+            <div class="score-bar">
+              <VProgressLinear :model-value="percent(row.score)" height="8" rounded color="primary" />
+              <span
+                v-if="row.threshold !== null"
+                class="threshold-tick"
+                :style="{ left: `${percent(row.threshold)}%` }"
+                :title="`Threshold ${row.threshold.toFixed(2)}`"
+              />
+            </div>
+            <span class="score-value text-caption">{{ row.score.toFixed(2) }}</span>
+            <VChip v-if="appliedLabel(row)" size="x-small" label class="score-chip">{{ appliedLabel(row) }}</VChip>
+            <span v-else class="score-chip" />
+          </div>
+
+          <template v-if="untrusted.length > 0">
+            <VDivider class="my-2" />
+            <div class="text-caption text-medium-emphasis mb-1">Not applied yet</div>
+            <div v-for="row in untrusted" :key="row.tag" class="score-row text-medium-emphasis">
+              <span class="score-name text-truncate" :title="row.tag">{{ row.tag }}</span>
+              <div class="score-bar">
+                <VProgressLinear :model-value="percent(row.score)" height="8" rounded color="grey" />
+                <span
+                  v-if="row.threshold !== null"
+                  class="threshold-tick"
+                  :style="{ left: `${percent(row.threshold)}%` }"
+                  :title="`Threshold ${row.threshold.toFixed(2)}`"
+                />
+              </div>
+              <span class="score-value text-caption">{{ row.score.toFixed(2) }}</span>
+              <VChip v-if="appliedLabel(row)" size="x-small" label class="score-chip">{{ appliedLabel(row) }}</VChip>
+              <span v-else class="score-chip" />
+            </div>
+          </template>
+        </template>
+      </VExpansionPanelText>
+    </VExpansionPanel>
+  </VExpansionPanels>
+</template>
+
+<style scoped>
+.score-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 28px;
+}
+.score-name {
+  flex: 0 0 140px;
+  font-size: 0.875rem;
+}
+.score-bar {
+  position: relative;
+  flex: 1 1 auto;
+}
+.threshold-tick {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  margin-left: -1px;
+  background: rgb(var(--v-theme-warning));
+}
+.score-value {
+  flex: 0 0 36px;
+  text-align: right;
+}
+.score-chip {
+  flex: 0 0 52px;
+  justify-content: center;
+}
+</style>

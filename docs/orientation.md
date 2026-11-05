@@ -37,8 +37,19 @@ Top-level directories:
 | `src-tauri/src/` | the Rust backend |
 | `src-tauri/src/audio/` | the audio engine (the hard part — see engine-architecture.md) |
 | `src-tauri/vendor/` | vendored C: miniaudio + the opus backend + our `shim.c` |
+| `src-tauri/src/autotag/` | the auto-tagging worker (see below) |
+| `tagger/` | the separate analyzer service used by auto-tagging, with its own README |
 | `generated/` | TypeScript types auto-generated from Rust structs by `ts-rs` |
 | `docs/` | you are here |
+
+Auto-tagging adds a fourth, optional piece. A background worker thread in
+`src-tauri/src/autotag/` wakes on requests (new imports, "Analyze library", or
+a tag change that calls for re-scoring), sends audio paths to the analyzer
+service over HTTP, and sends the current tagged examples along with each
+scoring request. The service keeps no tag state, only an embedding cache. The
+worker writes the resulting scores and auto tags to the database, emits
+`autotag-progress` while it works and `autotag-complete` when it finishes, and
+the Vue side reloads library state on that event.
 
 The split to keep in your head: **Vue decides *what* the user wants; Rust decides
 *how* to make it happen and actually does it.**

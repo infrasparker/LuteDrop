@@ -4,6 +4,7 @@ import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
 import WaveformEditor from './WaveformEditor.vue';
 import TagChip from './TagChip.vue';
+import TagScoresPanel from './TagScoresPanel.vue';
 import { open } from '@tauri-apps/plugin-dialog';
 import { AUDIO_EXTENSIONS } from '../constants';
 import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
@@ -416,6 +417,8 @@ async function relocateFile(): Promise<void> {
             </div>
           </template>
         </div>
+
+        <TagScoresPanel :entry-id="entryId" :is-ambiance="editEntryType === 'ambiance'" />
       </VCardText>
     </VCard>
   </VDialog>
