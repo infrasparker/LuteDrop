@@ -342,6 +342,17 @@ pub fn reject_auto_tags(
     actions::reject_auto_tags(&state, entry_ids, tags)
 }
 
+/// Clears the user's vote on `tags` for each of `entry_ids`; see
+/// `library::reset_entry_tag_votes`.
+#[tauri::command]
+pub fn reset_entry_tag_votes(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_ids: Vec<String>,
+    tags: Vec<String>,
+) -> Result<AppState, String> {
+    actions::reset_entry_tag_votes(&state, entry_ids, tags)
+}
+
 #[tauri::command]
 pub fn update_library_entry_type(
     state: State<'_, Arc<AppStateContainer>>,

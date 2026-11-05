@@ -217,6 +217,7 @@ pub fn run() {
             commands::update_library_entry_tags,
             commands::keep_auto_tags,
             commands::reject_auto_tags,
+            commands::reset_entry_tag_votes,
             commands::set_entry_role,
             commands::keep_auto_role,
             commands::set_entry_pace,
