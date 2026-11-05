@@ -83,7 +83,7 @@ const palette = computed(() => {
   const ink = toRgb(c['on-surface'], dark ? [232, 228, 220] : [33, 33, 33]);
   return {
     combat: toRgb(c.error, [211, 47, 47]),
-    nonCombat: toRgb(c.primary, [240, 168, 48]),
+    nonCombat: toRgb(c.secondary, [255, 109, 0]),
     unset: ink,
     ink,
     accent: toRgb(c.primary, [240, 168, 48]),

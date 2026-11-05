@@ -15,8 +15,8 @@ use std::sync::Mutex;
 use rusqlite::Connection;
 
 use super::client::{AnalyzerClient, HashScore, HttpAnalyzer};
-use crate::database::settings;
-use crate::models::{VibeHit, VibePoint};
+use crate::database::{autotag_db, settings};
+use crate::models::{AnalysisStatus, EntryAnalysis, VibeHit, VibePoint};
 
 /// Largest result count the analyzer returns.
 const MAX_LIMIT: u32 = 500;
@@ -108,8 +108,8 @@ pub fn client_for(db: &Mutex<Connection>) -> Result<HttpAnalyzer, String> {
 }
 
 /// Entries most like the selected ones (their centroid), best first. The
-/// selected entries are left out. Selected entries that are not music or have
-/// no hash are ignored; if none remain, that is an error.
+/// selected entries are left out. Selected entries that are not music or whose
+/// analysis is not `Embedded` are ignored; if none remain, that is an error.
 pub fn similar(
     db: &Mutex<Connection>,
     client: &dyn AnalyzerClient,
@@ -118,9 +118,15 @@ pub fn similar(
 ) -> Result<Vec<VibeHit>, String> {
     let index = MusicIndex::load(db)?;
     let mut query: Vec<String> = Vec::new();
-    for id in entry_ids {
-        if let Some(hash) = index.hash_by_entry.get(id) {
-            if !query.contains(hash) {
+    {
+        let conn = db.lock().map_err(|e| format!("Database lock poisoned: {e}"))?;
+        for id in entry_ids {
+            let Some(hash) = index.hash_by_entry.get(id) else { continue };
+            let embedded = matches!(
+                autotag_db::get_analysis(&conn, id)?,
+                Some((EntryAnalysis { status: AnalysisStatus::Embedded, .. }, _))
+            );
+            if embedded && !query.contains(hash) {
                 query.push(hash.clone());
             }
         }
@@ -179,6 +185,11 @@ mod tests {
         items.iter().map(|(h, s)| HashScore { hash: h.to_string(), score: *s }).collect()
     }
 
+    fn mark_embedded(db: &Mutex<Connection>, entry: &str, hash: &str) {
+        let conn = db.lock().unwrap();
+        autotag_db::set_analysis(&conn, entry, Some(hash), AnalysisStatus::Embedded, None).unwrap();
+    }
+
     fn strings(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
     }
@@ -187,6 +198,7 @@ mod tests {
     fn similar_maps_hashes_back_to_entries() {
         let db = setup();
         let seed = add(&db, "seed", "music");
+        mark_embedded(&db, &seed, "h-seed");
         let near = add(&db, "near", "music");
         let far = add(&db, "far", "music");
         let fake = FakeAnalyzer { ranked: ranked(&[("h-near", 0.9), ("h-far", 0.4)]), ..Default::default() };
@@ -223,9 +235,27 @@ mod tests {
     }
 
     #[test]
+    fn similar_ignores_seeds_that_are_hashed_but_not_embedded() {
+        let db = setup();
+        let pending = add(&db, "pending", "music");
+        let embedded = add(&db, "done", "music");
+        mark_embedded(&db, &embedded, "h-done");
+        let fake = FakeAnalyzer::default();
+
+        let err = similar(&db, &fake, &[pending.clone()], 10).unwrap_err();
+        assert_eq!(err, "None of the selected tracks have been analyzed yet");
+        assert!(fake.last_call.lock().unwrap().is_none());
+
+        similar(&db, &fake, &[pending, embedded], 10).unwrap();
+        let (query, _, _) = fake.last_call.lock().unwrap().clone().unwrap();
+        assert_eq!(query, strings(&["h-done"]));
+    }
+
+    #[test]
     fn shared_hash_returns_all_entries() {
         let db = setup();
         let seed = add(&db, "seed", "music");
+        mark_embedded(&db, &seed, "h-seed");
         // Two entries holding the same file.
         let twin_a = add(&db, "twin-a", "music");
         let twin_b = {
@@ -293,6 +323,7 @@ mod tests {
     fn limit_is_kept_within_the_analyzers_range() {
         let db = setup();
         let seed = add(&db, "seed", "music");
+        mark_embedded(&db, &seed, "h-seed");
         let fake = FakeAnalyzer::default();
         similar(&db, &fake, &[seed.clone()], 0).unwrap();
         assert_eq!(fake.last_call.lock().unwrap().clone().unwrap().2, 1);
@@ -331,6 +362,7 @@ mod tests {
     fn unreachable_analyzer_returns_error() {
         let db = setup();
         let seed = add(&db, "seed", "music");
+        mark_embedded(&db, &seed, "h-seed");
         let fake = FakeAnalyzer { down: Some("Could not reach the analyzer: refused".into()), ..Default::default() };
 
         let expected: Result<Vec<VibeHit>, String> = Err("Could not reach the analyzer: refused".to_string());

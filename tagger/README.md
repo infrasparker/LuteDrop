@@ -39,8 +39,9 @@ token rejects all requests.
 
 `limit` defaults to 50 and is capped at 500. The `/score` gate also returns
 `neg_threshold`, the leave-one-out precision threshold applied to `1 - score`
-with the classes swapped. It is null only when either class has fewer than
-two examples, so consumers must check `trusted` before using it.
+with the classes swapped. It is null when no cutoff reaches the target
+precision, including when a class has fewer than two examples, so consumers
+check `trusted` before using it.
 
 Hashes with no cached embedding are ignored as examples and receive no score
 as targets.

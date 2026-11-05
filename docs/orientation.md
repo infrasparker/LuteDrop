@@ -60,7 +60,7 @@ and seeds with `VibeResults.vue` (ranked list with Role and Pace filters),
 `VibeMap.vue` (canvas scatter with lasso selection) and
 `CreatePlaylistDialog.vue` (selection to a new shuffle track or an existing
 track). `RoleControl.vue` is the Combat / Non-combat control used by the entry
-editor and bulk bar.
+editor; the bulk bar has its own menu.
 
 The split to keep in your head: **Vue decides *what* the user wants; Rust decides
 *how* to make it happen and actually does it.**

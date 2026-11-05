@@ -42,7 +42,7 @@ Auto-tagging suggests a role and tags for music entries by comparing how they so
 
 ### Role
 
-Every music entry can have a role, **Combat** or **Non-combat**. The analyzer scores the Combat probability of each entry. The role is Combat when the probability reaches the Combat threshold, Non-combat when one minus the probability reaches the Non-combat threshold, and otherwise unset.
+Every music entry can have a role, **Combat** or **Non-combat**. The analyzer scores the Combat probability of each entry. The role is Combat when the probability reaches the Combat threshold, Non-combat when one minus the probability reaches the Non-combat threshold, and otherwise unset. An auto role is set only once the role classifier is trusted.
 
 - A role set by hand always wins. Auto-tagging never changes it.
 - Clearing a role is a decision too: the entry stays without a role and auto-tagging does not fill it again.
