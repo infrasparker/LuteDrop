@@ -2,6 +2,8 @@
 import type { AutoTag } from "./AutoTag";
 import type { EntryAnalysis } from "./EntryAnalysis";
 import type { EntryType } from "./EntryType";
+import type { MoodStep } from "./MoodStep";
+import type { Pace } from "./Pace";
 import type { Role } from "./Role";
 import type { TagSource } from "./TagSource";
 
@@ -30,4 +32,33 @@ roleSource: TagSource | null,
 /**
  * The analyzer's Combat probability, kept while `role_source` is auto.
  */
-roleScore: number | null, };
+roleScore: number | null, 
+/**
+ * Still or moving; `None` when unset or when the user cleared it.
+ */
+pace: Pace | null, 
+/**
+ * Who set `pace`, with the same meaning as `role_source`.
+ */
+paceSource: TagSource | null, 
+/**
+ * The analyzer's Moving probability, kept while `pace_source` is auto.
+ */
+paceScore: number | null, 
+/**
+ * The analyzer's Bright ↔ Dark position as a z-score across the
+ * library's analyzed music; positive is Bright.
+ */
+moodBright: number | null, 
+/**
+ * The analyzer's Light ↔ Heavy position as a z-score; positive is Light.
+ */
+moodLight: number | null, 
+/**
+ * The user's Bright ↔ Dark step; when set it overrides `mood_bright`.
+ */
+moodBrightUser: MoodStep | null, 
+/**
+ * The user's Light ↔ Heavy step; when set it overrides `mood_light`.
+ */
+moodLightUser: MoodStep | null, };

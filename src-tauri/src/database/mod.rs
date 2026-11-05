@@ -15,12 +15,12 @@ use uuid::Uuid;
 
 use crate::models::{
     AnalysisStatus, AppState, AutoTag, Clip, Comp, Configuration, EntryAnalysis, EntryType, Group,
-    LibraryEntry, Role, TagSource, Track, TrackMode, TrackTransition,
+    LibraryEntry, MoodStep, Pace, Role, TagSource, Track, TrackMode, TrackTransition,
 };
 
 /// Current schema version. Bump when adding a migration below; fresh
 /// databases are stamped with this directly.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// Spacing between sibling `sort_order` values, leaving room for insertions
 /// between neighbours without renumbering. Shared by hierarchy + configurations.
@@ -96,11 +96,151 @@ fn migrate_v5_to_v6(conn: &Connection) -> SqlResult<()> {
     )
 }
 
+/// Tag renames in the v7 vocabulary cleanup: (old name, new name).
+const V7_TAG_RENAMES: [(&str, &str); 3] = [
+    ("synth", "electronic"),
+    ("frantic", "driving"),
+    ("mischievous", "playful"),
+];
+
+/// Tags the v7 cleanup removes outright, with their rejections. `bright` and
+/// `dark` are removed too, after user ones become a Bright ↔ Dark step.
+const V7_TAG_REMOVALS: [&str; 12] = [
+    "brass", "choir", "slow", "heroic", "horror", "lively", "peaceful", "ominous", "majestic",
+    "moody", "haunting", "somber",
+];
+
+/// Adds the pace and mood columns and cleans the tag vocabulary up for the
+/// new scales (spec "Sound Vocabulary" §4). Runs inside the migration
+/// runner's transaction, so the columns and the cleanup commit together.
+fn migrate_v6_to_v7(conn: &Connection) -> SqlResult<()> {
+    conn.execute_batch(
+        "ALTER TABLE library_entries ADD COLUMN pace TEXT;
+         ALTER TABLE library_entries ADD COLUMN pace_source TEXT;
+         ALTER TABLE library_entries ADD COLUMN pace_score REAL;
+         ALTER TABLE library_entries ADD COLUMN mood_bright REAL;
+         ALTER TABLE library_entries ADD COLUMN mood_light REAL;
+         ALTER TABLE library_entries ADD COLUMN mood_bright_user TEXT;
+         ALTER TABLE library_entries ADD COLUMN mood_light_user TEXT;",
+    )?;
+
+    for (old, new) in V7_TAG_RENAMES {
+        rename_tag(conn, old, new)?;
+    }
+
+    // A user `bright` or `dark` tag becomes the user's Bright ↔ Dark step
+    // (both at once → the neutral step). Auto ones leave no step. Ambiance
+    // carries no mood values.
+    conn.execute(
+        "UPDATE library_entries SET mood_bright_user =
+             CASE WHEN user_moods.bright AND user_moods.dark THEN 'mid'
+                  WHEN user_moods.bright THEN 'high'
+                  ELSE 'low' END
+         FROM (
+             SELECT let.library_entry_id AS entry_id,
+                    MAX(t.name = 'bright') AS bright,
+                    MAX(t.name = 'dark')   AS dark
+             FROM library_entry_tags let JOIN tags t ON t.id = let.tag_id
+             WHERE let.source = 'user' AND t.name IN ('bright', 'dark')
+             GROUP BY let.library_entry_id
+         ) AS user_moods
+         WHERE library_entries.id = user_moods.entry_id
+           AND library_entries.entry_type = 'music'",
+        [],
+    )?;
+
+    // Removed tags go with their applications and rejections. Deleted
+    // explicitly rather than through ON DELETE CASCADE, which only fires
+    // when the connection has foreign keys on.
+    for name in V7_TAG_REMOVALS.iter().chain(["bright", "dark"].iter()) {
+        conn.execute(
+            "DELETE FROM library_entry_tags WHERE tag_id IN (SELECT id FROM tags WHERE name = ?1)",
+            [name],
+        )?;
+        conn.execute(
+            "DELETE FROM tag_rejections WHERE tag_id IN (SELECT id FROM tags WHERE name = ?1)",
+            [name],
+        )?;
+        conn.execute("DELETE FROM tags WHERE name = ?1", [name])?;
+    }
+    conn.execute(library::SWEEP_ORPHAN_TAGS, [])?;
+
+    settings::reset_saved_scene_config(conn)?;
+
+    // Queue every analyzed music entry for the next run, which computes the
+    // new pace features and mood scores and re-scores the new vocabulary.
+    conn.execute(
+        "UPDATE entry_analysis SET status = ?1, error = NULL
+         WHERE library_entry_id IN (SELECT id FROM library_entries WHERE entry_type = 'music')",
+        [AnalysisStatus::Pending.as_str()],
+    )?;
+    Ok(())
+}
+
+/// Renames tag `old` to `new` on every entry and rejection. When `new`
+/// doesn't exist yet the tag row is simply renamed. Otherwise rows move onto
+/// `new`; where an entry already has `new`, one row is kept, as a user tag if
+/// either was. An auto tag that lands on a tag the user rejected on that
+/// entry is dropped.
+fn rename_tag(conn: &Connection, old: &str, new: &str) -> SqlResult<()> {
+    use rusqlite::OptionalExtension;
+    let tag_id = |name: &str| -> SqlResult<Option<String>> {
+        conn.query_row("SELECT id FROM tags WHERE name = ?1", [name], |r| r.get(0))
+            .optional()
+    };
+    let Some(old_id) = tag_id(old)? else {
+        return Ok(());
+    };
+    let Some(new_id) = tag_id(new)? else {
+        conn.execute("UPDATE tags SET name = ?2 WHERE id = ?1", params![old_id, new])?;
+        return Ok(());
+    };
+
+    // Collisions: a user `old` row promotes the entry's `new` row to user,
+    // then the `old` row goes.
+    conn.execute(
+        "UPDATE library_entry_tags SET source = 'user', score = NULL
+         WHERE tag_id = ?2 AND library_entry_id IN (
+             SELECT library_entry_id FROM library_entry_tags
+             WHERE tag_id = ?1 AND source = 'user')",
+        params![old_id, new_id],
+    )?;
+    conn.execute(
+        "DELETE FROM library_entry_tags
+         WHERE tag_id = ?1 AND library_entry_id IN (
+             SELECT library_entry_id FROM library_entry_tags WHERE tag_id = ?2)",
+        params![old_id, new_id],
+    )?;
+    conn.execute(
+        "UPDATE library_entry_tags SET tag_id = ?2 WHERE tag_id = ?1",
+        params![old_id, new_id],
+    )?;
+
+    conn.execute(
+        "INSERT OR IGNORE INTO tag_rejections (library_entry_id, tag_id, created_at)
+         SELECT library_entry_id, ?2, created_at FROM tag_rejections WHERE tag_id = ?1",
+        params![old_id, new_id],
+    )?;
+    conn.execute("DELETE FROM tag_rejections WHERE tag_id = ?1", [&old_id])?;
+
+    // The user's rejection outranks an auto tag.
+    conn.execute(
+        "DELETE FROM library_entry_tags
+         WHERE tag_id = ?1 AND source = 'auto' AND library_entry_id IN (
+             SELECT library_entry_id FROM tag_rejections WHERE tag_id = ?1)",
+        [&new_id],
+    )?;
+
+    conn.execute("DELETE FROM tags WHERE id = ?1", [&old_id])?;
+    Ok(())
+}
+
 /// Ordered migrations: entry `(n, f)` upgrades version n → n+1.
 const MIGRATIONS: &[(i64, Migration)] = &[
     (3, migrate_v3_to_v4),
     (4, migrate_v4_to_v5),
     (5, migrate_v5_to_v6),
+    (6, migrate_v6_to_v7),
 ];
 
 fn read_schema_version(conn: &Connection) -> i64 {
@@ -173,6 +313,25 @@ pub fn open_db(path: &Path) -> Result<Connection, String> {
         )
         .map_err(|e| format!("Failed to inspect database: {e}"))?;
 
+    // Migrations rewrite the user's library (v7 cleans up their tags), so an
+    // existing database behind the current schema is copied first, before
+    // anything changes it. No copy, no migration.
+    if !fresh {
+        let on_disk = match read_schema_version(&conn) {
+            0 => 3, // pre-runner database; see the stamp below
+            v => v,
+        };
+        if on_disk < SCHEMA_VERSION {
+            let copy = backup::perform_pre_migration_backup(
+                &conn,
+                &backup::backup_dir_for(path),
+                on_disk,
+            )
+            .map_err(|e| format!("Not upgrading the database: the pre-upgrade backup failed: {e}"))?;
+            log::info!("Pre-migration backup written to {copy:?}");
+        }
+    }
+
     init_schema(&conn).map_err(|e| format!("Failed to initialise schema: {e}"))?;
 
     // A pre-runner database has no schema_version row; it is backfilled to 3
@@ -215,7 +374,14 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
             entry_type   TEXT NOT NULL DEFAULT 'music',
             role         TEXT,
             role_source  TEXT,
-            role_score   REAL
+            role_score   REAL,
+            pace             TEXT,
+            pace_source      TEXT,
+            pace_score       REAL,
+            mood_bright      REAL,
+            mood_light       REAL,
+            mood_bright_user TEXT,
+            mood_light_user  TEXT
         );
 
         CREATE TABLE IF NOT EXISTS tags (
@@ -394,7 +560,8 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
         .prepare(
             "SELECT id, file_path, content_hash, name, duration, sample_rate, file_size,
                     volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type,
-                    role, role_source, role_score
+                    role, role_source, role_score, pace, pace_source, pace_score,
+                    mood_bright, mood_light, mood_bright_user, mood_light_user
              FROM library_entries
              ORDER BY name ASC",
         )
@@ -420,6 +587,15 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
                 row.get::<_, Option<String>>(14)?,  // role
                 row.get::<_, Option<String>>(15)?,  // role_source
                 row.get::<_, Option<f64>>(16)?,     // role_score
+                (
+                    row.get::<_, Option<String>>(17)?, // pace
+                    row.get::<_, Option<String>>(18)?, // pace_source
+                    row.get::<_, Option<f64>>(19)?,    // pace_score
+                    row.get::<_, Option<f64>>(20)?,    // mood_bright
+                    row.get::<_, Option<f64>>(21)?,    // mood_light
+                    row.get::<_, Option<String>>(22)?, // mood_bright_user
+                    row.get::<_, Option<String>>(23)?, // mood_light_user
+                ),
             ))
         })
         .map_err(|e| format!("Failed to query library_entries: {e}"))?
@@ -503,7 +679,9 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
     let mut entries = Vec::with_capacity(rows.len());
     for (id, file_path, content_hash, name, duration, sample_rate, file_size,
          volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type,
-         role, role_source, role_score) in rows
+         role, role_source, role_score,
+         (pace, pace_source, pace_score, mood_bright, mood_light, mood_bright_user, mood_light_user))
+        in rows
     {
         let tags = tag_map.remove(&id).unwrap_or_default();
         let auto_tags = auto_map.remove(&id).unwrap_or_default();
@@ -529,6 +707,13 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
             role: role.as_deref().and_then(Role::from_db_str),
             role_source: role_source.as_deref().map(TagSource::from_str),
             role_score,
+            pace: pace.as_deref().and_then(Pace::from_db_str),
+            pace_source: pace_source.as_deref().map(TagSource::from_str),
+            pace_score,
+            mood_bright,
+            mood_light,
+            mood_bright_user: mood_bright_user.as_deref().and_then(MoodStep::from_db_str),
+            mood_light_user: mood_light_user.as_deref().and_then(MoodStep::from_db_str),
         });
     }
 
@@ -941,7 +1126,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let conn = open_db(&dir.path().join("fresh.db")).unwrap();
         assert_eq!(index_names(&conn), EXPECTED_INDEXES);
-        assert_eq!(read_schema_version(&conn), 6);
+        assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
     }
 
     #[test]
@@ -952,9 +1137,10 @@ mod tests {
         for name in EXPECTED_INDEXES {
             conn.execute_batch(&format!("DROP INDEX IF EXISTS {name}")).unwrap();
         }
-        // init_schema now builds the v5 tag table, auto-tagging tables and v6
-        // role columns; put them back in their v3 shape so the v4→v5 and
-        // v5→v6 steps have work to do.
+        // init_schema now builds the v5 tag table, auto-tagging tables, v6
+        // role columns and v7 pace/mood columns; put them back in their v3
+        // shape so the later steps have work to do.
+        drop_v7_columns(&conn);
         conn.execute_batch(
             "ALTER TABLE library_entries DROP COLUMN role;
              ALTER TABLE library_entries DROP COLUMN role_source;
@@ -972,7 +1158,7 @@ mod tests {
         conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '3')", []).unwrap();
         run_migrations(&conn).unwrap();
         assert_eq!(index_names(&conn), EXPECTED_INDEXES);
-        assert_eq!(read_schema_version(&conn), 6);
+        assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
     }
 
     #[test]
@@ -1024,7 +1210,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("schema_version row should exist");
-        assert_eq!(version, "6");
+        assert_eq!(version, SCHEMA_VERSION.to_string());
     }
 
     #[test]
@@ -1289,14 +1475,14 @@ mod tests {
                  PRIMARY KEY (library_entry_id, tag_id));
              INSERT INTO meta (key, value) VALUES ('schema_version', '4');
              INSERT INTO library_entries (id, file_path, name, created_at) VALUES ('e1', '/a.mp3', 'A', '0');
-             INSERT INTO tags (id, name) VALUES ('t1', 'folk'), ('t2', 'brass');
+             INSERT INTO tags (id, name) VALUES ('t1', 'folk'), ('t2', 'boss');
              INSERT INTO library_entry_tags (library_entry_id, tag_id) VALUES ('e1', 't1'), ('e1', 't2');",
         )
         .unwrap();
 
         run_migrations(&conn).unwrap();
 
-        assert_eq!(read_schema_version(&conn), 6);
+        assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
         let rows: Vec<(String, Option<f64>)> = conn
             .prepare("SELECT source, score FROM library_entry_tags")
             .unwrap()
@@ -1313,7 +1499,7 @@ mod tests {
     fn fresh_database_has_autotag_tables() {
         let dir = tempfile::tempdir().unwrap();
         let conn = open_db(&dir.path().join("fresh.db")).unwrap();
-        assert_eq!(read_schema_version(&conn), 6);
+        assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
         assert!(table_exists(&conn, "tag_rejections"));
         assert!(table_exists(&conn, "entry_analysis"));
         // The tag provenance columns exist on a fresh database too.
@@ -1362,14 +1548,22 @@ mod tests {
                  volume REAL NOT NULL DEFAULT 1.0, trim_start REAL, trim_end REAL,
                  loop_start REAL, loop_end REAL, created_at TEXT NOT NULL,
                  entry_type TEXT NOT NULL DEFAULT 'music');
+             CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE);
+             CREATE TABLE library_entry_tags (
+                 library_entry_id TEXT NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,
+                 tag_id           TEXT NOT NULL REFERENCES tags(id)            ON DELETE CASCADE,
+                 source           TEXT NOT NULL DEFAULT 'user',
+                 score            REAL,
+                 PRIMARY KEY (library_entry_id, tag_id));
              INSERT INTO meta (key, value) VALUES ('schema_version', '5');
              INSERT INTO library_entries (id, file_path, name, created_at) VALUES ('e1', '/a.mp3', 'A', '0');",
         )
         .unwrap();
+        conn.execute_batch(AUTOTAG_TABLES_DDL).unwrap();
 
         run_migrations(&conn).unwrap();
 
-        assert_eq!(read_schema_version(&conn), 6);
+        assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
         let row: (Option<String>, Option<String>, Option<f64>) = conn
             .query_row(
                 "SELECT role, role_source, role_score FROM library_entries WHERE id = 'e1'",
@@ -1381,11 +1575,14 @@ mod tests {
     }
 
     #[test]
-    fn fresh_database_is_v6() {
+    fn fresh_database_is_v7() {
         let dir = tempfile::tempdir().unwrap();
         let conn = open_db(&dir.path().join("fresh.db")).unwrap();
-        assert_eq!(read_schema_version(&conn), 6);
+        assert_eq!(read_schema_version(&conn), 7);
         conn.prepare("SELECT role, role_source, role_score FROM library_entries").unwrap();
+        conn.prepare(&format!("SELECT {} FROM library_entries", V7_COLUMNS.join(", "))).unwrap();
+        // Nothing to protect on a fresh database, so no pre-migration copy.
+        assert!(!dir.path().join("backups").exists());
     }
 
     #[test]
@@ -1410,6 +1607,244 @@ mod tests {
 
         let c = entries.iter().find(|e| e.id == unset).unwrap();
         assert_eq!((c.role, c.role_source, c.role_score), (None, None, None));
+    }
+
+
+    /// The columns schema v7 adds to `library_entries`.
+    const V7_COLUMNS: [&str; 7] = [
+        "pace",
+        "pace_source",
+        "pace_score",
+        "mood_bright",
+        "mood_light",
+        "mood_bright_user",
+        "mood_light_user",
+    ];
+
+    fn drop_v7_columns(conn: &Connection) {
+        for column in V7_COLUMNS {
+            conn.execute_batch(&format!("ALTER TABLE library_entries DROP COLUMN {column}"))
+                .unwrap();
+        }
+    }
+
+    /// Writes a file-backed database in the v6 shape: today's schema without
+    /// the v7 columns, stamped version 6.
+    fn create_v6_db(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        init_schema(&conn).unwrap();
+        drop_v7_columns(&conn);
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '6')", []).unwrap();
+    }
+
+    /// (tag name, source) pairs on an entry, sorted by name.
+    fn entry_tags(conn: &Connection, entry_id: &str) -> Vec<(String, String)> {
+        conn.prepare(
+            "SELECT t.name, let.source FROM library_entry_tags let
+             JOIN tags t ON t.id = let.tag_id
+             WHERE let.library_entry_id = ?1 ORDER BY t.name",
+        )
+        .unwrap()
+        .query_map([entry_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    }
+
+    fn pairs(items: &[(&str, &str)]) -> Vec<(String, String)> {
+        items.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+    }
+
+    fn mood_bright_user(conn: &Connection, entry_id: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT mood_bright_user FROM library_entries WHERE id = ?1",
+            [entry_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn pre_migration_backups(dir: &Path) -> Vec<std::path::PathBuf> {
+        let Ok(entries) = std::fs::read_dir(dir.join("backups")) else {
+            return Vec::new();
+        };
+        entries
+            .map(|e| e.unwrap().path())
+            .filter(|p| {
+                let name = p.file_name().unwrap().to_string_lossy().to_string();
+                name.starts_with("pre-migration-v6-") && name.ends_with(".db")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn v6_database_migrates_to_v7_with_vocabulary_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lutedrop.db");
+        create_v6_db(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                r#"INSERT INTO library_entries (id, file_path, name, created_at, entry_type) VALUES
+                     ('A', '/a.mp3', 'A', '0', 'music'), ('B', '/b.mp3', 'B', '0', 'music'),
+                     ('C', '/c.mp3', 'C', '0', 'music'), ('D', '/d.mp3', 'D', '0', 'music'),
+                     ('E', '/e.mp3', 'E', '0', 'music'), ('R', '/r.ogg', 'Rain', '0', 'ambiance');
+                   INSERT INTO tags (id, name) VALUES
+                     ('t-synth', 'synth'), ('t-brass', 'brass'), ('t-bright', 'bright'),
+                     ('t-heroic', 'heroic'), ('t-skyrim', 'skyrim'), ('t-dark', 'dark'),
+                     ('t-mischievous', 'mischievous'), ('t-playful', 'playful'),
+                     ('t-frantic', 'frantic'), ('t-driving', 'driving'), ('t-choir', 'choir');
+                   INSERT INTO library_entry_tags (library_entry_id, tag_id, source, score) VALUES
+                     ('A', 't-synth', 'user', NULL), ('A', 't-brass', 'user', NULL),
+                     ('A', 't-bright', 'user', NULL), ('A', 't-heroic', 'user', NULL),
+                     ('A', 't-skyrim', 'user', NULL),
+                     ('B', 't-bright', 'user', NULL), ('B', 't-dark', 'user', NULL),
+                     ('C', 't-dark', 'auto', 0.9), ('C', 't-mischievous', 'user', NULL),
+                     ('C', 't-playful', 'user', NULL), ('C', 't-frantic', 'auto', 0.8),
+                     ('D', 't-frantic', 'user', NULL), ('D', 't-driving', 'auto', 0.7),
+                     ('E', 't-mischievous', 'auto', 0.75);
+                   INSERT INTO tag_rejections (library_entry_id, tag_id, created_at) VALUES
+                     ('A', 't-choir', '1'), ('C', 't-mischievous', '1'), ('E', 't-playful', '1');
+                   INSERT INTO entry_analysis (library_entry_id, content_hash, status, analyzed_at) VALUES
+                     ('A', 'h-a', 'embedded', '1'), ('D', 'h-d', 'failed', '1'),
+                     ('R', 'h-r', 'embedded', '1');
+                   INSERT INTO meta (key, value) VALUES ('autotag_scene_encounter',
+                     '{"vocabulary":["brass","folk","choir","synth","bright","dark","mischievous"]}');"#,
+            )
+            .unwrap();
+        }
+
+        let conn = open_db(&path).unwrap();
+        assert_eq!(read_schema_version(&conn), 7);
+
+        // A: synth renamed, removed tags gone, user `bright` became a user step.
+        assert_eq!(entry_tags(&conn, "A"), pairs(&[("electronic", "user"), ("skyrim", "user")]));
+        assert_eq!(mood_bright_user(&conn, "A").as_deref(), Some("high"));
+        // B: user `bright` and user `dark` together give the neutral step.
+        assert!(entry_tags(&conn, "B").is_empty());
+        assert_eq!(mood_bright_user(&conn, "B").as_deref(), Some("mid"));
+        // C: the rename collision keeps one user row; an auto `dark` leaves no step.
+        assert_eq!(entry_tags(&conn, "C"), pairs(&[("driving", "auto"), ("playful", "user")]));
+        assert_eq!(mood_bright_user(&conn, "C"), None);
+        // D: a user `frantic` colliding with an auto `driving` keeps it as user.
+        assert_eq!(entry_tags(&conn, "D"), pairs(&[("driving", "user")]));
+        let d_score: Option<f64> = conn
+            .query_row(
+                "SELECT let.score FROM library_entry_tags let JOIN tags t ON t.id = let.tag_id
+                 WHERE let.library_entry_id = 'D' AND t.name = 'driving'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(d_score, None);
+        // E: an auto tag renamed onto a tag the user rejected is dropped.
+        assert!(entry_tags(&conn, "E").is_empty());
+
+        // Rejections follow renames and removals.
+        let rejections: Vec<(String, String)> = conn
+            .prepare(
+                "SELECT r.library_entry_id, t.name FROM tag_rejections r
+                 JOIN tags t ON t.id = r.tag_id ORDER BY r.library_entry_id",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rejections, pairs(&[("C", "playful"), ("E", "playful")]));
+
+        // Orphan tag rows are swept.
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM tags ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(names, ["driving", "electronic", "playful", "skyrim"]);
+
+        // The saved vocabulary is replaced with the new default.
+        assert_eq!(
+            settings::load_scene_config(&conn).unwrap(),
+            crate::models::SceneConfig::default()
+        );
+
+        // Music entries are queued for re-analysis; ambiance is left alone.
+        let status = |id: &str| -> String {
+            conn.query_row(
+                "SELECT status FROM entry_analysis WHERE library_entry_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(status("A"), "pending");
+        assert_eq!(status("D"), "pending");
+        assert_eq!(status("R"), "embedded");
+        let needing = crate::autotag::entries_needing_analysis(&conn).unwrap();
+        assert!(needing.contains(&"A".to_string()));
+
+        // A pre-migration copy of the v6 database was taken, untouched.
+        let backups = pre_migration_backups(dir.path());
+        assert_eq!(backups.len(), 1);
+        {
+            let copy = Connection::open(&backups[0]).unwrap();
+            assert_eq!(read_schema_version(&copy), 6);
+            assert_eq!(entry_tags(&copy, "A").len(), 5);
+        }
+
+        // Opening the now-current database again takes no further copy.
+        drop(conn);
+        open_db(&path).unwrap();
+        assert_eq!(pre_migration_backups(dir.path()).len(), 1);
+    }
+
+    #[test]
+    fn migration_refuses_without_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lutedrop.db");
+        create_v6_db(&path);
+        // A file where the backups folder should be makes the copy fail.
+        std::fs::write(dir.path().join("backups"), b"not a folder").unwrap();
+
+        assert!(open_db(&path).is_err());
+
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(read_schema_version(&conn), 6);
+        assert!(conn.prepare("SELECT pace FROM library_entries").is_err());
+    }
+
+    #[test]
+    fn entries_load_pace_and_mood() {
+        use crate::models::{MoodStep, Pace};
+
+        let conn = open_memory_db();
+        let set = library::insert_library_entry(&conn, "/a.mp3", None, "A", None, None, None, "music").unwrap();
+        let unset = library::insert_library_entry(&conn, "/b.mp3", None, "B", None, None, None, "music").unwrap();
+        conn.execute(
+            "UPDATE library_entries
+             SET pace = 'moving', pace_source = 'auto', pace_score = 0.83,
+                 mood_bright = 1.2, mood_light = -0.4,
+                 mood_bright_user = 'low', mood_light_user = 'high'
+             WHERE id = ?1",
+            [&set],
+        )
+        .unwrap();
+
+        let entries = load_library_entries(&conn).unwrap();
+        let a = entries.iter().find(|e| e.id == set).unwrap();
+        assert_eq!(a.pace, Some(Pace::Moving));
+        assert_eq!(a.pace_source, Some(TagSource::Auto));
+        assert_eq!(a.pace_score, Some(0.83));
+        assert_eq!(a.mood_bright, Some(1.2));
+        assert_eq!(a.mood_light, Some(-0.4));
+        assert_eq!(a.mood_bright_user, Some(MoodStep::Low));
+        assert_eq!(a.mood_light_user, Some(MoodStep::High));
+
+        let b = entries.iter().find(|e| e.id == unset).unwrap();
+        assert_eq!((b.pace, b.pace_source, b.pace_score), (None, None, None));
+        assert_eq!((b.mood_bright, b.mood_light), (None, None));
+        assert_eq!((b.mood_bright_user, b.mood_light_user), (None, None));
     }
 
 }

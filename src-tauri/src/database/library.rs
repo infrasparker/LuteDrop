@@ -445,7 +445,7 @@ pub fn remove_tag_from_entry(
 
 /// Deletes tag rows that no entry uses and that no entry has rejected.
 /// Rejections point at tag rows, so a tag with a rejection must stay.
-const SWEEP_ORPHAN_TAGS: &str = "DELETE FROM tags
+pub(crate) const SWEEP_ORPHAN_TAGS: &str = "DELETE FROM tags
      WHERE id NOT IN (SELECT tag_id FROM library_entry_tags)
        AND id NOT IN (SELECT tag_id FROM tag_rejections)";
 
