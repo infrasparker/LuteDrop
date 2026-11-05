@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import threading
@@ -113,22 +114,59 @@ class EmbeddingCache:
             np.save(f, np.asarray(windows, dtype=np.float32))
         os.replace(tmp, path)
 
+    def _rhythm_path(self, hash: str) -> Path:
+        return self._path(hash).with_name(f"{hash}.rhythm.json")
+
+    def has_rhythm(self, hash: str) -> bool:
+        try:
+            return self._rhythm_path(hash).is_file()
+        except ValueError:
+            return False
+
+    def get_rhythm(self, hash: str) -> dict[str, float] | None:
+        if not self.has_rhythm(hash):
+            return None
+        return json.loads(self._rhythm_path(hash).read_text())
+
+    def put_rhythm(self, hash: str, feats: dict[str, float]) -> None:
+        path = self._rhythm_path(hash)
+        tmp = path.with_name(f"{hash}.{os.getpid()}.{threading.get_ident()}.rhythm.tmp")
+        tmp.write_text(json.dumps({k: float(v) for k, v in feats.items()}))
+        os.replace(tmp, path)
+
     def count(self) -> int:
         return sum(1 for _ in self.root.glob("*.npy"))
+
+
+def _decode(path: str) -> np.ndarray:
+    import librosa
+
+    y, _ = librosa.load(path, sr=config.SAMPLE_RATE, mono=True)
+    if len(y) == 0:
+        raise ValueError("no audio decoded")
+    return y
+
+
+def _cut_windows(y: np.ndarray) -> np.ndarray:
+    size = config.WINDOW_SECONDS * config.SAMPLE_RATE
+    if len(y) <= size:
+        return np.pad(y, (0, size - len(y)))[None, :].astype(np.float32)
+    count = min(config.MAX_WINDOWS, len(y) // size)
+    starts = np.linspace(0, len(y) - size, count).astype(int)
+    return np.stack([y[s : s + size] for s in starts]).astype(np.float32)
 
 
 def load_windows(path: str) -> np.ndarray:
     """Decode a file at SAMPLE_RATE and cut up to MAX_WINDOWS evenly spaced
     WINDOW_SECONDS windows (windows x samples). Audio shorter than one window
     is zero-padded into a single window."""
-    import librosa
+    return _cut_windows(_decode(path))
 
-    y, _ = librosa.load(path, sr=config.SAMPLE_RATE, mono=True)
-    size = config.WINDOW_SECONDS * config.SAMPLE_RATE
-    if len(y) == 0:
-        raise ValueError("no audio decoded")
-    if len(y) <= size:
-        return np.pad(y, (0, size - len(y)))[None, :].astype(np.float32)
-    count = min(config.MAX_WINDOWS, len(y) // size)
-    starts = np.linspace(0, len(y) - size, count).astype(int)
-    return np.stack([y[s : s + size] for s in starts]).astype(np.float32)
+
+def decode_track(path: str) -> tuple[np.ndarray, dict[str, float]]:
+    """One decode, two products: the embedding windows and the track's rhythm
+    features. Runs in a worker process."""
+    from . import rhythm
+
+    y = _decode(path)
+    return _cut_windows(y), rhythm.track_features(y, config.SAMPLE_RATE)

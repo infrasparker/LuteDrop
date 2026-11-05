@@ -7,13 +7,14 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from tagger import app as app_module
+from tagger import app as app_module, rhythm
 from tagger.app import create_app
 from tagger.embed import EmbeddingCache
 
 TOKEN = "secret"
 HEADERS = {"X-LuteDrop-Token": TOKEN}
 DIM = 8
+FEATS = {k: 0.0 for k in rhythm.FEATURES}
 
 
 class FakeEmbedder:
@@ -55,7 +56,7 @@ def client(tmp_path, monkeypatch, calls):
         level = 1.0 if kind == "hi" else -1.0
         return synthetic(level, int(idx))
 
-    monkeypatch.setattr(app_module, "load_windows", fake_load)
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (fake_load(p), FEATS))
     app = create_app(
         FakeEmbedder(), EmbeddingCache(tmp_path), TOKEN, executor_factory=lambda: ThreadPoolExecutor(2)
     )
@@ -101,7 +102,7 @@ class SlowEmbedder(FakeEmbedder):
 
 def test_embed_waits_for_model_then_answers_503(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "LOAD_WAIT_SECONDS", 0.05)
-    monkeypatch.setattr(app_module, "load_windows", lambda p: synthetic(1.0, 1))
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), FEATS))
     embedder = SlowEmbedder()
     c = TestClient(
         create_app(embedder, EmbeddingCache(tmp_path), TOKEN, executor_factory=lambda: ThreadPoolExecutor(1))
@@ -223,7 +224,7 @@ class BrokenPool:
 
 @pytest.mark.parametrize("fail_on", ["submit", "result"])
 def test_embed_recovers_from_broken_pool(tmp_path, monkeypatch, fail_on):
-    monkeypatch.setattr(app_module, "load_windows", lambda p: synthetic(1.0, 1))
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), FEATS))
     pools = iter([BrokenPool(fail_on)])
     app = create_app(
         FakeEmbedder(),
@@ -385,3 +386,36 @@ def test_endpoints_drop_uncached_hashes(client):
 def test_vibe_endpoints_require_token(client, path, body):
     assert client.post(path, json=body).status_code == 401
     assert client.post(path, json=body, headers={"X-LuteDrop-Token": "nope"}).status_code == 401
+
+
+def _rhythm_client(tmp_path, monkeypatch, calls):
+    def fake_decode(path):
+        calls.append(path)
+        return synthetic(1.0, 1), {k: 0.5 for k in rhythm.FEATURES}
+
+    monkeypatch.setattr(app_module, "decode_track", fake_decode)
+    cache = EmbeddingCache(tmp_path)
+    app = create_app(FakeEmbedder(), cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2))
+    return TestClient(app), cache
+
+
+def test_embed_backfills_rhythm_for_cached_embedding(tmp_path, monkeypatch):
+    calls = []
+    c, cache = _rhythm_client(tmp_path, monkeypatch, calls)
+    cache.put("h1", np.ones((2, DIM), dtype=np.float32))
+    monkeypatch.setattr(
+        FakeEmbedder, "embed_windows", lambda self, w: (_ for _ in ()).throw(AssertionError("embedder called"))
+    )
+    assert not cache.has_rhythm("h1")
+    r = embed(c, [("h1", "hi-1")])
+    assert r.json()["results"] == [{"hash": "h1", "ok": True}]
+    assert calls == ["hi-1"]
+    assert cache.has_rhythm("h1")
+    assert cache.get_rhythm("h1") == {k: 0.5 for k in rhythm.FEATURES}
+    assert np.array_equal(cache.get_windows("h1"), np.ones((2, DIM), dtype=np.float32))
+
+
+def test_embed_stores_rhythm_for_new_files(tmp_path, monkeypatch):
+    c, cache = _rhythm_client(tmp_path, monkeypatch, [])
+    assert embed(c, [("h2", "hi-1")]).json()["results"] == [{"hash": "h2", "ok": True}]
+    assert cache.has("h2") and cache.has_rhythm("h2")

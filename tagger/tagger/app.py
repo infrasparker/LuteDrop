@@ -12,7 +12,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from . import heads, vibe
-from .embed import Embedder, EmbeddingCache, MuqEmbedder, load_windows
+from .embed import Embedder, EmbeddingCache, MuqEmbedder, decode_track
 
 MAX_EMBED_ITEMS = 32
 
@@ -68,9 +68,9 @@ def _limit(n: int) -> int:
     return min(max(n, 0), MAX_RESULTS)
 
 
-def _decode(path: str) -> np.ndarray:
+def _decode(path: str):
     # Module-level so a process pool can pickle it by reference.
-    return load_windows(path)
+    return decode_track(path)
 
 
 def _failure(hash: str, e: Exception) -> dict:
@@ -142,7 +142,7 @@ def create_app(
         results: dict[str, dict] = {}
         pending = {}
         for item in req.items:
-            if cache.has(item.hash):
+            if cache.has(item.hash) and cache.has_rhythm(item.hash):
                 results[item.hash] = {"hash": item.hash, "ok": True}
             elif item.hash not in pending:
                 try:
@@ -152,8 +152,10 @@ def create_app(
                     results[item.hash] = _failure(item.hash, e)
         for hash, (pool, future) in pending.items():
             try:
-                windows = future.result()
-                cache.put(hash, embedder.embed_windows(windows))
+                windows, feats = future.result()
+                if not cache.has(hash):
+                    cache.put(hash, embedder.embed_windows(windows))
+                cache.put_rhythm(hash, feats)
                 results[hash] = {"hash": hash, "ok": True}
             except BrokenProcessPool as e:
                 replace_pool(pool)
