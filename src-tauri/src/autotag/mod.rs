@@ -43,8 +43,9 @@ pub const COMPLETE_EVENT: &str = "autotag-complete";
 enum Message {
     /// Analyze these entries (newly imported) in a run that starts now.
     Queue(Vec<String>),
-    /// Analyze every music entry that has no current analysis.
-    AnalyzeLibrary,
+    /// Analyze music entries. With `all` false, only those with no current
+    /// analysis; with `all` true, every music entry.
+    AnalyzeLibrary { all: bool },
     /// Re-score the library after a tag change, once edits settle.
     Rescore,
 }
@@ -78,7 +79,14 @@ impl Handle {
     /// Analyzes every music entry whose analysis is missing, unsuccessful,
     /// or recorded under a different file hash.
     pub fn analyze_library(&self) {
-        self.send(Message::AnalyzeLibrary);
+        self.send(Message::AnalyzeLibrary { all: false });
+    }
+
+    /// Analyzes every music entry, including those already embedded. The
+    /// analyzer answers `/embed` at once for hashes it has cached, and
+    /// re-embeds the ones it lost.
+    pub fn reanalyze_library(&self) {
+        self.send(Message::AnalyzeLibrary { all: true });
     }
 
     /// Re-scores the library 5 s after the last call.
@@ -97,7 +105,7 @@ impl Handle {
     pub fn pending_analyze_requests(&self) -> usize {
         let receiver = self.receiver.lock().unwrap();
         let receiver = receiver.as_ref().expect("worker not spawned");
-        receiver.try_iter().filter(|m| matches!(m, Message::AnalyzeLibrary)).count()
+        receiver.try_iter().filter(|m| matches!(m, Message::AnalyzeLibrary { .. })).count()
     }
 
     fn set_report(&self, report: AutoTagReport) {
@@ -201,8 +209,14 @@ impl Worker {
                 self.add_to_queue(ids);
                 true
             }
-            Message::AnalyzeLibrary => {
-                let ids = lock(&self.container.db).and_then(|conn| entries_needing_analysis(&conn));
+            Message::AnalyzeLibrary { all } => {
+                let ids = lock(&self.container.db).and_then(|conn| {
+                    if all {
+                        all_music_entries(&conn)
+                    } else {
+                        entries_needing_analysis(&conn)
+                    }
+                });
                 match ids {
                     Ok(ids) => self.add_to_queue(ids),
                     Err(e) => log::warn!("Could not list entries to analyze: {e}"),
@@ -300,6 +314,17 @@ pub fn entries_needing_analysis(conn: &Connection) -> Result<Vec<String>, String
     Ok(autotag_db::load_run_entries(conn)?
         .into_iter()
         .filter(|e| e.facts.is_music && !is_embedded(e))
+        .map(|e| e.facts.id)
+        .collect())
+}
+
+/// Ids of the music entries `Handle::reanalyze_library` queues: every music
+/// entry that has a content hash, plus those not yet hashed (as in
+/// `entries_needing_analysis`, a run hashes them).
+pub fn all_music_entries(conn: &Connection) -> Result<Vec<String>, String> {
+    Ok(autotag_db::load_run_entries(conn)?
+        .into_iter()
+        .filter(|e| e.facts.is_music)
         .map(|e| e.facts.id)
         .collect())
 }
@@ -889,5 +914,19 @@ mod tests {
         }
         let ids: HashSet<String> = entries_needing_analysis(&db.lock().unwrap()).unwrap().into_iter().collect();
         assert_eq!(ids, HashSet::from([fresh, failed, stale]));
+    }
+
+    #[test]
+    fn manual_analyze_queues_embedded_entries_too() {
+        let db = setup();
+        let fresh = add(&db, "fresh", "music");
+        let done = add(&db, "done", "music");
+        add(&db, "rain", "ambiance");
+        {
+            let conn = db.lock().unwrap();
+            autotag_db::set_analysis(&conn, &done, Some("h-done"), AnalysisStatus::Embedded, None).unwrap();
+        }
+        let ids: HashSet<String> = all_music_entries(&db.lock().unwrap()).unwrap().into_iter().collect();
+        assert_eq!(ids, HashSet::from([fresh, done]));
     }
 }

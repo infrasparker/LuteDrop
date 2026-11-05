@@ -79,18 +79,47 @@ pub fn update_library_entry_name(
     Ok(())
 }
 
-/// Updates the `entry_type` column for the given entry.
+/// Updates the `entry_type` column for the given entry. Only music entries
+/// are auto-tagged, so when an entry stops being music its auto tags are
+/// deleted in the same transaction (without rejections, since the user never
+/// judged them) and orphaned tag rows are swept. User tags and rejections
+/// are left alone.
+///
+/// Returns true if the entry was not music before and is music now.
 pub fn update_library_entry_type(
     conn: &Connection,
     id: &str,
     entry_type: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin entry type transaction: {e}"))?;
+
+    let old_type: Option<String> = conn
+        .query_row(
+            "SELECT entry_type FROM library_entries WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to read entry type: {e}"))?;
+    let was_music = old_type.as_deref() == Some("music");
+    let is_music = entry_type == "music";
+
     conn.execute(
         "UPDATE library_entries SET entry_type = ?1 WHERE id = ?2",
         params![entry_type, id],
     )
     .map_err(|e| format!("Failed to update entry type: {e}"))?;
-    Ok(())
+
+    if was_music && !is_music {
+        remove_dependent_auto_tags(conn, id)?;
+        sweep_orphan_tags(conn)?;
+    }
+
+    tx.commit()
+        .map_err(|e| format!("Failed to commit entry type transaction: {e}"))?;
+    Ok(!was_music && is_music)
 }
 
 /// Updates the loop window for the given entry.
@@ -1324,6 +1353,48 @@ mod tests {
 
     fn count(conn: &Connection, sql: &str) -> i64 {
         conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn type_change_from_music_removes_auto_tags() {
+        let conn = open_memory_db();
+        let e = new_entry(&conn, "/a.mp3");
+        add_auto(&conn, &e, "brass", 0.8);
+        add_auto(&conn, &e, "dark", 0.7);
+        add_tag_to_entry(&conn, &e, "night").unwrap();
+        let rejected = vec!["dark".to_string()];
+        reject_auto_tags(&conn, &[e.clone()], Some(&rejected[..])).unwrap();
+        add_auto(&conn, &e, "dark", 0.7);
+
+        assert!(!update_library_entry_type(&conn, &e, "ambiance").unwrap());
+
+        assert_eq!(row_of(&conn, &e, "brass"), None);
+        assert_eq!(row_of(&conn, &e, "dark"), None);
+        assert_eq!(row_of(&conn, &e, "night"), Some(("user".into(), None)));
+        // The rejection stays, so its tag row survives the sweep. "brass" is
+        // used by nothing and is swept.
+        assert!(is_rejected(&conn, &e, "dark").unwrap());
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tag_rejections"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tags"), 2);
+    }
+
+    #[test]
+    fn type_change_to_music_reports_it_and_keeps_tags() {
+        let conn = open_memory_db();
+        let e = new_entry(&conn, "/a.mp3");
+        update_library_entry_type(&conn, &e, "ambiance").unwrap();
+        assert!(update_library_entry_type(&conn, &e, "music").unwrap());
+    }
+
+    #[test]
+    fn music_to_music_type_change_keeps_auto_tags() {
+        let conn = open_memory_db();
+        let e = new_entry(&conn, "/a.mp3");
+        add_auto(&conn, &e, "brass", 0.8);
+
+        assert!(!update_library_entry_type(&conn, &e, "music").unwrap());
+
+        assert_eq!(row_of(&conn, &e, "brass"), Some(("auto".into(), Some(0.8))));
     }
 
     #[test]

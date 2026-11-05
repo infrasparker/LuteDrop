@@ -398,10 +398,15 @@ pub fn update_library_entry_type(
     entry_id: &str,
     entry_type: &str,
 ) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| {
-        library::update_library_entry_type(conn, entry_id, entry_type)?;
+    let mut became_music = false;
+    let state = mutate_and_reload(container, |conn| {
+        became_music = library::update_library_entry_type(conn, entry_id, entry_type)?;
         Ok(())
-    })
+    })?;
+    if became_music && autotag_enabled(container) {
+        container.autotag.queue_entries(vec![entry_id.to_string()]);
+    }
+    Ok(state)
 }
 
 pub fn update_library_entry_markers(
@@ -715,13 +720,14 @@ pub fn test_autotag_connection(settings: &AutoTagSettings) -> Result<String, Str
     HttpAnalyzer::new(&settings.analyzer_url, &settings.token).health()
 }
 
-/// Starts analyzing every entry that needs it. Progress arrives as
+/// Starts analyzing every music entry, including those already embedded, so
+/// the library recovers if the analyzer lost its cache. Progress arrives as
 /// `autotag-progress` events.
 pub fn analyze_library(container: &AppStateContainer) -> Result<(), String> {
     if !autotag_enabled(container) {
         return Err("Auto-tagging is turned off".to_string());
     }
-    container.autotag.analyze_library();
+    container.autotag.reanalyze_library();
     Ok(())
 }
 
