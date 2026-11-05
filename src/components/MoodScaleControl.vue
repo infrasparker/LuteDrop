@@ -3,12 +3,15 @@ import { computed, ref } from 'vue';
 import type { MoodScale, MoodStep } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { effectiveStep, STEP_LABELS, STEPS } from '../utils/mood';
+import FacetStatus from './FacetStatus.vue';
 
 /// Three-step toggle for one mood scale (Dark/Neutral/Bright or
-/// Heavy/Neutral/Light). The shown step is the user's if set, else the
-/// analyzer's, which is outlined with a creation icon and a z-score tooltip;
-/// when the user's step differs, the icon stays on the analyzer's step.
-/// Clicking a step stores it as the user's choice; Reset hands it back to the analyzer.
+/// Heavy/Neutral/Light), plus its status column. The shown step is yours if
+/// set, else the step for the analyzer's z-score. Clicking a step makes it
+/// yours; Confirm stores the analyzer's step as yours; Use auto clears yours.
+///
+/// The root uses `display: contents`, so inside a grid the options and the
+/// status are two cells that line up with the other facet rows.
 const props = defineProps<{
   entryIds: string[];
   scale: MoodScale;
@@ -20,16 +23,13 @@ const store = useAppStore();
 const busy = ref(false);
 
 const step = computed(() => effectiveStep(props.z, props.user));
-const isAuto = computed(() => props.user === null && step.value !== null);
-// The analyzer's own step, kept visible when the user's choice differs.
 const autoStep = computed(() => effectiveStep(props.z, null));
-const showAutoMarker = computed(
-  () => autoStep.value !== null && (props.user === null || props.user !== autoStep.value),
-);
-const zLabel = computed(() =>
-  props.z === null ? 'Auto' : `Auto · z = ${props.z >= 0 ? '+' : ''}${props.z.toFixed(2)}`,
-);
 const labels = computed(() => STEP_LABELS[props.scale]);
+const labelOf = (value: MoodStep | null): string | null =>
+  value === null ? null : labels.value[STEPS.indexOf(value)];
+const autoHint = computed(() =>
+  props.z === null ? null : `z = ${props.z >= 0 ? '+' : ''}${props.z.toFixed(2)}`,
+);
 
 async function setStep(value: MoodStep | null): Promise<void> {
   if (busy.value || props.entryIds.length === 0) return;
@@ -48,10 +48,14 @@ async function setStep(value: MoodStep | null): Promise<void> {
 function choose(value: MoodStep): void {
   if (props.user !== value) void setStep(value);
 }
+
+function confirm(): void {
+  if (autoStep.value !== null) void setStep(autoStep.value);
+}
 </script>
 
 <template>
-  <div class="d-flex align-center ga-2">
+  <div class="facet-control">
     <VBtnToggle
       :model-value="step"
       density="compact"
@@ -66,27 +70,24 @@ function choose(value: MoodStep): void {
         :key="value"
         :value="value"
         size="small"
-        :prepend-icon="showAutoMarker && autoStep === value ? 'mdi-creation' : undefined"
-        :variant="isAuto && step === value ? 'outlined' : undefined"
         @click.prevent="choose(value)"
       >
         {{ labels[i] }}
-        <VTooltip
-          v-if="showAutoMarker && autoStep === value"
-          activator="parent"
-          location="top"
-          open-delay="300"
-        >{{ zLabel }}</VTooltip>
       </VBtn>
     </VBtnToggle>
-    <VBtn
-      v-if="user !== null"
-      size="small"
-      variant="text"
+    <FacetStatus
+      :auto-label="labelOf(autoStep)"
+      :user-label="labelOf(user)"
+      :auto-hint="autoHint"
       :disabled="busy"
-      @click="setStep(null)"
-    >
-      Reset
-    </VBtn>
+      @confirm="confirm"
+      @use-auto="setStep(null)"
+    />
   </div>
 </template>
+
+<style scoped>
+.facet-control {
+  display: contents;
+}
+</style>
