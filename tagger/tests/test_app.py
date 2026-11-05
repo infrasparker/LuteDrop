@@ -516,3 +516,53 @@ def test_score_returns_raw_mood_for_targets(tmp_path, monkeypatch):
     assert data["mood"]["a"]["bright"] == pytest.approx(pole(moods.BRIGHT) - pole(moods.DARK))
     assert data["mood"]["a"]["light"] == pytest.approx(pole(moods.LIGHT) - pole(moods.HEAVY))
     assert data["mood"]["a"]["bright"] != 0
+
+
+def test_score_mood_recovers_after_partial_embed_failure(tmp_path, monkeypatch):
+    class FlakyEmbedder(FakeEmbedder):
+        calls = 0
+
+        def embed_text(self, texts):
+            FlakyEmbedder.calls += 1
+            if FlakyEmbedder.calls == 3:  # fail part-way through the poles
+                raise RuntimeError("transient")
+            return super().embed_text(texts)
+
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), FEATS))
+    cache = EmbeddingCache(tmp_path)
+    c = TestClient(create_app(FlakyEmbedder(), cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2)))
+    embed(c, [("a", "x-1")])
+    body = {"gate": {}, "targets": ["a"]}
+    first = c.post("/score", json=body, headers=HEADERS)
+    assert first.status_code == 200 and "mood" not in first.json()
+    second = c.post("/score", json=body, headers=HEADERS)
+    assert second.status_code == 200
+    assert set(second.json()["mood"]["a"]) == {"bright", "light"}
+
+
+def test_score_without_loaded_model_omits_mood(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), FEATS))
+    cache = EmbeddingCache(tmp_path)
+    cache.put("a", np.ones((2, DIM), dtype=np.float32))
+    embedder = SlowEmbedder()
+    c = TestClient(create_app(embedder, cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(1)))
+    body = {"gate": {"positives": ["a"], "negatives": []}, "targets": ["a"]}
+    r = c.post("/score", json=body, headers=HEADERS)
+    assert r.status_code == 200
+    assert "gate" in r.json() and "mood" not in r.json()
+    embedder.release.set()
+
+
+def test_score_with_failed_model_omits_mood(tmp_path):
+    cache = EmbeddingCache(tmp_path)
+    cache.put("a", np.ones((2, DIM), dtype=np.float32))
+    c = TestClient(create_app(BrokenEmbedder(), cache, TOKEN))
+    c.get("/health", headers=HEADERS)
+    import time
+
+    for _ in range(100):
+        if c.get("/health", headers=HEADERS).json()["error"]:
+            break
+        time.sleep(0.02)
+    r = c.post("/score", json={"gate": {}, "targets": ["a"]}, headers=HEADERS)
+    assert r.status_code == 200 and "mood" not in r.json()

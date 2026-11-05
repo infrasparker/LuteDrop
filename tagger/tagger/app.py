@@ -204,29 +204,36 @@ def create_app(
         }
 
     # Unit-length mood prompt vectors per pole, embedded the first time /score
-    # needs them (the model must be loaded) and reused after that.
+    # finds the model loaded and reused after that. Published only once every
+    # pole succeeded, so a failure part-way leaves nothing half-filled.
     mood_vecs: dict[str, np.ndarray] = {}
     mood_lock = threading.Lock()
 
-    def mood_poles() -> dict[str, np.ndarray]:
+    def mood_poles() -> dict[str, np.ndarray] | None:
+        """The pole vectors, or None while the model is not ready (or the
+        prompts could not be embedded); /score then omits mood. Never waits."""
+        if not loaded.is_set() or load_error:
+            return None
         with mood_lock:
             if not mood_vecs:
-                if not loaded.wait(LOAD_WAIT_SECONDS):
-                    raise HTTPException(status_code=503, detail="model is still loading")
-                if load_error:
-                    raise HTTPException(
-                        status_code=503, detail=f"model failed to load: {load_error[0]}"
-                    )
-                for name, texts in moods.POLES.items():
-                    vecs = np.asarray(embedder.embed_text(texts), dtype=np.float64)
-                    norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-                    mood_vecs[name] = vecs / np.where(norms == 0, 1, norms)
+                built = {}
+                try:
+                    for name, texts in moods.POLES.items():
+                        vecs = np.asarray(embedder.embed_text(texts), dtype=np.float64)
+                        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+                        built[name] = vecs / np.where(norms == 0, 1, norms)
+                except Exception:
+                    log.exception("Mood prompts failed to embed")
+                    return None
+                mood_vecs.update(built)
             return dict(mood_vecs)
 
-    def mood_scores(target_hashes: list[str], X_targets: np.ndarray) -> dict[str, dict]:
+    def mood_scores(target_hashes: list[str], X_targets: np.ndarray) -> dict[str, dict] | None:
         if not target_hashes:
             return {}
         poles = mood_poles()
+        if poles is None:
+            return None
         sims = {name: (X_targets @ v.T).mean(axis=1) for name, v in poles.items()}
         bright = sims["bright"] - sims["dark"]
         light = sims["light"] - sims["heavy"]
@@ -249,7 +256,9 @@ def create_app(
         if req.pace is not None:
             r_hashes, R_targets = rhythm_vectors(req.targets)
             out["pace"] = score_head(req.pace, r_hashes, R_targets, rhythm_vectors, scale=True)
-        out["mood"] = mood_scores(target_hashes, X_targets)
+        mood = mood_scores(target_hashes, X_targets)
+        if mood is not None:
+            out["mood"] = mood
         return out
 
     @app.post("/similar")

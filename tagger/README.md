@@ -49,7 +49,9 @@ need rhythm features, so hashes without them are ignored and receive no pace
 score. `mood` scores are raw, not z-scored: `bright` is the mean cosine of the
 track's mean embedding with the bright prompts minus the dark prompts, and
 `light` is the light prompts minus the heavy ones. The prompt embeddings are
-computed once, the first time `/score` needs them.
+computed once, the first time `/score` finds the model loaded. While the model
+is still loading or has failed, `mood` is omitted from the response; `/score`
+never waits for it, and `gate`, `tags` and `pace` are unaffected.
 
 Hashes with no cached embedding are ignored as examples and receive no score
 as targets.
