@@ -100,7 +100,7 @@ const palette = computed(() => {
     nonCombat: toRgb(c.secondary, [255, 109, 0]),
     unset: ink,
     ink,
-    // Dark outline behind light marks so they stand apart from warm points.
+    // Theme background, used as an outline behind marks so they stand apart from neighbouring points.
     shade: toRgb(c.background, dark ? [10, 10, 12] : [255, 255, 255]),
     accent: toRgb(c.primary, [240, 168, 48]),
   };
@@ -373,15 +373,20 @@ function onPointerMove(e: PointerEvent): void {
 }
 
 function onPointerUp(e: PointerEvent): void {
-  if (!pressStart || e.button !== pressButton) return;
+  if (!pressStart) return;
   const start = pressStart;
   const removing = pressButton === 2;
+  // Chorded buttons (hold left, add right, release left) fire no pointerdown or
+  // pointerup of their own, so a release of a different button cancels the press.
+  const cancelled = e.button !== pressButton;
+  const wasLassoing = lassoing;
+  const poly = lasso.value;
   pressStart = null;
-  canvas.value?.releasePointerCapture(e.pointerId);
-  if (lassoing) {
-    const poly = lasso.value;
-    lassoing = false;
-    lasso.value = [];
+  lassoing = false;
+  lasso.value = [];
+  if (canvas.value?.hasPointerCapture(e.pointerId)) canvas.value.releasePointerCapture(e.pointerId);
+  if (cancelled) return;
+  if (wasLassoing) {
     if (poly.length >= 3) {
       const ids = screenPoints.value.filter((pt) => insidePolygon(pt.x, pt.y, poly)).map((pt) => pt.id);
       if (ids.length === 0) return;
@@ -396,6 +401,7 @@ function onPointerUp(e: PointerEvent): void {
   else emit('play', hit.id);
 }
 
+// Also runs on lost capture (e.g. alt-tab mid-drag), where no pointerup arrives.
 function onPointerCancel(): void {
   pressStart = null;
   lassoing = false;
@@ -479,8 +485,8 @@ onBeforeUnmount(() => {
         @pointermove="onPointerMove"
         @pointerup="onPointerUp"
         @pointercancel="onPointerCancel"
+        @lostpointercapture="onPointerCancel"
         @pointerleave="onPointerLeave"
-        @contextmenu.prevent
       />
       <div v-if="hover && hoverName" class="vibe-map-tooltip text-caption" :style="tooltipStyle">
         {{ hoverName }}

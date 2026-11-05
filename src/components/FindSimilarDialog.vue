@@ -6,30 +6,28 @@
 import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { invoke } from '@tauri-apps/api/core';
-import type { LibraryEntry, SceneConfig, VibeHit } from '@generated/index';
+import type { LibraryEntry, VibeHit } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
-import { useAudio } from '../composables/useAudio';
+import { useLibraryPreview } from '../composables/useLibraryPreview';
 import { useToast } from '../composables/useToast';
-import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
+import { useVocabulary } from '../composables/useVocabulary';
 import VibeResults from './VibeResults.vue';
 
 const RESULT_LIMIT = 50;
-// Used to tell game tags from analyzer tags when the saved vocabulary cannot be read.
-const DEFAULT_VOCABULARY = [
-  'brass', 'folk', 'choir', 'synth', 'bright', 'dark', 'heroic', 'horror', 'lively', 'peaceful',
-  'ominous', 'majestic', 'moody', 'mischievous', 'haunting', 'somber', 'slow', 'driving', 'frantic',
-];
 
 const props = defineProps<{
   modelValue: boolean;
   trackId: string;
   seedIds: string[];
+  // A seamless track holds a single clip, so results cannot be added to it.
+  isSeamless?: boolean;
 }>();
 
 const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>();
 
 const store = useAppStore();
-const audio = useAudio();
+const { playingId, toggle: togglePreview, stop: stopPreview } = useLibraryPreview();
+const { vocabulary, reloadVocabulary } = useVocabulary(false);
 const toast = useToast();
 const router = useRouter();
 
@@ -40,7 +38,6 @@ const entriesById = computed(() => {
   return map;
 });
 
-const vocabulary = ref(new Set(DEFAULT_VOCABULARY));
 const hits = ref<VibeHit[]>([]);
 const loading = ref(false);
 const error = ref<string | null>(null);
@@ -60,11 +57,15 @@ async function load(): Promise<void> {
   loading.value = true;
   error.value = null;
   hits.value = [];
-  selectedIds.value = [];
   try {
-    const result = await invoke<VibeHit[]>('similar_entries', { entryIds: allSeeds.value, limit: RESULT_LIMIT });
+    // Entries already in the track are filtered out, so ask for that many extra.
+    const limit = RESULT_LIMIT + trackEntryIds.value.size;
+    const result = await invoke<VibeHit[]>('similar_entries', { entryIds: allSeeds.value, limit });
     if (id !== request) return;
     hits.value = result;
+    // Keep checked rows that are still in the results.
+    const returned = new Set(result.map((h) => h.entryId));
+    selectedIds.value = selectedIds.value.filter((entryId) => returned.has(entryId));
   } catch (e) {
     if (id !== request) return;
     error.value = String(e);
@@ -73,56 +74,21 @@ async function load(): Promise<void> {
   }
 }
 
-async function loadVocabulary(): Promise<void> {
-  try {
-    const config = await invoke<SceneConfig>('get_scene_config');
-    vocabulary.value = new Set(config.vocabulary);
-  } catch {
-    // Keep the default vocabulary; it only decides which tags show as game tags.
-  }
-}
-
 watch(
   () => props.modelValue,
-  (open) => {
+  (open, wasOpen) => {
     if (open) {
       extraSeeds.value = [];
+      selectedIds.value = [];
       load();
-      loadVocabulary();
-    } else {
+      reloadVocabulary();
+    } else if (wasOpen) {
       request++;
       stopPreview();
     }
   },
   { immediate: true },
 );
-
-// --- Preview playback ---
-
-const playingId = computed(() =>
-  store.playbackStates.get(LIBRARY_PLAYBACK_ID)?.isPlaying ? store.libraryPlayingEntryId : null,
-);
-
-function stopPreview(): void {
-  if (playingId.value) audio.stopLibrarySound();
-}
-
-function togglePreview(entryId: string): void {
-  if (playingId.value === entryId) {
-    audio.stopLibrarySound();
-    return;
-  }
-  const entry = entriesById.value.get(entryId);
-  if (!entry) return;
-  audio.playLibrarySound(
-    entry.id,
-    entry.filePath,
-    entry.trimStart ?? 0,
-    entry.volume,
-    entry.trimStart, entry.trimEnd,
-    entry.loopStart, entry.loopEnd,
-  );
-}
 
 // --- Actions ---
 
@@ -135,7 +101,8 @@ async function addSelected(): Promise<void> {
   if (ids.length === 0 || adding.value) return;
   adding.value = true;
   try {
-    await store.command('add_clips', { trackId: props.trackId, libraryEntryIds: ids });
+    const ok = await store.command('add_clips', { trackId: props.trackId, libraryEntryIds: ids });
+    if (!ok) return;
     toast.showSuccess(`Added ${ids.length} to "${track.value?.name ?? 'track'}"`);
     close();
   } finally {
@@ -189,7 +156,9 @@ function openInVibe(): void {
         <VBtn prepend-icon="mdi-compass-outline" variant="text" @click="openInVibe">Open in Vibe</VBtn>
         <VSpacer />
         <VBtn variant="text" @click="close">Close</VBtn>
+        <span v-if="isSeamless" class="text-caption text-medium-emphasis">Seamless tracks hold one clip</span>
         <VBtn
+          v-else
           color="primary"
           variant="flat"
           :disabled="selectedIds.length === 0"

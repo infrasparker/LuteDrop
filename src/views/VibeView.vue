@@ -2,29 +2,25 @@
 // Browse music by sound: a text search or seed tracks give ranked results,
 // and a map shows every analyzed music track. Selected tracks become a new
 // shuffle playlist or are added to an existing track.
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { invoke } from '@tauri-apps/api/core';
-import type { LibraryEntry, SceneConfig, VibeHit, VibePoint } from '@generated/index';
+import type { LibraryEntry, VibeHit, VibePoint } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
-import { useAudio } from '../composables/useAudio';
 import { useAutoTagEvents } from '../composables/useAutoTagEvents';
-import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
+import { useLibraryPreview } from '../composables/useLibraryPreview';
+import { useVocabulary } from '../composables/useVocabulary';
 import VibeMap from '../components/VibeMap.vue';
 import VibeResults from '../components/VibeResults.vue';
 import CreatePlaylistDialog from '../components/CreatePlaylistDialog.vue';
 import AutoTaggingDialog from '../components/AutoTaggingDialog.vue';
 
 const RESULT_LIMIT = 100;
-// Used to tell game tags from analyzer tags when the saved vocabulary cannot be read.
-const DEFAULT_VOCABULARY = [
-  'brass', 'folk', 'choir', 'synth', 'bright', 'dark', 'heroic', 'horror', 'lively', 'peaceful',
-  'ominous', 'majestic', 'moody', 'mischievous', 'haunting', 'somber', 'slow', 'driving', 'frantic',
-];
 
 const store = useAppStore();
 const route = useRoute();
-const audio = useAudio();
+const { vocabulary } = useVocabulary();
+const { playingId, toggle: togglePreview } = useLibraryPreview();
 const { completedRuns } = useAutoTagEvents();
 
 const entriesById = computed(() => {
@@ -36,8 +32,6 @@ const entriesById = computed(() => {
 const analyzedCount = computed(
   () => store.libraryEntries.filter((e) => e.entryType === 'music' && e.analysis?.status === 'embedded').length,
 );
-
-const vocabulary = ref(new Set(DEFAULT_VOCABULARY));
 
 // --- Results (text search or seeds) ---
 
@@ -184,30 +178,6 @@ watch(completedRuns, () => {
 const mappedPoints = computed(() => mapPoints.value.filter((p) => entriesById.value.has(p.entryId)));
 const resultIds = computed(() => hits.value.map((h) => h.entryId));
 
-// --- Preview playback ---
-
-const previewState = computed(() => store.playbackStates.get(LIBRARY_PLAYBACK_ID));
-const playingId = computed(() =>
-  previewState.value?.isPlaying ? store.libraryPlayingEntryId : null,
-);
-
-function togglePreview(entryId: string): void {
-  if (playingId.value === entryId) {
-    audio.stopLibrarySound();
-    return;
-  }
-  const entry = entriesById.value.get(entryId);
-  if (!entry) return;
-  audio.playLibrarySound(
-    entry.id,
-    entry.filePath,
-    entry.trimStart ?? 0,
-    entry.volume,
-    entry.trimStart, entry.trimEnd,
-    entry.loopStart, entry.loopEnd,
-  );
-}
-
 // --- Selection and playlists ---
 
 const selectedIds = ref<string[]>([]);
@@ -267,15 +237,6 @@ const suggestedName = computed(() => {
 });
 
 const showAutoTagging = ref(false);
-
-onMounted(async () => {
-  try {
-    const config = await invoke<SceneConfig>('get_scene_config');
-    vocabulary.value = new Set(config.vocabulary);
-  } catch {
-    // Keep the default vocabulary; it only decides which tags show as game tags.
-  }
-});
 </script>
 
 <template>

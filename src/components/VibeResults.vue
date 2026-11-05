@@ -2,7 +2,7 @@
 // Ranked Vibe results with Role and Pace filters. Each row has a checkbox,
 // a preview button, the track name, its game tags, Role, the score as a short
 // bar, and an "Add as seed" action.
-import { computed, nextTick, onBeforeUnmount, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import type { LibraryEntry, Role, VibeHit } from '@generated/index';
 
 const props = defineProps<{
@@ -22,6 +22,8 @@ const emit = defineEmits<{
   // The row under the mouse, or null when it leaves.
   hover: [entryId: string | null];
 }>();
+
+let hoveredId: string | null = null;
 
 const PACE_TAGS = ['slow', 'driving', 'frantic'] as const;
 
@@ -48,6 +50,19 @@ const visibleRows = computed(() =>
     return matchesRole && matchesPace;
   }),
 );
+
+// A filter change can hide the hovered row without a mouseleave.
+watch(visibleRows, (list) => {
+  if (hoveredId !== null && !list.some((r) => r.entry.id === hoveredId)) {
+    hoveredId = null;
+    emit('hover', null);
+  }
+});
+
+function setHovered(id: string | null): void {
+  hoveredId = id;
+  emit('hover', id);
+}
 
 // Bars are relative to the best score in the current list.
 const maxScore = computed(() => Math.max(0, ...rows.value.map((r) => r.score)));
@@ -158,7 +173,7 @@ onBeforeUnmount(() => {
       </span>
     </div>
 
-    <div ref="listEl" class="vibe-results-list flex-grow-1" @mouseleave="emit('hover', null)">
+    <div ref="listEl" class="vibe-results-list flex-grow-1" @mouseleave="setHovered(null)">
       <div
         v-for="{ entry, score } in visibleRows"
         :key="entry.id"
@@ -169,7 +184,7 @@ onBeforeUnmount(() => {
           'is-selected': selectedSet.has(entry.id),
           'is-flash': flashId === entry.id,
         }"
-        @mouseenter="emit('hover', entry.id)"
+        @mouseenter="setHovered(entry.id)"
       >
         <VCheckboxBtn
           :model-value="selectedSet.has(entry.id)"
@@ -245,6 +260,10 @@ onBeforeUnmount(() => {
 
 .vibe-row:hover {
   background: rgba(var(--v-theme-on-surface), 0.04);
+}
+
+.vibe-row.is-selected:hover {
+  background: rgba(var(--v-theme-primary), 0.06);
 }
 
 .vibe-row.is-playing {
