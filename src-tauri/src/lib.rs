@@ -24,7 +24,7 @@
 //! - `library-import-progress`: Bulk import progress (listened: useLibraryImport.ts).
 //! - `library-import-complete`: Bulk import finished (listened: useLibraryImport.ts).
 //! - `autotag-progress`: Auto-tag run progress, `AutoTagProgress` (listened: none yet).
-//! - `autotag-complete`: Auto-tag run finished, carrying its `AutoTagReport`; the frontend reloads state with `load_data` (listened: none yet).
+//! - `autotag-complete`: Auto-tag run finished, carrying its `AutoTagReport`; the frontend reloads state with `load_data` (listened: useAutoTagEvents.ts).
 //! - `broadcast-listeners`: Live-stream listener count, `null` when off; sent only on change (listened: useBroadcast.ts).
 //!
 //! ## WebSocket Message Types to Remote Clients

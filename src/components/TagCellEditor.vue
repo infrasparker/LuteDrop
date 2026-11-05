@@ -85,6 +85,7 @@ function onChange(tags: string[]): void {
           :tag="tags[index]"
           :auto="autoFor(tags[index])"
           :entry-id="entryId"
+          :menu="false"
           closable
           @remove="persist(tags.filter((_, i) => i !== index))"
         />

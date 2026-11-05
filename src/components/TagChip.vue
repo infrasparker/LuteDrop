@@ -7,12 +7,14 @@ import { useAppStore } from '../stores/appStore';
 /// outlined with a creation icon and a score tooltip, and clicking it opens a
 /// Keep / Remove menu: Keep turns it into a normal tag, Remove rejects it so
 /// later runs don't re-add it.
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   tag: string;
   auto?: AutoTag | null;
   entryId: string;
   closable?: boolean;
-}>();
+  /** Show the Keep / Remove menu on click (auto chips only). */
+  menu?: boolean;
+}>(), { auto: null, menu: true });
 
 const emit = defineEmits<{
   remove: [];
@@ -52,7 +54,7 @@ function reject(): void {
   >
     {{ tag }}
     <VTooltip activator="parent" location="top" open-delay="300">{{ scoreLabel }}</VTooltip>
-    <VMenu activator="parent" :close-on-content-click="true">
+    <VMenu v-if="menu" activator="parent" :close-on-content-click="true">
       <VList density="compact">
         <VListItem prepend-icon="mdi-check" title="Keep" @click="keep" />
         <VListItem prepend-icon="mdi-close" title="Remove" @click="reject" />
