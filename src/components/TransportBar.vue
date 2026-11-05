@@ -3,6 +3,7 @@ import { computed } from 'vue';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
 import { useBroadcast } from '../composables/useBroadcast';
+import TransportScrubber from './TransportScrubber.vue';
 
 const store = useAppStore();
 const audio = useAudio();
@@ -72,50 +73,53 @@ function togglePause(): void {
       </div>
     </div>
 
-    <div class="transport-grid">
-      <div class="transport-left">
-        <span style="white-space: nowrap;" :class="playingCount > 0 ? 'text-primary' : 'text-medium-emphasis'">
-          {{ playingCount === 1 ? '1 clip playing' : `${playingCount} clips playing` }}
-        </span>
-      </div>
+    <div class="transport-stack">
+      <TransportScrubber />
+      <div class="transport-grid">
+        <div class="transport-left">
+          <span style="white-space: nowrap;" :class="playingCount > 0 ? 'text-primary' : 'text-medium-emphasis'">
+            {{ playingCount === 1 ? '1 clip playing' : `${playingCount} clips playing` }}
+          </span>
+        </div>
 
-      <div class="transport-center">
-        <VBtn
-          :icon="showPlayIcon ? 'mdi-play' : 'mdi-pause'"
-          :disabled="!anyPlaying && !anyPaused"
-          variant="tonal"
-          size="small"
-          rounded="circle"
-          @click="togglePause"
-        />
-        <VBtn
-          icon="mdi-stop"
-          variant="tonal"
-          size="small"
-          rounded="circle"
-          @click="stopAll"
-        />
-      </div>
+        <div class="transport-center">
+          <VBtn
+            :icon="showPlayIcon ? 'mdi-play' : 'mdi-pause'"
+            :disabled="!anyPlaying && !anyPaused"
+            variant="tonal"
+            size="small"
+            rounded="circle"
+            @click="togglePause"
+          />
+          <VBtn
+            icon="mdi-stop"
+            variant="tonal"
+            size="small"
+            rounded="circle"
+            @click="stopAll"
+          />
+        </div>
 
-      <div class="transport-right">
-        <VBtn
-          :icon="store.masterMuted ? 'mdi-volume-off' : 'mdi-volume-high'"
-          :color="store.masterMuted ? 'error' : undefined"
-          variant="text"
-          size="small"
-          :title="store.masterMuted ? 'Unmute master' : 'Mute master'"
-          @click="audio.toggleMasterMute()"
-        />
-        <VSlider
-          :model-value="audio.masterVolume.value"
-          @update:model-value="setMasterVolume"
-          :min="0"
-          :max="1"
-          :step="0.01"
-          hide-details
-          density="compact"
-          class="volume-slider"
-        />
+        <div class="transport-right">
+          <VBtn
+            :icon="store.masterMuted ? 'mdi-volume-off' : 'mdi-volume-high'"
+            :color="store.masterMuted ? 'error' : undefined"
+            variant="text"
+            size="small"
+            :title="store.masterMuted ? 'Unmute master' : 'Mute master'"
+            @click="audio.toggleMasterMute()"
+          />
+          <VSlider
+            :model-value="audio.masterVolume.value"
+            @update:model-value="setMasterVolume"
+            :min="0"
+            :max="1"
+            :step="0.01"
+            hide-details
+            density="compact"
+            class="volume-slider"
+          />
+        </div>
       </div>
     </div>
 
@@ -143,6 +147,14 @@ function togglePause(): void {
 
 .footer-slot-right {
   justify-content: flex-end;
+}
+
+.transport-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 600px;
 }
 
 .transport-grid {

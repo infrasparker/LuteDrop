@@ -132,17 +132,36 @@ pub fn play_track_clip(
     start_clip(tracks, engine, track_id, clip_index, None, true, mute_state, None)
 }
 
+/// Start the track at `position` seconds into a clip's file. With `clip_id`,
+/// that clip plays (the transport scrubber seeks within the clip that is
+/// already playing); without it, the track's first clip is picked as usual.
 pub fn play_track_from(
     tracks: &mut HashMap<String, ManagedTrack>,
     engine: &ffi::Engine,
     track_id: &str,
+    clip_id: Option<&str>,
     position: f64,
     mute_state: &MuteState,
 ) -> Result<(), String> {
+    let clip_index = match clip_id {
+        Some(cid) => {
+            let track = tracks.get(track_id).ok_or_else(|| format!("Track not found: {}", track_id))?;
+            let idx = track.config.clips.iter().position(|c| c.id == cid)
+                .ok_or_else(|| format!("Clip not found: {}", cid))?;
+            Some(idx)
+        }
+        None => pick_first_clip(tracks, track_id)?,
+    };
     if let Some(track) = tracks.get_mut(track_id) {
-        track.clips_played = 0;
+        if clip_id.is_some() {
+            // Seeking within the current clip is not a new play: undo the
+            // `+= 1` that `start_clip` is about to do, so a sequence's
+            // play count is unchanged by the seek.
+            track.clips_played = track.clips_played.saturating_sub(1);
+        } else {
+            track.clips_played = 0;
+        }
     }
-    let clip_index = pick_first_clip(tracks, track_id)?;
     match clip_index {
         Some(idx) => start_clip(tracks, engine, track_id, idx, Some(position), true, mute_state, None),
         None => Err(format!("Track {} has no clips", track_id)),

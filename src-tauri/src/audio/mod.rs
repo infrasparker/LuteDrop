@@ -170,9 +170,9 @@ impl AudioEngine {
         orchestrator::play_track_clip(&mut self.tracks, &self.engine, track_id, clip_id, &self.mute_state)
     }
 
-    pub fn play_track_from(&mut self, track_id: &str, position: f64) -> Result<(), String> {
+    pub fn play_track_from(&mut self, track_id: &str, clip_id: Option<&str>, position: f64) -> Result<(), String> {
         self.invalidate_preload(track_id);
-        orchestrator::play_track_from(&mut self.tracks, &self.engine, track_id, position, &self.mute_state)
+        orchestrator::play_track_from(&mut self.tracks, &self.engine, track_id, clip_id, position, &self.mute_state)
     }
 
     pub fn pause_track(&mut self, track_id: &str) -> Result<(), String> {

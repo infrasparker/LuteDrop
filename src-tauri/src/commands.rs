@@ -113,9 +113,12 @@ pub fn play_track(state: State<'_, Arc<AppStateContainer>>, track_id: String) ->
     actions::play_track_audio(&state, &track_id)
 }
 
+/// `clip_id` is optional: when the frontend omits it, the track's first clip
+/// is picked (waveform click-to-play); the transport scrubber passes the
+/// playing clip so a seek stays in that clip.
 #[tauri::command]
-pub fn play_track_from(state: State<'_, Arc<AppStateContainer>>, track_id: String, position: f64) -> Result<(), String> {
-    actions::play_track_from_position(&state, &track_id, position)
+pub fn play_track_from(state: State<'_, Arc<AppStateContainer>>, track_id: String, clip_id: Option<String>, position: f64) -> Result<(), String> {
+    actions::play_track_from_position(&state, &track_id, clip_id.as_deref(), position)
 }
 
 #[tauri::command]

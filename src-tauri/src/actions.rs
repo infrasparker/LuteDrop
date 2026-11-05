@@ -991,12 +991,12 @@ pub fn play_track_clip(container: &AppStateContainer, track_id: &str, clip_id: &
     audio.play_track_clip(track_id, clip_id)
 }
 
-pub fn play_track_from_position(container: &AppStateContainer, track_id: &str, position: f64) -> Result<(), String> {
+pub fn play_track_from_position(container: &AppStateContainer, track_id: &str, clip_id: Option<&str>, position: f64) -> Result<(), String> {
     let track_config = find_track_ref(container, track_id)?;
     update_clip_file_state(container, &track_config);
     let mut audio = container.lock_audio();
     ensure_track_ready(&mut audio, &track_config)?;
-    audio.play_track_from(track_id, position)
+    audio.play_track_from(track_id, clip_id, position)
 }
 
 pub fn pause_track_audio(container: &AppStateContainer, track_id: &str) -> Result<(), String> {
