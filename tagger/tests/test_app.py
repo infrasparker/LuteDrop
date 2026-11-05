@@ -1,4 +1,5 @@
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 
 import numpy as np
 import pytest
@@ -46,7 +47,7 @@ def client(tmp_path, monkeypatch, calls):
 
     monkeypatch.setattr(app_module, "load_windows", fake_load)
     app = create_app(
-        FakeEmbedder(), EmbeddingCache(tmp_path), TOKEN, executor=ThreadPoolExecutor(2)
+        FakeEmbedder(), EmbeddingCache(tmp_path), TOKEN, executor_factory=lambda: ThreadPoolExecutor(2)
     )
     return TestClient(app)
 
@@ -150,3 +151,54 @@ def test_score_ignores_unknown_hashes(client):
     assert data["gate"]["quality"]["pos"] == 6
     assert "ghost2" not in data["gate"]["scores"]
     assert set(data["gate"]["scores"]) == set(hashes)
+
+
+class BrokenPool:
+    def __init__(self, fail_on):
+        self.fail_on = fail_on
+
+    def submit(self, fn, *args):
+        if self.fail_on == "submit":
+            raise BrokenProcessPool("worker died")
+        f = Future()
+        f.set_exception(BrokenProcessPool("worker died"))
+        return f
+
+    def shutdown(self, **kwargs):
+        pass
+
+
+@pytest.mark.parametrize("fail_on", ["submit", "result"])
+def test_embed_recovers_from_broken_pool(tmp_path, monkeypatch, fail_on):
+    monkeypatch.setattr(app_module, "load_windows", lambda p: synthetic(1.0, 1))
+    pools = iter([BrokenPool(fail_on)])
+    app = create_app(
+        FakeEmbedder(),
+        EmbeddingCache(tmp_path),
+        TOKEN,
+        executor_factory=lambda: next(pools, None) or ThreadPoolExecutor(2),
+    )
+    c = TestClient(app)
+    first = embed(c, [("h1", "hi-1")]).json()["results"][0]
+    assert first["ok"] is False and first["error"]
+    second = embed(c, [("h1", "hi-1")]).json()["results"][0]
+    assert second == {"hash": "h1", "ok": True}
+
+
+def test_score_with_no_cached_targets(client):
+    hashes = seed(client)
+    pos = [h for h in hashes if h.startswith("hi")]
+    neg = [h for h in hashes if h.startswith("lo")]
+    for targets in ([], ["ghost"]):
+        body = {
+            "gate": {"positives": pos, "negatives": neg},
+            "tags": {"brass": {"positives": pos, "negatives": neg}},
+            "targets": targets,
+        }
+        r = client.post("/score", json=body, headers=HEADERS)
+        assert r.status_code == 200
+        data = r.json()
+        assert data["gate"]["scores"] == {}
+        assert data["tags"]["brass"]["scores"] == {}
+        assert data["gate"]["quality"]["pos"] == 6
+        assert data["tags"]["brass"]["trusted"] is True

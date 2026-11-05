@@ -26,12 +26,12 @@ def test_short_file_gives_one_padded_window(tmp_path):
     assert w[0, -1] == 0.0
 
 
-def test_cache_roundtrip_and_mean(tmp_path):
+def test_cache_roundtrip(tmp_path):
     cache = EmbeddingCache(tmp_path)
     assert cache.get("abc") is None
     cache.put("abc", np.array([[1.0, 3.0], [3.0, 5.0]]))
     assert cache.get_windows("abc").shape == (2, 2)
-    assert cache.get("abc").tolist() == [2.0, 4.0]
+    assert np.isclose(np.linalg.norm(cache.get("abc")), 1.0)
     assert cache.count() == 1
 
 
@@ -40,3 +40,11 @@ def test_cache_rejects_path_like_hash(tmp_path):
     assert cache.get("../evil") is None
     with pytest.raises(ValueError):
         cache.put("../evil", np.zeros((1, 2)))
+
+
+def test_cache_mean_is_normalized_window_mean(tmp_path):
+    cache = EmbeddingCache(tmp_path)
+    cache.put("abc", np.array([[3.0, 0.0], [0.0, 1.0]]))
+    v = cache.get("abc")
+    assert np.allclose(v, [2**-0.5, 2**-0.5])
+    assert np.isclose(np.linalg.norm(v), 1.0)

@@ -1,6 +1,9 @@
 import hmac
 import os
+import threading
+from collections.abc import Callable
 from concurrent.futures import Executor, ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 import numpy as np
@@ -39,13 +42,32 @@ def _decode(path: str) -> np.ndarray:
     return load_windows(path)
 
 
+def _failure(hash: str, e: Exception) -> dict:
+    return {"hash": hash, "ok": False, "error": str(e) or type(e).__name__}
+
+
 def create_app(
     embedder: Embedder,
     cache: EmbeddingCache,
     token: str,
-    executor: Executor | None = None,
+    executor_factory: Callable[[], Executor] | None = None,
 ) -> FastAPI:
-    pool = executor or ProcessPoolExecutor(os.cpu_count())
+    make_pool = executor_factory or (lambda: ProcessPoolExecutor(os.cpu_count()))
+    pool_lock = threading.Lock()
+    current = [make_pool()]
+
+    def submit(path: str):
+        with pool_lock:
+            pool = current[0]
+            return pool, pool.submit(_decode, path)
+
+    def replace_pool(broken: Executor) -> None:
+        """Swap in a fresh pool once a worker has died; a no-op if another
+        request already did."""
+        with pool_lock:
+            if current[0] is broken:
+                broken.shutdown(wait=False, cancel_futures=True)
+                current[0] = make_pool()
 
     def require_token(x_lutedrop_token: str = Header(default="")) -> None:
         ok = hmac.compare_digest(x_lutedrop_token.encode(), token.encode())
@@ -66,18 +88,21 @@ def create_app(
             if cache.has(item.hash):
                 results[item.hash] = {"hash": item.hash, "ok": True}
             elif item.hash not in pending:
-                pending[item.hash] = pool.submit(_decode, item.path)
-        for hash, future in pending.items():
+                try:
+                    pending[item.hash] = submit(item.path)
+                except BrokenProcessPool as e:
+                    replace_pool(current[0])
+                    results[item.hash] = _failure(item.hash, e)
+        for hash, (pool, future) in pending.items():
             try:
                 windows = future.result()
                 cache.put(hash, embedder.embed_windows(windows))
                 results[hash] = {"hash": hash, "ok": True}
+            except BrokenProcessPool as e:
+                replace_pool(pool)
+                results[hash] = _failure(hash, e)
             except Exception as e:
-                results[hash] = {
-                    "hash": hash,
-                    "ok": False,
-                    "error": str(e) or type(e).__name__,
-                }
+                results[hash] = _failure(hash, e)
         return {"results": [results[i.hash] for i in req.items]}
 
     def vectors(hashes: list[str]) -> tuple[list[str], np.ndarray]:
@@ -93,12 +118,17 @@ def create_app(
     def score_head(examples: Examples, target_hashes, X_targets):
         _, X_pos = vectors(examples.positives)
         _, X_neg = vectors(examples.negatives)
-        r = heads.fit_and_score(X_pos, X_neg, X_targets)
+        # fit_and_score cannot predict on an empty array; score one example
+        # row instead and drop the result when there are no targets.
+        probe = X_targets if len(target_hashes) else (X_pos[:1] if len(X_pos) else X_neg[:1])
+        r = heads.fit_and_score(X_pos, X_neg, probe)
         return {
             "quality": {"auc": r.auc, "pos": r.pos, "neg": r.neg},
             "trusted": r.trusted,
             "threshold": r.threshold,
-            "scores": {h: float(s) for h, s in zip(target_hashes, r.scores)},
+            "scores": {h: float(s) for h, s in zip(target_hashes, r.scores)}
+            if len(target_hashes)
+            else {},
         }
 
     @app.post("/score")

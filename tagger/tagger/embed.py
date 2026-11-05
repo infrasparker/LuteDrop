@@ -72,9 +72,14 @@ class EmbeddingCache:
         return np.load(self._path(hash))
 
     def get(self, hash: str) -> np.ndarray | None:
-        """Mean of the track's window embeddings."""
+        """Unit-length mean of the track's L2-normalized window embeddings."""
         windows = self.get_windows(hash)
-        return None if windows is None else windows.mean(axis=0)
+        if windows is None:
+            return None
+        norms = np.linalg.norm(windows, axis=1, keepdims=True)
+        mean = (windows / np.where(norms == 0, 1, norms)).mean(axis=0)
+        n = np.linalg.norm(mean)
+        return mean / n if n else mean
 
     def put(self, hash: str, windows: np.ndarray) -> None:
         path = self._path(hash)
