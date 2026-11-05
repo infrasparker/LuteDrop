@@ -85,7 +85,7 @@ const headers = [
   { title: 'Role', key: 'role', sortable: true, width: '60px' },
   { title: 'Tags', key: 'tags', sortable: false },
   { title: 'Duration', key: 'duration', sortable: true, width: '80px', align: 'end' as const },
-  { title: '', key: 'actions', sortable: false, width: '96px', align: 'end' as const },
+  { title: '', key: 'actions', sortable: false, width: '112px', align: 'end' as const },
 ];
 
 const previewState = computed(() => store.playbackStates.get(LIBRARY_PLAYBACK_ID));
@@ -431,22 +431,26 @@ async function relocateEntry(entryId: string): Promise<void> {
       </template>
 
       <template #item.actions="{ item }">
-        <VBtn
-          v-if="item.entryType === 'music'"
-          icon="mdi-compass-outline"
-          size="small"
-          variant="text"
-          title="More like this"
-          @click.stop="moreLikeThis(item.id)"
-        />
-        <VBtn
-          icon="mdi-delete"
-          size="small"
-          variant="text"
-          color="error"
-          title="Delete"
-          @click.stop="deleteEntry(item.id)"
-        />
+        <div class="d-flex flex-nowrap justify-end align-center">
+          <VBtn
+            v-if="item.entryType === 'music'"
+            icon="mdi-compass-outline"
+            size="small"
+            density="comfortable"
+            variant="text"
+            title="More like this"
+            @click.stop="moreLikeThis(item.id)"
+          />
+          <VBtn
+            icon="mdi-delete"
+            size="small"
+            density="comfortable"
+            variant="text"
+            color="error"
+            title="Delete"
+            @click.stop="deleteEntry(item.id)"
+          />
+        </div>
       </template>
     </VDataTableVirtual>
 
