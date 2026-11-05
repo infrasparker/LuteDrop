@@ -49,6 +49,38 @@ use tauri::Emitter;
 use tauri::Manager;
 use state::AppStateContainer;
 
+/// Turn off WebView2's general autofill ("Saved info" dropdown under text inputs).
+/// This is a desktop app; the browser's list of previously typed values (track
+/// titles, search terms) is noise here. Tauri/wry 0.54 only expose this at webview
+/// creation time via an option Tauri doesn't surface, so set it on the live webview.
+/// Password and credit-card autosave are unaffected (not used by this app).
+#[cfg(windows)]
+fn disable_webview_autofill(app: &tauri::App) {
+    use tauri::Manager;
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings4;
+    use windows_core::Interface;
+
+    for (label, window) in app.webview_windows() {
+        let result = window.with_webview(|webview| unsafe {
+            let applied = webview
+                .controller()
+                .CoreWebView2()
+                .and_then(|core| core.Settings())
+                .and_then(|settings| settings.cast::<ICoreWebView2Settings4>())
+                .and_then(|settings| settings.SetIsGeneralAutofillEnabled(false));
+            if let Err(e) = applied {
+                log::warn!("could not disable WebView2 general autofill: {e}");
+            }
+        });
+        if let Err(e) = result {
+            log::warn!("with_webview failed for window {label}: {e}");
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn disable_webview_autofill(_app: &tauri::App) {}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -59,6 +91,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            disable_webview_autofill(app);
             // Determine file paths
             let db_path = {
                 let app_data = app.path().app_data_dir().expect("failed to get app data dir");
