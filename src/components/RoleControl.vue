@@ -60,6 +60,7 @@ function clear(): void {
       divided
       color="primary"
       :disabled="busy"
+      @update:model-value="() => {}"
     >
       <VBtn
         v-for="opt in options"
@@ -89,12 +90,15 @@ function clear(): void {
     >
       Keep
     </VBtn>
+    <span v-if="role === null && roleSource === 'user'" class="text-caption text-medium-emphasis">
+      No role (yours)
+    </span>
     <VBtn
       icon="mdi-close"
       size="small"
       variant="text"
       title="Clear role"
-      :disabled="busy || role === null"
+      :disabled="busy || (role === null && roleSource === 'user')"
       @click="clear"
     />
   </div>

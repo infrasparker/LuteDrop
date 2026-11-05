@@ -36,7 +36,8 @@ const roleFilter = ref<'all' | Role | 'unset'>('all');
 // Search text also matches the album folder (parent) and artist folder
 // (grandparent) of the file path, so a game is findable by soundtrack folder.
 function searchFields(entry: LibraryEntry): string[] {
-  const parts = entry.filePath.split(/[\\/]/).filter((p) => p.length > 0);
+  const parts = entry.filePath.split(/[\\/]/).filter((p) => p.length > 0 && !/^[A-Za-z]:$/.test(p));
+  // Empty segments and a leading drive letter are dropped, so "c:" matches nothing.
   // The last part is the file itself.
   return [entry.name, parts[parts.length - 2] ?? '', parts[parts.length - 3] ?? ''];
 }
@@ -69,7 +70,9 @@ const filteredEntries = computed(() => {
     const matchesAuto = !hasAuto.value || entry.autoTags.length > 0;
     const matchesRole =
       roleFilter.value === 'all' ||
-      (roleFilter.value === 'unset' ? entry.role === null : entry.role === roleFilter.value);
+      (roleFilter.value === 'unset'
+        ? entry.entryType === 'music' && entry.role === null
+        : entry.role === roleFilter.value);
     return matchesSearch && matchesTags && matchesType && matchesAuto && matchesRole;
   });
 });
@@ -154,10 +157,14 @@ async function applyBulkTags(mode: 'add' | 'remove'): Promise<void> {
 }
 
 async function applyBulkRole(role: Role | null): Promise<void> {
-  if (selectedIds.value.length === 0) return;
+  // Roles apply to music only.
+  const ids = libraryEntries.value
+    .filter((e) => selectedIds.value.includes(e.id) && e.entryType === 'music')
+    .map((e) => e.id);
+  if (ids.length === 0) return;
   bulkBusy.value = true;
   try {
-    await store.command('set_entry_role', { entryIds: selectedIds.value, role });
+    await store.command('set_entry_role', { entryIds: ids, role });
   } finally {
     bulkBusy.value = false;
   }
