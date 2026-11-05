@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::database::now_millis;
 use crate::database::DbError;
-use crate::models::{AutoTag, LibraryEntryUsage, Role, TagSource};
+use crate::models::{AutoTag, LibraryEntryUsage, MoodScale, MoodStep, Pace, Role, TagSource};
 
 // ─── Library Entry CRUD ───────────────────────────────────────────────────────
 
@@ -82,8 +82,8 @@ pub fn update_library_entry_name(
 /// are auto-tagged and roles only apply to music, so when an entry stops being
 /// music its auto tags are deleted in the same transaction (without
 /// rejections, since the user never judged them), orphaned tag rows are swept,
-/// and its role is cleared entirely regardless of source (changing the type is
-/// itself a user action). User tags and rejections are left alone.
+/// and its role, pace and mood are cleared entirely regardless of source
+/// (changing the type is itself a user action). User tags and rejections are left alone.
 ///
 /// Returns true if the entry was not music before and is music now.
 pub fn update_library_entry_type(
@@ -124,6 +124,15 @@ pub fn update_library_entry_type(
             params![id],
         )
         .map_err(|e| format!("Failed to clear role: {e}"))?;
+        conn.execute(
+            "UPDATE library_entries
+             SET pace = NULL, pace_source = NULL, pace_score = NULL,
+                 mood_bright = NULL, mood_light = NULL,
+                 mood_bright_user = NULL, mood_light_user = NULL
+             WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| format!("Failed to clear pace and mood: {e}"))?;
     }
 
     tx.commit()
@@ -922,6 +931,163 @@ pub fn apply_auto_role(
         params![entry_id, new_role, new_source, new_score],
     )
     .map_err(|e| format!("Failed to write auto role: {e}"))?;
+    Ok(true)
+}
+
+/// Sets the pace on each entry as a user decision: `pace_source` becomes
+/// user and any score is dropped. `None` clears the pace but keeps the user
+/// source, so the analyzer does not fill it in again.
+pub fn set_user_pace(
+    conn: &Connection,
+    entry_ids: &[String],
+    pace: Option<Pace>,
+) -> Result<(), String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin pace transaction: {e}"))?;
+
+    let pace_str = pace.map(|p| p.as_db_str());
+    for entry_id in entry_ids {
+        conn.execute(
+            "UPDATE library_entries
+             SET pace = ?2, pace_source = ?3, pace_score = NULL
+             WHERE id = ?1",
+            params![entry_id, pace_str, TagSource::User.as_str()],
+        )
+        .map_err(|e| format!("Failed to set pace: {e}"))?;
+    }
+
+    tx.commit().map_err(|e| format!("Failed to commit pace transaction: {e}"))?;
+    Ok(())
+}
+
+/// Turns each entry's auto pace into a user pace and clears its score.
+/// Entries without an auto pace are left as they are.
+pub fn keep_auto_pace(conn: &Connection, entry_ids: &[String]) -> Result<(), String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin keep pace transaction: {e}"))?;
+
+    for entry_id in entry_ids {
+        conn.execute(
+            "UPDATE library_entries SET pace_source = ?2, pace_score = NULL
+             WHERE id = ?1 AND pace_source = ?3",
+            params![entry_id, TagSource::User.as_str(), TagSource::Auto.as_str()],
+        )
+        .map_err(|e| format!("Failed to keep auto pace: {e}"))?;
+    }
+
+    tx.commit().map_err(|e| format!("Failed to commit keep pace transaction: {e}"))?;
+    Ok(())
+}
+
+/// Writes the analyzer's pace for an entry and returns whether the row
+/// changed. `Some(pace)` stores it as an auto pace with `score` (the Moving
+/// probability); `None` clears an existing auto pace. Nothing is written when
+/// the user has set or cleared the pace (`pace_source` is user).
+///
+/// Like `apply_auto_role`, this does not open a transaction, so a pace the
+/// user set earlier in the caller's transaction is seen and kept.
+pub fn apply_auto_pace(
+    conn: &Connection,
+    entry_id: &str,
+    pace: Option<Pace>,
+    score: f64,
+) -> Result<bool, String> {
+    let current: Option<(Option<String>, Option<String>, Option<f64>)> = conn
+        .query_row(
+            "SELECT pace, pace_source, pace_score FROM library_entries WHERE id = ?1",
+            params![entry_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to read pace: {e}"))?;
+
+    let Some((current_pace, current_source, current_score)) = current else {
+        return Ok(false);
+    };
+    if current_source.as_deref().map(TagSource::from_str) == Some(TagSource::User) {
+        return Ok(false);
+    }
+
+    // The values the row should hold afterwards.
+    let (new_pace, new_source, new_score) = match pace {
+        Some(p) => (Some(p.as_db_str()), Some(TagSource::Auto.as_str()), Some(score)),
+        None => (None, None, None),
+    };
+    if current_pace.as_deref() == new_pace
+        && current_source.as_deref() == new_source
+        && current_score == new_score
+    {
+        return Ok(false);
+    }
+
+    conn.execute(
+        "UPDATE library_entries SET pace = ?2, pace_source = ?3, pace_score = ?4
+         WHERE id = ?1",
+        params![entry_id, new_pace, new_source, new_score],
+    )
+    .map_err(|e| format!("Failed to write auto pace: {e}"))?;
+    Ok(true)
+}
+
+/// Sets the user's step on one mood scale for each entry. `None` clears the
+/// user step, so the auto value shows again.
+pub fn set_user_mood_step(
+    conn: &Connection,
+    entry_ids: &[String],
+    scale: MoodScale,
+    step: Option<MoodStep>,
+) -> Result<(), String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin mood transaction: {e}"))?;
+
+    // The column comes from a closed enum, never from caller-supplied text.
+    let sql = match scale {
+        MoodScale::Bright => "UPDATE library_entries SET mood_bright_user = ?2 WHERE id = ?1",
+        MoodScale::Light => "UPDATE library_entries SET mood_light_user = ?2 WHERE id = ?1",
+    };
+    let step_str = step.map(|s| s.as_db_str());
+    for entry_id in entry_ids {
+        conn.execute(sql, params![entry_id, step_str])
+            .map_err(|e| format!("Failed to set mood step: {e}"))?;
+    }
+
+    tx.commit().map_err(|e| format!("Failed to commit mood transaction: {e}"))?;
+    Ok(())
+}
+
+/// Writes the analyzer's mood z-scores for an entry (`None` clears one) and
+/// returns whether the row changed. Only the auto columns are written; the
+/// user's steps are never touched. Opens no transaction of its own.
+pub fn apply_auto_mood(
+    conn: &Connection,
+    entry_id: &str,
+    bright_z: Option<f64>,
+    light_z: Option<f64>,
+) -> Result<bool, String> {
+    let current: Option<(Option<f64>, Option<f64>)> = conn
+        .query_row(
+            "SELECT mood_bright, mood_light FROM library_entries WHERE id = ?1",
+            params![entry_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to read mood: {e}"))?;
+
+    let Some((current_bright, current_light)) = current else {
+        return Ok(false);
+    };
+    if current_bright == bright_z && current_light == light_z {
+        return Ok(false);
+    }
+
+    conn.execute(
+        "UPDATE library_entries SET mood_bright = ?2, mood_light = ?3 WHERE id = ?1",
+        params![entry_id, bright_z, light_z],
+    )
+    .map_err(|e| format!("Failed to write auto mood: {e}"))?;
     Ok(true)
 }
 
@@ -1816,5 +1982,135 @@ mod tests {
         assert_eq!(role_row(&conn, &auto), (None, None, None));
         assert_eq!(role_row(&conn, &user), (None, None, None));
         assert_eq!(role_row(&conn, &cleared), (None, None, None));
+    }
+
+    // ── Pace and mood facets ──────────────────────────────────────────────────
+
+    type PaceRow = (Option<String>, Option<String>, Option<f64>);
+
+    fn pace_row(conn: &Connection, id: &str) -> PaceRow {
+        conn.query_row(
+            "SELECT pace, pace_source, pace_score FROM library_entries WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+    }
+
+    type MoodRow = (Option<f64>, Option<f64>, Option<String>, Option<String>);
+
+    fn mood_row(conn: &Connection, id: &str) -> MoodRow {
+        conn.query_row(
+            "SELECT mood_bright, mood_light, mood_bright_user, mood_light_user
+             FROM library_entries WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn user_pace_blocks_auto_pace() {
+        let conn = open_memory_db();
+        let a = music_entry(&conn, "/a.mp3");
+        set_user_pace(&conn, &[a.clone()], Some(Pace::Still)).unwrap();
+
+        assert!(!apply_auto_pace(&conn, &a, Some(Pace::Moving), 0.9).unwrap());
+        assert!(!apply_auto_pace(&conn, &a, None, 0.1).unwrap());
+        assert_eq!(pace_row(&conn, &a), (Some("still".into()), Some("user".into()), None));
+    }
+
+    #[test]
+    fn user_cleared_pace_blocks_auto() {
+        let conn = open_memory_db();
+        let a = music_entry(&conn, "/a.mp3");
+        set_user_pace(&conn, &[a.clone()], Some(Pace::Moving)).unwrap();
+        set_user_pace(&conn, &[a.clone()], None).unwrap();
+        assert_eq!(pace_row(&conn, &a), (None, Some("user".into()), None));
+
+        assert!(!apply_auto_pace(&conn, &a, Some(Pace::Moving), 0.9).unwrap());
+        assert_eq!(pace_row(&conn, &a), (None, Some("user".into()), None));
+    }
+
+    #[test]
+    fn keep_auto_pace_makes_it_user() {
+        let conn = open_memory_db();
+        let auto = music_entry(&conn, "/a.mp3");
+        let user = music_entry(&conn, "/b.mp3");
+        let unset = music_entry(&conn, "/c.mp3");
+        apply_auto_pace(&conn, &auto, Some(Pace::Moving), 0.8).unwrap();
+        set_user_pace(&conn, &[user.clone()], Some(Pace::Still)).unwrap();
+
+        keep_auto_pace(&conn, &[auto.clone(), user.clone(), unset.clone()]).unwrap();
+
+        assert_eq!(pace_row(&conn, &auto), (Some("moving".into()), Some("user".into()), None));
+        assert_eq!(pace_row(&conn, &user), (Some("still".into()), Some("user".into()), None));
+        assert_eq!(pace_row(&conn, &unset), (None, None, None));
+        assert!(!apply_auto_pace(&conn, &auto, Some(Pace::Still), 0.1).unwrap());
+    }
+
+    #[test]
+    fn apply_auto_pace_reports_change() {
+        let conn = open_memory_db();
+        let a = music_entry(&conn, "/a.mp3");
+
+        assert!(apply_auto_pace(&conn, &a, Some(Pace::Moving), 0.8).unwrap());
+        assert_eq!(pace_row(&conn, &a), (Some("moving".into()), Some("auto".into()), Some(0.8)));
+        assert!(!apply_auto_pace(&conn, &a, Some(Pace::Moving), 0.8).unwrap());
+        assert!(apply_auto_pace(&conn, &a, Some(Pace::Moving), 0.7).unwrap());
+        assert!(apply_auto_pace(&conn, &a, None, 0.5).unwrap());
+        assert_eq!(pace_row(&conn, &a), (None, None, None));
+        assert!(!apply_auto_pace(&conn, &a, None, 0.5).unwrap());
+    }
+
+    #[test]
+    fn user_mood_step_round_trips_and_clears() {
+        let conn = open_memory_db();
+        let a = music_entry(&conn, "/a.mp3");
+        let b = music_entry(&conn, "/b.mp3");
+
+        set_user_mood_step(&conn, &[a.clone(), b.clone()], MoodScale::Bright, Some(MoodStep::High))
+            .unwrap();
+        set_user_mood_step(&conn, &[a.clone()], MoodScale::Light, Some(MoodStep::Low)).unwrap();
+        assert_eq!(mood_row(&conn, &a), (None, None, Some("high".into()), Some("low".into())));
+        assert_eq!(mood_row(&conn, &b), (None, None, Some("high".into()), None));
+
+        set_user_mood_step(&conn, &[a.clone()], MoodScale::Bright, None).unwrap();
+        assert_eq!(mood_row(&conn, &a), (None, None, None, Some("low".into())));
+        assert_eq!(mood_row(&conn, &b).2, Some("high".into()));
+    }
+
+    #[test]
+    fn apply_auto_mood_leaves_user_step() {
+        let conn = open_memory_db();
+        let a = music_entry(&conn, "/a.mp3");
+        set_user_mood_step(&conn, &[a.clone()], MoodScale::Bright, Some(MoodStep::Low)).unwrap();
+
+        assert!(apply_auto_mood(&conn, &a, Some(1.2), Some(-0.4)).unwrap());
+        assert_eq!(mood_row(&conn, &a), (Some(1.2), Some(-0.4), Some("low".into()), None));
+        assert!(!apply_auto_mood(&conn, &a, Some(1.2), Some(-0.4)).unwrap());
+        assert!(apply_auto_mood(&conn, &a, None, None).unwrap());
+        assert_eq!(mood_row(&conn, &a), (None, None, Some("low".into()), None));
+    }
+
+    #[test]
+    fn switching_to_ambiance_clears_pace_and_mood() {
+        let conn = open_memory_db();
+        let auto = music_entry(&conn, "/a.mp3");
+        let user = music_entry(&conn, "/b.mp3");
+        apply_auto_pace(&conn, &auto, Some(Pace::Moving), 0.8).unwrap();
+        apply_auto_mood(&conn, &auto, Some(1.0), Some(-1.0)).unwrap();
+        set_user_pace(&conn, &[user.clone()], None).unwrap();
+        set_user_mood_step(&conn, &[user.clone()], MoodScale::Bright, Some(MoodStep::Mid)).unwrap();
+        set_user_mood_step(&conn, &[user.clone()], MoodScale::Light, Some(MoodStep::High)).unwrap();
+
+        for id in [&auto, &user] {
+            update_library_entry_type(&conn, id, "ambiance").unwrap();
+        }
+
+        for id in [&auto, &user] {
+            assert_eq!(pace_row(&conn, id), (None, None, None));
+            assert_eq!(mood_row(&conn, id), (None, None, None, None));
+        }
     }
 }

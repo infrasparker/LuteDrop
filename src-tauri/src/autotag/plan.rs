@@ -2,7 +2,7 @@
 //! role and tags its scores earn. Nothing here touches the database or the
 //! network.
 
-use crate::models::{AutoTag, EntryTagScores, Role, SceneConfig, TagScore};
+use crate::models::{AutoTag, EntryTagScores, Pace, Role, SceneConfig, TagScore};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -26,6 +26,11 @@ pub struct EntryFacts {
     /// True when the user decided the role (`role_source` is user), including
     /// a role the user cleared.
     pub role_user_set: bool,
+    /// The pace the user set, with the same meaning as `user_role`.
+    pub user_pace: Option<Pace>,
+    /// True when the user decided the pace (`pace_source` is user), including
+    /// a pace the user cleared.
+    pub pace_user_set: bool,
 }
 
 /// Hashes of the entries that are examples for one tag (or for the gate).
@@ -306,6 +311,8 @@ mod tests {
             is_music: true,
             user_role: None,
             role_user_set: false,
+            user_pace: None,
+            pace_user_set: false,
         }
     }
 

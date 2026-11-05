@@ -137,6 +137,17 @@ pub enum MoodStep {
     High,
 }
 
+/// Which of the two mood scales a user step applies to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub enum MoodScale {
+    /// Bright <-> Dark.
+    Bright,
+    /// Light <-> Heavy.
+    Light,
+}
+
 impl MoodStep {
     /// z-scores beyond this distance from the library mean leave the middle step.
     pub const CUTOFF: f64 = 0.6;
