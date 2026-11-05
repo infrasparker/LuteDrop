@@ -5,7 +5,7 @@
 //! - **Actions**: Business logic orchestrating state mutations and notifications.
 //! - **Persistence & Audio**: SQLite database and audio engine.
 //!
-//! ## Background Threads Spawned in Setup (5)
+//! ## Background Threads Spawned in Setup (6)
 //! 1. **Peak preload**: Precomputes waveform peaks for the library on startup.
 //! 2. **Backup loop**: Automatic database snapshots every 30 minutes.
 //! 3. **WebSocket server**: Axum HTTP + WS for remote control (with tokio runtime).
@@ -13,6 +13,8 @@
 //! 5. **Broadcast restore**: Short-lived; turns the live stream back on if it
 //!    was on at last exit (the stream's own encoder/server threads then run
 //!    until it is turned off).
+//! 6. **Auto-tag worker**: Sleeps until imports, tag edits or "Analyze
+//!    library" give it work, then calls the analyzer service (see `autotag`).
 //!
 //! ## Tauri Events Emitted to Frontend
 //! - `playback-state-update`: Per-track playback position and state (every 50ms; listened: useAudio.ts).
@@ -21,6 +23,8 @@
 //! - `missing-entry-found`: Audio file relocated or found (listened: useAudio.ts).
 //! - `library-import-progress`: Bulk import progress (listened: useLibraryImport.ts).
 //! - `library-import-complete`: Bulk import finished (listened: useLibraryImport.ts).
+//! - `autotag-progress`: Auto-tag run progress, `AutoTagProgress` (listened: none yet).
+//! - `autotag-complete`: Auto-tag run finished, carrying its `AutoTagReport`; the frontend reloads state with `load_data` (listened: none yet).
 //! - `broadcast-listeners`: Live-stream listener count, `null` when off; sent only on change (listened: useBroadcast.ts).
 //!
 //! ## WebSocket Message Types to Remote Clients
@@ -92,6 +96,11 @@ pub fn run() {
 
             // Share the Arc with Tauri's managed state
             app.manage(container.clone());
+
+            // Start the auto-tag worker, and hand it any entries left
+            // unanalyzed since the last session.
+            autotag::Worker::spawn(container.clone());
+            actions::queue_unanalyzed_on_startup(&container);
 
             // Preload peak caches in background
             let preload_container = container.clone();
@@ -200,6 +209,14 @@ pub fn run() {
             commands::set_broadcast_enabled,
             commands::set_broadcast_settings,
             commands::regenerate_broadcast_key,
+            commands::get_autotag_settings,
+            commands::save_autotag_settings,
+            commands::get_scene_config,
+            commands::save_scene_config,
+            commands::test_autotag_connection,
+            commands::analyze_library,
+            commands::get_autotag_report,
+            commands::get_entry_tag_scores,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LuteDrop");

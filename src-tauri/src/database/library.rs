@@ -448,8 +448,8 @@ fn add_new_user_tag(conn: &Connection, entry_id: &str, tag_id: &str) -> Result<(
     }
     conn.execute(
         "INSERT INTO library_entry_tags (library_entry_id, tag_id, source, score)
-         VALUES (?1, ?2, 'user', NULL)",
-        params![entry_id, tag_id],
+         VALUES (?1, ?2, ?3, NULL)",
+        params![entry_id, tag_id, TagSource::User.as_str()],
     )
     .map_err(|e| format!("Failed to add tag to entry: {e}"))?;
     conn.execute(
@@ -636,9 +636,9 @@ pub fn keep_auto_tags(
     for entry_id in entry_ids {
         for tag_id in auto_tag_ids(conn, entry_id, tags)? {
             conn.execute(
-                "UPDATE library_entry_tags SET source = 'user', score = NULL
+                "UPDATE library_entry_tags SET source = ?3, score = NULL
                  WHERE library_entry_id = ?1 AND tag_id = ?2",
-                params![entry_id, tag_id],
+                params![entry_id, tag_id, TagSource::User.as_str()],
             )
             .map_err(|e| format!("Failed to keep auto tag: {e}"))?;
         }
@@ -757,8 +757,8 @@ pub fn apply_auto_tags(
         } else {
             conn.execute(
                 "INSERT INTO library_entry_tags (library_entry_id, tag_id, source, score)
-                 VALUES (?1, ?2, 'auto', ?3)",
-                params![entry_id, tag_id, score],
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![entry_id, tag_id, TagSource::Auto.as_str(), score],
             )
             .map_err(|e| format!("Failed to add auto tag: {e}"))?;
             added += 1;

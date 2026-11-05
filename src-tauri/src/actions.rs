@@ -4,10 +4,13 @@ use std::sync::Arc;
 use crate::audio::util::{is_audio_path, is_file_usable};
 use crate::database;
 use crate::database::{configurations, hierarchy, library, DbError};
+use crate::autotag::client::{AnalyzerClient, HttpAnalyzer};
+use crate::database::autotag_db;
 use crate::database::settings::{self as broadcast_settings, BroadcastSettings};
+use crate::database::settings as autotag_settings;
 use crate::models::{
-    AppState, BroadcastStatus, BulkImportProgress, FixMissingReport, LibraryEntry, LibraryEntryUsage,
-    MissingEntryCandidates, Track, TrackUpdates,
+    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
+    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, SceneConfig, Track, TrackUpdates,
 };
 use crate::relink;
 use crate::state::AppStateContainer;
@@ -298,7 +301,8 @@ pub fn import_library_entry(
         None => Some(hash_file(&file_path)?),
     };
 
-    mutate_and_reload(container, |conn| {
+    let mut new_entry_id = None;
+    let state = mutate_and_reload(container, |conn| {
         // Check for duplicate by hash
         if let Some(ref h) = hash {
             if let Some((_id, existing_name)) = library::get_library_entry_by_hash(conn, h)? {
@@ -325,8 +329,16 @@ pub fn import_library_entry(
             }
         }
 
+        new_entry_id = Some(entry_id);
         Ok(())
-    })
+    })?;
+
+    if let Some(id) = new_entry_id {
+        if is_music(&entry_type) {
+            container.autotag.queue_entries(vec![id]);
+        }
+    }
+    Ok(state)
 }
 
 /// Saves an entry's full tag list. `seen_auto_tags` is the set of auto tags
@@ -337,9 +349,11 @@ pub fn update_library_entry_tags(
     tags: Vec<String>,
     seen_auto_tags: Option<Vec<String>>,
 ) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| {
+    let state = mutate_and_reload(container, |conn| {
         library::set_entry_tags(conn, entry_id, &tags, seen_auto_tags.as_deref())
-    })
+    })?;
+    request_rescore_if_enabled(container);
+    Ok(state)
 }
 
 pub fn bulk_edit_library_entry_tags(
@@ -348,9 +362,11 @@ pub fn bulk_edit_library_entry_tags(
     add: Vec<String>,
     remove: Vec<String>,
 ) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| {
+    let state = mutate_and_reload(container, |conn| {
         library::bulk_edit_entry_tags(conn, &entry_ids, &add, &remove)
-    })
+    })?;
+    request_rescore_if_enabled(container);
+    Ok(state)
 }
 
 pub fn keep_auto_tags(
@@ -358,9 +374,11 @@ pub fn keep_auto_tags(
     entry_ids: Vec<String>,
     tags: Option<Vec<String>>,
 ) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| {
+    let state = mutate_and_reload(container, |conn| {
         library::keep_auto_tags(conn, &entry_ids, tags.as_deref())
-    })
+    })?;
+    request_rescore_if_enabled(container);
+    Ok(state)
 }
 
 pub fn reject_auto_tags(
@@ -368,9 +386,11 @@ pub fn reject_auto_tags(
     entry_ids: Vec<String>,
     tags: Option<Vec<String>>,
 ) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| {
+    let state = mutate_and_reload(container, |conn| {
         library::reject_auto_tags(conn, &entry_ids, tags.as_deref())
-    })
+    })?;
+    request_rescore_if_enabled(container);
+    Ok(state)
 }
 
 pub fn update_library_entry_type(
@@ -516,6 +536,8 @@ fn run_bulk_import(container: Arc<AppStateContainer>, paths: Vec<String>, tags: 
     let total = paths.len() as u32;
     let mut imported: u32 = 0;
     let mut skipped: u32 = 0;
+    // Ids of the entries this import added, handed to the auto-tag worker at the end.
+    let mut new_ids: Vec<String> = Vec::new();
 
     // Announce the task so the frontend can show an indicator before the first file completes.
     container.emit(
@@ -577,6 +599,7 @@ fn run_bulk_import(container: Arc<AppStateContainer>, paths: Vec<String>, tags: 
         match file_result {
             Ok(Some(id)) => {
                 imported += 1;
+                new_ids.push(id.clone());
                 // Probe duration after the insert tx has committed so the UI sees
                 // the row immediately and the duration fills in shortly after.
                 if let Some(dur) = crate::audio::util::probe_duration(file_path) {
@@ -608,6 +631,10 @@ fn run_bulk_import(container: Arc<AppStateContainer>, paths: Vec<String>, tags: 
     // the import finishes (cheap atomic store; redundant marks are harmless).
     container.mark_state_dirty();
     container.release_import();
+
+    if is_music(&entry_type) {
+        container.autotag.queue_entries(new_ids);
+    }
 }
 
 fn emit_progress(
@@ -621,6 +648,86 @@ fn emit_progress(
         "library-import-progress",
         BulkImportProgress { processed, imported, skipped, total },
     );
+}
+
+/// True if an import with this entry type creates music entries.
+fn is_music(entry_type: &str) -> bool {
+    matches!(EntryType::from_str(entry_type), EntryType::Music)
+}
+
+// --- Auto-tagging ---
+
+/// True if auto-tagging is turned on. A settings read error counts as off.
+fn autotag_enabled(container: &AppStateContainer) -> bool {
+    with_db(container, |conn| autotag_settings::load_autotag(conn))
+        .map(|s| s.enabled)
+        .unwrap_or(false)
+}
+
+/// Asks the worker to re-score after a tag change, if auto-tagging is on.
+fn request_rescore_if_enabled(container: &AppStateContainer) {
+    if autotag_enabled(container) {
+        container.autotag.request_rescore();
+    }
+}
+
+/// Queues every entry whose analysis is missing, failed, or stale. Called at
+/// app start; does nothing while auto-tagging is off.
+pub fn queue_unanalyzed_on_startup(container: &AppStateContainer) {
+    if autotag_enabled(container) {
+        container.autotag.analyze_library();
+    }
+}
+
+pub fn get_autotag_settings(container: &AppStateContainer) -> Result<AutoTagSettings, String> {
+    with_db(container, |conn| autotag_settings::load_autotag(conn))
+}
+
+pub fn save_autotag_settings(container: &AppStateContainer, settings: AutoTagSettings) -> Result<(), String> {
+    with_db(container, |conn| autotag_settings::save_autotag(conn, &settings))
+}
+
+pub fn get_scene_config(container: &AppStateContainer) -> Result<SceneConfig, String> {
+    with_db(container, |conn| autotag_settings::load_scene_config(conn))
+}
+
+/// Saves the scene config and re-scores, since the vocabulary or gate may
+/// have changed. A blank gate tag is refused.
+pub fn save_scene_config(container: &AppStateContainer, config: SceneConfig) -> Result<(), String> {
+    if config.gate_tag.trim().is_empty() {
+        return Err("The scene needs a gate tag".to_string());
+    }
+    with_db(container, |conn| autotag_settings::save_scene_config(conn, &config))?;
+    request_rescore_if_enabled(container);
+    Ok(())
+}
+
+/// Calls the analyzer's `/health` with `settings`, which need not be saved.
+/// Blocks for up to a few seconds.
+pub fn test_autotag_connection(settings: &AutoTagSettings) -> Result<String, String> {
+    HttpAnalyzer::new(&settings.analyzer_url, &settings.token).health()
+}
+
+/// Starts analyzing every entry that needs it. Progress arrives as
+/// `autotag-progress` events.
+pub fn analyze_library(container: &AppStateContainer) -> Result<(), String> {
+    if !autotag_enabled(container) {
+        return Err("Auto-tagging is turned off".to_string());
+    }
+    container.autotag.analyze_library();
+    Ok(())
+}
+
+pub fn get_autotag_report(container: &AppStateContainer) -> AutoTagReport {
+    container.autotag.last_report()
+}
+
+/// The entry's stored scores, or `None` if it has not been scored.
+pub fn get_entry_tag_scores(
+    container: &AppStateContainer,
+    entry_id: &str,
+) -> Result<Option<EntryTagScores>, String> {
+    with_db(container, |conn| autotag_db::load_scores(conn, entry_id))
 }
 
 pub fn relocate_library_entry(

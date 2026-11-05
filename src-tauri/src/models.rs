@@ -182,7 +182,7 @@ pub struct TagQuality {
 }
 
 /// Summary of the most recent auto-tagging run.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
 pub struct AutoTagReport {

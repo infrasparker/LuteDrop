@@ -2,7 +2,10 @@ use serde::Serialize;
 use tauri::State;
 use std::sync::Arc;
 use crate::actions;
-use crate::models::{AppState, BroadcastStatus, LibraryEntryUsage, TrackUpdates};
+use crate::models::{
+    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, SceneConfig,
+    TrackUpdates,
+};
 use crate::state::AppStateContainer;
 use crate::waveform;
 
@@ -452,4 +455,56 @@ pub fn set_broadcast_settings(
 #[tauri::command]
 pub fn regenerate_broadcast_key(state: State<'_, Arc<AppStateContainer>>) -> Result<BroadcastStatus, String> {
     actions::regenerate_broadcast_key(&state)
+}
+
+// --- Auto-tagging commands ---
+
+#[tauri::command]
+pub fn get_autotag_settings(state: State<'_, Arc<AppStateContainer>>) -> Result<AutoTagSettings, String> {
+    actions::get_autotag_settings(&state)
+}
+
+#[tauri::command]
+pub fn save_autotag_settings(
+    state: State<'_, Arc<AppStateContainer>>,
+    settings: AutoTagSettings,
+) -> Result<(), String> {
+    actions::save_autotag_settings(&state, settings)
+}
+
+#[tauri::command]
+pub fn get_scene_config(state: State<'_, Arc<AppStateContainer>>) -> Result<SceneConfig, String> {
+    actions::get_scene_config(&state)
+}
+
+#[tauri::command]
+pub fn save_scene_config(state: State<'_, Arc<AppStateContainer>>, config: SceneConfig) -> Result<(), String> {
+    actions::save_scene_config(&state, config)
+}
+
+/// Async on purpose: the request can take seconds when the analyzer host is
+/// slow or down, and a plain command would freeze the window meanwhile.
+#[tauri::command]
+pub async fn test_autotag_connection(settings: AutoTagSettings) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || actions::test_autotag_connection(&settings))
+        .await
+        .map_err(|e| format!("Connection test failed: {e}"))?
+}
+
+#[tauri::command]
+pub fn analyze_library(state: State<'_, Arc<AppStateContainer>>) -> Result<(), String> {
+    actions::analyze_library(&state)
+}
+
+#[tauri::command]
+pub fn get_autotag_report(state: State<'_, Arc<AppStateContainer>>) -> AutoTagReport {
+    actions::get_autotag_report(&state)
+}
+
+#[tauri::command]
+pub fn get_entry_tag_scores(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_id: String,
+) -> Result<Option<EntryTagScores>, String> {
+    actions::get_entry_tag_scores(&state, &entry_id)
 }

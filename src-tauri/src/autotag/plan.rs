@@ -87,7 +87,8 @@ fn has_tag(tags: &[String], wanted: &str) -> bool {
 /// Turns a local library path into the path the analyzer host sees.
 ///
 /// The prefix match ignores ASCII case and treats `\` and `/` alike. Returns
-/// `None` when `local_prefix` is empty or the path is not inside it.
+/// `None` when `local_prefix` is empty, the path is not inside it, nothing
+/// follows the prefix, or the rest of the path has a `..` segment.
 pub fn map_path(local: &str, local_prefix: &str, remote_prefix: &str) -> Option<String> {
     let local = local.replace('\\', "/");
     let prefix = local_prefix.replace('\\', "/");
