@@ -5,6 +5,7 @@ import { useToast } from '../composables/useToast';
 import { useAutoTagEvents } from '../composables/useAutoTagEvents';
 import { useAppStore } from '../stores/appStore';
 import type { EntryTagScores, TagScore } from '@generated/index';
+import { MOOD_SCALES, SCALE_NAMES, scaleValues } from '../utils/mood';
 
 // Expansion panel for the entry editor: how strongly the analyzer thinks each
 // vocabulary tag fits this entry. It starts open and loads on mount, and
@@ -123,15 +124,9 @@ const soundRows = computed<{ label: string; value: string }[]>(() => {
   const e = entry.value;
   if (!e) return [];
   const rows: { label: string; value: string }[] = [];
-  if (e.moodBright !== null) rows.push({ label: 'Bright ↔ Dark', value: `z = ${signed(e.moodBright)}` });
-  if (e.moodLight !== null) rows.push({ label: 'Airy ↔ Heavy', value: `z = ${signed(e.moodLight)}` });
-  if (e.paceAutoScore !== null) {
-    // The probability is the analyzer's; the label says which layer the shown
-    // pace comes from.
-    const shown = e.pace === null ? '' : ` · ${e.pace === 'moving' ? 'Moving' : 'Still'} (${e.paceUser !== null ? 'yours' : 'auto'})`;
-    rows.push({ label: 'Moving', value: `p = ${e.paceAutoScore.toFixed(2)}${shown}` });
-  } else if (e.paceUser !== null) {
-    rows.push({ label: 'Pace', value: `${e.paceUser === 'moving' ? 'Moving' : 'Still'} (yours)` });
+  for (const scale of MOOD_SCALES) {
+    const { z } = scaleValues(e, scale);
+    if (z !== null) rows.push({ label: SCALE_NAMES[scale], value: `z = ${signed(z)}` });
   }
   return rows;
 });
