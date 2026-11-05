@@ -8,7 +8,9 @@ import { useAppStore } from '../stores/appStore';
 /// score tooltip, and offers ✓ (vote yes: make it yours) next to its ✕.
 /// ✕ on any chip votes no, so later analysis runs don't bring it back: with
 /// `closable` the parent removes it from the list (and saves the list), else
-/// an auto chip rejects itself directly.
+/// an auto chip rejects itself directly. The auto chip sets `closable` to false
+/// explicitly: inside a VCombobox with `closable-chips`, Vuetify would otherwise
+/// add its own close button, which hides the chip without saving anything.
 const props = withDefaults(defineProps<{
   tag: string;
   auto?: AutoTag | null;
@@ -51,6 +53,7 @@ function reject(): void {
     size="small"
     variant="outlined"
     prepend-icon="mdi-creation"
+    :closable="false"
     @click.stop
   >
     {{ tag }}
