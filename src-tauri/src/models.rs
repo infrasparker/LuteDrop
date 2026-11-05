@@ -42,6 +42,45 @@ pub struct LibraryEntry {
     pub auto_tags: Vec<AutoTag>,
     /// Analyzer state for this entry; `None` if it was never submitted.
     pub analysis: Option<EntryAnalysis>,
+    /// Combat or non-combat; `None` when unset or when the user cleared it.
+    pub role: Option<Role>,
+    /// Who set `role`. `Some(User)` with `role: None` means the user cleared
+    /// it, so the analyzer leaves it empty.
+    pub role_source: Option<TagSource>,
+    /// The analyzer's Combat probability, kept while `role_source` is auto.
+    pub role_score: Option<f64>,
+}
+
+/// Whether a music entry is meant for combat scenes.
+///
+/// Two string forms: the database stores `"combat"` and `"non_combat"`
+/// (`as_db_str` / `from_db_str`), while serde and the generated TypeScript use
+/// `"combat"` and `"nonCombat"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub enum Role {
+    Combat,
+    NonCombat,
+}
+
+impl Role {
+    /// The value stored in `library_entries.role`.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            Role::Combat => "combat",
+            Role::NonCombat => "non_combat",
+        }
+    }
+
+    /// Parses a stored value; anything unrecognised is `None`.
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        match s {
+            "combat" => Some(Role::Combat),
+            "non_combat" => Some(Role::NonCombat),
+            _ => None,
+        }
+    }
 }
 
 /// Who put a tag on an entry.

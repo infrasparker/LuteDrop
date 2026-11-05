@@ -184,6 +184,8 @@ pub fn run() {
             commands::update_library_entry_tags,
             commands::keep_auto_tags,
             commands::reject_auto_tags,
+            commands::set_entry_role,
+            commands::keep_auto_role,
             commands::bulk_edit_library_entry_tags,
             commands::update_library_entry_type,
             commands::update_library_entry_markers,

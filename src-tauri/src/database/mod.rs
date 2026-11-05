@@ -15,12 +15,12 @@ use uuid::Uuid;
 
 use crate::models::{
     AnalysisStatus, AppState, AutoTag, Clip, Comp, Configuration, EntryAnalysis, EntryType, Group,
-    LibraryEntry, Track, TrackMode, TrackTransition,
+    LibraryEntry, Role, TagSource, Track, TrackMode, TrackTransition,
 };
 
 /// Current schema version. Bump when adding a migration below; fresh
 /// databases are stamped with this directly.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// Spacing between sibling `sort_order` values, leaving room for insertions
 /// between neighbours without renumbering. Shared by hierarchy + configurations.
@@ -86,10 +86,21 @@ fn migrate_v4_to_v5(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(AUTOTAG_TABLES_DDL)
 }
 
+/// Adds the combat / non-combat role columns. Existing entries start with no
+/// role.
+fn migrate_v5_to_v6(conn: &Connection) -> SqlResult<()> {
+    conn.execute_batch(
+        "ALTER TABLE library_entries ADD COLUMN role TEXT;
+         ALTER TABLE library_entries ADD COLUMN role_source TEXT;
+         ALTER TABLE library_entries ADD COLUMN role_score REAL;",
+    )
+}
+
 /// Ordered migrations: entry `(n, f)` upgrades version n → n+1.
 const MIGRATIONS: &[(i64, Migration)] = &[
     (3, migrate_v3_to_v4),
     (4, migrate_v4_to_v5),
+    (5, migrate_v5_to_v6),
 ];
 
 fn read_schema_version(conn: &Connection) -> i64 {
@@ -201,7 +212,10 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
             loop_start   REAL,
             loop_end     REAL,
             created_at   TEXT NOT NULL,
-            entry_type   TEXT NOT NULL DEFAULT 'music'
+            entry_type   TEXT NOT NULL DEFAULT 'music',
+            role         TEXT,
+            role_source  TEXT,
+            role_score   REAL
         );
 
         CREATE TABLE IF NOT EXISTS tags (
@@ -379,7 +393,8 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
     let mut stmt = conn
         .prepare(
             "SELECT id, file_path, content_hash, name, duration, sample_rate, file_size,
-                    volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type
+                    volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type,
+                    role, role_source, role_score
              FROM library_entries
              ORDER BY name ASC",
         )
@@ -402,6 +417,9 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
                 row.get::<_, Option<f64>>(11)?,     // loop_end
                 row.get::<_, String>(12)?,          // created_at
                 row.get::<_, String>(13)?,          // entry_type
+                row.get::<_, Option<String>>(14)?,  // role
+                row.get::<_, Option<String>>(15)?,  // role_source
+                row.get::<_, Option<f64>>(16)?,     // role_score
             ))
         })
         .map_err(|e| format!("Failed to query library_entries: {e}"))?
@@ -484,7 +502,8 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
 
     let mut entries = Vec::with_capacity(rows.len());
     for (id, file_path, content_hash, name, duration, sample_rate, file_size,
-         volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type) in rows
+         volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type,
+         role, role_source, role_score) in rows
     {
         let tags = tag_map.remove(&id).unwrap_or_default();
         let auto_tags = auto_map.remove(&id).unwrap_or_default();
@@ -507,6 +526,9 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
             entry_type: EntryType::from_str(&entry_type),
             auto_tags,
             analysis,
+            role: role.as_deref().and_then(Role::from_db_str),
+            role_source: role_source.as_deref().map(TagSource::from_str),
+            role_score,
         });
     }
 
@@ -919,7 +941,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let conn = open_db(&dir.path().join("fresh.db")).unwrap();
         assert_eq!(index_names(&conn), EXPECTED_INDEXES);
-        assert_eq!(read_schema_version(&conn), 5);
+        assert_eq!(read_schema_version(&conn), 6);
     }
 
     #[test]
@@ -930,10 +952,14 @@ mod tests {
         for name in EXPECTED_INDEXES {
             conn.execute_batch(&format!("DROP INDEX IF EXISTS {name}")).unwrap();
         }
-        // init_schema now builds the v5 tag table and auto-tagging tables; put
-        // them back in their v3 shape so the v4→v5 step has work to do.
+        // init_schema now builds the v5 tag table, auto-tagging tables and v6
+        // role columns; put them back in their v3 shape so the v4→v5 and
+        // v5→v6 steps have work to do.
         conn.execute_batch(
-            "DROP TABLE tag_rejections;
+            "ALTER TABLE library_entries DROP COLUMN role;
+             ALTER TABLE library_entries DROP COLUMN role_source;
+             ALTER TABLE library_entries DROP COLUMN role_score;
+             DROP TABLE tag_rejections;
              DROP TABLE entry_analysis;
              DROP TABLE library_entry_tags;
              CREATE TABLE library_entry_tags (
@@ -946,7 +972,7 @@ mod tests {
         conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '3')", []).unwrap();
         run_migrations(&conn).unwrap();
         assert_eq!(index_names(&conn), EXPECTED_INDEXES);
-        assert_eq!(read_schema_version(&conn), 5);
+        assert_eq!(read_schema_version(&conn), 6);
     }
 
     #[test]
@@ -998,7 +1024,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("schema_version row should exist");
-        assert_eq!(version, "5");
+        assert_eq!(version, "6");
     }
 
     #[test]
@@ -1270,7 +1296,7 @@ mod tests {
 
         run_migrations(&conn).unwrap();
 
-        assert_eq!(read_schema_version(&conn), 5);
+        assert_eq!(read_schema_version(&conn), 6);
         let rows: Vec<(String, Option<f64>)> = conn
             .prepare("SELECT source, score FROM library_entry_tags")
             .unwrap()
@@ -1284,10 +1310,10 @@ mod tests {
     }
 
     #[test]
-    fn fresh_database_is_v5_with_autotag_tables() {
+    fn fresh_database_has_autotag_tables() {
         let dir = tempfile::tempdir().unwrap();
         let conn = open_db(&dir.path().join("fresh.db")).unwrap();
-        assert_eq!(read_schema_version(&conn), 5);
+        assert_eq!(read_schema_version(&conn), 6);
         assert!(table_exists(&conn, "tag_rejections"));
         assert!(table_exists(&conn, "entry_analysis"));
         // The tag provenance columns exist on a fresh database too.
@@ -1322,6 +1348,68 @@ mod tests {
         let b = entries.iter().find(|e| e.id == untouched).unwrap();
         assert!(b.auto_tags.is_empty());
         assert!(b.analysis.is_none());
+    }
+
+    #[test]
+    fn v5_database_migrates_to_v6_with_null_roles() {
+        let conn = Connection::open_in_memory().unwrap();
+        // The v5 shape of library_entries: no role columns.
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE library_entries (
+                 id TEXT PRIMARY KEY, file_path TEXT NOT NULL UNIQUE, content_hash TEXT,
+                 name TEXT NOT NULL, duration REAL, sample_rate INTEGER, file_size INTEGER,
+                 volume REAL NOT NULL DEFAULT 1.0, trim_start REAL, trim_end REAL,
+                 loop_start REAL, loop_end REAL, created_at TEXT NOT NULL,
+                 entry_type TEXT NOT NULL DEFAULT 'music');
+             INSERT INTO meta (key, value) VALUES ('schema_version', '5');
+             INSERT INTO library_entries (id, file_path, name, created_at) VALUES ('e1', '/a.mp3', 'A', '0');",
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        assert_eq!(read_schema_version(&conn), 6);
+        let row: (Option<String>, Option<String>, Option<f64>) = conn
+            .query_row(
+                "SELECT role, role_source, role_score FROM library_entries WHERE id = 'e1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (None, None, None));
+    }
+
+    #[test]
+    fn fresh_database_is_v6() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_db(&dir.path().join("fresh.db")).unwrap();
+        assert_eq!(read_schema_version(&conn), 6);
+        conn.prepare("SELECT role, role_source, role_score FROM library_entries").unwrap();
+    }
+
+    #[test]
+    fn library_entry_exposes_role_fields() {
+        use crate::models::{Role, TagSource};
+
+        let conn = open_memory_db();
+        let set = library::insert_library_entry(&conn, "/a.mp3", None, "A", None, None, None, "music").unwrap();
+        let cleared = library::insert_library_entry(&conn, "/b.mp3", None, "B", None, None, None, "music").unwrap();
+        let unset = library::insert_library_entry(&conn, "/c.mp3", None, "C", None, None, None, "music").unwrap();
+        library::apply_auto_role(&conn, &set, Some(Role::Combat), 0.9).unwrap();
+        library::set_user_role(&conn, &[cleared.clone()], None).unwrap();
+
+        let entries = load_library_entries(&conn).unwrap();
+        let a = entries.iter().find(|e| e.id == set).unwrap();
+        assert_eq!(a.role, Some(Role::Combat));
+        assert_eq!(a.role_source, Some(TagSource::Auto));
+        assert_eq!(a.role_score, Some(0.9));
+
+        let b = entries.iter().find(|e| e.id == cleared).unwrap();
+        assert_eq!((b.role, b.role_source, b.role_score), (None, Some(TagSource::User), None));
+
+        let c = entries.iter().find(|e| e.id == unset).unwrap();
+        assert_eq!((c.role, c.role_source, c.role_score), (None, None, None));
     }
 
 }

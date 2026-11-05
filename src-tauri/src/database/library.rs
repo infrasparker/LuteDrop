@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::database::now_millis;
 use crate::database::settings;
 use crate::database::DbError;
-use crate::models::{AutoTag, LibraryEntryUsage, TagSource};
+use crate::models::{AutoTag, LibraryEntryUsage, Role, TagSource};
 
 // ─── Library Entry CRUD ───────────────────────────────────────────────────────
 
@@ -866,6 +866,105 @@ pub fn apply_auto_tags(
     Ok((added, removed))
 }
 
+/// Sets the role on each entry as a user decision: `role_source` becomes
+/// user and any score is dropped. `None` clears the role but keeps the user
+/// source, so the analyzer does not fill it in again.
+pub fn set_user_role(
+    conn: &Connection,
+    entry_ids: &[String],
+    role: Option<Role>,
+) -> Result<(), String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin role transaction: {e}"))?;
+
+    let role_str = role.map(|r| r.as_db_str());
+    for entry_id in entry_ids {
+        conn.execute(
+            "UPDATE library_entries
+             SET role = ?2, role_source = ?3, role_score = NULL
+             WHERE id = ?1",
+            params![entry_id, role_str, TagSource::User.as_str()],
+        )
+        .map_err(|e| format!("Failed to set role: {e}"))?;
+    }
+
+    tx.commit().map_err(|e| format!("Failed to commit role transaction: {e}"))?;
+    Ok(())
+}
+
+/// Turns each entry's auto role into a user role and clears its score.
+/// Entries without an auto role are left as they are.
+pub fn keep_auto_role(conn: &Connection, entry_ids: &[String]) -> Result<(), String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin keep role transaction: {e}"))?;
+
+    for entry_id in entry_ids {
+        conn.execute(
+            "UPDATE library_entries SET role_source = ?2, role_score = NULL
+             WHERE id = ?1 AND role_source = ?3",
+            params![entry_id, TagSource::User.as_str(), TagSource::Auto.as_str()],
+        )
+        .map_err(|e| format!("Failed to keep auto role: {e}"))?;
+    }
+
+    tx.commit().map_err(|e| format!("Failed to commit keep role transaction: {e}"))?;
+    Ok(())
+}
+
+/// Writes the analyzer's role for an entry and returns whether the row
+/// changed. `Some(role)` stores it as an auto role with `score` (the Combat
+/// probability); `None` clears an existing auto role. Nothing is written when
+/// the user has set or cleared the role (`role_source` is user).
+///
+/// Like `apply_auto_tags`, this reads the entry's current row on the
+/// connection it is given and does not open a transaction, so a role the user
+/// set earlier in the caller's transaction is seen and kept.
+#[allow(dead_code)] // no caller yet; the analyzer run is its intended user
+pub fn apply_auto_role(
+    conn: &Connection,
+    entry_id: &str,
+    role: Option<Role>,
+    score: f64,
+) -> Result<bool, String> {
+    let current: Option<(Option<String>, Option<String>, Option<f64>)> = conn
+        .query_row(
+            "SELECT role, role_source, role_score FROM library_entries WHERE id = ?1",
+            params![entry_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to read role: {e}"))?;
+
+    let Some((current_role, current_source, current_score)) = current else {
+        return Ok(false);
+    };
+    if current_source.as_deref().map(TagSource::from_str) == Some(TagSource::User) {
+        return Ok(false);
+    }
+
+    // The values the row should hold afterwards.
+    let (new_role, new_source, new_score) = match role {
+        Some(r) => (Some(r.as_db_str()), Some(TagSource::Auto.as_str()), Some(score)),
+        None => (None, None, None),
+    };
+    if current_role.as_deref() == new_role
+        && current_source.as_deref() == new_source
+        && current_score == new_score
+    {
+        return Ok(false);
+    }
+
+    conn.execute(
+        "UPDATE library_entries SET role = ?2, role_source = ?3, role_score = ?4
+         WHERE id = ?1",
+        params![entry_id, new_role, new_source, new_score],
+    )
+    .map_err(|e| format!("Failed to write auto role: {e}"))?;
+    Ok(true)
+}
+
 /// Returns all tag names associated with the given library entry, sorted.
 #[cfg(test)]
 pub fn get_tags_for_entry(
@@ -1681,4 +1780,92 @@ mod tests {
         conn.execute("DELETE FROM library_entries WHERE id = ?1", params![e]).unwrap();
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM tag_rejections"), 0);
     }
+    // ── Role facet ────────────────────────────────────────────────────────────
+
+    fn role_row(conn: &Connection, id: &str) -> (Option<String>, Option<String>, Option<f64>) {
+        conn.query_row(
+            "SELECT role, role_source, role_score FROM library_entries WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+    }
+
+    fn music_entry(conn: &Connection, path: &str) -> String {
+        insert_library_entry(conn, path, None, "T", None, None, None, "music").unwrap()
+    }
+
+    #[test]
+    fn user_role_set_and_clear() {
+        let conn = open_memory_db();
+        let a = music_entry(&conn, "/a.mp3");
+        let b = music_entry(&conn, "/b.mp3");
+
+        set_user_role(&conn, &[a.clone(), b.clone()], Some(Role::NonCombat)).unwrap();
+        assert_eq!(role_row(&conn, &a), (Some("non_combat".into()), Some("user".into()), None));
+        assert_eq!(role_row(&conn, &b), (Some("non_combat".into()), Some("user".into()), None));
+
+        // Clearing keeps the user source so the analyzer stays out.
+        set_user_role(&conn, &[a.clone()], None).unwrap();
+        assert_eq!(role_row(&conn, &a), (None, Some("user".into()), None));
+        assert_eq!(role_row(&conn, &b).0, Some("non_combat".into()));
+    }
+
+    #[test]
+    fn user_clear_blocks_auto_role() {
+        let conn = open_memory_db();
+        let a = music_entry(&conn, "/a.mp3");
+        set_user_role(&conn, &[a.clone()], None).unwrap();
+
+        let changed = apply_auto_role(&conn, &a, Some(Role::Combat), 0.95).unwrap();
+
+        assert!(!changed);
+        assert_eq!(role_row(&conn, &a), (None, Some("user".into()), None));
+    }
+
+    #[test]
+    fn apply_auto_role_never_overwrites_user_role() {
+        let conn = open_memory_db();
+        let a = music_entry(&conn, "/a.mp3");
+        set_user_role(&conn, &[a.clone()], Some(Role::NonCombat)).unwrap();
+
+        assert!(!apply_auto_role(&conn, &a, Some(Role::Combat), 0.99).unwrap());
+        assert!(!apply_auto_role(&conn, &a, None, 0.1).unwrap());
+        assert_eq!(role_row(&conn, &a), (Some("non_combat".into()), Some("user".into()), None));
+    }
+
+    #[test]
+    fn apply_auto_role_none_clears_only_auto() {
+        let conn = open_memory_db();
+        let a = music_entry(&conn, "/a.mp3");
+
+        assert!(apply_auto_role(&conn, &a, Some(Role::Combat), 0.8).unwrap());
+        assert_eq!(role_row(&conn, &a), (Some("combat".into()), Some("auto".into()), Some(0.8)));
+
+        // Same value again changes nothing; a new score does.
+        assert!(!apply_auto_role(&conn, &a, Some(Role::Combat), 0.8).unwrap());
+        assert!(apply_auto_role(&conn, &a, Some(Role::Combat), 0.7).unwrap());
+
+        assert!(apply_auto_role(&conn, &a, None, 0.5).unwrap());
+        assert_eq!(role_row(&conn, &a), (None, None, None));
+        // Nothing left to clear.
+        assert!(!apply_auto_role(&conn, &a, None, 0.5).unwrap());
+    }
+
+    #[test]
+    fn keep_auto_role_flips_source() {
+        let conn = open_memory_db();
+        let auto = music_entry(&conn, "/a.mp3");
+        let user = music_entry(&conn, "/b.mp3");
+        apply_auto_role(&conn, &auto, Some(Role::Combat), 0.8).unwrap();
+        set_user_role(&conn, &[user.clone()], Some(Role::NonCombat)).unwrap();
+
+        keep_auto_role(&conn, &[auto.clone(), user.clone()]).unwrap();
+
+        assert_eq!(role_row(&conn, &auto), (Some("combat".into()), Some("user".into()), None));
+        assert_eq!(role_row(&conn, &user), (Some("non_combat".into()), Some("user".into()), None));
+        // Once kept, the analyzer can no longer change it.
+        assert!(!apply_auto_role(&conn, &auto, Some(Role::NonCombat), 0.9).unwrap());
+    }
+
 }

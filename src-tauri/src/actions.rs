@@ -10,7 +10,7 @@ use crate::database::settings::{self as broadcast_settings, BroadcastSettings};
 use crate::database::settings as autotag_settings;
 use crate::models::{
     AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
-    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, SceneConfig, Track, TrackUpdates,
+    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, Role, SceneConfig, Track, TrackUpdates,
 };
 use crate::relink;
 use crate::state::AppStateContainer;
@@ -388,6 +388,32 @@ pub fn reject_auto_tags(
 ) -> Result<AppState, String> {
     let state = mutate_and_reload(container, |conn| {
         library::reject_auto_tags(conn, &entry_ids, tags.as_deref())
+    })?;
+    request_rescore_if_enabled(container);
+    Ok(state)
+}
+
+/// Sets (or, with `None`, clears) the role on the given entries as a user
+/// decision.
+pub fn set_entry_role(
+    container: &AppStateContainer,
+    entry_ids: Vec<String>,
+    role: Option<Role>,
+) -> Result<AppState, String> {
+    let state = mutate_and_reload(container, |conn| {
+        library::set_user_role(conn, &entry_ids, role)
+    })?;
+    request_rescore_if_enabled(container);
+    Ok(state)
+}
+
+/// Turns the entries' auto roles into user roles.
+pub fn keep_auto_role(
+    container: &AppStateContainer,
+    entry_ids: Vec<String>,
+) -> Result<AppState, String> {
+    let state = mutate_and_reload(container, |conn| {
+        library::keep_auto_role(conn, &entry_ids)
     })?;
     request_rescore_if_enabled(container);
     Ok(state)

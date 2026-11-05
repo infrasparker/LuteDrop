@@ -3,8 +3,8 @@ use tauri::State;
 use std::sync::Arc;
 use crate::actions;
 use crate::models::{
-    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, SceneConfig,
-    TrackUpdates,
+    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, Role,
+    SceneConfig, TrackUpdates,
 };
 use crate::state::AppStateContainer;
 use crate::waveform;
@@ -277,6 +277,23 @@ pub fn keep_auto_tags(
     tags: Option<Vec<String>>,
 ) -> Result<AppState, String> {
     actions::keep_auto_tags(&state, entry_ids, tags)
+}
+
+#[tauri::command]
+pub fn set_entry_role(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_ids: Vec<String>,
+    role: Option<Role>,
+) -> Result<AppState, String> {
+    actions::set_entry_role(&state, entry_ids, role)
+}
+
+#[tauri::command]
+pub fn keep_auto_role(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_ids: Vec<String>,
+) -> Result<AppState, String> {
+    actions::keep_auto_role(&state, entry_ids)
 }
 
 #[tauri::command]

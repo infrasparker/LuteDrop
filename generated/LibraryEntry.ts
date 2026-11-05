@@ -2,6 +2,8 @@
 import type { AutoTag } from "./AutoTag";
 import type { EntryAnalysis } from "./EntryAnalysis";
 import type { EntryType } from "./EntryType";
+import type { Role } from "./Role";
+import type { TagSource } from "./TagSource";
 
 export type LibraryEntry = { id: string, filePath: string, contentHash: string | null, name: string, duration: number | null, sampleRate: number | null, fileSize: bigint | null, volume: number, trimStart: number | null, trimEnd: number | null, loopStart: number | null, loopEnd: number | null, createdAt: string, 
 /**
@@ -15,4 +17,17 @@ autoTags: Array<AutoTag>,
 /**
  * Analyzer state for this entry; `None` if it was never submitted.
  */
-analysis: EntryAnalysis | null, };
+analysis: EntryAnalysis | null, 
+/**
+ * Combat or non-combat; `None` when unset or when the user cleared it.
+ */
+role: Role | null, 
+/**
+ * Who set `role`. `Some(User)` with `role: None` means the user cleared
+ * it, so the analyzer leaves it empty.
+ */
+roleSource: TagSource | null, 
+/**
+ * The analyzer's Combat probability, kept while `role_source` is auto.
+ */
+roleScore: number | null, };
