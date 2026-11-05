@@ -38,13 +38,13 @@ const similarSeeds = computed(() => {
   return [...ids];
 });
 
-// Opens the Vibe view seeded with the track's music, targeting this track.
+// Opens Scry seeded with the track's music, targeting this track.
 // The Soundstage scrolls back to this track on return.
 const router = useRouter();
 const ui = useSoundstageUiStore();
 function findSimilar(): void {
   ui.focusTrackId = props.track.id;
-  router.push({ name: 'vibe', query: { seed: similarSeeds.value, target: props.track.id } });
+  router.push({ name: 'scry', query: { seed: similarSeeds.value, target: props.track.id } });
 }
 
 // --- SortableJS for sequence/shuffle clip reordering ---

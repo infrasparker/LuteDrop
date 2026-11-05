@@ -37,7 +37,7 @@ const showEditorDialog = computed({
 });
 
 // Views that preview library sounds; leaving one stops the preview.
-const PREVIEW_ROUTES = ['/library', '/vibe'];
+const PREVIEW_ROUTES = ['/library', '/scry'];
 
 watch(() => router.currentRoute.value.path, (newPath, oldPath) => {
   if (PREVIEW_ROUTES.includes(oldPath) && newPath !== oldPath) {
@@ -74,11 +74,11 @@ onMounted(async () => {
         />
         <VListItem
           prepend-icon="mdi-compass-outline"
-          to="/vibe"
-          :active="$route.path === '/vibe'"
+          to="/scry"
+          :active="$route.path === '/scry'"
           color="primary"
-          title="Vibe"
-          aria-label="Vibe"
+          title="Scry"
+          aria-label="Scry"
         />
       </VList>
 

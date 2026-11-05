@@ -55,7 +55,7 @@ the Vue side reloads library state on that event.
 `search_vibe`, `vibe_map`). Each one maps music entries to their content
 hashes, asks the analyzer's `/similar`, `/search` or `/map` endpoint, and maps
 the returned hashes back to entry ids; entries that share a hash all appear in
-the result. The Vibe view (`src/views/VibeView.vue`) combines the text search
+the result. Scry (`src/views/VibeView.vue`) combines the text search
 and seeds with `VibeResults.vue` (ranked list with Role and Pace filters),
 `VibeMap.vue` (canvas scatter with lasso selection) and
 `CreatePlaylistDialog.vue` (selection to a new shuffle track or an existing

@@ -114,7 +114,7 @@ function openEditor(entryId: string): void {
 }
 
 function moreLikeThis(entryId: string): void {
-  router.push({ name: 'vibe', query: { seed: entryId } });
+  router.push({ name: 'scry', query: { seed: entryId } });
 }
 
 // --- Multi-select + bulk tagging ---

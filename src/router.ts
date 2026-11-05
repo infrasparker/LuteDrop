@@ -8,7 +8,7 @@ const router = createRouter({
   routes: [
     { path: '/', name: 'soundstage', component: SoundstageView },
     { path: '/library', name: 'library', component: LibraryView },
-    { path: '/vibe', name: 'vibe', component: VibeView },
+    { path: '/scry', name: 'scry', component: VibeView },
   ],
 });
 

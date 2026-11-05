@@ -271,7 +271,7 @@ function openPlaylistDialog(target: 'new' | 'existing'): void {
 const suggestedName = computed(() => {
   if (query.value?.kind === 'search') return query.value.text;
   if (query.value?.kind === 'seeds' && seeds.value.length > 0) return `Like ${seedName(seeds.value[0])}`;
-  return 'Vibe playlist';
+  return 'Scry playlist';
 });
 
 // --- Adding to the target track ---
@@ -348,7 +348,7 @@ const showAutoTagging = ref(false);
       <VIcon size="64" class="mb-4 text-medium-emphasis">mdi-compass-outline</VIcon>
       <div class="text-h6 mb-2">No analyzed music yet</div>
       <div class="text-body-2 text-medium-emphasis mb-4" style="max-width: 460px;">
-        The Vibe view searches and maps music the analyzer has processed. Open Auto-tagging,
+        Scry searches and maps music the analyzer has processed. Open Auto-tagging,
         connect the analyzer, and run Analyze library; analyzed music tracks then appear here.
       </div>
       <VBtn prepend-icon="mdi-creation" color="primary" variant="tonal" @click="showAutoTagging = true">

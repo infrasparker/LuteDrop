@@ -4,7 +4,7 @@ import { ref } from 'vue';
 // Where the user is on the Soundstage: the open group tab, the selected comp
 // in each group, and which tracks are expanded. Kept in a store rather than
 // in the components so it survives leaving the page (e.g. Find similar opens
-// the Vibe view, and Back returns to the same spot).
+// Scry, and Back returns to the same spot).
 export const useSoundstageUiStore = defineStore('soundstageUi', () => {
   const groupId = ref<string | null>(null);
   const compByGroup = ref<Record<string, string>>({});
