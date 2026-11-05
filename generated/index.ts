@@ -17,6 +17,7 @@ export type { LibraryEntryUsage } from "./LibraryEntryUsage";
 export type { MatchKind } from "./MatchKind";
 export type { MissingEntryCandidates } from "./MissingEntryCandidates";
 export type { RelinkCandidate } from "./RelinkCandidate";
+export type { Role } from "./Role";
 export type { SceneConfig } from "./SceneConfig";
 export type { TagQuality } from "./TagQuality";
 export type { TagScore } from "./TagScore";

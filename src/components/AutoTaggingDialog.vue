@@ -179,7 +179,7 @@ const summary = computed(() => {
 
 // --- Quality table ---
 
-// Gate first, then each vocabulary tag.
+// The role gate (Combat vs non-combat) first, then each vocabulary tag.
 const qualityRows = computed<TagQuality[]>(() => {
   const r = report.value;
   if (!r) return [];
@@ -375,8 +375,8 @@ function close(): void {
             <tbody>
               <tr v-for="(q, i) in qualityRows" :key="q.tag">
                 <td>
-                  {{ q.tag }}
-                  <VChip v-if="i === 0 && report?.gate" size="x-small" class="ml-1">gate</VChip>
+                  {{ i === 0 && report?.gate ? 'Combat vs non-combat' : q.tag }}
+                  <VChip v-if="i === 0 && report?.gate" size="x-small" class="ml-1">role</VChip>
                 </td>
                 <td class="text-right">{{ q.pos }}</td>
                 <td class="text-right">{{ q.neg }}</td>

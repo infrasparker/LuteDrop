@@ -13,7 +13,7 @@ import ImportDialog from '../components/ImportDialog.vue';
 import FixMissingDialog from '../components/FixMissingDialog.vue';
 import AutoTaggingDialog from '../components/AutoTaggingDialog.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
-import type { LibraryEntry, LibraryEntryUsage } from '@generated/index';
+import type { LibraryEntry, LibraryEntryUsage, Role } from '@generated/index';
 import { AUDIO_EXTENSIONS } from '../constants';
 import { formatDuration } from '../shared/format';
 import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
@@ -29,6 +29,21 @@ const selectedTags = ref<string[]>([]);
 const untagged = ref(false);
 const hasAuto = ref(false);
 const selectedType = ref<string>('all');
+const roleFilter = ref<'all' | Role | 'unset'>('all');
+
+// Search text also matches the album folder (parent) and artist folder
+// (grandparent) of the file path, so a game is findable by soundtrack folder.
+function searchFields(entry: LibraryEntry): string[] {
+  const parts = entry.filePath.split(/[\\/]/).filter((p) => p.length > 0);
+  // The last part is the file itself.
+  return [entry.name, parts[parts.length - 2] ?? '', parts[parts.length - 3] ?? ''];
+}
+
+function roleLabel(role: Role | null): string {
+  if (role === 'combat') return 'Combat';
+  if (role === 'nonCombat') return 'Non-combat';
+  return 'No role';
+}
 
 watch(tags, (current) => {
   const stale = selectedTags.value.filter((t) => !current.includes(t));
@@ -39,9 +54,9 @@ watch(tags, (current) => {
 
 const filteredEntries = computed(() => {
   return libraryEntries.value.filter((entry) => {
+    const query = (searchQuery.value ?? '').trim().toLowerCase();
     const matchesSearch =
-      searchQuery.value === '' ||
-      entry.name.toLowerCase().includes(searchQuery.value.toLowerCase());
+      query === '' || searchFields(entry).some((f) => f.toLowerCase().includes(query));
     // Auto tags are part of `tags`, so "untagged" means no user tags.
     const matchesTags = untagged.value
       ? entry.tags.length === entry.autoTags.length
@@ -50,7 +65,10 @@ const filteredEntries = computed(() => {
     const matchesType =
       selectedType.value === 'all' || entry.entryType === selectedType.value;
     const matchesAuto = !hasAuto.value || entry.autoTags.length > 0;
-    return matchesSearch && matchesTags && matchesType && matchesAuto;
+    const matchesRole =
+      roleFilter.value === 'all' ||
+      (roleFilter.value === 'unset' ? entry.role === null : entry.role === roleFilter.value);
+    return matchesSearch && matchesTags && matchesType && matchesAuto && matchesRole;
   });
 });
 
@@ -59,6 +77,7 @@ const headers = [
     sort: (a: boolean, b: boolean) => (a === b ? 0 : a ? -1 : 1) },
   { title: 'Type', key: 'entryType', sortable: true, width: '60px' },
   { title: 'Name', key: 'name', sortable: true, width: '40%' },
+  { title: 'Role', key: 'role', sortable: true, width: '60px' },
   { title: 'Tags', key: 'tags', sortable: false },
   { title: 'Duration', key: 'duration', sortable: true, width: '80px', align: 'end' as const },
   { title: '', key: 'actions', sortable: false, width: '80px', align: 'end' as const },
@@ -123,6 +142,16 @@ async function applyBulkTags(mode: 'add' | 'remove'): Promise<void> {
       remove: mode === 'remove' ? tags : [],
     });
     bulkTags.value = [];
+  } finally {
+    bulkBusy.value = false;
+  }
+}
+
+async function applyBulkRole(role: Role | null): Promise<void> {
+  if (selectedIds.value.length === 0) return;
+  bulkBusy.value = true;
+  try {
+    await store.command('set_entry_role', { entryIds: selectedIds.value, role });
   } finally {
     bulkBusy.value = false;
   }
@@ -300,6 +329,12 @@ async function relocateEntry(entryId: string): Promise<void> {
       <div class="d-flex flex-wrap ga-1 flex-grow-1" style="min-width: 0;">
         <TagFilter v-model:selected-tags="selectedTags" v-model:untagged="untagged" v-model:has-auto="hasAuto" />
       </div>
+      <VBtnToggle v-model="roleFilter" mandatory density="compact" variant="outlined" divided>
+        <VBtn value="all" size="x-small">All roles</VBtn>
+        <VBtn value="combat" size="x-small" prepend-icon="mdi-sword-cross">Combat</VBtn>
+        <VBtn value="nonCombat" size="x-small" prepend-icon="mdi-music-note">Non-combat</VBtn>
+        <VBtn value="unset" size="x-small">Unset</VBtn>
+      </VBtnToggle>
       <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
         {{ filteredEntries.length }} {{ filteredEntries.length === 1 ? 'entry' : 'entries' }}
       </span>
@@ -362,6 +397,18 @@ async function relocateEntry(entryId: string): Promise<void> {
         </VIcon>
       </template>
 
+      <template #item.role="{ item }">
+        <span v-if="item.role" class="role-cell" :title="roleLabel(item.role)">
+          <VIcon size="small" :color="item.roleSource === 'auto' ? undefined : 'primary'">
+            {{ item.role === 'combat' ? 'mdi-sword-cross' : 'mdi-music-note' }}
+          </VIcon>
+          <VIcon v-if="item.roleSource === 'auto'" size="x-small" class="role-auto">mdi-creation</VIcon>
+          <VTooltip v-if="item.roleSource === 'auto'" activator="parent" location="top" open-delay="300">
+            {{ roleLabel(item.role) }} · Auto{{ item.roleScore === null ? '' : ` · ${item.roleScore.toFixed(2)}` }}
+          </VTooltip>
+        </span>
+      </template>
+
       <template #item.tags="{ item }">
         <TagCellEditor :entry-id="item.id" :tags="item.tags" :auto-tags="item.autoTags" />
       </template>
@@ -393,7 +440,7 @@ async function relocateEntry(entryId: string): Promise<void> {
     <!-- Bulk tag bar: floats over the bottom of the table so the rows
          never shift when it appears -->
     <VFadeTransition>
-      <div v-if="selectedIds.length > 0" class="bulk-bar elevation-8 d-flex align-center ga-2 px-3 py-2">
+      <div v-if="selectedIds.length > 0" class="bulk-bar elevation-8 d-flex flex-wrap align-center ga-2 px-3 py-2">
         <VIcon size="small" color="primary">mdi-checkbox-multiple-marked</VIcon>
         <span class="text-body-2 font-weight-medium" style="white-space: nowrap;">
           {{ selectedIds.length }} selected
@@ -432,6 +479,25 @@ async function relocateEntry(entryId: string): Promise<void> {
         >
           Remove
         </VBtn>
+        <VMenu>
+          <template #activator="{ props: menuProps }">
+            <VBtn
+              v-bind="menuProps"
+              prepend-icon="mdi-sword-cross"
+              append-icon="mdi-menu-down"
+              variant="tonal"
+              size="small"
+              :disabled="bulkBusy"
+            >
+              Set role
+            </VBtn>
+          </template>
+          <VList density="compact">
+            <VListItem prepend-icon="mdi-sword-cross" title="Combat" @click="applyBulkRole('combat')" />
+            <VListItem prepend-icon="mdi-music-note" title="Non-combat" @click="applyBulkRole('nonCombat')" />
+            <VListItem prepend-icon="mdi-close" title="Clear" @click="applyBulkRole(null)" />
+          </VList>
+        </VMenu>
         <VBtn
           prepend-icon="mdi-check"
           variant="tonal"
@@ -504,7 +570,7 @@ async function relocateEntry(entryId: string): Promise<void> {
   left: 50%;
   bottom: 16px;
   transform: translateX(-50%);
-  width: min(720px, calc(100% - 32px));
+  width: min(960px, calc(100% - 32px));
   z-index: 2;
   background: rgb(var(--v-theme-surface));
   border: 1px solid rgba(var(--v-theme-primary), 0.5);
@@ -514,6 +580,18 @@ async function relocateEntry(entryId: string): Promise<void> {
 :deep(.preview-active) {
   background: rgba(240, 168, 48, 0.08) !important;
   border-left: 3px solid #F0A830;
+}
+
+.role-cell {
+  position: relative;
+  display: inline-flex;
+}
+
+.role-auto {
+  position: absolute;
+  top: -4px;
+  right: -8px;
+  opacity: 0.8;
 }
 
 .library-table {

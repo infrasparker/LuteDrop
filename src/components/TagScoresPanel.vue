@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { useToast } from '../composables/useToast';
 import { useAutoTagEvents } from '../composables/useAutoTagEvents';
+import { useAppStore } from '../stores/appStore';
 import type { EntryTagScores, TagScore } from '@generated/index';
 
 // Expansion panel for the entry editor: how strongly the analyzer thinks each
@@ -15,6 +16,7 @@ const props = defineProps<{
 }>();
 
 const toast = useToast();
+const store = useAppStore();
 const { completedRuns } = useAutoTagEvents();
 
 const scores = ref<EntryTagScores | null>(null);
@@ -72,6 +74,22 @@ const trusted = computed<TagScore[]>(() => (scores.value?.tags ?? []).filter((t)
 const untrusted = computed<TagScore[]>(() => (scores.value?.tags ?? []).filter((t) => !t.trusted));
 const topRows = computed<TagScore[]>(() => (scores.value ? [scores.value.gate, ...trusted.value] : []));
 
+// The gate row is always the Combat probability, whatever tag name an old
+// saved score carries. Its `applied` is set for either role, so the chip shows
+// the entry's actual role.
+const entry = computed(() => store.findLibraryEntry(props.entryId));
+
+function rowName(row: TagScore): string {
+  return row === scores.value?.gate ? 'Combat' : row.tag;
+}
+
+function gateLabel(): string | null {
+  const e = entry.value;
+  if (!e?.role) return null;
+  const name = e.role === 'combat' ? 'Combat' : 'Non-combat';
+  return `${name} · ${e.roleSource === 'user' ? 'yours' : 'auto'}`;
+}
+
 function percent(score: number): number {
   return Math.max(0, Math.min(1, score)) * 100;
 }
@@ -93,7 +111,7 @@ function appliedLabel(s: TagScore): string | null {
         <div v-else-if="!scores" class="text-caption text-medium-emphasis">No scores yet.</div>
         <template v-else>
           <div v-for="row in topRows" :key="row.tag" class="score-row">
-            <span class="score-name text-truncate" :title="row.tag">{{ row.tag }}</span>
+            <span class="score-name text-truncate" :title="rowName(row)">{{ rowName(row) }}</span>
             <div class="score-bar">
               <VProgressLinear :model-value="percent(row.score)" height="8" rounded color="primary" />
               <span
@@ -104,7 +122,12 @@ function appliedLabel(s: TagScore): string | null {
               />
             </div>
             <span class="score-value text-caption">{{ row.score.toFixed(2) }}</span>
-            <VChip v-if="appliedLabel(row)" size="x-small" label class="score-chip">{{ appliedLabel(row) }}</VChip>
+            <VChip
+              v-if="row === scores.gate ? gateLabel() : appliedLabel(row)"
+              size="x-small"
+              label
+              :class="row === scores.gate ? 'score-chip-wide' : 'score-chip'"
+            >{{ row === scores.gate ? gateLabel() : appliedLabel(row) }}</VChip>
             <span v-else class="score-chip" />
           </div>
 
@@ -162,6 +185,10 @@ function appliedLabel(s: TagScore): string | null {
 }
 .score-chip {
   flex: 0 0 52px;
+  justify-content: center;
+}
+.score-chip-wide {
+  flex: 0 0 auto;
   justify-content: center;
 }
 </style>

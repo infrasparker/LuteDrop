@@ -5,6 +5,7 @@ import { useAudio } from '../composables/useAudio';
 import WaveformEditor from './WaveformEditor.vue';
 import TagChip from './TagChip.vue';
 import TagScoresPanel from './TagScoresPanel.vue';
+import RoleControl from './RoleControl.vue';
 import { open } from '@tauri-apps/plugin-dialog';
 import { AUDIO_EXTENSIONS } from '../constants';
 import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
@@ -301,6 +302,17 @@ async function relocateFile(): Promise<void> {
             />
           </template>
         </VCombobox>
+
+        <!-- Role (music only) -->
+        <div v-if="editEntryType === 'music'" class="d-flex align-center ga-3 mb-3">
+          <span class="text-caption text-medium-emphasis" style="min-width: 50px;">Role</span>
+          <RoleControl
+            :entry-ids="[props.entryId]"
+            :role="entry.role"
+            :role-source="entry.roleSource"
+            :role-score="entry.roleScore"
+          />
+        </div>
 
         <!-- Volume -->
         <div class="d-flex align-center ga-3 mb-4">
