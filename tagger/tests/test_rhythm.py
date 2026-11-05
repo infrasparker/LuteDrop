@@ -43,3 +43,26 @@ def test_short_track_uses_whole_signal():
 def test_silence_is_finite():
     f = rhythm.track_features(np.zeros(12 * SR, dtype=np.float32), SR)
     assert all(np.isfinite(v) for v in f.values())
+
+
+def test_features_do_not_use_beat_track(monkeypatch):
+    # beat_track's numba kernel segfaults on some builds, which kills the
+    # worker process; the features must not depend on it.
+    import librosa
+
+    def boom(*_a, **_k):
+        raise AssertionError("beat_track must not be called")
+
+    monkeypatch.setattr(librosa.beat, "beat_track", boom)
+    feats = rhythm.features(click_track(10), SR)
+    assert set(feats) == set(rhythm.FEATURES)
+
+
+def test_regular_clicks_have_low_beat_cv():
+    assert rhythm.features(click_track(20), SR)["beat_cv"] < 0.2
+
+
+def test_peaks_finds_local_maxima_above_mean():
+    curve = np.array([0.0, 1.0, 0.0, 0.2, 0.1, 2.0, 0.0])
+    assert list(rhythm._peaks(curve)) == [1, 5]
+    assert len(rhythm._peaks(np.array([1.0, 2.0]))) == 0

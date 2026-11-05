@@ -8,7 +8,7 @@ Per window:
   perc_onsets - onsets per second of the percussive part
   perc_pulse  - pulse clarity of the percussive onset envelope
   low_pulse   - pulse clarity of the low band (< 200 Hz)
-  beat_cv     - irregularity of beat-tracker intervals
+  beat_cv     - irregularity of the intervals between PLP peaks
   flux        - mean spectral flux
   loud_var    - loudness variation
 """
@@ -46,6 +46,15 @@ def _clarity(env: np.ndarray, sr: int) -> float:
     return float(seg.max()) if len(seg) else 0.0
 
 
+def _peaks(curve: np.ndarray) -> np.ndarray:
+    """Frames where `curve` has a local maximum above its mean."""
+    if len(curve) < 3:
+        return np.empty(0, dtype=int)
+    mid = curve[1:-1]
+    is_peak = (mid > curve[:-2]) & (mid >= curve[2:]) & (mid > curve.mean())
+    return np.flatnonzero(is_peak) + 1
+
+
 def features(y: np.ndarray, sr: int) -> dict[str, float]:
     """Rhythm features of one window of mono audio."""
     import librosa
@@ -60,8 +69,10 @@ def features(y: np.ndarray, sr: int) -> dict[str, float]:
     low = S[freqs < LOW_BAND_HZ]
     o_low = librosa.onset.onset_strength(S=librosa.amplitude_to_db(low), sr=sr, hop_length=HOP)
     plp = librosa.beat.plp(onset_envelope=o_all, sr=sr, hop_length=HOP)
-    _, beats = librosa.beat.beat_track(onset_envelope=o_all, sr=sr, hop_length=HOP)
-    ibi = np.diff(beats)
+    # Beats are taken as the peaks of the PLP curve rather than from
+    # librosa.beat.beat_track, whose numba kernel segfaults on some
+    # numba/numpy builds (a crash no try/except can catch).
+    ibi = np.diff(_peaks(plp))
     on_perc = librosa.onset.onset_detect(onset_envelope=o_perc, sr=sr, hop_length=HOP)
     rms = librosa.feature.rms(y=y, hop_length=HOP)[0]
     out = {

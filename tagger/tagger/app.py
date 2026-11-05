@@ -1,5 +1,6 @@
 import hmac
 import logging
+import multiprocessing
 import os
 import threading
 from collections.abc import Callable
@@ -101,7 +102,11 @@ def create_app(
 
     threading.Thread(target=load_model, daemon=True).start()
 
-    make_pool = executor_factory or (lambda: ProcessPoolExecutor(os.cpu_count()))
+    # Workers are spawned, not forked: the parent has CUDA and threads loaded,
+    # and numba code (librosa's onset/PLP kernels) segfaults in forked children.
+    make_pool = executor_factory or (
+        lambda: ProcessPoolExecutor(os.cpu_count(), mp_context=multiprocessing.get_context("spawn"))
+    )
     pool_lock = threading.Lock()
     current = [make_pool()]
 
