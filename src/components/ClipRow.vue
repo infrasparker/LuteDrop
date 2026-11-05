@@ -59,8 +59,9 @@ function toggleMute(): void {
   <div
     class="clip-row d-flex align-center ga-2 py-2 px-1"
     :class="{ 'clip-active': isCurrentClip, 'clip-missing': isMissing }"
+    @click="editLibraryEntry"
   >
-    <VIcon size="small" class="text-medium-emphasis drag-handle" style="cursor: grab;">mdi-drag</VIcon>
+    <VIcon size="small" class="text-medium-emphasis drag-handle" style="cursor: grab;" @click.stop>mdi-drag</VIcon>
     <VBtn
       v-if="isMissing"
       icon="mdi-alert"
@@ -76,7 +77,7 @@ function toggleMute(): void {
       variant="text"
       size="x-small"
       :color="isCurrentClip ? 'primary' : undefined"
-      @click="isPlaying ? audio.pauseTrack(trackId) : playClip()"
+      @click.stop="isPlaying ? audio.pauseTrack(trackId) : playClip()"
     />
     <span
       class="text-body-2 flex-grow-1 text-truncate"
@@ -99,6 +100,7 @@ function toggleMute(): void {
       :step="0.01"
       hide-details
       density="compact"
+      @click.stop
       style="width: 120px; flex: 0 0 120px;"
       :style="{ opacity: isMuted ? 0.4 : 1 }"
     />
@@ -109,14 +111,18 @@ function toggleMute(): void {
       title="Edit in Library"
       @click.stop="editLibraryEntry"
     />
-    <VBtn icon="mdi-delete" variant="text" size="x-small" color="error" @click="remove" />
+    <VBtn icon="mdi-delete" variant="text" size="x-small" color="error" @click.stop="remove" />
   </div>
 </template>
 
 <style scoped>
 .clip-row {
+  cursor: pointer;
   border-bottom: 1px solid rgba(232, 228, 220, 0.05);
   border-left: 3px solid transparent;
+}
+.clip-row:hover {
+  background: rgba(var(--v-theme-on-surface), var(--v-hover-opacity));
 }
 .clip-active {
   border-left: 3px solid #F0A830;
