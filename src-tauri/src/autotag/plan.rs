@@ -67,6 +67,19 @@ fn norm(tag: &str) -> String {
     tag.trim().to_lowercase()
 }
 
+/// The scene's vocabulary, normalized, without duplicates, blanks, or the
+/// gate tag itself, in the order it was written.
+fn vocabulary(scene: &SceneConfig) -> Vec<String> {
+    let gate_tag = norm(&scene.gate_tag);
+    let mut seen = HashSet::new();
+    scene
+        .vocabulary
+        .iter()
+        .map(|t| norm(t))
+        .filter(|t| !t.is_empty() && *t != gate_tag && seen.insert(t.clone()))
+        .collect()
+}
+
 fn has_tag(tags: &[String], wanted: &str) -> bool {
     tags.iter().any(|t| norm(t) == wanted)
 }
@@ -91,6 +104,9 @@ pub fn map_path(local: &str, local_prefix: &str, remote_prefix: &str) -> Option<
         return None;
     }
     let rest = rest.trim_start_matches('/');
+    if rest.is_empty() || rest.split('/').any(|part| part == "..") {
+        return None;
+    }
     let remote = remote_prefix.trim_end_matches('/');
     Some(format!("{remote}/{rest}"))
 }
@@ -130,8 +146,7 @@ pub fn build_score_request(
     }
 
     let mut tags = HashMap::new();
-    for vocab_tag in &scene.vocabulary {
-        let vocab_tag = norm(vocab_tag);
+    for vocab_tag in vocabulary(scene) {
         let mut examples = Examples::default();
         for (entry, hash, has_gate) in &hashed {
             if has_tag(&entry.user_tags, &vocab_tag) {
@@ -198,8 +213,7 @@ pub fn decide(
 
         // Vocabulary tags only go on entries that are in the scene.
         if user_gate || auto_gate {
-            for vocab_tag in &scene.vocabulary {
-                let vocab_tag = norm(vocab_tag);
+            for vocab_tag in vocabulary(scene) {
                 let Some(set) = resp.tags.get(&vocab_tag) else {
                     continue;
                 };
@@ -325,6 +339,50 @@ mod tests {
             map_path("Z:/media/audio2/a.opus", "Z:/media/audio", "/media/audio"),
             None
         );
+    }
+
+    #[test]
+    fn map_path_rejects_empty_remainder_and_parent_segments() {
+        assert_eq!(
+            map_path("Z:/media/audio", "Z:/media/audio", "/media/audio"),
+            None
+        );
+        assert_eq!(
+            map_path("Z:/media/audio/", "Z:/media/audio", "/media/audio"),
+            None
+        );
+        assert_eq!(
+            map_path(
+                "Z:/media/audio/../secret.opus",
+                "Z:/media/audio",
+                "/media/audio"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn decide_dedupes_vocabulary_and_skips_gate_tag() {
+        let mut cfg = scene();
+        cfg.vocabulary = vec![
+            "brass".into(),
+            "Brass".into(),
+            "encounter".into(),
+            " ".into(),
+        ];
+        let entries = vec![entry("a", &[])];
+        let resp = response(
+            set(true, Some(0.6), &[("h-a", 0.9)]),
+            &[
+                ("brass", set(true, Some(0.5), &[("h-a", 0.7)])),
+                ("encounter", set(true, Some(0.5), &[("h-a", 0.7)])),
+            ],
+        );
+        let out = decide(&entries, &cfg, &resp);
+        assert_eq!(tag_names(&out["a"]), vec!["encounter", "brass"]);
+
+        let req = build_score_request(&entries, &cfg, &HashSet::new());
+        assert_eq!(req.tags.keys().collect::<Vec<_>>(), vec!["brass"]);
     }
 
     #[test]
