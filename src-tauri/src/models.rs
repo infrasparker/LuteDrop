@@ -408,6 +408,11 @@ pub struct TrackPlaybackState {
     pub is_paused: bool,
     pub current_clip_id: Option<String>,
     pub current_time: f64,
+    /// True when a sound is loaded (playing, paused, or just ended). False
+    /// while a Gap transition waits to start the next clip: `is_playing` is
+    /// still true then, but `current_time` is 0 and `current_clip_id` is the
+    /// clip that just finished, so there is nothing to show a position for.
+    pub has_sound: bool,
 }
 
 /// One location (clip) where a library entry is referenced.

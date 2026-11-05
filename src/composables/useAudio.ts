@@ -73,9 +73,12 @@ export function useAudio() {
   }
 
   // `clipId` keeps the seek in that clip; omitted, the track's first clip plays.
-  async function playTrackFrom(trackId: string, position: number, clipId?: string): Promise<void> {
+  // `paused` seeks a paused track and leaves it paused (one backend call).
+  async function playTrackFrom(
+    trackId: string, position: number, clipId?: string, paused = false,
+  ): Promise<void> {
     try {
-      await invoke('play_track_from', { trackId, clipId: clipId ?? null, position });
+      await invoke('play_track_from', { trackId, clipId: clipId ?? null, position, paused });
     } catch (e) {
       toast.showError(String(e));
     }
@@ -202,6 +205,8 @@ export function useAudio() {
     trimEnd?: number | null,
     loopStart?: number | null,
     loopEnd?: number | null,
+    // Seek a paused preview and leave it paused (one backend call).
+    paused = false,
   ): Promise<void> {
     try {
       await invoke('play_library_sound', {
@@ -211,6 +216,7 @@ export function useAudio() {
         trimEnd: trimEnd ?? null,
         loopStart: loopStart ?? null,
         loopEnd: loopEnd ?? null,
+        paused,
       });
       const appStore = useAppStore();
       appStore.libraryPlayingEntryId = entryId;

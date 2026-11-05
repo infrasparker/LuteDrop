@@ -115,10 +115,17 @@ pub fn play_track(state: State<'_, Arc<AppStateContainer>>, track_id: String) ->
 
 /// `clip_id` is optional: when the frontend omits it, the track's first clip
 /// is picked (waveform click-to-play); the transport scrubber passes the
-/// playing clip so a seek stays in that clip.
+/// playing clip so a seek stays in that clip. `paused` (optional, default
+/// false) seeks a paused track and leaves it paused.
 #[tauri::command]
-pub fn play_track_from(state: State<'_, Arc<AppStateContainer>>, track_id: String, clip_id: Option<String>, position: f64) -> Result<(), String> {
-    actions::play_track_from_position(&state, &track_id, clip_id.as_deref(), position)
+pub fn play_track_from(
+    state: State<'_, Arc<AppStateContainer>>,
+    track_id: String,
+    clip_id: Option<String>,
+    position: f64,
+    paused: Option<bool>,
+) -> Result<(), String> {
+    actions::play_track_from_position(&state, &track_id, clip_id.as_deref(), position, paused.unwrap_or(false))
 }
 
 #[tauri::command]
@@ -417,8 +424,14 @@ pub fn play_library_sound(
     trim_end: Option<f64>,
     loop_start: Option<f64>,
     loop_end: Option<f64>,
+    // Optional (default false): seek a paused preview and leave it paused.
+    paused: Option<bool>,
 ) -> Result<(), String> {
-    actions::play_library_sound(&state, &entry_id, &file_path, position, volume, trim_start, trim_end, loop_start, loop_end)
+    actions::play_library_sound(
+        &state, &entry_id, &file_path, position, volume,
+        trim_start, trim_end, loop_start, loop_end,
+        paused.unwrap_or(false),
+    )
 }
 
 #[tauri::command]
@@ -545,7 +558,7 @@ pub async fn search_vibe(
     let container = state.inner().clone();
     tokio::task::spawn_blocking(move || actions::search_vibe(&container, &text, limit))
         .await
-        .map_err(|e| format!("Vibe search failed: {e}"))?
+        .map_err(|e| format!("Scry search failed: {e}"))?
 }
 
 #[tauri::command]
@@ -553,7 +566,7 @@ pub async fn vibe_map(state: State<'_, Arc<AppStateContainer>>) -> Result<Vec<Vi
     let container = state.inner().clone();
     tokio::task::spawn_blocking(move || actions::vibe_map(&container))
         .await
-        .map_err(|e| format!("Vibe map failed: {e}"))?
+        .map_err(|e| format!("Scry map failed: {e}"))?
 }
 
 #[tauri::command]

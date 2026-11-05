@@ -132,15 +132,27 @@ pub fn play_track_clip(
     start_clip(tracks, engine, track_id, clip_index, None, true, mute_state, None)
 }
 
-/// Start the track at `position` seconds into a clip's file. With `clip_id`,
-/// that clip plays (the transport scrubber seeks within the clip that is
-/// already playing); without it, the track's first clip is picked as usual.
+/// Start the track at `position` seconds into a clip's file.
+///
+/// - With `clip_id`, that clip plays: this is a SEEK by the transport
+///   scrubber within the clip that is already playing. It does not count as
+///   a new play (`clips_played` is unchanged) and does not restart the
+///   track's fade-in.
+/// - Without it, the track's first clip is picked as usual (waveform
+///   click-to-play), with the track fade-in.
+///
+/// `paused = true` leaves the track paused at `position` (seeking a paused
+/// item). The start and the pause happen here, under the one audio lock the
+/// caller holds, so the poll thread never sees the sound playing and the
+/// operator hears nothing (the start's fade-in from silence is cut off by the
+/// pause's fade-out before it becomes audible).
 pub fn play_track_from(
     tracks: &mut HashMap<String, ManagedTrack>,
     engine: &ffi::Engine,
     track_id: &str,
     clip_id: Option<&str>,
     position: f64,
+    paused: bool,
     mute_state: &MuteState,
 ) -> Result<(), String> {
     let clip_index = match clip_id {
@@ -152,20 +164,39 @@ pub fn play_track_from(
         }
         None => pick_first_clip(tracks, track_id)?,
     };
-    if let Some(track) = tracks.get_mut(track_id) {
-        if clip_id.is_some() {
-            // Seeking within the current clip is not a new play: undo the
-            // `+= 1` that `start_clip` is about to do, so a sequence's
-            // play count is unchanged by the seek.
-            track.clips_played = track.clips_played.saturating_sub(1);
-        } else {
-            track.clips_played = 0;
+    let Some(idx) = clip_index else {
+        return Err(format!("Track {} has no clips", track_id));
+    };
+
+    // Remember the play count so a failed start can put it back.
+    let track = tracks.get_mut(track_id).ok_or_else(|| format!("Track not found: {}", track_id))?;
+    let clips_played_before = track.clips_played;
+    let is_seek = clip_id.is_some();
+    if is_seek {
+        // A seek is not a new play: undo the `+= 1` that `start_clip` is
+        // about to do, so a sequence's play count is unchanged by the seek.
+        track.clips_played = track.clips_played.saturating_sub(1);
+    } else {
+        track.clips_played = 0;
+    }
+
+    // Only a fresh play gets the track's fade-in; a seek must not re-fade.
+    let apply_track_fade = !is_seek;
+    let result = start_clip(tracks, engine, track_id, idx, Some(position), apply_track_fade, mute_state, None);
+
+    if let Err(e) = result {
+        // `start_clip` failed before its `+= 1`, so restore the count we
+        // changed above: a failed start leaves the track's count as it was.
+        if let Some(track) = tracks.get_mut(track_id) {
+            track.clips_played = clips_played_before;
         }
+        return Err(e);
     }
-    match clip_index {
-        Some(idx) => start_clip(tracks, engine, track_id, idx, Some(position), true, mute_state, None),
-        None => Err(format!("Track {} has no clips", track_id)),
+
+    if paused {
+        pause_track(tracks, track_id)?;
     }
+    Ok(())
 }
 
 pub fn pause_track(tracks: &mut HashMap<String, ManagedTrack>, track_id: &str) -> Result<(), String> {
@@ -482,7 +513,11 @@ fn execute_action(
 }
 
 pub fn get_playback_state(track: &ManagedTrack) -> TrackPlaybackState {
-    let (is_playing, is_paused_state, current_time) = if track.voice.has_current() {
+    // `has_sound` is false while a Gap transition waits to start the next
+    // clip: the track still counts as playing, but there is no sound (so no
+    // meaningful position) until the gap ends.
+    let has_sound = track.voice.has_current();
+    let (is_playing, is_paused_state, current_time) = if has_sound {
         let st = track.voice.state();
         (matches!(st, PlaybackState::Playing), matches!(st, PlaybackState::Paused), track.voice.position())
     } else {
@@ -499,6 +534,7 @@ pub fn get_playback_state(track: &ManagedTrack) -> TrackPlaybackState {
         is_paused: is_paused_state,
         current_clip_id,
         current_time,
+        has_sound,
     }
 }
 

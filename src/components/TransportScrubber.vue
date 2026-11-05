@@ -46,13 +46,23 @@ const target = computed<ScrubTarget | null>(() => {
     };
   }
 
-  const clip = store.findTrack(only.trackId)?.clips.find((c) => c.id === only.currentClipId);
-  if (!clip) return null;
+  // During a Gap transition the track counts as playing but has no sound
+  // yet (position 0, previous clip id): nothing to scrub until it starts.
+  if (!only.hasSound) return null;
+  const track = store.findTrack(only.trackId);
+  const clip = track?.clips.find((c) => c.id === only.currentClipId);
+  if (!track || !clip) return null;
   const entry = store.findLibraryEntry(clip.libraryEntryId);
+  let end = clip.trimEnd ?? entry?.duration ?? null;
+  // A seamless track loops at loop_end, so the file past it never plays:
+  // end the bar there (same rule as the engine: loopEnd 0 means unset).
+  if (track.mode.type === 'seamless' && track.mode.loopEnd > 0) {
+    end = end === null ? track.mode.loopEnd : Math.min(end, track.mode.loopEnd);
+  }
   return {
     state: only, trackId: only.trackId, clipId: clip.id, entryId: clip.libraryEntryId, name: clip.name,
     start: clip.trimStart ?? 0,
-    end: clip.trimEnd ?? entry?.duration ?? null,
+    end,
   };
 });
 
@@ -102,6 +112,7 @@ watch(
 
 onUnmounted(() => {
   if (rafId !== null) cancelAnimationFrame(rafId);
+  removeReleaseListeners();
 });
 
 // --- Dragging / seeking ---
@@ -110,10 +121,42 @@ onUnmounted(() => {
 // the pointer ourselves: while it is down, slider updates only move the
 // thumb locally; the seek fires once on `end`. Keyboard changes (pointer up)
 // seek immediately.
+//
+// Vuetify only emits `end` for presses that land on the slider itself, so a
+// press elsewhere in the wrapper (or a release Vuetify misses) would leave us
+// stuck in `dragging`. A one-time window listener ends the drag on release
+// no matter where it happens.
+let dragStartValue = 0;
+
 function onPointerDown(e: PointerEvent): void {
   if (e.button !== 0 || target.value?.end == null) return;
   dragging.value = true;
   dragValue.value = displayTime.value;
+  dragStartValue = displayTime.value;
+  removeReleaseListeners(); // in case an earlier drag never cleaned up
+  window.addEventListener('pointerup', onWindowRelease);
+  window.addEventListener('pointercancel', onWindowRelease);
+  window.addEventListener('blur', onWindowRelease);
+}
+
+function removeReleaseListeners(): void {
+  window.removeEventListener('pointerup', onWindowRelease);
+  window.removeEventListener('pointercancel', onWindowRelease);
+  window.removeEventListener('blur', onWindowRelease);
+}
+
+function onWindowRelease(): void {
+  removeReleaseListeners();
+  // Vuetify ends its drag on the `mouseup` that follows this `pointerup`, so
+  // wait a tick to let its `end` (which seeks) run first. If it did, we are
+  // no longer dragging and there is nothing left to do.
+  setTimeout(() => {
+    if (!dragging.value) return;
+    dragging.value = false;
+    // Vuetify never saw this drag end: seek to wherever the thumb was moved,
+    // or snap back to the live position if it never moved.
+    if (dragValue.value !== dragStartValue) seek(dragValue.value);
+  }, 0);
 }
 
 function onSliderInput(v: number): void {
@@ -127,6 +170,7 @@ function onSliderInput(v: number): void {
 function onSliderEnd(v: number): void {
   if (!dragging.value) return;
   dragging.value = false;
+  removeReleaseListeners();
   seek(v);
 }
 
@@ -141,9 +185,11 @@ async function seek(position: number): Promise<void> {
   syncTime = pos;
   syncAt = performance.now();
 
+  // One backend call per seek: with `paused` the engine starts the new
+  // position and pauses it under one lock, so a paused item stays silent
+  // (no play-then-pause burst, no click).
   if (tg.trackId) {
-    await audio.playTrackFrom(tg.trackId, pos, tg.clipId ?? undefined);
-    if (wasPaused) await audio.pauseTrack(tg.trackId);
+    await audio.playTrackFrom(tg.trackId, pos, tg.clipId ?? undefined, wasPaused);
     return;
   }
 
@@ -158,9 +204,8 @@ async function seek(position: number): Promise<void> {
     entry.trimStart, entry.trimEnd,
     keepLoop ? entry.loopStart : null,
     keepLoop ? entry.loopEnd : null,
+    wasPaused,
   );
-  // Only the preview is active here, so pausing everything pauses just it.
-  if (wasPaused) await audio.pauseAll();
 }
 
 // --- Display ---

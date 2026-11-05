@@ -991,12 +991,14 @@ pub fn play_track_clip(container: &AppStateContainer, track_id: &str, clip_id: &
     audio.play_track_clip(track_id, clip_id)
 }
 
-pub fn play_track_from_position(container: &AppStateContainer, track_id: &str, clip_id: Option<&str>, position: f64) -> Result<(), String> {
+/// `paused = true` seeks without un-pausing: the track ends up paused at
+/// `position` (one audio lock, so nothing plays in between).
+pub fn play_track_from_position(container: &AppStateContainer, track_id: &str, clip_id: Option<&str>, position: f64, paused: bool) -> Result<(), String> {
     let track_config = find_track_ref(container, track_id)?;
     update_clip_file_state(container, &track_config);
     let mut audio = container.lock_audio();
     ensure_track_ready(&mut audio, &track_config)?;
-    audio.play_track_from(track_id, clip_id, position)
+    audio.play_track_from(track_id, clip_id, position, paused)
 }
 
 pub fn pause_track_audio(container: &AppStateContainer, track_id: &str) -> Result<(), String> {
@@ -1126,6 +1128,7 @@ pub fn play_library_sound(
     trim_end: Option<f64>,
     loop_start: Option<f64>,
     loop_end: Option<f64>,
+    paused: bool,
 ) -> Result<(), String> {
     // Check the file is usable (exists and is not empty) before attempting playback
     if !is_file_usable(file_path) {
@@ -1151,7 +1154,7 @@ pub fn play_library_sound(
         loop_region,
         fade_in: None,
         fade_out: None,
-    })
+    }, paused)
 }
 
 pub fn stop_library_sound(container: &AppStateContainer) -> Result<(), String> {
