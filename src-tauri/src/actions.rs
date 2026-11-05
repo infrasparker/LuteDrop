@@ -11,7 +11,7 @@ use crate::database::settings::{self as broadcast_settings, BroadcastSettings};
 use crate::database::settings as autotag_settings;
 use crate::models::{
     AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
-    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodScale, MoodStep, Pace, Role, SceneConfig, Track, TrackUpdates, VibeHit,
+    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodScale, MoodStep, Role, SceneConfig, Track, TrackUpdates, VibeHit,
     VibePoint,
 };
 use crate::relink;
@@ -418,32 +418,6 @@ pub fn set_entry_role(
 ) -> Result<AppState, String> {
     let state = mutate_and_reload(container, |conn| {
         library::set_user_role(conn, &entry_ids, role)
-    })?;
-    request_rescore_if_enabled(container);
-    Ok(state)
-}
-
-/// Sets the user's pace on the given entries. `None` clears it ("use auto"),
-/// so the analyzer's pace shows.
-pub fn set_entry_pace(
-    container: &AppStateContainer,
-    entry_ids: Vec<String>,
-    pace: Option<Pace>,
-) -> Result<AppState, String> {
-    let state = mutate_and_reload(container, |conn| {
-        library::set_user_pace(conn, &entry_ids, pace)
-    })?;
-    request_rescore_if_enabled(container);
-    Ok(state)
-}
-
-/// Makes the analyzer's pace the user's, on each entry that has one.
-pub fn keep_auto_pace(
-    container: &AppStateContainer,
-    entry_ids: Vec<String>,
-) -> Result<AppState, String> {
-    let state = mutate_and_reload(container, |conn| {
-        library::keep_auto_pace(conn, &entry_ids)
     })?;
     request_rescore_if_enabled(container);
     Ok(state)

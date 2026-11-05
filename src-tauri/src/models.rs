@@ -55,23 +55,21 @@ pub struct LibraryEntry {
     pub role_auto_score: Option<f64>,
     /// The user's role. When set it is shown instead of `role_auto`.
     pub role_user: Option<Role>,
-    /// The pace shown: `pace_user` if set, otherwise `pace_auto`.
-    pub pace: Option<Pace>,
-    /// The analyzer's pace, written by every analysis run.
-    pub pace_auto: Option<Pace>,
-    /// The analyzer's Moving probability behind `pace_auto`.
-    pub pace_auto_score: Option<f64>,
-    /// The user's pace. When set it is shown instead of `pace_auto`.
-    pub pace_user: Option<Pace>,
     /// The analyzer's Bright ↔ Dark position as a z-score across the
     /// library's analyzed music; positive is Bright.
     pub mood_bright: Option<f64>,
-    /// The analyzer's Light ↔ Heavy position as a z-score; positive is Light.
-    pub mood_light: Option<f64>,
     /// The user's Bright ↔ Dark step; when set it overrides `mood_bright`.
     pub mood_bright_user: Option<MoodStep>,
-    /// The user's Light ↔ Heavy step; when set it overrides `mood_light`.
-    pub mood_light_user: Option<MoodStep>,
+    /// The analyzer's Intimate ↔ Grand position as a z-score; positive is
+    /// Grand.
+    pub mood_grand: Option<f64>,
+    /// The user's Intimate ↔ Grand step; when set it overrides `mood_grand`.
+    pub mood_grand_user: Option<MoodStep>,
+    /// The analyzer's Calm ↔ Energetic position as a z-score; positive is
+    /// Energetic.
+    pub mood_energy: Option<f64>,
+    /// The user's Calm ↔ Energetic step; when set it overrides `mood_energy`.
+    pub mood_energy_user: Option<MoodStep>,
 }
 
 /// Whether a music entry is meant for combat scenes.
@@ -106,36 +104,9 @@ impl Role {
     }
 }
 
-/// Whether a music entry is still or moving.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../generated/")]
-#[serde(rename_all = "camelCase")]
-pub enum Pace {
-    Still,
-    Moving,
-}
-
-impl Pace {
-    /// The value stored in `library_entries.pace`.
-    pub fn as_db_str(&self) -> &'static str {
-        match self {
-            Pace::Still => "still",
-            Pace::Moving => "moving",
-        }
-    }
-
-    /// Parses a stored value; anything unrecognised is `None`.
-    pub fn from_db_str(s: &str) -> Option<Self> {
-        match s {
-            "still" => Some(Pace::Still),
-            "moving" => Some(Pace::Moving),
-            _ => None,
-        }
-    }
-}
-
 /// One of the three steps on a mood scale. `High` is the positive pole
-/// (Bright on Bright ↔ Dark, Light on Light ↔ Heavy).
+/// (Bright on Bright ↔ Dark, Grand on Intimate ↔ Grand, Energetic on
+/// Calm ↔ Energetic).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
@@ -145,15 +116,27 @@ pub enum MoodStep {
     High,
 }
 
-/// Which of the two mood scales a user step applies to.
+/// Which of the three mood scales a user step applies to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
 pub enum MoodScale {
     /// Bright <-> Dark.
     Bright,
-    /// Light <-> Heavy.
-    Light,
+    /// Intimate <-> Grand.
+    Grand,
+    /// Calm <-> Energetic.
+    Energy,
+}
+
+/// The analyzer's position on each mood scale for one entry, as z-scores
+/// across the library's analyzed music. Positive is Bright, Grand and
+/// Energetic. Backend-only: the frontend reads these from `LibraryEntry`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MoodZ {
+    pub bright: f64,
+    pub grand: f64,
+    pub energy: f64,
 }
 
 impl MoodStep {
@@ -302,8 +285,6 @@ pub struct AutoTagReport {
     pub failed: u32,
     pub unreachable: u32,
     pub gate: Option<TagQuality>,
-    /// Quality of the pace head (Moving = positive), like `gate` for Role.
-    pub pace: Option<TagQuality>,
     pub tags: Vec<TagQuality>,
     pub error: Option<String>,
     /// Up to 5 "entry name: error" lines from entries that failed or could
@@ -605,11 +586,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pace_and_mood_step_db_strings_round_trip() {
-        for pace in [Pace::Still, Pace::Moving] {
-            assert_eq!(Pace::from_db_str(pace.as_db_str()), Some(pace));
-        }
-        assert_eq!((Pace::Still.as_db_str(), Pace::Moving.as_db_str()), ("still", "moving"));
+    fn mood_step_db_strings_round_trip() {
         for step in [MoodStep::Low, MoodStep::Mid, MoodStep::High] {
             assert_eq!(MoodStep::from_db_str(step.as_db_str()), Some(step));
         }
@@ -617,7 +594,6 @@ mod tests {
             [MoodStep::Low.as_db_str(), MoodStep::Mid.as_db_str(), MoodStep::High.as_db_str()],
             ["low", "mid", "high"]
         );
-        assert_eq!(Pace::from_db_str("steady"), None);
         assert_eq!(MoodStep::from_db_str(""), None);
     }
 

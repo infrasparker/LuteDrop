@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use super::now_millis;
 use crate::autotag::plan::EntryFacts;
-use crate::models::{AnalysisStatus, EntryAnalysis, EntryTagScores, EntryType, Pace, Role, TagScore, TagSource};
+use crate::models::{AnalysisStatus, EntryAnalysis, EntryTagScores, EntryType, Role, TagScore, TagSource};
 
 /// One library entry as an auto-tagging run sees it.
 #[derive(Debug, Clone)]
@@ -21,7 +21,7 @@ pub struct RunEntry {
 }
 
 /// Loads every library entry with the user's layer only (yes and no tag
-/// votes, user role and user pace), its file path and analysis status. The
+/// votes and user role), its file path and analysis status. The
 /// analyzer's own layer is left out, so it never trains on its own guesses.
 pub fn load_run_entries(conn: &Connection) -> Result<Vec<RunEntry>, String> {
     // Voted tag names per entry: yes votes and no votes.
@@ -49,12 +49,12 @@ pub fn load_run_entries(conn: &Connection) -> Result<Vec<RunEntry>, String> {
     }
 
     /// One `library_entries` row: id, name, file path, hash, type, user
-    /// role, user pace.
-    type EntryRow = (String, String, String, Option<String>, String, Option<String>, Option<String>);
+    /// role.
+    type EntryRow = (String, String, String, Option<String>, String, Option<String>);
     let entries: Vec<EntryRow> = {
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, file_path, content_hash, entry_type, role_user, pace_user
+                "SELECT id, name, file_path, content_hash, entry_type, role_user
                  FROM library_entries ORDER BY name",
             )
             .map_err(|e| format!("Failed to prepare entry query: {e}"))?;
@@ -67,7 +67,6 @@ pub fn load_run_entries(conn: &Connection) -> Result<Vec<RunEntry>, String> {
                     row.get(3)?,
                     row.get(4)?,
                     row.get(5)?,
-                    row.get(6)?,
                 ))
             })
             .map_err(|e| format!("Failed to query entries: {e}"))?
@@ -77,7 +76,7 @@ pub fn load_run_entries(conn: &Connection) -> Result<Vec<RunEntry>, String> {
     };
 
     let mut out = Vec::with_capacity(entries.len());
-    for (id, name, file_path, hash, entry_type, role_user, pace_user) in entries {
+    for (id, name, file_path, hash, entry_type, role_user) in entries {
         let analysis = get_analysis(conn, &id)?.map(|(a, stored_hash)| (a.status, stored_hash));
         out.push(RunEntry {
             facts: EntryFacts {
@@ -85,7 +84,6 @@ pub fn load_run_entries(conn: &Connection) -> Result<Vec<RunEntry>, String> {
                 rejected: rejected.remove(&id).unwrap_or_default(),
                 is_music: matches!(EntryType::from_str(&entry_type), EntryType::Music),
                 user_role: role_user.as_deref().and_then(Role::from_db_str),
-                user_pace: pace_user.as_deref().and_then(Pace::from_db_str),
                 hash,
                 id,
             },
@@ -357,24 +355,6 @@ mod tests {
         assert_eq!(role(&both), Some(Role::NonCombat), "the user layer, not the analyzer's");
         assert_eq!(role(&auto), None, "an auto role is never a user role");
         assert_eq!(role(&unset), None);
-    }
-
-    #[test]
-    fn facts_loader_reads_user_pace_only() {
-        let conn = open_memory_db();
-        let new = |path: &str| {
-            library::insert_library_entry(&conn, path, None, path, None, None, None, "music").unwrap()
-        };
-        let (user, auto, unset) = (new("/u.mp3"), new("/a.mp3"), new("/n.mp3"));
-        library::set_user_pace(&conn, std::slice::from_ref(&user), Some(Pace::Moving)).unwrap();
-        library::apply_auto_pace(&conn, &user, Some(Pace::Still), 0.1).unwrap();
-        library::apply_auto_pace(&conn, &auto, Some(Pace::Still), 0.1).unwrap();
-
-        let entries = load_run_entries(&conn).unwrap();
-        let pace = |id: &str| entries.iter().find(|e| e.facts.id == id).unwrap().facts.user_pace;
-        assert_eq!(pace(&user), Some(Pace::Moving));
-        assert_eq!(pace(&auto), None, "an auto pace is never a user pace");
-        assert_eq!(pace(&unset), None);
     }
 
     #[test]

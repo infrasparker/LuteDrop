@@ -15,12 +15,12 @@ use uuid::Uuid;
 
 use crate::models::{
     AnalysisStatus, AppState, AutoTag, Clip, Comp, Configuration, EntryAnalysis, EntryType, Group,
-    LibraryEntry, MoodStep, Pace, Role, Track, TrackMode, TrackTransition,
+    LibraryEntry, MoodStep, Role, Track, TrackMode, TrackTransition,
 };
 
 /// Current schema version. Bump when adding a migration below; fresh
 /// databases are stamped with this directly.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// Spacing between sibling `sort_order` values, leaving room for insertions
 /// between neighbours without renumbering. Shared by hierarchy + configurations.
@@ -331,6 +331,36 @@ fn migrate_v7_to_v8(conn: &Connection) -> SqlResult<()> {
     Ok(())
 }
 
+/// Moves mood to three PAD scales (spec "Three-axis mood"): Bright ↔ Dark
+/// stays, Intimate ↔ Grand and Calm ↔ Energetic are added, and Light ↔ Heavy
+/// and pace are dropped. Runs inside the migration runner's transaction.
+///
+/// - Every scale starts from the analyzer alone: the user's Bright ↔ Dark
+///   steps are cleared (they came from the old bright/dark tags), and nothing
+///   is carried from `mood_light_user` or `pace_user`. The pre-migration
+///   backup keeps them.
+/// - The analyzer's Bright ↔ Dark z-score, role and tags are untouched.
+/// - Stored scores are cleared, so the next run re-scores every entry and
+///   fills the new z-scores.
+fn migrate_v8_to_v9(conn: &Connection) -> SqlResult<()> {
+    conn.execute_batch(
+        "ALTER TABLE library_entries ADD COLUMN mood_grand REAL;
+         ALTER TABLE library_entries ADD COLUMN mood_grand_user TEXT;
+         ALTER TABLE library_entries ADD COLUMN mood_energy REAL;
+         ALTER TABLE library_entries ADD COLUMN mood_energy_user TEXT;
+
+         UPDATE library_entries SET mood_bright_user = NULL;
+
+         ALTER TABLE library_entries DROP COLUMN mood_light;
+         ALTER TABLE library_entries DROP COLUMN mood_light_user;
+         ALTER TABLE library_entries DROP COLUMN pace_auto;
+         ALTER TABLE library_entries DROP COLUMN pace_auto_score;
+         ALTER TABLE library_entries DROP COLUMN pace_user;
+
+         UPDATE entry_analysis SET scores_json = NULL;",
+    )
+}
+
 /// Ordered migrations: entry `(n, f)` upgrades version n → n+1.
 const MIGRATIONS: &[(i64, Migration)] = &[
     (3, migrate_v3_to_v4),
@@ -338,6 +368,7 @@ const MIGRATIONS: &[(i64, Migration)] = &[
     (5, migrate_v5_to_v6),
     (6, migrate_v6_to_v7),
     (7, migrate_v7_to_v8),
+    (8, migrate_v8_to_v9),
 ];
 
 fn read_schema_version(conn: &Connection) -> i64 {
@@ -411,7 +442,8 @@ pub fn open_db(path: &Path) -> Result<Connection, String> {
         .map_err(|e| format!("Failed to inspect database: {e}"))?;
 
     // Migrations rewrite the user's library (v7 cleans up their tags, v8
-    // splits every facet and tag into auto and user layers), so an
+    // splits every facet and tag into auto and user layers, v9 clears the
+    // user's mood steps), so an
     // existing database behind the current schema is copied first, before
     // anything changes it. No copy, no migration.
     if !fresh {
@@ -473,13 +505,12 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
             role_auto        TEXT,
             role_auto_score  REAL,
             role_user        TEXT,
-            pace_auto        TEXT,
-            pace_auto_score  REAL,
-            pace_user        TEXT,
             mood_bright      REAL,
-            mood_light       REAL,
             mood_bright_user TEXT,
-            mood_light_user  TEXT
+            mood_grand       REAL,
+            mood_grand_user  TEXT,
+            mood_energy      REAL,
+            mood_energy_user TEXT
         );
 
         CREATE TABLE IF NOT EXISTS tags (
@@ -653,8 +684,9 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
         .prepare(
             "SELECT id, file_path, content_hash, name, duration, sample_rate, file_size,
                     volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type,
-                    role_auto, role_auto_score, role_user, pace_auto, pace_auto_score, pace_user,
-                    mood_bright, mood_light, mood_bright_user, mood_light_user
+                    role_auto, role_auto_score, role_user,
+                    mood_bright, mood_bright_user, mood_grand, mood_grand_user,
+                    mood_energy, mood_energy_user
              FROM library_entries
              ORDER BY name ASC",
         )
@@ -681,15 +713,14 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
                     row.get::<_, Option<String>>(14)?, // role_auto
                     row.get::<_, Option<f64>>(15)?,    // role_auto_score
                     row.get::<_, Option<String>>(16)?, // role_user
-                    row.get::<_, Option<String>>(17)?, // pace_auto
-                    row.get::<_, Option<f64>>(18)?,    // pace_auto_score
-                    row.get::<_, Option<String>>(19)?, // pace_user
                 ),
                 (
-                    row.get::<_, Option<f64>>(20)?,    // mood_bright
-                    row.get::<_, Option<f64>>(21)?,    // mood_light
-                    row.get::<_, Option<String>>(22)?, // mood_bright_user
-                    row.get::<_, Option<String>>(23)?, // mood_light_user
+                    row.get::<_, Option<f64>>(17)?,    // mood_bright
+                    row.get::<_, Option<String>>(18)?, // mood_bright_user
+                    row.get::<_, Option<f64>>(19)?,    // mood_grand
+                    row.get::<_, Option<String>>(20)?, // mood_grand_user
+                    row.get::<_, Option<f64>>(21)?,    // mood_energy
+                    row.get::<_, Option<String>>(22)?, // mood_energy_user
                 ),
             ))
         })
@@ -769,16 +800,15 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
     let mut entries = Vec::with_capacity(rows.len());
     for (id, file_path, content_hash, name, duration, sample_rate, file_size,
          volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type,
-         (role_auto, role_auto_score, role_user, pace_auto, pace_auto_score, pace_user),
-         (mood_bright, mood_light, mood_bright_user, mood_light_user))
+         (role_auto, role_auto_score, role_user),
+         (mood_bright, mood_bright_user, mood_grand, mood_grand_user, mood_energy, mood_energy_user))
         in rows
     {
         let tags = tag_map.remove(&id).unwrap_or_default();
         let analysis = analysis_map.remove(&id);
         let role_auto = role_auto.as_deref().and_then(Role::from_db_str);
         let role_user = role_user.as_deref().and_then(Role::from_db_str);
-        let pace_auto = pace_auto.as_deref().and_then(Pace::from_db_str);
-        let pace_user = pace_user.as_deref().and_then(Pace::from_db_str);
+        let step = |s: Option<String>| s.as_deref().and_then(MoodStep::from_db_str);
         entries.push(LibraryEntry {
             id,
             file_path,
@@ -803,14 +833,12 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
             // A score without a role says nothing the UI can show.
             role_auto_score: role_auto.and(role_auto_score),
             role_user,
-            pace: pace_user.or(pace_auto),
-            pace_auto,
-            pace_auto_score: pace_auto.and(pace_auto_score),
-            pace_user,
             mood_bright,
-            mood_light,
-            mood_bright_user: mood_bright_user.as_deref().and_then(MoodStep::from_db_str),
-            mood_light_user: mood_light_user.as_deref().and_then(MoodStep::from_db_str),
+            mood_bright_user: step(mood_bright_user),
+            mood_grand,
+            mood_grand_user: step(mood_grand_user),
+            mood_energy,
+            mood_energy_user: step(mood_energy_user),
         });
     }
 
@@ -1556,10 +1584,29 @@ mod tests {
         conn.prepare(&format!("SELECT {column} FROM {table}")).is_ok()
     }
 
+    /// Turns a database `init_schema` just built into the v8 shape of
+    /// `library_entries`: Light ↔ Heavy and pace layers, no Intimate ↔ Grand
+    /// or Calm ↔ Energetic columns.
+    fn make_v8_shape(conn: &Connection) {
+        conn.execute_batch(
+            "ALTER TABLE library_entries DROP COLUMN mood_grand;
+             ALTER TABLE library_entries DROP COLUMN mood_grand_user;
+             ALTER TABLE library_entries DROP COLUMN mood_energy;
+             ALTER TABLE library_entries DROP COLUMN mood_energy_user;
+             ALTER TABLE library_entries ADD COLUMN pace_auto TEXT;
+             ALTER TABLE library_entries ADD COLUMN pace_auto_score REAL;
+             ALTER TABLE library_entries ADD COLUMN pace_user TEXT;
+             ALTER TABLE library_entries ADD COLUMN mood_light REAL;
+             ALTER TABLE library_entries ADD COLUMN mood_light_user TEXT;",
+        )
+        .unwrap();
+    }
+
     /// Turns a database `init_schema` just built into the v7 shape of the
     /// tables v8 changes: single-value role and pace columns with a source and
     /// a score, the v5 tag table, and `tag_rejections`.
     fn make_v7_shape(conn: &Connection) {
+        make_v8_shape(conn);
         conn.execute_batch(
             "ALTER TABLE library_entries DROP COLUMN role_auto;
              ALTER TABLE library_entries DROP COLUMN role_auto_score;
@@ -1713,17 +1760,21 @@ mod tests {
     }
 
     #[test]
-    fn fresh_database_is_v8() {
+    fn fresh_database_is_v9() {
         let dir = tempfile::tempdir().unwrap();
         let conn = open_db(&dir.path().join("fresh.db")).unwrap();
-        assert_eq!(read_schema_version(&conn), 8);
+        assert_eq!(read_schema_version(&conn), 9);
         conn.prepare(
-            "SELECT role_auto, role_auto_score, role_user, pace_auto, pace_auto_score, pace_user,
-                    mood_bright, mood_light, mood_bright_user, mood_light_user
+            "SELECT role_auto, role_auto_score, role_user,
+                    mood_bright, mood_bright_user, mood_grand, mood_grand_user,
+                    mood_energy, mood_energy_user
              FROM library_entries",
         )
         .unwrap();
-        for old in ["role", "role_source", "role_score", "pace", "pace_source", "pace_score"] {
+        for old in [
+            "role", "role_source", "role_score", "pace", "pace_source", "pace_score",
+            "pace_auto", "pace_auto_score", "pace_user", "mood_light", "mood_light_user",
+        ] {
             assert!(!has_column(&conn, "library_entries", old), "{old} should be gone");
         }
         // Nothing to protect on a fresh database, so no pre-migration copy.
@@ -1775,6 +1826,14 @@ mod tests {
             conn.execute_batch(&format!("ALTER TABLE library_entries DROP COLUMN {column}"))
                 .unwrap();
         }
+    }
+
+    /// Writes a file-backed database in the v8 shape, stamped version 8.
+    fn create_v8_db(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        init_schema(&conn).unwrap();
+        make_v8_shape(&conn);
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '8')", []).unwrap();
     }
 
     /// Writes a file-backed database in the v7 shape, stamped version 7.
@@ -1880,12 +1939,14 @@ mod tests {
         let conn = open_db(&path).unwrap();
         assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
 
-        // A: synth renamed, removed tags gone, user `bright` became a user step.
+        // A: synth renamed, removed tags gone. Its user `bright` became a
+        // user step in v7 (see v7_turns_user_bright_dark_tags_into_steps),
+        // which v9 clears again, like every user mood step.
         assert_eq!(entry_tags(&conn, "A"), pairs(&[("electronic", "user"), ("skyrim", "user")]));
-        assert_eq!(mood_bright_user(&conn, "A").as_deref(), Some("high"));
-        // B: user `bright` and user `dark` together give the neutral step.
+        assert_eq!(mood_bright_user(&conn, "A"), None);
+        // B: user `bright` and user `dark` tags are gone too.
         assert!(entry_tags(&conn, "B").is_empty());
-        assert_eq!(mood_bright_user(&conn, "B").as_deref(), Some("mid"));
+        assert_eq!(mood_bright_user(&conn, "B"), None);
         // C: the rename collision keeps one user row; an auto `dark` leaves no
         // step. The `mischievous` rejection moved onto `playful` in v7, where
         // the user's own `playful` tag wins in v8.
@@ -1971,7 +2032,7 @@ mod tests {
     /// Every data case of the v7 → v8 split into analyzer and user layers.
     #[test]
     fn v7_database_migrates_to_auto_and_user_layers() {
-        use crate::models::{AutoTag, Pace, Role};
+        use crate::models::{AutoTag, Role};
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("lutedrop.db");
@@ -2012,17 +2073,18 @@ mod tests {
         }
 
         let conn = open_db(&path).unwrap();
-        assert_eq!(read_schema_version(&conn), 8);
+        assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
 
         // Old columns and the rejections table are gone; the index is back.
-        for old in ["role", "role_source", "role_score", "pace", "pace_source", "pace_score"] {
+        // Pace goes entirely in v9 (see v7_to_v8_splits_pace_layers).
+        for old in ["role", "role_source", "role_score", "pace", "pace_source", "pace_score", "pace_user"] {
             assert!(!has_column(&conn, "library_entries", old), "{old} should be gone");
         }
         assert!(!has_column(&conn, "library_entry_tags", "source"));
         assert!(!table_exists(&conn, "tag_rejections"));
         assert_eq!(index_names(&conn), EXPECTED_INDEXES);
 
-        // Role and pace: (auto, auto score, user) per entry.
+        // Role: (auto, auto score, user) per entry.
         type Layers = (Option<String>, Option<f64>, Option<String>);
         let layers = |facet: &str, id: &str| -> Layers {
             conn.query_row(
@@ -2035,13 +2097,10 @@ mod tests {
         let s = |v: &str| Some(v.to_string());
         // A user role becomes the user layer.
         assert_eq!(layers("role", "U"), (None, None, s("combat")));
-        assert_eq!(layers("pace", "U"), (None, None, s("moving")));
         // An auto role becomes the analyzer layer with its score.
         assert_eq!(layers("role", "AU"), (s("non_combat"), Some(0.2), None));
-        assert_eq!(layers("pace", "AU"), (s("still"), Some(0.1), None));
         // "None (yours)" becomes all NULL, i.e. "use auto".
         assert_eq!(layers("role", "CL"), (None, None, None));
-        assert_eq!(layers("pace", "CL"), (None, None, None));
         assert_eq!(layers("role", "N"), (None, None, None));
 
         // Tags: (auto_score, user_vote) per tag on U.
@@ -2080,7 +2139,6 @@ mod tests {
         let entry = |id: &str| state.library_entries.iter().find(|e| e.id == id).unwrap();
         let u = entry("U");
         assert_eq!((u.role, u.role_user, u.role_auto), (Some(Role::Combat), Some(Role::Combat), None));
-        assert_eq!((u.pace, u.pace_user, u.pace_auto), (Some(Pace::Moving), Some(Pace::Moving), None));
         assert_eq!(u.tags, vec!["brass", "dark", "folk", "x"]);
         assert_eq!(
             u.auto_tags,
@@ -2089,7 +2147,6 @@ mod tests {
         assert_eq!(u.rejected_tags, vec!["choir", "drums"]);
         let au = entry("AU");
         assert_eq!((au.role, au.role_auto_score, au.role_user), (Some(Role::NonCombat), Some(0.2), None));
-        assert_eq!((au.pace, au.pace_auto_score), (Some(Pace::Still), Some(0.1)));
         assert_eq!(state.tags, vec!["brass", "dark", "folk", "x"]);
 
         // Every stored score is cleared so the next run re-scores, and fills
@@ -2143,18 +2200,204 @@ mod tests {
         assert!(conn.prepare("SELECT pace FROM library_entries").is_err());
     }
 
+    /// The v6 → v7 step alone (v9 then clears the steps): a user `bright` or
+    /// `dark` tag becomes the user's Bright ↔ Dark step.
     #[test]
-    fn entries_load_pace_and_mood() {
-        use crate::models::{MoodStep, Pace};
+    fn v7_turns_user_bright_dark_tags_into_steps() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lutedrop.db");
+        create_v6_db(&path);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "INSERT INTO library_entries (id, file_path, name, created_at, entry_type) VALUES
+               ('A', '/a.mp3', 'A', '0', 'music'), ('B', '/b.mp3', 'B', '0', 'music'),
+               ('C', '/c.mp3', 'C', '0', 'music'), ('R', '/r.ogg', 'R', '0', 'ambiance');
+             INSERT INTO tags (id, name) VALUES ('t-bright', 'bright'), ('t-dark', 'dark');
+             INSERT INTO library_entry_tags (library_entry_id, tag_id, source, score) VALUES
+               ('A', 't-bright', 'user', NULL),
+               ('B', 't-bright', 'user', NULL), ('B', 't-dark', 'user', NULL),
+               ('C', 't-dark', 'auto', 0.9),
+               ('R', 't-dark', 'user', NULL);",
+        )
+        .unwrap();
+        let up_to_v7: Vec<(i64, Migration)> = MIGRATIONS.iter().copied().filter(|(from, _)| *from < 7).collect();
+        run_migrations_with(&conn, &up_to_v7, 7).unwrap();
+        assert_eq!(read_schema_version(&conn), 7);
+
+        assert_eq!(mood_bright_user(&conn, "A").as_deref(), Some("high"));
+        // Both at once give the neutral step.
+        assert_eq!(mood_bright_user(&conn, "B").as_deref(), Some("mid"));
+        // An auto tag leaves no step; ambiance carries no mood.
+        assert_eq!(mood_bright_user(&conn, "C"), None);
+        assert_eq!(mood_bright_user(&conn, "R"), None);
+    }
+
+    /// The v7 → v8 step alone (v9 then drops pace): the pace columns split
+    /// into layers like role.
+    #[test]
+    fn v7_to_v8_splits_pace_layers() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        make_v7_shape(&conn);
+        conn.execute_batch(
+            "INSERT INTO meta (key, value) VALUES ('schema_version', '7');
+             INSERT INTO library_entries
+               (id, file_path, name, created_at, pace, pace_source, pace_score) VALUES
+               ('U',  '/u.mp3',  'U',  '0', 'moving', 'user', NULL),
+               ('AU', '/au.mp3', 'AU', '0', 'still',  'auto', 0.1),
+               ('CL', '/cl.mp3', 'CL', '0', NULL,     'user', NULL);",
+        )
+        .unwrap();
+        let up_to_v8: Vec<(i64, Migration)> = MIGRATIONS.iter().copied().filter(|(from, _)| *from < 8).collect();
+        run_migrations_with(&conn, &up_to_v8, 8).unwrap();
+        assert_eq!(read_schema_version(&conn), 8);
+
+        let layers = |id: &str| -> (Option<String>, Option<f64>, Option<String>) {
+            conn.query_row(
+                "SELECT pace_auto, pace_auto_score, pace_user FROM library_entries WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+        };
+        let s = |v: &str| Some(v.to_string());
+        assert_eq!(layers("U"), (None, None, s("moving")));
+        assert_eq!(layers("AU"), (s("still"), Some(0.1), None));
+        assert_eq!(layers("CL"), (None, None, None));
+    }
+
+    /// Every data case of the v8 → v9 move to three mood scales.
+    #[test]
+    fn v8_database_migrates_to_three_mood_scales() {
+        use crate::models::{AutoTag, Role};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lutedrop.db");
+        create_v8_db(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                r#"INSERT INTO library_entries
+                     (id, file_path, name, created_at, entry_type, role_auto, role_auto_score, role_user,
+                      pace_auto, pace_auto_score, pace_user,
+                      mood_bright, mood_light, mood_bright_user, mood_light_user) VALUES
+                     ('M', '/m.mp3', 'M', '0', 'music', 'combat', 0.9, 'non_combat',
+                      'moving', 0.8, 'still', 1.25, -0.5, 'high', 'low'),
+                     ('N', '/n.mp3', 'N', '0', 'music', NULL, NULL, NULL,
+                      NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+                     ('R', '/r.ogg', 'R', '0', 'ambiance', NULL, NULL, NULL,
+                      NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+                   INSERT INTO tags (id, name) VALUES ('t-folk', 'folk'), ('t-brass', 'brass'), ('t-drums', 'drums');
+                   INSERT INTO library_entry_tags (library_entry_id, tag_id, auto_score, user_vote) VALUES
+                     ('M', 't-folk', NULL, 1), ('M', 't-brass', 0.7, NULL), ('M', 't-drums', 0.6, 0);
+                   INSERT INTO entry_analysis (library_entry_id, content_hash, status, analyzed_at, scores_json) VALUES
+                     ('M', 'h-m', 'embedded', '1', '{"gate":1}'),
+                     ('R', 'h-r', 'embedded', '1', '{"keep":1}');"#,
+            )
+            .unwrap();
+        }
+
+        let conn = open_db(&path).unwrap();
+        assert_eq!(read_schema_version(&conn), 9);
+
+        // Light ↔ Heavy and pace are gone; the new scales exist.
+        for old in ["mood_light", "mood_light_user", "pace_auto", "pace_auto_score", "pace_user"] {
+            assert!(!has_column(&conn, "library_entries", old), "{old} should be gone");
+        }
+        assert_eq!(index_names(&conn), EXPECTED_INDEXES);
+
+        // Every user step is cleared; the analyzer's Bright ↔ Dark z stays and
+        // the new z-scores start empty.
+        type Moods = (Option<f64>, Option<String>, Option<f64>, Option<String>, Option<f64>, Option<String>);
+        let moods = |id: &str| -> Moods {
+            conn.query_row(
+                "SELECT mood_bright, mood_bright_user, mood_grand, mood_grand_user,
+                        mood_energy, mood_energy_user
+                 FROM library_entries WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(moods("M"), (Some(1.25), None, None, None, None, None));
+        assert_eq!(moods("N"), (None, None, None, None, None, None));
+
+        // Role and tags are untouched.
+        ensure_test_config(&conn);
+        let state = load_full_state(&conn).unwrap();
+        let m = state.library_entries.iter().find(|e| e.id == "M").unwrap();
+        assert_eq!(
+            (m.role, m.role_auto, m.role_auto_score, m.role_user),
+            (Some(Role::NonCombat), Some(Role::Combat), Some(0.9), Some(Role::NonCombat))
+        );
+        assert_eq!(m.tags, vec!["brass", "folk"]);
+        assert_eq!(m.auto_tags, vec![AutoTag { tag: "brass".into(), score: 0.7 }]);
+        assert_eq!(m.rejected_tags, vec!["drums"]);
+        assert_eq!(m.mood_bright, Some(1.25));
+        assert_eq!((m.mood_bright_user, m.mood_grand_user, m.mood_energy_user), (None, None, None));
+
+        // Every stored score is cleared so the next run re-scores; the
+        // embeddings stay good.
+        let scores: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entry_analysis WHERE scores_json IS NOT NULL", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(scores, 0);
+        let status: String = conn
+            .query_row("SELECT status FROM entry_analysis WHERE library_entry_id = 'M'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "embedded");
+
+        // A pre-migration copy of the v8 database keeps the user's old steps.
+        let backups = pre_migration_backups(dir.path(), 8);
+        assert_eq!(backups.len(), 1);
+        let copy = Connection::open(&backups[0]).unwrap();
+        assert_eq!(read_schema_version(&copy), 8);
+        let old: (Option<String>, Option<String>, Option<String>) = copy
+            .query_row(
+                "SELECT mood_bright_user, mood_light_user, pace_user FROM library_entries WHERE id = 'M'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(old, (Some("high".into()), Some("low".into()), Some("still".into())));
+    }
+
+    #[test]
+    fn v9_migration_rolls_back_as_a_whole_on_failure() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        make_v8_shape(&conn);
+        conn.execute_batch(
+            "INSERT INTO meta (key, value) VALUES ('schema_version', '8');
+             INSERT INTO library_entries (id, file_path, name, created_at, mood_bright_user)
+               VALUES ('M', '/m.mp3', 'M', '0', 'high');
+             -- An index on a column v9 drops makes the DROP COLUMN fail.
+             CREATE INDEX idx_in_the_way ON library_entries(pace_user);",
+        )
+        .unwrap();
+
+        assert!(run_migrations(&conn).is_err());
+
+        assert_eq!(read_schema_version(&conn), 8);
+        assert!(has_column(&conn, "library_entries", "mood_light"));
+        assert!(!has_column(&conn, "library_entries", "mood_grand"));
+        let step: Option<String> = conn
+            .query_row("SELECT mood_bright_user FROM library_entries WHERE id = 'M'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(step.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn entries_load_mood() {
+        use crate::models::MoodStep;
 
         let conn = open_memory_db();
         let set = library::insert_library_entry(&conn, "/a.mp3", None, "A", None, None, None, "music").unwrap();
         let unset = library::insert_library_entry(&conn, "/b.mp3", None, "B", None, None, None, "music").unwrap();
         conn.execute(
             "UPDATE library_entries
-             SET pace_auto = 'moving', pace_auto_score = 0.83, pace_user = 'still',
-                 mood_bright = 1.2, mood_light = -0.4,
-                 mood_bright_user = 'low', mood_light_user = 'high'
+             SET mood_bright = 1.2, mood_grand = -0.4, mood_energy = 0.7,
+                 mood_bright_user = 'low', mood_grand_user = 'high', mood_energy_user = 'mid'
              WHERE id = ?1",
             [&set],
         )
@@ -2162,19 +2405,15 @@ mod tests {
 
         let entries = load_library_entries(&conn).unwrap();
         let a = entries.iter().find(|e| e.id == set).unwrap();
-        assert_eq!(a.pace, Some(Pace::Still), "the user's pace is shown");
-        assert_eq!(a.pace_auto, Some(Pace::Moving));
-        assert_eq!(a.pace_auto_score, Some(0.83));
-        assert_eq!(a.pace_user, Some(Pace::Still));
-        assert_eq!(a.mood_bright, Some(1.2));
-        assert_eq!(a.mood_light, Some(-0.4));
-        assert_eq!(a.mood_bright_user, Some(MoodStep::Low));
-        assert_eq!(a.mood_light_user, Some(MoodStep::High));
+        assert_eq!((a.mood_bright, a.mood_grand, a.mood_energy), (Some(1.2), Some(-0.4), Some(0.7)));
+        assert_eq!(
+            (a.mood_bright_user, a.mood_grand_user, a.mood_energy_user),
+            (Some(MoodStep::Low), Some(MoodStep::High), Some(MoodStep::Mid))
+        );
 
         let b = entries.iter().find(|e| e.id == unset).unwrap();
-        assert_eq!((b.pace, b.pace_auto, b.pace_auto_score, b.pace_user), (None, None, None, None));
-        assert_eq!((b.mood_bright, b.mood_light), (None, None));
-        assert_eq!((b.mood_bright_user, b.mood_light_user), (None, None));
+        assert_eq!((b.mood_bright, b.mood_grand, b.mood_energy), (None, None, None));
+        assert_eq!((b.mood_bright_user, b.mood_grand_user, b.mood_energy_user), (None, None, None));
     }
 
 }
