@@ -335,10 +335,11 @@ fn migrate_v7_to_v8(conn: &Connection) -> SqlResult<()> {
 /// stays, Intimate ↔ Grand and Calm ↔ Energetic are added, and Light ↔ Heavy
 /// and pace are dropped. Runs inside the migration runner's transaction.
 ///
-/// - Every scale starts from the analyzer alone: the user's Bright ↔ Dark
-///   steps are cleared (they came from the old bright/dark tags), and nothing
-///   is carried from `mood_light_user` or `pace_user`. The pre-migration
-///   backup keeps them.
+/// - The user's Bright ↔ Dark steps are kept: that scale's meaning is
+///   unchanged. Nothing is carried from `mood_light_user` or `pace_user`
+///   (their meanings don't map onto the new scales), so Intimate ↔ Grand and
+///   Calm ↔ Energetic start from the analyzer alone. The pre-migration
+///   backup keeps the dropped values.
 /// - The analyzer's Bright ↔ Dark z-score, role and tags are untouched.
 /// - Stored scores are cleared, so the next run re-scores every entry and
 ///   fills the new z-scores.
@@ -348,8 +349,6 @@ fn migrate_v8_to_v9(conn: &Connection) -> SqlResult<()> {
          ALTER TABLE library_entries ADD COLUMN mood_grand_user TEXT;
          ALTER TABLE library_entries ADD COLUMN mood_energy REAL;
          ALTER TABLE library_entries ADD COLUMN mood_energy_user TEXT;
-
-         UPDATE library_entries SET mood_bright_user = NULL;
 
          ALTER TABLE library_entries DROP COLUMN mood_light;
          ALTER TABLE library_entries DROP COLUMN mood_light_user;
@@ -1941,12 +1940,12 @@ mod tests {
 
         // A: synth renamed, removed tags gone. Its user `bright` became a
         // user step in v7 (see v7_turns_user_bright_dark_tags_into_steps),
-        // which v9 clears again, like every user mood step.
+        // which v9 keeps.
         assert_eq!(entry_tags(&conn, "A"), pairs(&[("electronic", "user"), ("skyrim", "user")]));
-        assert_eq!(mood_bright_user(&conn, "A"), None);
-        // B: user `bright` and user `dark` tags are gone too.
+        assert_eq!(mood_bright_user(&conn, "A").as_deref(), Some("high"));
+        // B: user `bright` and user `dark` tags are gone too (step: mid).
         assert!(entry_tags(&conn, "B").is_empty());
-        assert_eq!(mood_bright_user(&conn, "B"), None);
+        assert_eq!(mood_bright_user(&conn, "B").as_deref(), Some("mid"));
         // C: the rename collision keeps one user row; an auto `dark` leaves no
         // step. The `mischievous` rejection moved onto `playful` in v7, where
         // the user's own `playful` tag wins in v8.
@@ -2269,7 +2268,7 @@ mod tests {
     /// Every data case of the v8 → v9 move to three mood scales.
     #[test]
     fn v8_database_migrates_to_three_mood_scales() {
-        use crate::models::{AutoTag, Role};
+        use crate::models::{AutoTag, MoodStep, Role};
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("lutedrop.db");
@@ -2306,8 +2305,7 @@ mod tests {
         }
         assert_eq!(index_names(&conn), EXPECTED_INDEXES);
 
-        // Every user step is cleared; the analyzer's Bright ↔ Dark z stays and
-        // the new z-scores start empty.
+        // Bright ↔ Dark (both layers) is kept; the new scales start empty.
         type Moods = (Option<f64>, Option<String>, Option<f64>, Option<String>, Option<f64>, Option<String>);
         let moods = |id: &str| -> Moods {
             conn.query_row(
@@ -2319,7 +2317,7 @@ mod tests {
             )
             .unwrap()
         };
-        assert_eq!(moods("M"), (Some(1.25), None, None, None, None, None));
+        assert_eq!(moods("M"), (Some(1.25), Some("high".into()), None, None, None, None));
         assert_eq!(moods("N"), (None, None, None, None, None, None));
 
         // Role and tags are untouched.
@@ -2334,7 +2332,7 @@ mod tests {
         assert_eq!(m.auto_tags, vec![AutoTag { tag: "brass".into(), score: 0.7 }]);
         assert_eq!(m.rejected_tags, vec!["drums"]);
         assert_eq!(m.mood_bright, Some(1.25));
-        assert_eq!((m.mood_bright_user, m.mood_grand_user, m.mood_energy_user), (None, None, None));
+        assert_eq!((m.mood_bright_user, m.mood_grand_user, m.mood_energy_user), (Some(MoodStep::High), None, None));
 
         // Every stored score is cleared so the next run re-scores; the
         // embeddings stay good.
