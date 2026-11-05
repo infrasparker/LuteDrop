@@ -8,6 +8,7 @@ import TagScoresPanel from './TagScoresPanel.vue';
 import RoleControl from './RoleControl.vue';
 import PaceControl from './PaceControl.vue';
 import MoodScaleControl from './MoodScaleControl.vue';
+import MoodGridInfo from './MoodGridInfo.vue';
 import { open } from '@tauri-apps/plugin-dialog';
 import { AUDIO_EXTENSIONS } from '../constants';
 import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
@@ -328,7 +329,15 @@ async function relocateFile(): Promise<void> {
             :z="entry.moodBright"
             :user="entry.moodBrightUser"
           />
-          <span class="text-caption text-medium-emphasis">Light ↔ Heavy</span>
+          <span class="text-caption text-medium-emphasis d-flex align-center">
+            Airy ↔ Heavy
+            <MoodGridInfo
+              :bright-z="entry.moodBright"
+              :bright-user="entry.moodBrightUser"
+              :light-z="entry.moodLight"
+              :light-user="entry.moodLightUser"
+            />
+          </span>
           <MoodScaleControl
             :entry-ids="[props.entryId]"
             scale="light"
@@ -464,7 +473,7 @@ async function relocateFile(): Promise<void> {
    as two cells (display: contents), so the columns line up across rows. */
 .facet-grid {
   display: grid;
-  grid-template-columns: 90px max-content 1fr;
+  grid-template-columns: max-content max-content 1fr;
   align-items: center;
   column-gap: 12px;
   row-gap: 12px;
