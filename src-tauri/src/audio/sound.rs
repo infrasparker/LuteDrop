@@ -22,6 +22,11 @@ pub struct SoundHandle {
     /// We track paused state ourselves; miniaudio reports a paused sound as
     /// "not playing", which is indistinguishable from "stopped" otherwise.
     pub paused: bool,
+    /// Source position (seconds) at which a de-clicked stop was scheduled —
+    /// the clip's `trim_end` — or `None` if no trim-end stop was scheduled.
+    /// Kept so `Voice::resume` can re-schedule it: resuming clears miniaudio's
+    /// stop time (see `ld_sound_resume` in shim.c), trim-end stop included.
+    pub trim_stop_at: Option<f64>,
 }
 
 #[derive(Clone)]
@@ -79,6 +84,7 @@ pub fn play(
         },
         loop_region: params.loop_region,
         paused: false,
+        trim_stop_at: None,
     })
 }
 
@@ -117,6 +123,7 @@ pub fn preload(engine: &ffi::EngineRef, params: &PlayParams) -> Result<SoundHand
         },
         loop_region: params.loop_region,
         paused: false,
+        trim_stop_at: None,
     })
 }
 

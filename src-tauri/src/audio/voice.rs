@@ -50,6 +50,34 @@ struct LoopRestart {
     loop_start_position: f64,
 }
 
+/// A de-clicked stop to schedule at a clip's `trim_end`.
+#[derive(Clone, Copy)]
+struct TrimStop {
+    /// The clip's `trim_end`, as a position in the source file (seconds).
+    trim_end: f64,
+    /// How long from now (engine clock, seconds) until playback reaches it.
+    secs_from_now: f64,
+}
+
+/// Work out the trim-end stop for a clip about to start, or `None` when it
+/// shouldn't get one: the caller didn't ask (`schedule` is false), the clip
+/// loops (its loop machinery decides when it ends), or it has no `trim_end`.
+fn trim_stop_plan(params: &PlayParams, schedule: bool) -> Option<TrimStop> {
+    if !schedule || params.loop_region.is_some() {
+        return None;
+    }
+    let trim_end = params.trim_end?;
+    let start = params.start_position.max(params.trim_start.unwrap_or(0.0));
+    Some(TrimStop { trim_end, secs_from_now: (trim_end - start).max(0.0) })
+}
+
+/// Schedule `stop` on `snd` and remember its `trim_end` on the handle, so
+/// `Voice::resume` can schedule it again after a pause.
+fn apply_trim_stop(snd: &mut SoundHandle, stop: TrimStop) {
+    snd.sound.schedule_stop_secs(stop.secs_from_now, TRIM_STOP_FADE_SECS);
+    snd.trim_stop_at = Some(stop.trim_end);
+}
+
 /// Whether `poll_loop` should stop a non-looping sound that passed its
 /// trim_end (library preview: yes; tracks: no — their transition machine
 /// handles it).
@@ -225,23 +253,16 @@ impl Voice {
 
         // Capture what we need for the scheduled trim-end stop before `params` is
         // moved into `sound::play`. Only for a non-looping clip with a trim_end.
-        let scheduled_stop = if schedule_trim_stop && params.loop_region.is_none() {
-            params.trim_end.map(|te| {
-                let start = params.start_position.max(params.trim_start.unwrap_or(0.0));
-                (te - start).max(0.0)
-            })
-        } else {
-            None
-        };
+        let trim_stop = trim_stop_plan(&params, schedule_trim_stop);
 
         // Replacing `current`: any staged next loop instance belongs to the OLD
         // sound and (EngineClock) may already be scheduled live — discard it.
         self.discard_loop_staging();
         self.stop_current_quick();
 
-        let snd = sound::play(engine, &self.group, params)?;
-        if let Some(secs_from_now) = scheduled_stop {
-            snd.sound.schedule_stop_secs(secs_from_now, TRIM_STOP_FADE_SECS);
+        let mut snd = sound::play(engine, &self.group, params)?;
+        if let Some(plan) = trim_stop {
+            apply_trim_stop(&mut snd, plan);
         }
         self.current = Some(snd);
         self.loop_restart = restart;
@@ -304,9 +325,18 @@ impl Voice {
     }
 
     /// Resume the current sound from its preserved cursor.
+    ///
+    /// Resuming clears miniaudio's scheduled stop time (the shim must, to undo
+    /// the pause fade), which also wipes the trim-end stop set at `play`. So if
+    /// the sound had one, schedule it again for the time that is left between
+    /// the current cursor and `trim_end`.
     pub fn resume(&mut self) {
         if let Some(ref mut snd) = self.current {
             sound::resume(snd);
+            if let Some(trim_end) = snd.trim_stop_at {
+                let secs_left = (trim_end - sound::position(snd)).max(0.0);
+                apply_trim_stop(snd, TrimStop { trim_end, secs_from_now: secs_left });
+            }
         }
     }
 
@@ -604,7 +634,7 @@ impl Voice {
     /// the outgoing handoff.
     pub fn start_preloaded(
         &mut self,
-        handle: SoundHandle,
+        mut handle: SoundHandle,
         params: &PlayParams,
         volume: f32,
         fade_in: Option<f64>,
@@ -624,14 +654,7 @@ impl Voice {
             loop_start_position: ls,
         });
 
-        let scheduled_stop = if schedule_trim_stop && params.loop_region.is_none() {
-            params.trim_end.map(|te| {
-                let start = params.start_position.max(params.trim_start.unwrap_or(0.0));
-                (te - start).max(0.0)
-            })
-        } else {
-            None
-        };
+        let trim_stop = trim_stop_plan(params, schedule_trim_stop);
 
         handle.sound.attach_to_group(&self.group);
         handle.sound.set_volume(volume);
@@ -639,8 +662,8 @@ impl Voice {
             .sound
             .play_no_seek(fade_in.unwrap_or(0.0))
             .map_err(|e| format!("Failed to start preloaded '{}': {}", params.file_path, e))?;
-        if let Some(secs_from_now) = scheduled_stop {
-            handle.sound.schedule_stop_secs(secs_from_now, TRIM_STOP_FADE_SECS);
+        if let Some(plan) = trim_stop {
+            apply_trim_stop(&mut handle, plan);
         }
         self.current = Some(handle);
         self.loop_restart = restart;
