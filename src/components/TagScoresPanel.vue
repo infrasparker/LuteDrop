@@ -98,6 +98,22 @@ function gateLabel(): string | null {
   return `${name} · ${e.roleSource === 'user' ? 'yours' : 'auto'}`;
 }
 
+function signed(z: number): string {
+  return `${z >= 0 ? '+' : ''}${z.toFixed(2)}`;
+}
+
+const soundRows = computed<{ label: string; value: string }[]>(() => {
+  const e = entry.value;
+  if (!e) return [];
+  const rows: { label: string; value: string }[] = [];
+  if (e.moodBright !== null) rows.push({ label: 'Bright ↔ Dark', value: `z = ${signed(e.moodBright)}` });
+  if (e.moodLight !== null) rows.push({ label: 'Light ↔ Heavy', value: `z = ${signed(e.moodLight)}` });
+  if (e.paceSource === 'auto' && e.paceScore !== null) {
+    rows.push({ label: 'Moving', value: `p = ${e.paceScore.toFixed(2)}` });
+  }
+  return rows;
+});
+
 function percent(score: number): number {
   return Math.max(0, Math.min(1, score)) * 100;
 }
@@ -158,6 +174,14 @@ function appliedLabel(s: TagScore): string | null {
               <span v-else class="score-chip" />
             </div>
           </template>
+        </template>
+        <template v-if="scores && soundRows.length > 0">
+          <VDivider class="my-2" />
+          <div class="text-caption text-medium-emphasis mb-1">Sound</div>
+          <div v-for="row in soundRows" :key="row.label" class="score-row">
+            <span class="score-name text-truncate">{{ row.label }}</span>
+            <span class="text-caption">{{ row.value }}</span>
+          </div>
         </template>
       </VExpansionPanelText>
     </VExpansionPanel>

@@ -6,7 +6,8 @@ import { effectiveStep, STEP_LABELS, STEPS } from '../utils/mood';
 
 /// Three-step toggle for one mood scale (Dark/Neutral/Bright or
 /// Heavy/Neutral/Light). The shown step is the user's if set, else the
-/// analyzer's, which is outlined with a creation icon and a z-score tooltip.
+/// analyzer's, which is outlined with a creation icon and a z-score tooltip;
+/// when the user's step differs, the icon stays on the analyzer's step.
 /// Clicking a step stores it as the user's choice; Reset hands it back to the analyzer.
 const props = defineProps<{
   entryIds: string[];
@@ -20,6 +21,11 @@ const busy = ref(false);
 
 const step = computed(() => effectiveStep(props.z, props.user));
 const isAuto = computed(() => props.user === null && step.value !== null);
+// The analyzer's own step, kept visible when the user's choice differs.
+const autoStep = computed(() => effectiveStep(props.z, null));
+const showAutoMarker = computed(
+  () => autoStep.value !== null && (props.user === null || props.user !== autoStep.value),
+);
 const zLabel = computed(() =>
   props.z === null ? 'Auto' : `Auto · z = ${props.z >= 0 ? '+' : ''}${props.z.toFixed(2)}`,
 );
@@ -60,13 +66,13 @@ function choose(value: MoodStep): void {
         :key="value"
         :value="value"
         size="small"
-        :prepend-icon="isAuto && step === value ? 'mdi-creation' : undefined"
+        :prepend-icon="showAutoMarker && autoStep === value ? 'mdi-creation' : undefined"
         :variant="isAuto && step === value ? 'outlined' : undefined"
         @click.prevent="choose(value)"
       >
         {{ labels[i] }}
         <VTooltip
-          v-if="isAuto && step === value"
+          v-if="showAutoMarker && autoStep === value"
           activator="parent"
           location="top"
           open-delay="300"

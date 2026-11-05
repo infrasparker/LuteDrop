@@ -46,8 +46,9 @@ pub struct Examples {
 pub struct ScoreRequest {
     pub gate: Examples,
     pub tags: HashMap<String, Examples>,
-    /// Moving (positive) vs Still (negative) examples. Left out of the
-    /// request when the user has set no pace on any entry.
+    /// Moving (positive) vs Still (negative) examples. Always sent, empty
+    /// when the user has set no pace, so the response carries an untrusted
+    /// pace head and stale auto paces get cleared.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pace: Option<Examples>,
     pub targets: Vec<String>,
@@ -243,7 +244,6 @@ pub fn build_score_request(
             None => {}
         }
     }
-    let pace = (!pace.positives.is_empty() || !pace.negatives.is_empty()).then_some(pace);
 
     let targets = hashed
         .iter()
@@ -251,7 +251,7 @@ pub fn build_score_request(
         .map(|(_, hash)| (*hash).clone())
         .collect();
 
-    ScoreRequest { gate, tags, pace, targets }
+    ScoreRequest { gate, tags, pace: Some(pace), targets }
 }
 
 /// The role a Combat probability `p` earns from the gate: Combat when the
@@ -730,10 +730,10 @@ mod tests {
         assert_eq!(pace.negatives, hashes(&["h-s"]));
         assert!(serde_json::to_value(&req).unwrap().get("pace").is_some());
 
-        // No examples: the key is left out.
+        // No examples: the key is still sent, with empty lists.
         let req = build_score_request(&[entry("unset", &[])], &scene(), &HashSet::new());
-        assert_eq!(req.pace, None);
-        assert!(serde_json::to_value(&req).unwrap().get("pace").is_none());
+        assert_eq!(req.pace, Some(Examples::default()));
+        assert!(serde_json::to_value(&req).unwrap().get("pace").is_some());
     }
 
     #[test]

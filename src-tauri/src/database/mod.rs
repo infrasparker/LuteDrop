@@ -170,7 +170,7 @@ fn migrate_v6_to_v7(conn: &Connection) -> SqlResult<()> {
     // Queue every analyzed music entry for the next run, which computes the
     // new pace features and mood scores and re-scores the new vocabulary.
     conn.execute(
-        "UPDATE entry_analysis SET status = ?1, error = NULL
+        "UPDATE entry_analysis SET status = ?1, error = NULL, scores_json = NULL
          WHERE library_entry_id IN (SELECT id FROM library_entries WHERE entry_type = 'music')",
         [AnalysisStatus::Pending.as_str()],
     )?;
@@ -1705,9 +1705,9 @@ mod tests {
                      ('E', 't-mischievous', 'auto', 0.75);
                    INSERT INTO tag_rejections (library_entry_id, tag_id, created_at) VALUES
                      ('A', 't-choir', '1'), ('C', 't-mischievous', '1'), ('E', 't-playful', '1');
-                   INSERT INTO entry_analysis (library_entry_id, content_hash, status, analyzed_at) VALUES
-                     ('A', 'h-a', 'embedded', '1'), ('D', 'h-d', 'failed', '1'),
-                     ('R', 'h-r', 'embedded', '1');
+                   INSERT INTO entry_analysis (library_entry_id, content_hash, status, analyzed_at, scores_json) VALUES
+                     ('A', 'h-a', 'embedded', '1', '{"stale":1}'), ('D', 'h-d', 'failed', '1', NULL),
+                     ('R', 'h-r', 'embedded', '1', '{"keep":1}');
                    INSERT INTO meta (key, value) VALUES ('autotag_scene_encounter',
                      '{"vocabulary":["brass","folk","choir","synth","bright","dark","mischievous"]}');"#,
             )
@@ -1781,6 +1781,16 @@ mod tests {
         assert_eq!(status("A"), "pending");
         assert_eq!(status("D"), "pending");
         assert_eq!(status("R"), "embedded");
+        let scores = |id: &str| -> Option<String> {
+            conn.query_row(
+                "SELECT scores_json FROM entry_analysis WHERE library_entry_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(scores("A"), None, "stale scores are cleared for queued entries");
+        assert_eq!(scores("R"), Some(r#"{"keep":1}"#.to_string()));
         let needing = crate::autotag::entries_needing_analysis(&conn).unwrap();
         assert!(needing.contains(&"A".to_string()));
 

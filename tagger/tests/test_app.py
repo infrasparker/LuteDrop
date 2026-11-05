@@ -473,6 +473,31 @@ def test_score_returns_pace_head_on_rhythm(scored):
     assert all(pace["scores"][h] < 0.5 for h in neg[1:])
 
 
+def test_score_ignores_cached_rhythm_with_other_keys(scored):
+    client, cache = scored
+    hashes = _rhythm_scored(client, cache)
+    pos = [h for h in hashes if h.startswith("hi")]
+    neg = [h for h in hashes if h.startswith("lo")]
+    cache.put_rhythm("lo0", {"other_feature": 1.0})  # written with a different feature set
+    body = {
+        "gate": {"positives": pos, "negatives": neg},
+        "pace": {"positives": pos, "negatives": neg[1:]},
+        "targets": hashes,
+    }
+    r = client.post("/score", json=body, headers=HEADERS)
+    assert r.status_code == 200
+    assert set(r.json()["pace"]["scores"]) == set(hashes) - {"lo0"}
+
+
+def test_embed_warns_when_rhythm_features_missing(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), None))
+    cache = EmbeddingCache(tmp_path)
+    app = create_app(FakeEmbedder(), cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2))
+    with caplog.at_level("WARNING"):
+        embed(TestClient(app), [("h9", "hi-1")])
+    assert any("h9" in m for m in caplog.messages)
+
+
 def test_score_without_pace_has_no_pace_key(client):
     hashes = seed(client)
     pos = [h for h in hashes if h.startswith("hi")]

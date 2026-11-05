@@ -158,6 +158,8 @@ def create_app(
                     cache.put(hash, embedder.embed_windows(windows))
                 if feats is not None:
                     cache.put_rhythm(hash, feats)
+                else:
+                    log.warning("No rhythm features for %s; pace is unavailable for it", hash)
                 results[hash] = {"hash": hash, "ok": True}
             except BrokenProcessPool as e:
                 replace_pool(pool)
@@ -181,7 +183,8 @@ def create_app(
         found, rows = [], []
         for h in dict.fromkeys(hashes):
             feats = cache.get_rhythm(h)
-            if feats is not None:
+            # A cached file written with a different feature set is skipped.
+            if feats is not None and all(k in feats for k in rhythm.FEATURES):
                 found.append(h)
                 rows.append([feats[k] for k in rhythm.FEATURES])
         return found, (np.array(rows) if rows else np.empty((0, len(rhythm.FEATURES))))
