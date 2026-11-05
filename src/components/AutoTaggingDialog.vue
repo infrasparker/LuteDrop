@@ -397,8 +397,7 @@ function close(): void {
           <!-- Vocabulary -->
           <div class="text-subtitle-2 mb-1">Vocabulary</div>
           <div class="text-caption text-medium-emphasis mb-2">
-            Tags that can be applied automatically
-            <template v-if="scene?.gateTag"> to entries that fit "{{ scene.gateTag }}"</template>.
+            Tags that can be applied automatically to music entries.
           </div>
           <div class="d-flex align-start ga-3">
             <VCombobox

@@ -178,31 +178,28 @@ pub struct AutoTagSettings {
     pub remote_prefix: String,
 }
 
-/// Which tags define the scene being detected and which tags are scored for it.
+/// The tags the analyzer scores on every music entry. Older saved configs
+/// also hold `scene`, `gateTag` and `negativeSceneTags`; serde ignores those
+/// fields when loading, and a config with no `vocabulary` gets the default one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct SceneConfig {
-    pub scene: String,
-    /// Tag whose examples train the gate that decides if an entry fits the scene.
-    pub gate_tag: String,
-    /// Tags from other scenes, used as negative examples for the gate.
-    pub negative_scene_tags: Vec<String>,
-    /// Tags that can be auto-applied to entries that pass the gate.
+    /// Tags that can be auto-applied to music entries.
     pub vocabulary: Vec<String>,
 }
 
 impl Default for SceneConfig {
     fn default() -> Self {
-        let words = |list: &[&str]| list.iter().map(|w| w.to_string()).collect();
         Self {
-            scene: "encounter".into(),
-            gate_tag: "encounter".into(),
-            negative_scene_tags: words(&["tavern", "mood"]),
-            vocabulary: words(&[
-                "boss", "brass", "strings", "folk", "choir", "synth", "slow", "driving",
-                "frantic", "bright", "dark", "serious", "heroic", "horror", "lively",
-            ]),
+            vocabulary: [
+                "brass", "folk", "choir", "synth", "bright", "dark", "heroic", "horror",
+                "lively", "peaceful", "ominous", "majestic", "moody", "mischievous", "haunting",
+                "somber", "slow", "driving", "frantic",
+            ]
+            .iter()
+            .map(|w| w.to_string())
+            .collect(),
         }
     }
 }
@@ -269,6 +266,8 @@ pub struct TagScore {
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
 pub struct EntryTagScores {
+    /// The Combat probability, with `tag` `"combat"`. Its `applied` is the
+    /// source of the entry's role, or `None` when the entry has no role.
     pub gate: TagScore,
     pub tags: Vec<TagScore>,
 }

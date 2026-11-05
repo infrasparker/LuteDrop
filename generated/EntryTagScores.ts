@@ -4,4 +4,9 @@ import type { TagScore } from "./TagScore";
 /**
  * The gate score and per-tag scores for one entry.
  */
-export type EntryTagScores = { gate: TagScore, tags: Array<TagScore>, };
+export type EntryTagScores = { 
+/**
+ * The Combat probability, with `tag` `"combat"`. Its `applied` is the
+ * source of the entry's role, or `None` when the entry has no role.
+ */
+gate: TagScore, tags: Array<TagScore>, };

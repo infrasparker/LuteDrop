@@ -729,12 +729,9 @@ pub fn get_scene_config(container: &AppStateContainer) -> Result<SceneConfig, St
     with_db(container, autotag_settings::load_scene_config)
 }
 
-/// Saves the scene config and re-scores, since the vocabulary or gate may
-/// have changed. A blank gate tag is refused.
+/// Saves the scene config and re-scores, since the vocabulary may have
+/// changed.
 pub fn save_scene_config(container: &AppStateContainer, config: SceneConfig) -> Result<(), String> {
-    if config.gate_tag.trim().is_empty() {
-        return Err("The scene needs a gate tag".to_string());
-    }
     with_db(container, |conn| autotag_settings::save_scene_config(conn, &config))?;
     request_rescore_if_enabled(container);
     Ok(())

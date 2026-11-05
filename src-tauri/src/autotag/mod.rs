@@ -1,5 +1,6 @@
 //! Auto-tagging: a background worker that sends library entries to the
-//! analyzer service and writes the tags they earn back to the database.
+//! analyzer service and writes the role and tags they earn back to the
+//! database.
 //!
 //! `run_once` does one full pass (embed, score, write). `Worker` owns the
 //! background thread that decides when to call it, and `Handle` is how the
@@ -355,12 +356,12 @@ fn progress_update(phase: &str, processed: u32, total: u32, message: Option<Stri
 ///    changed since it was embedded); unmappable ones become `UnreachablePath`;
 /// 3. embed them in batches of 32, marking each `Embedded` or `Failed`;
 /// 4. call `/score` once for every embedded music entry;
-/// 5. decide each scored entry's auto tags;
-/// 6. write those tags and the scores in one transaction.
+/// 5. decide each scored entry's auto role and auto tags;
+/// 6. write those roles and tags and the scores in one transaction.
 ///
 /// The database lock is released while the analyzer works, so the app stays
 /// usable. An analyzer or database error stops the run before step 6 commits,
-/// so tags are left as they were, and the report carries the error.
+/// so roles and tags are left as they were, and the report carries the error.
 pub fn run_once(
     db: &Mutex<Connection>,
     client: &dyn AnalyzerClient,
@@ -487,9 +488,9 @@ fn run_steps(
     // Step 5: decide. Only scored entries appear in `decisions`.
     let decisions = plan::decide(&facts, &scene, &response);
 
-    // Step 6: one transaction for every tag and score write. If anything
-    // fails, `tx` is dropped without a commit and SQLite rolls it all back.
-    let gate_tag = scene.gate_tag.trim().to_lowercase();
+    // Step 6: one transaction for every role, tag and score write. If
+    // anything fails, `tx` is dropped without a commit and SQLite rolls it
+    // all back.
     let (mut analyzed, mut added, mut removed) = (0, 0, 0);
     {
         let conn = lock(db)?;
@@ -498,7 +499,7 @@ fn run_steps(
             .map_err(|e| format!("Failed to begin auto-tag transaction: {e}"))?;
         for entry in &entries {
             let id = &entry.facts.id;
-            let (Some(tags), Some(hash)) = (decisions.get(id), &entry.facts.hash) else {
+            let (Some(decision), Some(hash)) = (decisions.get(id), &entry.facts.hash) else {
                 continue;
             };
             // The entry may have been deleted, or changed to another type,
@@ -506,12 +507,17 @@ fn run_steps(
             if !entry_is_music(&conn, id)? {
                 continue;
             }
-            let (a, r) = library::apply_auto_tags(&conn, id, tags)?;
+            // Both writers re-read the entry here, so a role or tag the user
+            // set while the analyzer worked is kept.
+            let (role, role_score) = match decision.role {
+                Some((role, score)) => (Some(role), score),
+                None => (None, 0.0),
+            };
+            library::apply_auto_role(&conn, id, role, role_score)?;
+            let (a, r) = library::apply_auto_tags(&conn, id, &decision.tags)?;
             added += a;
             removed += r;
-            if let Some(mut scores) = plan::entry_scores(hash, &response) {
-                // Shown in the UI under the gate tag's name (e.g. "encounter").
-                scores.gate.tag = gate_tag.clone();
+            if let Some(scores) = plan::entry_scores(hash, &response) {
                 autotag_db::save_scores(&conn, id, &scores)?;
             }
             analyzed += 1;
@@ -525,7 +531,7 @@ fn run_steps(
     report.analyzed = analyzed;
     report.added = added;
     report.removed = removed;
-    report.gate = Some(quality(&gate_tag, &response.gate));
+    report.gate = Some(quality(plan::GATE_NAME, &response.gate));
     let mut tags: Vec<TagQuality> = response
         .tags
         .iter()
@@ -554,12 +560,13 @@ mod tests {
     use super::plan::{Quality, ScoreRequest, ScoreResponse, ScoreSet};
     use super::*;
     use crate::database::{autotag_db, library, open_memory_db, settings};
-    use crate::models::{AnalysisStatus, AutoTagProgress, AutoTagSettings, SceneConfig, TagSource};
+    use crate::models::{AnalysisStatus, AutoTagProgress, AutoTagSettings, Role, SceneConfig, TagSource};
     use rusqlite::{params, Connection, OptionalExtension};
     use std::collections::{HashMap, HashSet};
     use std::sync::{Arc, Mutex};
 
-    /// Analyzer stand-in. Every classifier is trusted with threshold 0.5;
+    /// Analyzer stand-in. Every classifier is trusted (unless `untrusted_gate`
+    /// is set for the gate), with threshold and Non-combat threshold 0.5;
     /// `/score` returns the configured score for each requested target.
     #[derive(Default)]
     struct FakeAnalyzer {
@@ -568,6 +575,7 @@ mod tests {
         /// Hashes whose embed item fails, with the analyzer's error.
         embed_failures: HashMap<String, String>,
         gate: HashMap<String, f64>,
+        untrusted_gate: bool,
         tags: HashMap<String, HashMap<String, f64>>,
         /// Runs inside `score`, before it returns.
         on_score: Option<Box<dyn Fn() + Send + Sync>>,
@@ -585,6 +593,7 @@ mod tests {
             quality: Quality { auc: Some(0.9), pos: 10, neg: 10 },
             trusted: true,
             threshold: Some(0.5),
+            neg_threshold: Some(0.5),
             scores: targets
                 .iter()
                 .filter_map(|h| scores.get(h).map(|s| (h.clone(), *s)))
@@ -624,7 +633,10 @@ mod tests {
             }
             Ok(ScoreResponse {
                 model: "fake".into(),
-                gate: trusted_set(&self.gate, &req.targets),
+                gate: ScoreSet {
+                    trusted: !self.untrusted_gate,
+                    ..trusted_set(&self.gate, &req.targets)
+                },
                 tags: self
                     .tags
                     .iter()
@@ -650,9 +662,6 @@ mod tests {
         settings::save_scene_config(
             &conn,
             &SceneConfig {
-                scene: "encounter".into(),
-                gate_tag: "encounter".into(),
-                negative_scene_tags: vec!["tavern".into()],
                 vocabulary: vec!["brass".into(), "dark".into()],
             },
         )
@@ -676,10 +685,6 @@ mod tests {
         .unwrap()
     }
 
-    fn add_user_tag(db: &Mutex<Connection>, entry: &str, tag: &str) {
-        library::add_tag_to_entry(&db.lock().unwrap(), entry, tag).unwrap();
-    }
-
     /// Returns (source, score) of the entry's row for `tag`, if any.
     fn row_of(db: &Mutex<Connection>, entry: &str, tag: &str) -> Option<(TagSource, Option<f64>)> {
         db.lock()
@@ -693,6 +698,30 @@ mod tests {
             )
             .optional()
             .unwrap()
+    }
+
+    fn set_user_role(db: &Mutex<Connection>, entry: &str, role: Option<Role>) {
+        library::set_user_role(&db.lock().unwrap(), &[entry.to_string()], role).unwrap();
+    }
+
+    /// Returns the entry's (role, role_source, role_score) as stored.
+    fn role_of(db: &Mutex<Connection>, entry: &str) -> (Option<String>, Option<String>, Option<f64>) {
+        db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT role, role_source, role_score FROM library_entries WHERE id = ?1",
+                params![entry],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+    }
+
+    fn auto_combat(score: f64) -> (Option<String>, Option<String>, Option<f64>) {
+        (Some("combat".into()), Some("auto".into()), Some(score))
+    }
+
+    fn no_role() -> (Option<String>, Option<String>, Option<f64>) {
+        (None, None, None)
     }
 
     fn status_of(db: &Mutex<Connection>, entry: &str) -> Option<(AnalysisStatus, Option<String>)> {
@@ -712,30 +741,34 @@ mod tests {
         let db = setup();
         let a = add(&db, "a", "music");
         let b = add(&db, "b", "music");
-        add_user_tag(&db, &a, "encounter");
+        let c = add(&db, "c", "music");
+        set_user_role(&db, &a, Some(Role::NonCombat));
         let fake = FakeAnalyzer {
-            gate: scores(&[("h-a", 0.9), ("h-b", 0.8)]),
-            tags: HashMap::from([("brass".to_string(), scores(&[("h-a", 0.7), ("h-b", 0.9)]))]),
+            gate: scores(&[("h-a", 0.9), ("h-b", 0.8), ("h-c", 0.1)]),
+            tags: HashMap::from([("brass".to_string(), scores(&[("h-a", 0.7), ("h-b", 0.9), ("h-c", 0.2)]))]),
             ..Default::default()
         };
 
-        let report = run_once(&db, &fake, &[a.clone(), b.clone()], &no_progress);
+        let report = run_once(&db, &fake, &[a.clone(), b.clone(), c.clone()], &no_progress);
 
         assert_eq!(report.error, None);
-        assert_eq!(report.analyzed, 2);
-        assert_eq!(report.added, 3);
+        assert_eq!(report.analyzed, 3);
+        assert_eq!(report.added, 2);
         assert_eq!(report.removed, 0);
         assert!(report.finished_at.is_some());
-        assert_eq!(report.gate.as_ref().unwrap().tag, "encounter");
-        assert_eq!(row_of(&db, &a, "encounter"), Some((TagSource::User, None)));
+        assert_eq!(report.gate.as_ref().unwrap().tag, "combat");
+        // The user's role stays; the others get auto roles scored with p(Combat).
+        assert_eq!(role_of(&db, &a), (Some("non_combat".into()), Some("user".into()), None));
+        assert_eq!(role_of(&db, &b), auto_combat(0.8));
+        assert_eq!(role_of(&db, &c), (Some("non_combat".into()), Some("auto".into()), Some(0.1)));
         assert_eq!(row_of(&db, &a, "brass"), Some((TagSource::Auto, Some(0.7))));
-        assert_eq!(row_of(&db, &b, "encounter"), Some((TagSource::Auto, Some(0.8))));
         assert_eq!(row_of(&db, &b, "brass"), Some((TagSource::Auto, Some(0.9))));
+        assert_eq!(row_of(&db, &c, "brass"), None);
         assert_eq!(status_of(&db, &a), Some((AnalysisStatus::Embedded, None)));
 
         let saved = autotag_db::load_scores(&db.lock().unwrap(), &b).unwrap().unwrap();
-        assert_eq!(saved.gate.tag, "encounter", "gate score is labeled with the gate tag");
-        assert_eq!(saved.gate.applied, Some(TagSource::Auto));
+        assert_eq!(saved.gate.tag, "combat");
+        assert_eq!(saved.gate.applied, Some(TagSource::Auto), "gate applied follows the role source");
         assert_eq!(saved.tags[0].tag, "brass");
     }
 
@@ -750,7 +783,7 @@ mod tests {
         let report = run_once(&db, &fake, &[], &no_progress);
         assert_eq!(fake.embedded_hashes(), vec!["h-a"], "no second /embed");
         assert_eq!(report.analyzed, 1);
-        assert_eq!(row_of(&db, &a, "encounter"), Some((TagSource::Auto, Some(0.9))));
+        assert_eq!(role_of(&db, &a), auto_combat(0.9));
     }
 
     #[test]
@@ -759,7 +792,7 @@ mod tests {
         let a = add(&db, "a", "music");
         let ok = FakeAnalyzer { gate: scores(&[("h-a", 0.9)]), ..Default::default() };
         run_once(&db, &ok, &[a.clone()], &no_progress);
-        assert_eq!(row_of(&db, &a, "encounter"), Some((TagSource::Auto, Some(0.9))));
+        assert_eq!(role_of(&db, &a), auto_combat(0.9));
 
         let down = FakeAnalyzer { down: Some("connection refused".into()), ..Default::default() };
         let phases = Mutex::new(Vec::new());
@@ -769,7 +802,7 @@ mod tests {
 
         assert!(report.error.as_deref().unwrap().contains("connection refused"));
         assert_eq!(phases.lock().unwrap().last().map(String::as_str), Some("error"));
-        assert_eq!(row_of(&db, &a, "encounter"), Some((TagSource::Auto, Some(0.9))));
+        assert_eq!(role_of(&db, &a), auto_combat(0.9));
     }
 
     #[test]
@@ -813,8 +846,8 @@ mod tests {
             status_of(&db, &b),
             Some((AnalysisStatus::Failed, Some("decode failed".to_string())))
         );
-        assert_eq!(row_of(&db, &a, "encounter"), Some((TagSource::Auto, Some(0.9))));
-        assert_eq!(row_of(&db, &b, "encounter"), None);
+        assert_eq!(role_of(&db, &a), auto_combat(0.9));
+        assert_eq!(role_of(&db, &b), no_role());
     }
 
     #[test]
@@ -871,14 +904,13 @@ mod tests {
         assert_eq!(fake.embedded_hashes(), vec!["h-a"]);
         assert_eq!(report.analyzed, 1);
         assert_eq!(status_of(&db, &amb), None);
-        assert_eq!(row_of(&db, &amb, "encounter"), None);
+        assert_eq!(role_of(&db, &amb), no_role());
     }
 
     #[test]
     fn user_tag_added_during_scoring_is_not_overwritten() {
         let db = setup();
         let a = add(&db, "a", "music");
-        add_user_tag(&db, &a, "encounter");
         let hook_db = db.clone();
         let hook_entry = a.clone();
         let fake = FakeAnalyzer {
@@ -919,8 +951,50 @@ mod tests {
 
         assert_eq!(report.error, None);
         assert_eq!(row_of(&db, &a, "brass"), None);
-        assert_eq!(row_of(&db, &a, "encounter"), None);
+        assert_eq!(role_of(&db, &a), no_role());
         assert_eq!(report.added, 0);
+    }
+
+    #[test]
+    fn run_does_not_overwrite_role_set_during_scoring() {
+        let db = setup();
+        let a = add(&db, "a", "music");
+        let b = add(&db, "b", "music");
+        let hook_db = db.clone();
+        let (hook_a, hook_b) = (a.clone(), b.clone());
+        let fake = FakeAnalyzer {
+            gate: scores(&[("h-a", 0.9), ("h-b", 0.9)]),
+            on_score: Some(Box::new(move || {
+                let conn = hook_db.try_lock().expect("database is free during /score");
+                library::set_user_role(&conn, &[hook_a.clone()], Some(Role::NonCombat)).unwrap();
+                // A cleared role is a user decision too.
+                library::set_user_role(&conn, &[hook_b.clone()], None).unwrap();
+            })),
+            ..Default::default()
+        };
+
+        let report = run_once(&db, &fake, &[a.clone(), b.clone()], &no_progress);
+
+        assert_eq!(report.error, None);
+        assert_eq!(role_of(&db, &a), (Some("non_combat".into()), Some("user".into()), None));
+        assert_eq!(role_of(&db, &b), (None, Some("user".into()), None));
+    }
+
+    #[test]
+    fn run_clears_auto_role_when_gate_no_longer_qualifies() {
+        let db = setup();
+        let a = add(&db, "a", "music");
+        let first = FakeAnalyzer { gate: scores(&[("h-a", 0.9)]), ..Default::default() };
+        run_once(&db, &first, &[a.clone()], &no_progress);
+        assert_eq!(role_of(&db, &a), auto_combat(0.9));
+
+        let untrusted = FakeAnalyzer {
+            gate: scores(&[("h-a", 0.9)]),
+            untrusted_gate: true,
+            ..Default::default()
+        };
+        run_once(&db, &untrusted, &[], &no_progress);
+        assert_eq!(role_of(&db, &a), no_role());
     }
 
     #[test]

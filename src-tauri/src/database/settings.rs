@@ -246,14 +246,36 @@ mod tests {
         write_meta(&conn, KEY_AUTOTAG_SCENE, "{not json").unwrap();
         assert_eq!(load_scene_config(&conn).unwrap(), SceneConfig::default());
 
-        let custom = SceneConfig {
-            scene: "tavern".into(),
-            gate_tag: "tavern".into(),
-            negative_scene_tags: vec!["encounter".into()],
-            vocabulary: vec!["folk".into()],
-        };
+        let custom = SceneConfig { vocabulary: vec!["folk".into()] };
         save_scene_config(&conn, &custom).unwrap();
         assert_eq!(load_scene_config(&conn).unwrap(), custom);
+    }
+
+    #[test]
+    fn scene_config_loads_legacy_json_keeping_vocabulary() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        // The shape saved before the config was reduced to its vocabulary.
+        let legacy = r#"{"scene":"encounter","gateTag":"encounter",
+            "negativeSceneTags":["tavern","mood"],"vocabulary":["brass","Dark","folk"]}"#;
+        write_meta(&conn, KEY_AUTOTAG_SCENE, legacy).unwrap();
+        assert_eq!(
+            load_scene_config(&conn).unwrap(),
+            SceneConfig { vocabulary: vec!["brass".into(), "Dark".into(), "folk".into()] }
+        );
+    }
+
+    #[test]
+    fn scene_config_default_vocabulary() {
+        let words: Vec<String> = [
+            "brass", "folk", "choir", "synth", "bright", "dark", "heroic", "horror", "lively",
+            "peaceful", "ominous", "majestic", "moody", "mischievous", "haunting", "somber",
+            "slow", "driving", "frantic",
+        ]
+        .iter()
+        .map(|w| w.to_string())
+        .collect();
+        assert_eq!(SceneConfig::default().vocabulary, words);
     }
 
     #[test]
