@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Ranked Scry results with Role and Pace filters. Each row has a checkbox,
+// Ranked Scry results with Role, mood and Pace filters. Each row has a checkbox,
 // a preview button, the track name, its game tags, Role, the score as a short
 // bar, and an "Add as seed" action. Clicking the row itself opens the entry's
 // details.

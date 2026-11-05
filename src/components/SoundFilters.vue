@@ -12,6 +12,7 @@ function update<K extends keyof SoundFilters>(key: K, value: SoundFilters[K]): v
 </script>
 
 <template>
+  <div class="d-flex flex-wrap align-center ga-3">
   <VBtnToggle
     :model-value="filters.bright"
     mandatory
@@ -20,7 +21,7 @@ function update<K extends keyof SoundFilters>(key: K, value: SoundFilters[K]): v
     divided
     @update:model-value="(v) => update('bright', v)"
   >
-    <VBtn value="all" :size="size">Any tone</VBtn>
+    <VBtn value="all" :size="size">Bright ↔ Dark: any</VBtn>
     <VBtn value="low" :size="size">Dark</VBtn>
     <VBtn value="mid" :size="size">Neutral</VBtn>
     <VBtn value="high" :size="size">Bright</VBtn>
@@ -33,7 +34,7 @@ function update<K extends keyof SoundFilters>(key: K, value: SoundFilters[K]): v
     divided
     @update:model-value="(v) => update('light', v)"
   >
-    <VBtn value="all" :size="size">Any weight</VBtn>
+    <VBtn value="all" :size="size">Light ↔ Heavy: any</VBtn>
     <VBtn value="low" :size="size">Heavy</VBtn>
     <VBtn value="mid" :size="size">Neutral</VBtn>
     <VBtn value="high" :size="size">Light</VBtn>
@@ -51,4 +52,5 @@ function update<K extends keyof SoundFilters>(key: K, value: SoundFilters[K]): v
     <VBtn value="moving" :size="size" prepend-icon="mdi-play">Moving</VBtn>
     <VBtn value="unset" :size="size">Unset</VBtn>
   </VBtnToggle>
+  </div>
 </template>

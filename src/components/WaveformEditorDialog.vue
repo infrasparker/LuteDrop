@@ -307,7 +307,7 @@ async function relocateFile(): Promise<void> {
 
         <!-- Role (music only) -->
         <div v-if="editEntryType === 'music'" class="d-flex align-center ga-3 mb-3">
-          <span class="text-caption text-medium-emphasis" style="min-width: 50px;">Role</span>
+          <span class="text-caption text-medium-emphasis" style="min-width: 90px;">Role</span>
           <RoleControl
             :entry-ids="[props.entryId]"
             :role="entry.role"
@@ -318,7 +318,7 @@ async function relocateFile(): Promise<void> {
 
         <!-- Pace and mood (music only) -->
         <div v-if="editEntryType === 'music'" class="d-flex align-center ga-3 mb-3">
-          <span class="text-caption text-medium-emphasis" style="min-width: 50px;">Pace</span>
+          <span class="text-caption text-medium-emphasis" style="min-width: 90px;">Pace</span>
           <PaceControl
             :entry-ids="[props.entryId]"
             :pace="entry.pace"
@@ -327,7 +327,7 @@ async function relocateFile(): Promise<void> {
           />
         </div>
         <div v-if="editEntryType === 'music'" class="d-flex align-center ga-3 mb-3">
-          <span class="text-caption text-medium-emphasis" style="min-width: 50px;">Tone</span>
+          <span class="text-caption text-medium-emphasis" style="min-width: 90px;">Bright ↔ Dark</span>
           <MoodScaleControl
             :entry-ids="[props.entryId]"
             scale="bright"
@@ -336,7 +336,7 @@ async function relocateFile(): Promise<void> {
           />
         </div>
         <div v-if="editEntryType === 'music'" class="d-flex align-center ga-3 mb-3">
-          <span class="text-caption text-medium-emphasis" style="min-width: 50px;">Weight</span>
+          <span class="text-caption text-medium-emphasis" style="min-width: 90px;">Light ↔ Heavy</span>
           <MoodScaleControl
             :entry-ids="[props.entryId]"
             scale="light"
@@ -347,7 +347,7 @@ async function relocateFile(): Promise<void> {
 
         <!-- Volume -->
         <div class="d-flex align-center ga-3 mb-4">
-          <span class="text-caption text-medium-emphasis" style="min-width: 50px;">Gain</span>
+          <span class="text-caption text-medium-emphasis" style="min-width: 90px;">Gain</span>
           <VSlider
             :model-value="localGain"
             @update:model-value="setGain"

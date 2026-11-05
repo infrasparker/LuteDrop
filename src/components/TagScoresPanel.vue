@@ -29,6 +29,7 @@ const open = ref<string | undefined>('scores');
 let requestId = 0;
 
 async function load(): Promise<void> {
+  if (props.isAmbiance) return; // ambiance entries are never scored
   const id = ++requestId;
   loading.value = true;
   try {
@@ -66,8 +67,10 @@ watch(
     scores.value = null;
     loaded.value = false;
     loading.value = false;
+    // A collapsed panel reopens, and its open watcher does the load.
+    const wasOpen = open.value !== undefined;
     open.value = 'scores';
-    void load();
+    if (wasOpen) void load();
   },
 );
 
