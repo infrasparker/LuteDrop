@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import { storeToRefs } from 'pinia';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -23,6 +24,7 @@ const { libraryEntries, tags } = storeToRefs(store);
 const { pickFiles, pickFolder, runImport } = useLibraryImport();
 const audio = useAudio();
 const toast = useToast();
+const router = useRouter();
 
 const searchQuery = ref('');
 const selectedTags = ref<string[]>([]);
@@ -80,7 +82,7 @@ const headers = [
   { title: 'Role', key: 'role', sortable: true, width: '60px' },
   { title: 'Tags', key: 'tags', sortable: false },
   { title: 'Duration', key: 'duration', sortable: true, width: '80px', align: 'end' as const },
-  { title: '', key: 'actions', sortable: false, width: '80px', align: 'end' as const },
+  { title: '', key: 'actions', sortable: false, width: '96px', align: 'end' as const },
 ];
 
 const previewState = computed(() => store.playbackStates.get(LIBRARY_PLAYBACK_ID));
@@ -106,6 +108,10 @@ function togglePreview(entry: LibraryEntry): void {
 
 function openEditor(entryId: string): void {
   store.editEntryId = entryId;
+}
+
+function moreLikeThis(entryId: string): void {
+  router.push({ name: 'vibe', query: { seed: entryId } });
 }
 
 // --- Multi-select + bulk tagging ---
@@ -418,6 +424,14 @@ async function relocateEntry(entryId: string): Promise<void> {
       </template>
 
       <template #item.actions="{ item }">
+        <VBtn
+          v-if="item.entryType === 'music'"
+          icon="mdi-compass-outline"
+          size="small"
+          variant="text"
+          title="More like this"
+          @click.stop="moreLikeThis(item.id)"
+        />
         <VBtn
           icon="mdi-delete"
           size="small"
