@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, nextTick, onMounted } from 'vue';
 import type { Track } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
+import { useSoundstageUiStore } from '../stores/soundstageUi';
 import { useAudio } from '../composables/useAudio';
 import { useTrackUpdates } from '../composables/useTrackUpdates';
 import { useContextMenuState } from '../composables/useContextMenu';
@@ -28,6 +29,22 @@ const playbackState = computed(() => store.playbackStates.get(props.track.id));
 const isPlaying = computed(() => playbackState.value?.isPlaying ?? false);
 const isActive = computed(() => isPlaying.value || (playbackState.value?.isPaused ?? false));
 const isSeamless = computed(() => props.track.mode.type === 'seamless');
+
+// Expansion lives in a store so returning to the Soundstage (e.g. Back from
+// Find similar) reopens the same tracks.
+const ui = useSoundstageUiStore();
+const expanded = computed({
+  get: () => (ui.expandedTrackIds.has(props.track.id) ? 'open' : null),
+  set: (v: string | null) => ui.setTrackExpanded(props.track.id, v === 'open'),
+});
+
+const wrapper = ref<HTMLElement | null>(null);
+onMounted(async () => {
+  if (ui.focusTrackId !== props.track.id) return;
+  ui.focusTrackId = null;
+  await nextTick();
+  wrapper.value?.scrollIntoView({ block: 'start' });
+});
 
 const currentClipName = computed(() => {
   const clipId = playbackState.value?.currentClipId;
@@ -89,9 +106,10 @@ function toggleMute(): void {
 </script>
 
 <template>
-  <div :class="{ 'track-wrapper': true, 'track-active': isActive }">
-    <VExpansionPanels>
+  <div ref="wrapper" :class="{ 'track-wrapper': true, 'track-active': isActive }">
+    <VExpansionPanels v-model="expanded">
       <VExpansionPanel
+        value="open"
         color="surface-light"
         rounded="0"
         elevation="0"

@@ -1,15 +1,18 @@
 <script setup lang="ts">
 // Browse music by sound: a text search or seed tracks give ranked results,
 // and a map shows every analyzed music track. Selected tracks become a new
-// shuffle playlist or are added to an existing track.
+// shuffle playlist or are added to an existing track. With `?target=<trackId>`
+// (Find similar on a Soundstage track) results leave out what that track
+// already holds and selections are added straight to it.
 import { computed, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { invoke } from '@tauri-apps/api/core';
 import type { LibraryEntry, VibeHit, VibePoint } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAutoTagEvents } from '../composables/useAutoTagEvents';
 import { useLibraryPreview } from '../composables/useLibraryPreview';
 import { useVocabulary } from '../composables/useVocabulary';
+import { useToast } from '../composables/useToast';
 import VibeMap from '../components/VibeMap.vue';
 import VibeResults from '../components/VibeResults.vue';
 import CreatePlaylistDialog from '../components/CreatePlaylistDialog.vue';
@@ -19,6 +22,8 @@ const RESULT_LIMIT = 100;
 
 const store = useAppStore();
 const route = useRoute();
+const router = useRouter();
+const toast = useToast();
 const { vocabulary } = useVocabulary();
 const { playingId, toggle: togglePreview } = useLibraryPreview();
 const { completedRuns } = useAutoTagEvents();
@@ -32,6 +37,33 @@ const entriesById = computed(() => {
 const analyzedCount = computed(
   () => store.libraryEntries.filter((e) => e.entryType === 'music' && e.analysis?.status === 'embedded').length,
 );
+
+// --- Target track (Find similar from the Soundstage) ---
+
+// The comp and track named by `?target=`; null when absent or unknown, which
+// leaves the view in its normal mode.
+const target = computed(() => {
+  const id = route.query.target;
+  if (typeof id !== 'string' || !id) return null;
+  for (const group of store.groups) {
+    for (const comp of group.comps) {
+      const track = comp.tracks.find((t) => t.id === id);
+      if (track) return { comp, track };
+    }
+  }
+  return null;
+});
+
+const targetEntryIds = computed(() => new Set(target.value?.track.clips.map((c) => c.libraryEntryId) ?? []));
+// A seamless track plays a single clip, so results are not added to it.
+const targetIsSeamless = computed(() => target.value?.track.mode.type === 'seamless');
+
+// Back to where the user came from (the Soundstage keeps its place), or to
+// the Soundstage when there is no history entry to return to.
+function goBack(): void {
+  if (window.history.state?.back) router.back();
+  else router.push({ name: 'soundstage' });
+}
 
 // --- Results (text search or seeds) ---
 
@@ -52,7 +84,9 @@ async function fetchResults(cmd: 'search_vibe' | 'similar_entries', args: Record
   resultsLoading.value = true;
   resultsError.value = null;
   try {
-    const result = await invoke<VibeHit[]>(cmd, { ...args, limit: RESULT_LIMIT });
+    // Entries already in the target track are hidden, so ask for that many extra.
+    const limit = RESULT_LIMIT + targetEntryIds.value.size;
+    const result = await invoke<VibeHit[]>(cmd, { ...args, limit });
     if (id !== resultsRequest) return;
     hits.value = result;
   } catch (e) {
@@ -176,7 +210,11 @@ watch(completedRuns, () => {
 });
 
 const mappedPoints = computed(() => mapPoints.value.filter((p) => entriesById.value.has(p.entryId)));
-const resultIds = computed(() => hits.value.map((h) => h.entryId));
+// Results shown: in target mode, without what the track already holds.
+const shownHits = computed(() =>
+  targetEntryIds.value.size === 0 ? hits.value : hits.value.filter((h) => !targetEntryIds.value.has(h.entryId)),
+);
+const resultIds = computed(() => shownHits.value.map((h) => h.entryId));
 
 // --- Selection and playlists ---
 
@@ -236,6 +274,31 @@ const suggestedName = computed(() => {
   return 'Vibe playlist';
 });
 
+// --- Adding to the target track ---
+
+// A map lasso can catch entries the track already holds; those are skipped.
+const addableIds = computed(() => selectedIds.value.filter((id) => !targetEntryIds.value.has(id)));
+const adding = ref(false);
+
+async function addToTarget(): Promise<void> {
+  const t = target.value;
+  const ids = addableIds.value;
+  if (!t || ids.length === 0 || adding.value) return;
+  adding.value = true;
+  try {
+    const ok = await store.command('add_clips', { trackId: t.track.id, libraryEntryIds: ids });
+    if (!ok) return;
+    toast.showSuccess(`Added ${ids.length} to "${t.track.name}"`);
+    selectedIds.value = [];
+  } finally {
+    adding.value = false;
+  }
+}
+
+function openDetails(entryId: string): void {
+  store.editEntryId = entryId;
+}
+
 const showAutoTagging = ref(false);
 </script>
 
@@ -267,6 +330,18 @@ const showAutoTagging = ref(false);
         Auto-tagging
       </VBtn>
     </Teleport>
+
+    <div v-if="target" class="target-strip d-flex align-center ga-2 mb-2 px-2 py-1">
+      <VBtn prepend-icon="mdi-arrow-left" variant="text" size="small" @click="goBack">Back</VBtn>
+      <VIcon size="small" color="primary">mdi-compass-outline</VIcon>
+      <span class="text-body-2 text-truncate">
+        Finding tracks for <strong>{{ target.comp.name }}</strong> &rsaquo; <strong>{{ target.track.name }}</strong>
+      </span>
+      <VSpacer />
+      <span v-if="targetIsSeamless" class="text-caption text-medium-emphasis" style="white-space: nowrap;">
+        Seamless tracks hold one clip
+      </span>
+    </div>
 
     <!-- Nothing analyzed yet: explain where the data comes from. -->
     <div v-if="analyzedCount === 0" class="d-flex flex-column align-center justify-center text-center flex-grow-1 pa-8">
@@ -326,7 +401,7 @@ const showAutoTagging = ref(false);
             ref="resultsList"
             v-model:selected-ids="selectedIds"
             class="vibe-results-host"
-            :hits="hits"
+            :hits="shownHits"
             :entries-by-id="entriesById"
             :seed-ids="seeds"
             :playing-id="playingId"
@@ -334,6 +409,7 @@ const showAutoTagging = ref(false);
             @play="togglePreview"
             @add-seed="addSeed"
             @hover="hoveredRowId = $event"
+            @open="openDetails"
           />
         </section>
 
@@ -380,7 +456,25 @@ const showAutoTagging = ref(false);
           {{ selectedIds.length }} selected
         </span>
         <VSpacer />
-        <VBtn prepend-icon="mdi-playlist-plus" color="primary" variant="tonal" size="small" @click="openPlaylistDialog('new')">
+        <VBtn
+          v-if="target && !targetIsSeamless"
+          prepend-icon="mdi-plus"
+          color="primary"
+          variant="flat"
+          size="small"
+          :disabled="addableIds.length === 0"
+          :loading="adding"
+          @click="addToTarget"
+        >
+          Add {{ addableIds.length }} to {{ target.track.name }}
+        </VBtn>
+        <VBtn
+          prepend-icon="mdi-playlist-plus"
+          :color="target && !targetIsSeamless ? undefined : 'primary'"
+          variant="tonal"
+          size="small"
+          @click="openPlaylistDialog('new')"
+        >
           Create playlist
         </VBtn>
         <VBtn prepend-icon="mdi-playlist-music" variant="tonal" size="small" @click="openPlaylistDialog('existing')">
@@ -408,6 +502,13 @@ const showAutoTagging = ref(false);
   height: calc(100vh - var(--v-layout-top, 0px) - var(--v-layout-bottom, 0px));
   position: relative;
   overflow: hidden;
+}
+
+.target-strip {
+  flex: none;
+  min-width: 0;
+  border-radius: 8px;
+  background: rgba(var(--v-theme-primary), 0.08);
 }
 
 .vibe-panes {

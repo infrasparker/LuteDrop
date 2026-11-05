@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import type { Track } from '@generated/index';
+import { useRouter } from 'vue-router';
 import { useAppStore } from '../stores/appStore';
+import { useSoundstageUiStore } from '../stores/soundstageUi';
 import Sortable from 'sortablejs';
 import ClipRow from './ClipRow.vue';
 import FindSimilarButton from './FindSimilarButton.vue';
-import FindSimilarDialog from './FindSimilarDialog.vue';
 
 const props = defineProps<{
   track: Track;
@@ -27,7 +28,6 @@ function addClips(): void {
 
 // --- Find similar ---
 
-const showFindSimilar = ref(false);
 // Distinct music entries behind the track's clips.
 const similarSeeds = computed(() => {
   const ids = new Set<string>();
@@ -37,6 +37,15 @@ const similarSeeds = computed(() => {
   }
   return [...ids];
 });
+
+// Opens the Vibe view seeded with the track's music, targeting this track.
+// The Soundstage scrolls back to this track on return.
+const router = useRouter();
+const ui = useSoundstageUiStore();
+function findSimilar(): void {
+  ui.focusTrackId = props.track.id;
+  router.push({ name: 'vibe', query: { seed: similarSeeds.value, target: props.track.id } });
+}
 
 // --- SortableJS for sequence/shuffle clip reordering ---
 
@@ -92,7 +101,7 @@ onUnmounted(() => {
     <div class="d-flex align-center mb-2">
       <span class="text-subtitle-2">Clip</span>
       <VSpacer />
-      <FindSimilarButton :disabled="similarSeeds.length === 0" @click="showFindSimilar = true" />
+      <FindSimilarButton :disabled="similarSeeds.length === 0" @click="findSimilar" />
       <VBtn
         v-if="!hasClips"
         prepend-icon="mdi-plus"
@@ -116,7 +125,7 @@ onUnmounted(() => {
     <div class="d-flex align-center mb-2">
       <span class="text-subtitle-2">Clips</span>
       <VSpacer />
-      <FindSimilarButton :disabled="similarSeeds.length === 0" @click="showFindSimilar = true" />
+      <FindSimilarButton :disabled="similarSeeds.length === 0" @click="findSimilar" />
       <VBtn prepend-icon="mdi-plus" variant="tonal" rounded="xl" @click="addClips">
         Add Clips
       </VBtn>
@@ -135,6 +144,4 @@ onUnmounted(() => {
       No clips yet.
     </div>
   </div>
-
-  <FindSimilarDialog v-model="showFindSimilar" :track-id="track.id" :seed-ids="similarSeeds" :is-seamless="isSeamless" />
 </template>

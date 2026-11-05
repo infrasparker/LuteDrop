@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { computed } from 'vue';
 import type { Group } from '@generated/index';
+import { useSoundstageUiStore } from '../stores/soundstageUi';
 import CompCard from './CompCard.vue';
 import CompDetails from './CompDetails.vue';
 
@@ -12,7 +13,13 @@ const emit = defineEmits<{
   'add-comp': [groupId: string];
 }>();
 
-const selectedCompId = ref<string | null>(null);
+const ui = useSoundstageUiStore();
+
+// Kept per group in a store so it survives leaving the Soundstage.
+const selectedCompId = computed({
+  get: () => ui.compByGroup[props.group.id] ?? null,
+  set: (id: string | null) => ui.selectComp(props.group.id, id),
+});
 
 const selectedComp = computed(() =>
   props.group.comps.find((c) => c.id === selectedCompId.value) ?? null

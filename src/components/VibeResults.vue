@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // Ranked Vibe results with Role and Pace filters. Each row has a checkbox,
 // a preview button, the track name, its game tags, Role, the score as a short
-// bar, and an "Add as seed" action.
+// bar, and an "Add as seed" action. Clicking the row itself opens the entry's
+// details.
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import type { LibraryEntry, Role, VibeHit } from '@generated/index';
 
@@ -21,6 +22,8 @@ const emit = defineEmits<{
   addSeed: [entryId: string];
   // The row under the mouse, or null when it leaves.
   hover: [entryId: string | null];
+  // The row itself was clicked (not one of its controls).
+  open: [entryId: string];
 }>();
 
 let hoveredId: string | null = null;
@@ -185,20 +188,24 @@ onBeforeUnmount(() => {
           'is-flash': flashId === entry.id,
         }"
         @mouseenter="setHovered(entry.id)"
+        @click="emit('open', entry.id)"
       >
-        <VCheckboxBtn
-          :model-value="selectedSet.has(entry.id)"
-          density="compact"
-          class="flex-grow-0"
-          :aria-label="`Select ${entry.name}`"
-          @update:model-value="toggle(entry.id)"
-        />
+        <!-- The wrapper keeps checkbox clicks from opening details. -->
+        <span class="d-flex flex-grow-0" @click.stop>
+          <VCheckboxBtn
+            :model-value="selectedSet.has(entry.id)"
+            density="compact"
+            class="flex-grow-0"
+            :aria-label="`Select ${entry.name}`"
+            @update:model-value="toggle(entry.id)"
+          />
+        </span>
         <VBtn
           :icon="playingId === entry.id ? 'mdi-stop' : 'mdi-play'"
           variant="text"
           size="small"
           :title="playingId === entry.id ? 'Stop' : 'Play'"
-          @click="emit('play', entry.id)"
+          @click.stop="emit('play', entry.id)"
         />
         <div class="flex-grow-1" style="min-width: 0;">
           <div class="text-body-2 text-truncate" :title="entry.name">{{ entry.name }}</div>
@@ -224,7 +231,7 @@ onBeforeUnmount(() => {
           size="small"
           :disabled="seedSet.has(entry.id)"
           title="Add as seed"
-          @click="emit('addSeed', entry.id)"
+          @click.stop="emit('addSeed', entry.id)"
         />
       </div>
       <div v-if="rows.length === 0" class="text-body-2 text-medium-emphasis pa-6 text-center">
@@ -250,6 +257,7 @@ onBeforeUnmount(() => {
 
 .vibe-row {
   min-height: 44px;
+  cursor: pointer;
   border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
   border-left: 3px solid transparent;
 }
