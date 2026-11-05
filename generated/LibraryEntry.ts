@@ -3,7 +3,6 @@ import type { AutoTag } from "./AutoTag";
 import type { EntryAnalysis } from "./EntryAnalysis";
 import type { EntryType } from "./EntryType";
 import type { MoodStep } from "./MoodStep";
-import type { Pace } from "./Pace";
 import type { Role } from "./Role";
 
 export type LibraryEntry = { id: string, filePath: string, contentHash: string | null, name: string, duration: number | null, sampleRate: number | null, fileSize: bigint | null, volume: number, trimStart: number | null, trimEnd: number | null, loopStart: number | null, loopEnd: number | null, createdAt: string, 
@@ -43,35 +42,29 @@ roleAutoScore: number | null,
  */
 roleUser: Role | null, 
 /**
- * The pace shown: `pace_user` if set, otherwise `pace_auto`.
- */
-pace: Pace | null, 
-/**
- * The analyzer's pace, written by every analysis run.
- */
-paceAuto: Pace | null, 
-/**
- * The analyzer's Moving probability behind `pace_auto`.
- */
-paceAutoScore: number | null, 
-/**
- * The user's pace. When set it is shown instead of `pace_auto`.
- */
-paceUser: Pace | null, 
-/**
  * The analyzer's Bright ↔ Dark position as a z-score across the
  * library's analyzed music; positive is Bright.
  */
 moodBright: number | null, 
 /**
- * The analyzer's Light ↔ Heavy position as a z-score; positive is Light.
- */
-moodLight: number | null, 
-/**
  * The user's Bright ↔ Dark step; when set it overrides `mood_bright`.
  */
 moodBrightUser: MoodStep | null, 
 /**
- * The user's Light ↔ Heavy step; when set it overrides `mood_light`.
+ * The analyzer's Intimate ↔ Grand position as a z-score; positive is
+ * Grand.
  */
-moodLightUser: MoodStep | null, };
+moodGrand: number | null, 
+/**
+ * The user's Intimate ↔ Grand step; when set it overrides `mood_grand`.
+ */
+moodGrandUser: MoodStep | null, 
+/**
+ * The analyzer's Calm ↔ Energetic position as a z-score; positive is
+ * Energetic.
+ */
+moodEnergy: number | null, 
+/**
+ * The user's Calm ↔ Energetic step; when set it overrides `mood_energy`.
+ */
+moodEnergyUser: MoodStep | null, };

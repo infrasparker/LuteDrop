@@ -18,7 +18,6 @@ export type { MatchKind } from "./MatchKind";
 export type { MoodScale } from "./MoodScale";
 export type { MoodStep } from "./MoodStep";
 export type { MissingEntryCandidates } from "./MissingEntryCandidates";
-export type { Pace } from "./Pace";
 export type { RelinkCandidate } from "./RelinkCandidate";
 export type { Role } from "./Role";
 export type { SceneConfig } from "./SceneConfig";

@@ -2,6 +2,7 @@
 
 /**
  * One of the three steps on a mood scale. `High` is the positive pole
- * (Bright on Bright ↔ Dark, Light on Light ↔ Heavy).
+ * (Bright on Bright ↔ Dark, Grand on Intimate ↔ Grand, Energetic on
+ * Calm ↔ Energetic).
  */
 export type MoodStep = "low" | "mid" | "high";
