@@ -8,7 +8,7 @@ import TagScoresPanel from './TagScoresPanel.vue';
 import RoleControl from './RoleControl.vue';
 import PaceControl from './PaceControl.vue';
 import MoodScaleControl from './MoodScaleControl.vue';
-import MoodGridInfo from './MoodGridInfo.vue';
+import MoodMapPicker from './MoodMapPicker.vue';
 import { open } from '@tauri-apps/plugin-dialog';
 import { AUDIO_EXTENSIONS } from '../constants';
 import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
@@ -322,22 +322,23 @@ async function relocateFile(): Promise<void> {
             :pace-auto-score="entry.paceAutoScore"
             :pace-user="entry.paceUser"
           />
-          <span class="text-caption text-medium-emphasis">Bright ↔ Dark</span>
+          <span class="text-caption text-medium-emphasis">Mood</span>
+          <MoodMapPicker
+            :entry-ids="[props.entryId]"
+            :bright-z="entry.moodBright"
+            :bright-user="entry.moodBrightUser"
+            :light-z="entry.moodLight"
+            :light-user="entry.moodLightUser"
+          />
+          <span />
+          <span class="text-caption text-medium-emphasis mood-sub">Bright ↔ Dark</span>
           <MoodScaleControl
             :entry-ids="[props.entryId]"
             scale="bright"
             :z="entry.moodBright"
             :user="entry.moodBrightUser"
           />
-          <span class="text-caption text-medium-emphasis d-flex align-center">
-            Airy ↔ Heavy
-            <MoodGridInfo
-              :bright-z="entry.moodBright"
-              :bright-user="entry.moodBrightUser"
-              :light-z="entry.moodLight"
-              :light-user="entry.moodLightUser"
-            />
-          </span>
+          <span class="text-caption text-medium-emphasis mood-sub">Airy ↔ Heavy</span>
           <MoodScaleControl
             :entry-ids="[props.entryId]"
             scale="light"
@@ -471,6 +472,9 @@ async function relocateFile(): Promise<void> {
 <style scoped>
 /* Label | options | status. Each facet control renders its options and status
    as two cells (display: contents), so the columns line up across rows. */
+.mood-sub {
+  padding-left: 12px;
+}
 .facet-grid {
   display: grid;
   grid-template-columns: max-content max-content 1fr;
