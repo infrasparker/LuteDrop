@@ -38,19 +38,19 @@ installer fetches it automatically, the portable build assumes it's present).
 
 ## Auto-tagging
 
-Auto-tagging suggests tags for music entries by comparing how they sound with the entries you have already tagged. For each entry it first scores how well the entry fits the scene (the gate tag, such as `encounter`), then scores the entry against each tag in the vocabulary. Tags that pass their threshold are added automatically.
+Auto-tagging suggests tags for music entries by comparing how they sound with entries that already carry tags applied by hand. For each entry it first scores how well the entry fits the scene (the gate tag, such as `encounter`), then scores the entry against each tag in the vocabulary. Tags that pass their threshold are added automatically.
 
-- Auto tags are marked on their chip. Each one offers **Keep** (it becomes a normal tag) or **Remove** (it is taken off and not suggested again for that entry). Editing an entry's tags yourself always wins over what auto-tagging would do.
-- A tag is applied only once the analyzer can predict it reliably: it needs at least 5 tagged and 5 untagged examples and a clear separation between them. The tag quality table in the dialog shows each tag's example counts, AUC and, for tags not yet trusted, what is missing.
+- Auto tags are marked on their chip. Each one offers **Keep** (it becomes a normal tag) or **Remove** (it is taken off and not suggested again for that entry). Auto-tagging never overwrites or removes a tag applied by hand, and removing an auto tag stops it being applied to that entry again. Removing the gate tag from an entry also removes that entry's other auto tags.
+- A tag is applied only once the analyzer can predict it reliably. Its positive examples are gate-tagged entries that carry the tag; its negative examples are gate-tagged entries without it, plus entries where it was removed as an auto tag. It needs at least 5 of each, and the tag must also separate them well enough when tested on these examples. Auto tags themselves never count as examples. The tag quality table in the dialog shows each tag's example counts, AUC and, for tags not yet trusted, what is missing.
 - The library's tag filter can show only entries with auto tags. Bulk actions can keep or remove the auto tags on several entries at once.
-- In the entry editor, the **Tag scores** panel shows each tag's score against its threshold and whether the tag came from you or from auto-tagging.
+- In the entry editor, the **Tag scores** panel shows each tag's score against its threshold and whether the entry's tag was applied by hand or by auto-tagging.
 
 Audio is analyzed by a separate service that needs a GPU host; see [`tagger/README.md`](tagger/README.md) for how to run it. The **Auto-tagging** button in the Library toolbar opens the settings:
 
 - **Enable auto-tagging.** Turning it on starts analyzing the library right away. New imports are analyzed as they arrive.
-- **Analyzer URL** and **Token** identify the service. **Test connection** reports the model the service loaded, or the error.
-- **Local path prefix** and **Analyzer path prefix** map the library folder on this machine to the same folder as the analyzer sees it.
-- **Analyze library** analyzes every entry that has no current analysis, with a progress bar and a summary of the last run.
+- **Analyzer URL** and **Token** identify the service. **Test connection** reports the service's model, whether it has finished loading, and how many embeddings it has cached, or the error.
+- **Local path prefix** and **Analyzer path prefix** map the library folder on this machine to the same folder as the analyzer sees it. For example, a library shared from the analyzer host and opened here as `Z:\media\audio` uses local prefix `Z:\media\audio` and analyzer prefix `/media/audio`, matching the compose mount `/srv/media/audio:/media/audio:ro`. Entries outside the local prefix are counted as unreachable.
+- **Analyze library** analyzes every entry that has no current analysis, with a progress bar and a summary of the last run. The summary lists up to five entries that failed or were unreachable, with the reason for each.
 - **Vocabulary** lists the tags that can be applied automatically.
 
 ## Building Soundscapes

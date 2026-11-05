@@ -39,7 +39,7 @@ const saving = ref(false);
 const savingVocabulary = ref(false);
 const testing = ref(false);
 const starting = ref(false);
-// Result of the last connection test: the model name, or the error text.
+// Result of the last connection test: the analyzer's status line, or the error text.
 const testResult = ref<{ ok: boolean; text: string } | null>(null);
 
 // Bumped when the dialog closes so a slow load cannot overwrite a newer one.
@@ -101,8 +101,8 @@ async function testConnection(): Promise<void> {
   testing.value = true;
   testResult.value = null;
   try {
-    const model = await invoke<string>('test_autotag_connection', { settings: settings.value });
-    testResult.value = { ok: true, text: `Connected. Model: ${model}` };
+    const status = await invoke<string>('test_autotag_connection', { settings: settings.value });
+    testResult.value = { ok: true, text: status };
   } catch (e) {
     testResult.value = { ok: false, text: String(e) };
   } finally {
@@ -157,10 +157,11 @@ async function analyze(): Promise<void> {
 
 // --- Last run ---
 
+// `finishedAt` is milliseconds since the Unix epoch, sent as a string.
 const finishedLabel = computed(() => {
   const at = report.value?.finishedAt;
   if (!at) return null;
-  const d = new Date(at);
+  const d = new Date(Number(at));
   return Number.isNaN(d.getTime()) ? at : d.toLocaleString();
 });
 
@@ -348,6 +349,12 @@ function close(): void {
             <VAlert v-if="report.error" type="error" variant="tonal" density="compact" class="mt-2">
               {{ report.error }}
             </VAlert>
+            <div v-if="report.sampleErrors.length > 0" class="mt-2">
+              <div class="text-caption text-medium-emphasis">Examples of entries that could not be analyzed:</div>
+              <ul class="sample-errors text-caption">
+                <li v-for="(line, i) in report.sampleErrors" :key="i">{{ line }}</li>
+              </ul>
+            </div>
           </div>
           <div v-else class="text-caption text-medium-emphasis mb-2">No run yet.</div>
 
@@ -429,6 +436,11 @@ function close(): void {
 </template>
 
 <style scoped>
+.sample-errors {
+  padding-left: 20px;
+  word-break: break-all;
+}
+
 .quality-table {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 4px;
