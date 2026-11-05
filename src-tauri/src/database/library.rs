@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::database::now_millis;
 use crate::database::DbError;
-use crate::models::LibraryEntryUsage;
+use crate::models::{AutoTag, LibraryEntryUsage};
 
 // ─── Library Entry CRUD ───────────────────────────────────────────────────────
 
@@ -394,7 +394,9 @@ pub fn remove_tag_from_entry(
 
     // Clean up orphaned tag
     conn.execute(
-        "DELETE FROM tags WHERE name = ?1 AND id NOT IN (SELECT tag_id FROM library_entry_tags)",
+        "DELETE FROM tags WHERE name = ?1
+           AND id NOT IN (SELECT tag_id FROM library_entry_tags)
+           AND id NOT IN (SELECT tag_id FROM tag_rejections)",
         params![normalised],
     )
     .map_err(|e| format!("Failed to clean up orphaned tag: {e}"))?;
@@ -402,38 +404,125 @@ pub fn remove_tag_from_entry(
     Ok(())
 }
 
-/// Atomically replaces the full tag set for an entry: one delete, one insert
-/// per tag, one orphan sweep — all in a single transaction (the previous
-/// remove-then-re-add loop could leave a partial tag set on mid-way failure).
+/// Deletes tag rows that no entry uses and that no entry has rejected.
+/// Rejections point at tag rows, so a tag with a rejection must stay.
+const SWEEP_ORPHAN_TAGS: &str = "DELETE FROM tags
+     WHERE id NOT IN (SELECT tag_id FROM library_entry_tags)
+       AND id NOT IN (SELECT tag_id FROM tag_rejections)";
+
+fn sweep_orphan_tags(conn: &Connection) -> Result<(), String> {
+    conn.execute(SWEEP_ORPHAN_TAGS, [])
+        .map_err(|e| format!("Failed to sweep orphaned tags: {e}"))?;
+    Ok(())
+}
+
+/// Returns the `source` ('user' or 'auto') of the entry's row for this tag,
+/// or None if the entry doesn't have the tag.
+fn stored_source(conn: &Connection, entry_id: &str, tag_id: &str) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT source FROM library_entry_tags WHERE library_entry_id = ?1 AND tag_id = ?2",
+        params![entry_id, tag_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| format!("Failed to read tag source: {e}"))
+}
+
+/// Records that the user rejected this tag on this entry.
+fn insert_rejection(conn: &Connection, entry_id: &str, tag_id: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT OR IGNORE INTO tag_rejections (library_entry_id, tag_id, created_at)
+         VALUES (?1, ?2, ?3)",
+        params![entry_id, tag_id, now_millis()],
+    )
+    .map_err(|e| format!("Failed to record tag rejection: {e}"))?;
+    Ok(())
+}
+
+/// Adds a tag the entry doesn't have yet as a user tag and clears any
+/// rejection of it, since the user's latest action wins. A tag the entry
+/// already has (user or auto) is left exactly as stored.
+fn add_new_user_tag(conn: &Connection, entry_id: &str, tag_id: &str) -> Result<(), String> {
+    if stored_source(conn, entry_id, tag_id)?.is_some() {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO library_entry_tags (library_entry_id, tag_id, source, score)
+         VALUES (?1, ?2, 'user', NULL)",
+        params![entry_id, tag_id],
+    )
+    .map_err(|e| format!("Failed to add tag to entry: {e}"))?;
+    conn.execute(
+        "DELETE FROM tag_rejections WHERE library_entry_id = ?1 AND tag_id = ?2",
+        params![entry_id, tag_id],
+    )
+    .map_err(|e| format!("Failed to clear tag rejection: {e}"))?;
+    Ok(())
+}
+
+/// Removes the entry's row for this tag. If it was an auto tag, the removal
+/// is also recorded as a rejection; removing a user tag is plain editing.
+fn remove_tag_row(conn: &Connection, entry_id: &str, tag_id: &str) -> Result<(), String> {
+    let source = stored_source(conn, entry_id, tag_id)?;
+    conn.execute(
+        "DELETE FROM library_entry_tags WHERE library_entry_id = ?1 AND tag_id = ?2",
+        params![entry_id, tag_id],
+    )
+    .map_err(|e| format!("Failed to remove tag from entry: {e}"))?;
+    if source.as_deref() == Some("auto") {
+        insert_rejection(conn, entry_id, tag_id)?;
+    }
+    Ok(())
+}
+
+/// Atomically saves the full tag list for an entry as a diff against the
+/// stored rows, in one transaction:
+/// - a listed tag that is stored as auto stays auto, score unchanged;
+/// - a listed tag the entry doesn't have is added as a user tag;
+/// - a stored auto tag that is missing from the list is removed and rejected;
+/// - a stored user tag that is missing from the list is simply removed.
 pub fn set_entry_tags(conn: &Connection, entry_id: &str, tags: &[String]) -> Result<(), String> {
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("Failed to begin tag transaction: {e}"))?;
 
-    conn.execute(
-        "DELETE FROM library_entry_tags WHERE library_entry_id = ?1",
-        params![entry_id],
-    )
-    .map_err(|e| format!("Failed to clear entry tags: {e}"))?;
-
+    let mut wanted_ids = Vec::new();
     for tag_name in tags {
-        add_tag_to_entry(conn, entry_id, tag_name)?;
+        wanted_ids.push(ensure_tag(conn, tag_name)?);
     }
 
-    conn.execute(
-        "DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM library_entry_tags)",
-        [],
-    )
-    .map_err(|e| format!("Failed to sweep orphaned tags: {e}"))?;
+    let stored_ids: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT tag_id FROM library_entry_tags WHERE library_entry_id = ?1")
+            .map_err(|e| format!("Failed to prepare stored tag query: {e}"))?;
+        let rows = stmt
+            .query_map(params![entry_id], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("Failed to query stored tags: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to collect stored tags: {e}"))?;
+        rows
+    };
+
+    for tag_id in &stored_ids {
+        if !wanted_ids.contains(tag_id) {
+            remove_tag_row(conn, entry_id, tag_id)?;
+        }
+    }
+    for tag_id in &wanted_ids {
+        add_new_user_tag(conn, entry_id, tag_id)?;
+    }
+
+    sweep_orphan_tags(conn)?;
 
     tx.commit().map_err(|e| format!("Failed to commit tag transaction: {e}"))?;
     Ok(())
 }
 
 /// Adds `add` to and removes `remove` from every entry in `entry_ids`, in
-/// one transaction. Tags the entry already has are left alone, so this is
-/// safe to apply to a mixed selection. Orphaned tag rows are swept at the
-/// end, matching `set_entry_tags`.
+/// one transaction. Applies the same rules as `set_entry_tags`: removing an
+/// auto tag rejects it, adding a tag the entry already has leaves it as
+/// stored, and adding a new tag inserts it as a user tag. Orphaned tag rows
+/// are swept at the end.
 pub fn bulk_edit_entry_tags(
     conn: &Connection,
     entry_ids: &[String],
@@ -447,28 +536,207 @@ pub fn bulk_edit_entry_tags(
     for entry_id in entry_ids {
         for tag_name in remove {
             let normalised = tag_name.trim().to_lowercase();
-            conn.execute(
-                "DELETE FROM library_entry_tags
-                 WHERE library_entry_id = ?1
-                   AND tag_id = (SELECT id FROM tags WHERE name = ?2)",
-                params![entry_id, normalised],
-            )
-            .map_err(|e| format!("Failed to remove tag from entry: {e}"))?;
+            let tag_id: Option<String> = conn
+                .query_row(
+                    "SELECT id FROM tags WHERE name = ?1",
+                    params![normalised],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| format!("Failed to query tag: {e}"))?;
+            if let Some(tag_id) = tag_id {
+                remove_tag_row(conn, entry_id, &tag_id)?;
+            }
         }
         for tag_name in add {
-            add_tag_to_entry(conn, entry_id, tag_name)?;
+            let tag_id = ensure_tag(conn, tag_name)?;
+            add_new_user_tag(conn, entry_id, &tag_id)?;
         }
     }
 
-    conn.execute(
-        "DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM library_entry_tags)",
-        [],
-    )
-    .map_err(|e| format!("Failed to sweep orphaned tags: {e}"))?;
+    sweep_orphan_tags(conn)?;
 
     tx.commit()
         .map_err(|e| format!("Failed to commit bulk tag transaction: {e}"))?;
     Ok(())
+}
+
+/// Returns the ids of the entry's auto tags. With `tags` set, only those
+/// names are considered; with `None`, every auto tag on the entry.
+fn auto_tag_ids(
+    conn: &Connection,
+    entry_id: &str,
+    tags: Option<&[String]>,
+) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT lt.tag_id, t.name FROM library_entry_tags lt
+             JOIN tags t ON t.id = lt.tag_id
+             WHERE lt.library_entry_id = ?1 AND lt.source = 'auto'",
+        )
+        .map_err(|e| format!("Failed to prepare auto tag query: {e}"))?;
+    let rows = stmt
+        .query_map(params![entry_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| format!("Failed to query auto tags: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to collect auto tags: {e}"))?;
+
+    let wanted: Option<Vec<String>> =
+        tags.map(|names| names.iter().map(|n| n.trim().to_lowercase()).collect());
+    Ok(rows
+        .into_iter()
+        .filter(|(_, name)| wanted.as_ref().map_or(true, |w| w.contains(name)))
+        .map(|(id, _)| id)
+        .collect())
+}
+
+/// Turns the entry's matching auto tags into user tags and clears their
+/// scores. `tags: None` keeps every auto tag on the entries.
+pub fn keep_auto_tags(
+    conn: &Connection,
+    entry_ids: &[String],
+    tags: Option<&[String]>,
+) -> Result<(), String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin keep transaction: {e}"))?;
+
+    for entry_id in entry_ids {
+        for tag_id in auto_tag_ids(conn, entry_id, tags)? {
+            conn.execute(
+                "UPDATE library_entry_tags SET source = 'user', score = NULL
+                 WHERE library_entry_id = ?1 AND tag_id = ?2",
+                params![entry_id, tag_id],
+            )
+            .map_err(|e| format!("Failed to keep auto tag: {e}"))?;
+        }
+    }
+
+    tx.commit().map_err(|e| format!("Failed to commit keep transaction: {e}"))?;
+    Ok(())
+}
+
+/// Removes the entry's matching auto tags and records a rejection for each,
+/// so they aren't suggested again. `tags: None` rejects every auto tag on
+/// the entries. User tags are never touched.
+pub fn reject_auto_tags(
+    conn: &Connection,
+    entry_ids: &[String],
+    tags: Option<&[String]>,
+) -> Result<(), String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin reject transaction: {e}"))?;
+
+    for entry_id in entry_ids {
+        for tag_id in auto_tag_ids(conn, entry_id, tags)? {
+            remove_tag_row(conn, entry_id, &tag_id)?;
+        }
+    }
+
+    tx.commit().map_err(|e| format!("Failed to commit reject transaction: {e}"))?;
+    Ok(())
+}
+
+/// True if the user has rejected this tag on this entry.
+pub fn is_rejected(conn: &Connection, entry_id: &str, tag_name: &str) -> Result<bool, String> {
+    let normalised = tag_name.trim().to_lowercase();
+    conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM tag_rejections r
+             JOIN tags t ON t.id = r.tag_id
+             WHERE r.library_entry_id = ?1 AND t.name = ?2)",
+        params![entry_id, normalised],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("Failed to check tag rejection: {e}"))
+}
+
+/// Replaces the entry's auto tags with `desired` and returns how many auto
+/// rows were (added, removed). Names the entry holds as user tags or has
+/// rejected are skipped, and user rows are never changed. A name that is
+/// already an auto tag keeps its row and gets the new score.
+///
+/// This does not open its own transaction. It reads the entry's current rows
+/// on the connection it is given, so it sees whatever the caller's open
+/// transaction has already written and must be called inside one.
+pub fn apply_auto_tags(
+    conn: &Connection,
+    entry_id: &str,
+    desired: &[AutoTag],
+) -> Result<(u32, u32), String> {
+    // Stored tag ids on this entry, split by source.
+    let mut auto_ids: Vec<String> = Vec::new();
+    let mut user_ids: Vec<String> = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT tag_id, source FROM library_entry_tags WHERE library_entry_id = ?1")
+            .map_err(|e| format!("Failed to prepare stored tag query: {e}"))?;
+        let rows = stmt
+            .query_map(params![entry_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| format!("Failed to query stored tags: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to collect stored tags: {e}"))?;
+        for (tag_id, source) in rows {
+            if source == "auto" {
+                auto_ids.push(tag_id);
+            } else {
+                user_ids.push(tag_id);
+            }
+        }
+    }
+
+    // Keep only the desired tags the user hasn't claimed or rejected.
+    let mut keep: Vec<(String, f64)> = Vec::new();
+    for wanted in desired {
+        let tag_id = ensure_tag(conn, &wanted.tag)?;
+        if user_ids.contains(&tag_id)
+            || keep.iter().any(|(id, _)| *id == tag_id)
+            || is_rejected(conn, entry_id, &wanted.tag)?
+        {
+            continue;
+        }
+        keep.push((tag_id, wanted.score));
+    }
+
+    let mut removed = 0;
+    for tag_id in &auto_ids {
+        if !keep.iter().any(|(id, _)| id == tag_id) {
+            conn.execute(
+                "DELETE FROM library_entry_tags WHERE library_entry_id = ?1 AND tag_id = ?2",
+                params![entry_id, tag_id],
+            )
+            .map_err(|e| format!("Failed to remove auto tag: {e}"))?;
+            removed += 1;
+        }
+    }
+
+    let mut added = 0;
+    for (tag_id, score) in &keep {
+        if auto_ids.contains(tag_id) {
+            conn.execute(
+                "UPDATE library_entry_tags SET score = ?3
+                 WHERE library_entry_id = ?1 AND tag_id = ?2",
+                params![entry_id, tag_id, score],
+            )
+            .map_err(|e| format!("Failed to update auto tag score: {e}"))?;
+        } else {
+            conn.execute(
+                "INSERT INTO library_entry_tags (library_entry_id, tag_id, source, score)
+                 VALUES (?1, ?2, 'auto', ?3)",
+                params![entry_id, tag_id, score],
+            )
+            .map_err(|e| format!("Failed to add auto tag: {e}"))?;
+            added += 1;
+        }
+    }
+
+    sweep_orphan_tags(conn)?;
+    Ok((added, removed))
 }
 
 /// Returns all tag names associated with the given library entry, sorted.
@@ -927,5 +1195,239 @@ mod tests {
         // Removing the last use of a tag sweeps the orphan row.
         bulk_edit_entry_tags(&conn, &[c.clone()], &[], &["night".into()]).expect("bulk remove");
         assert_eq!(list_all_tags(&conn).unwrap(), vec!["boss", "combat"]);
+    }
+
+    // ── Auto-tag write semantics ──────────────────────────────────────────────
+
+    fn new_entry(conn: &Connection, path: &str) -> String {
+        insert_library_entry(conn, path, None, "T", None, None, None, "music").unwrap()
+    }
+
+    /// Stores `tag` on `entry` as an auto tag with the given score.
+    fn add_auto(conn: &Connection, entry: &str, tag: &str, score: f64) {
+        let tag_id = ensure_tag(conn, tag).unwrap();
+        conn.execute(
+            "INSERT INTO library_entry_tags (library_entry_id, tag_id, source, score)
+             VALUES (?1, ?2, 'auto', ?3)",
+            params![entry, tag_id, score],
+        )
+        .unwrap();
+    }
+
+    /// Returns (source, score) for a stored tag row, or None if absent.
+    fn row_of(conn: &Connection, entry: &str, tag: &str) -> Option<(String, Option<f64>)> {
+        conn.query_row(
+            "SELECT lt.source, lt.score FROM library_entry_tags lt
+             JOIN tags t ON t.id = lt.tag_id
+             WHERE lt.library_entry_id = ?1 AND t.name = ?2",
+            params![entry, tag],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .unwrap()
+    }
+
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn set_tags_keeps_auto_rows_auto_when_resent() {
+        let conn = open_memory_db();
+        let e = new_entry(&conn, "/a.mp3");
+        add_auto(&conn, &e, "brass", 0.8);
+        set_entry_tags(&conn, &e, &["brass".into(), "night".into()]).unwrap();
+        assert_eq!(row_of(&conn, &e, "brass"), Some(("auto".into(), Some(0.8))));
+        assert_eq!(row_of(&conn, &e, "night"), Some(("user".into(), None)));
+    }
+
+    #[test]
+    fn set_tags_missing_auto_becomes_rejection() {
+        let conn = open_memory_db();
+        let e = new_entry(&conn, "/a.mp3");
+        add_auto(&conn, &e, "brass", 0.8);
+        set_entry_tags(&conn, &e, &[]).unwrap();
+        assert_eq!(row_of(&conn, &e, "brass"), None);
+        assert!(is_rejected(&conn, &e, "brass").unwrap());
+    }
+
+    #[test]
+    fn set_tags_missing_user_is_plain_delete_no_rejection() {
+        let conn = open_memory_db();
+        let e = new_entry(&conn, "/a.mp3");
+        add_tag_to_entry(&conn, &e, "night").unwrap();
+        set_entry_tags(&conn, &e, &[]).unwrap();
+        assert_eq!(row_of(&conn, &e, "night"), None);
+        assert!(!is_rejected(&conn, &e, "night").unwrap());
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tag_rejections"), 0);
+    }
+
+    #[test]
+    fn user_add_clears_rejection() {
+        let conn = open_memory_db();
+        let e = new_entry(&conn, "/a.mp3");
+        add_auto(&conn, &e, "brass", 0.8);
+        set_entry_tags(&conn, &e, &[]).unwrap();
+        assert!(is_rejected(&conn, &e, "brass").unwrap());
+
+        set_entry_tags(&conn, &e, &["brass".into()]).unwrap();
+        assert_eq!(row_of(&conn, &e, "brass"), Some(("user".into(), None)));
+        assert!(!is_rejected(&conn, &e, "brass").unwrap());
+
+        // Same rule for bulk add.
+        let f = new_entry(&conn, "/b.mp3");
+        add_auto(&conn, &f, "drums", 0.7);
+        bulk_edit_entry_tags(&conn, &[f.clone()], &[], &["drums".into()]).unwrap();
+        assert!(is_rejected(&conn, &f, "drums").unwrap());
+        bulk_edit_entry_tags(&conn, &[f.clone()], &["drums".into()], &[]).unwrap();
+        assert_eq!(row_of(&conn, &f, "drums"), Some(("user".into(), None)));
+        assert!(!is_rejected(&conn, &f, "drums").unwrap());
+    }
+
+    #[test]
+    fn bulk_remove_of_auto_tag_records_rejection() {
+        let conn = open_memory_db();
+        let a = new_entry(&conn, "/a.mp3");
+        let b = new_entry(&conn, "/b.mp3");
+        add_auto(&conn, &a, "brass", 0.8);
+        add_tag_to_entry(&conn, &b, "brass").unwrap();
+        bulk_edit_entry_tags(&conn, &[a.clone(), b.clone()], &[], &["brass".into()]).unwrap();
+        assert!(is_rejected(&conn, &a, "brass").unwrap());
+        assert!(!is_rejected(&conn, &b, "brass").unwrap());
+        assert_eq!(row_of(&conn, &a, "brass"), None);
+        assert_eq!(row_of(&conn, &b, "brass"), None);
+    }
+
+    #[test]
+    fn bulk_add_existing_auto_stays_auto() {
+        let conn = open_memory_db();
+        let a = new_entry(&conn, "/a.mp3");
+        add_auto(&conn, &a, "brass", 0.8);
+        bulk_edit_entry_tags(&conn, &[a.clone()], &["brass".into()], &[]).unwrap();
+        assert_eq!(row_of(&conn, &a, "brass"), Some(("auto".into(), Some(0.8))));
+    }
+
+    #[test]
+    fn keep_flips_to_user_and_clears_score() {
+        let conn = open_memory_db();
+        let e = new_entry(&conn, "/a.mp3");
+        add_auto(&conn, &e, "brass", 0.8);
+        add_auto(&conn, &e, "drums", 0.7);
+
+        keep_auto_tags(&conn, &[e.clone()], Some(&["brass".to_string()])).unwrap();
+        assert_eq!(row_of(&conn, &e, "brass"), Some(("user".into(), None)));
+        assert_eq!(row_of(&conn, &e, "drums"), Some(("auto".into(), Some(0.7))));
+
+        keep_auto_tags(&conn, &[e.clone()], None).unwrap();
+        assert_eq!(row_of(&conn, &e, "drums"), Some(("user".into(), None)));
+    }
+
+    #[test]
+    fn reject_auto_tags_deletes_rows_and_records_rejections() {
+        let conn = open_memory_db();
+        let e = new_entry(&conn, "/a.mp3");
+        add_auto(&conn, &e, "brass", 0.8);
+        add_auto(&conn, &e, "drums", 0.7);
+        add_tag_to_entry(&conn, &e, "night").unwrap();
+
+        reject_auto_tags(&conn, &[e.clone()], Some(&["brass".to_string()])).unwrap();
+        assert_eq!(row_of(&conn, &e, "brass"), None);
+        assert!(is_rejected(&conn, &e, "brass").unwrap());
+        assert!(row_of(&conn, &e, "drums").is_some());
+
+        reject_auto_tags(&conn, &[e.clone()], None).unwrap();
+        assert_eq!(row_of(&conn, &e, "drums"), None);
+        assert!(is_rejected(&conn, &e, "drums").unwrap());
+        // User rows are never rejected.
+        assert_eq!(row_of(&conn, &e, "night"), Some(("user".into(), None)));
+        assert!(!is_rejected(&conn, &e, "night").unwrap());
+    }
+
+    fn auto(tag: &str, score: f64) -> crate::models::AutoTag {
+        crate::models::AutoTag { tag: tag.into(), score }
+    }
+
+    #[test]
+    fn apply_auto_never_touches_user_rows() {
+        let conn = open_memory_db();
+        let e = new_entry(&conn, "/a.mp3");
+        add_tag_to_entry(&conn, &e, "night").unwrap();
+        apply_auto_tags(&conn, &e, &[auto("night", 0.9), auto("brass", 0.8)]).unwrap();
+        assert_eq!(row_of(&conn, &e, "night"), Some(("user".into(), None)));
+        assert_eq!(row_of(&conn, &e, "brass"), Some(("auto".into(), Some(0.8))));
+
+        // An empty desired set removes auto rows but leaves user rows.
+        apply_auto_tags(&conn, &e, &[]).unwrap();
+        assert_eq!(row_of(&conn, &e, "night"), Some(("user".into(), None)));
+        assert_eq!(row_of(&conn, &e, "brass"), None);
+    }
+
+    #[test]
+    fn apply_auto_skips_rejected_and_user_named() {
+        let conn = open_memory_db();
+        let e = new_entry(&conn, "/a.mp3");
+        add_tag_to_entry(&conn, &e, "night").unwrap();
+        add_auto(&conn, &e, "drums", 0.7);
+        reject_auto_tags(&conn, &[e.clone()], None).unwrap();
+
+        let (added, removed) = apply_auto_tags(
+            &conn,
+            &e,
+            &[auto("night", 0.9), auto("drums", 0.9), auto("brass", 0.8)],
+        )
+        .unwrap();
+        assert_eq!((added, removed), (1, 0));
+        assert_eq!(row_of(&conn, &e, "drums"), None);
+        assert_eq!(row_of(&conn, &e, "night"), Some(("user".into(), None)));
+        assert!(row_of(&conn, &e, "brass").is_some());
+    }
+
+    #[test]
+    fn apply_auto_replaces_previous_auto_set() {
+        let conn = open_memory_db();
+        let e = new_entry(&conn, "/a.mp3");
+        add_auto(&conn, &e, "old", 0.6);
+        add_auto(&conn, &e, "same", 0.6);
+
+        let (added, removed) =
+            apply_auto_tags(&conn, &e, &[auto("same", 0.9), auto("fresh", 0.8)]).unwrap();
+        assert_eq!((added, removed), (1, 1));
+        assert_eq!(row_of(&conn, &e, "old"), None);
+        // A kept name gets its new score.
+        assert_eq!(row_of(&conn, &e, "same"), Some(("auto".into(), Some(0.9))));
+        assert_eq!(row_of(&conn, &e, "fresh"), Some(("auto".into(), Some(0.8))));
+        // The dropped tag was not a user rejection and no longer has any row.
+        assert!(!is_rejected(&conn, &e, "old").unwrap());
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tags WHERE name = 'old'"), 0);
+    }
+
+    #[test]
+    fn rejection_survives_orphan_sweep() {
+        let conn = open_memory_db();
+        let e = new_entry(&conn, "/a.mp3");
+        add_auto(&conn, &e, "x", 0.8);
+        set_entry_tags(&conn, &e, &[]).unwrap();
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tags WHERE name = 'x'"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tag_rejections"), 1);
+        assert!(list_all_tags(&conn).unwrap().is_empty());
+
+        // Other sweeps leave it alone too.
+        let f = new_entry(&conn, "/b.mp3");
+        add_tag_to_entry(&conn, &f, "y").unwrap();
+        bulk_edit_entry_tags(&conn, &[f.clone()], &[], &["y".into()]).unwrap();
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tag_rejections"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tags WHERE name = 'x'"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tags WHERE name = 'y'"), 0);
+    }
+
+    #[test]
+    fn delete_entry_cascades_rejections() {
+        let conn = open_memory_db();
+        let e = new_entry(&conn, "/a.mp3");
+        add_auto(&conn, &e, "x", 0.8);
+        reject_auto_tags(&conn, &[e.clone()], None).unwrap();
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tag_rejections"), 1);
+        conn.execute("DELETE FROM library_entries WHERE id = ?1", params![e]).unwrap();
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tag_rejections"), 0);
     }
 }

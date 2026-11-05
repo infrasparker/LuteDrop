@@ -348,6 +348,26 @@ pub fn bulk_edit_library_entry_tags(
     })
 }
 
+pub fn keep_auto_tags(
+    container: &AppStateContainer,
+    entry_ids: Vec<String>,
+    tags: Option<Vec<String>>,
+) -> Result<AppState, String> {
+    mutate_and_reload(container, |conn| {
+        library::keep_auto_tags(conn, &entry_ids, tags.as_deref())
+    })
+}
+
+pub fn reject_auto_tags(
+    container: &AppStateContainer,
+    entry_ids: Vec<String>,
+    tags: Option<Vec<String>>,
+) -> Result<AppState, String> {
+    mutate_and_reload(container, |conn| {
+        library::reject_auto_tags(conn, &entry_ids, tags.as_deref())
+    })
+}
+
 pub fn update_library_entry_type(
     container: &AppStateContainer,
     entry_id: &str,

@@ -172,6 +172,8 @@ pub fn run() {
             commands::bulk_import_library_entries,
             commands::scan_folder_for_audio,
             commands::update_library_entry_tags,
+            commands::keep_auto_tags,
+            commands::reject_auto_tags,
             commands::bulk_edit_library_entry_tags,
             commands::update_library_entry_type,
             commands::update_library_entry_markers,

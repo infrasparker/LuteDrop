@@ -267,6 +267,24 @@ pub fn bulk_edit_library_entry_tags(
 }
 
 #[tauri::command]
+pub fn keep_auto_tags(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_ids: Vec<String>,
+    tags: Option<Vec<String>>,
+) -> Result<AppState, String> {
+    actions::keep_auto_tags(&state, entry_ids, tags)
+}
+
+#[tauri::command]
+pub fn reject_auto_tags(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_ids: Vec<String>,
+    tags: Option<Vec<String>>,
+) -> Result<AppState, String> {
+    actions::reject_auto_tags(&state, entry_ids, tags)
+}
+
+#[tauri::command]
 pub fn update_library_entry_type(
     state: State<'_, Arc<AppStateContainer>>,
     entry_id: String,
