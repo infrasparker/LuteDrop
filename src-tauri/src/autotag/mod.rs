@@ -501,8 +501,9 @@ fn run_steps(
             let (Some(tags), Some(hash)) = (decisions.get(id), &entry.facts.hash) else {
                 continue;
             };
-            // The entry may have been deleted while the analyzer worked.
-            if !entry_exists(&conn, id)? {
+            // The entry may have been deleted, or changed to another type,
+            // while the analyzer worked.
+            if !entry_is_music(&conn, id)? {
                 continue;
             }
             let (a, r) = library::apply_auto_tags(&conn, id, tags)?;
@@ -537,9 +538,10 @@ fn run_steps(
     Ok(())
 }
 
-fn entry_exists(conn: &Connection, id: &str) -> Result<bool, String> {
+/// True if the entry exists and is currently a music entry.
+fn entry_is_music(conn: &Connection, id: &str) -> Result<bool, String> {
     conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM library_entries WHERE id = ?1)",
+        "SELECT EXISTS(SELECT 1 FROM library_entries WHERE id = ?1 AND entry_type = 'music')",
         params![id],
         |row| row.get(0),
     )
@@ -894,6 +896,30 @@ mod tests {
 
         assert_eq!(report.error, None);
         assert_eq!(row_of(&db, &a, "brass"), Some((TagSource::User, None)));
+        assert_eq!(report.added, 0);
+    }
+
+    #[test]
+    fn run_skips_entry_that_stopped_being_music_during_scoring() {
+        let db = setup();
+        let a = add(&db, "a", "music");
+        let hook_db = db.clone();
+        let hook_entry = a.clone();
+        let fake = FakeAnalyzer {
+            gate: scores(&[("h-a", 0.9)]),
+            tags: HashMap::from([("brass".to_string(), scores(&[("h-a", 0.9)]))]),
+            on_score: Some(Box::new(move || {
+                let conn = hook_db.try_lock().expect("database is free during /score");
+                library::update_library_entry_type(&conn, &hook_entry, "ambiance").unwrap();
+            })),
+            ..Default::default()
+        };
+
+        let report = run_once(&db, &fake, &[a.clone()], &no_progress);
+
+        assert_eq!(report.error, None);
+        assert_eq!(row_of(&db, &a, "brass"), None);
+        assert_eq!(row_of(&db, &a, "encounter"), None);
         assert_eq!(report.added, 0);
     }
 

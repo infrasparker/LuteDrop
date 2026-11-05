@@ -103,7 +103,10 @@ pub fn update_library_entry_type(
         )
         .optional()
         .map_err(|e| format!("Failed to read entry type: {e}"))?;
-    let was_music = old_type.as_deref() == Some("music");
+    let Some(old_type) = old_type else {
+        return Ok(false);
+    };
+    let was_music = old_type == "music";
     let is_music = entry_type == "music";
 
     conn.execute(
