@@ -3,6 +3,9 @@ import { computed, ref, watch } from 'vue';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
 import WaveformEditor from './WaveformEditor.vue';
+import TagChip from './TagChip.vue';
+import TagScoresPanel from './TagScoresPanel.vue';
+import RoleControl from './RoleControl.vue';
 import { open } from '@tauri-apps/plugin-dialog';
 import { AUDIO_EXTENSIONS } from '../constants';
 import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
@@ -55,6 +58,9 @@ async function toggleLoop(): Promise<void> {
 // Local editable fields
 const editName = ref('');
 const editTags = ref<string[]>([]);
+// Auto tag names currently shown; sent with each save so only auto tags
+// removed in this dialog are rejected.
+const seenAutoTags = ref<string[]>([]);
 const editEntryType = ref('music');
 const { local: localGain } = useLocalVolume(() => entry.value?.volume);
 
@@ -79,11 +85,23 @@ function togglePreview(): void {
 watch(() => props.modelValue, (open) => {
   if (open && entry.value) {
     editName.value = entry.value.name;
-    editTags.value = [...entry.value.tags];
     editEntryType.value = entry.value.entryType;
     localGain.value = entry.value.volume;
   }
 }, { immediate: true });
+
+// Tag edits save immediately, so the store is the source of truth: keep the
+// combobox and the seen auto tags in step with it (this also picks up Keep /
+// Remove on an auto chip and auto-tag runs finishing while the dialog is open).
+watch(
+  () => [entry.value?.tags.join('|'), entry.value?.autoTags.map((a) => a.tag).join('|')],
+  () => {
+    if (!entry.value) return;
+    editTags.value = [...entry.value.tags];
+    seenAutoTags.value = entry.value.autoTags.map((a) => a.tag);
+  },
+  { immediate: true },
+);
 
 // --- Name ---
 async function saveName(): Promise<void> {
@@ -95,6 +113,11 @@ async function saveName(): Promise<void> {
 }
 
 // --- Tags ---
+function removeEditTag(index: number): void {
+  editTags.value = editTags.value.filter((_, i) => i !== index);
+  saveTags();
+}
+
 async function saveTags(): Promise<void> {
   if (!entry.value) return;
   const tags = editTags.value
@@ -103,6 +126,7 @@ async function saveTags(): Promise<void> {
   await store.command('update_library_entry_tags', {
     entryId: props.entryId,
     tags,
+    seenAutoTags: seenAutoTags.value,
   });
 }
 
@@ -267,7 +291,28 @@ async function relocateFile(): Promise<void> {
           closable-chips
           class="mb-3"
           @update:model-value="saveTags"
-        />
+        >
+          <template #chip="{ index }">
+            <TagChip
+              :tag="editTags[index]"
+              :auto="entry?.autoTags.find((a) => a.tag === editTags[index]) ?? null"
+              :entry-id="props.entryId"
+              closable
+              @remove="removeEditTag(index)"
+            />
+          </template>
+        </VCombobox>
+
+        <!-- Role (music only) -->
+        <div v-if="editEntryType === 'music'" class="d-flex align-center ga-3 mb-3">
+          <span class="text-caption text-medium-emphasis" style="min-width: 50px;">Role</span>
+          <RoleControl
+            :entry-ids="[props.entryId]"
+            :role="entry.role"
+            :role-source="entry.roleSource"
+            :role-score="entry.roleScore"
+          />
+        </div>
 
         <!-- Volume -->
         <div class="d-flex align-center ga-3 mb-4">
@@ -384,6 +429,8 @@ async function relocateFile(): Promise<void> {
             </div>
           </template>
         </div>
+
+        <TagScoresPanel :entry-id="entryId" :is-ambiance="editEntryType === 'ambiance'" />
       </VCardText>
     </VCard>
   </VDialog>

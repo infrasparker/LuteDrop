@@ -4,10 +4,15 @@ use std::sync::Arc;
 use crate::audio::util::{is_audio_path, is_file_usable};
 use crate::database;
 use crate::database::{configurations, hierarchy, library, DbError};
+use crate::autotag::client::{AnalyzerClient, HttpAnalyzer};
+use crate::autotag::vibe;
+use crate::database::autotag_db;
 use crate::database::settings::{self as broadcast_settings, BroadcastSettings};
+use crate::database::settings as autotag_settings;
 use crate::models::{
-    AppState, BroadcastStatus, BulkImportProgress, FixMissingReport, LibraryEntry, LibraryEntryUsage,
-    MissingEntryCandidates, Track, TrackUpdates,
+    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
+    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, Role, SceneConfig, Track, TrackUpdates, VibeHit,
+    VibePoint,
 };
 use crate::relink;
 use crate::state::AppStateContainer;
@@ -298,7 +303,8 @@ pub fn import_library_entry(
         None => Some(hash_file(&file_path)?),
     };
 
-    mutate_and_reload(container, |conn| {
+    let mut new_entry_id = None;
+    let state = mutate_and_reload(container, |conn| {
         // Check for duplicate by hash
         if let Some(ref h) = hash {
             if let Some((_id, existing_name)) = library::get_library_entry_by_hash(conn, h)? {
@@ -325,16 +331,31 @@ pub fn import_library_entry(
             }
         }
 
+        new_entry_id = Some(entry_id);
         Ok(())
-    })
+    })?;
+
+    if let Some(id) = new_entry_id {
+        if is_music(&entry_type) {
+            container.autotag.queue_entries(vec![id]);
+        }
+    }
+    Ok(state)
 }
 
+/// Saves an entry's full tag list. `seen_auto_tags` is the set of auto tags
+/// the editor showed; see `library::set_entry_tags`.
 pub fn update_library_entry_tags(
     container: &AppStateContainer,
     entry_id: &str,
     tags: Vec<String>,
+    seen_auto_tags: Option<Vec<String>>,
 ) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| library::set_entry_tags(conn, entry_id, &tags))
+    let state = mutate_and_reload(container, |conn| {
+        library::set_entry_tags(conn, entry_id, &tags, seen_auto_tags.as_deref())
+    })?;
+    request_rescore_if_enabled(container);
+    Ok(state)
 }
 
 pub fn bulk_edit_library_entry_tags(
@@ -343,9 +364,61 @@ pub fn bulk_edit_library_entry_tags(
     add: Vec<String>,
     remove: Vec<String>,
 ) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| {
+    let state = mutate_and_reload(container, |conn| {
         library::bulk_edit_entry_tags(conn, &entry_ids, &add, &remove)
-    })
+    })?;
+    request_rescore_if_enabled(container);
+    Ok(state)
+}
+
+pub fn keep_auto_tags(
+    container: &AppStateContainer,
+    entry_ids: Vec<String>,
+    tags: Option<Vec<String>>,
+) -> Result<AppState, String> {
+    let state = mutate_and_reload(container, |conn| {
+        library::keep_auto_tags(conn, &entry_ids, tags.as_deref())
+    })?;
+    request_rescore_if_enabled(container);
+    Ok(state)
+}
+
+pub fn reject_auto_tags(
+    container: &AppStateContainer,
+    entry_ids: Vec<String>,
+    tags: Option<Vec<String>>,
+) -> Result<AppState, String> {
+    let state = mutate_and_reload(container, |conn| {
+        library::reject_auto_tags(conn, &entry_ids, tags.as_deref())
+    })?;
+    request_rescore_if_enabled(container);
+    Ok(state)
+}
+
+/// Sets (or, with `None`, clears) the role on the given entries as a user
+/// decision.
+pub fn set_entry_role(
+    container: &AppStateContainer,
+    entry_ids: Vec<String>,
+    role: Option<Role>,
+) -> Result<AppState, String> {
+    let state = mutate_and_reload(container, |conn| {
+        library::set_user_role(conn, &entry_ids, role)
+    })?;
+    request_rescore_if_enabled(container);
+    Ok(state)
+}
+
+/// Turns the entries' auto roles into user roles.
+pub fn keep_auto_role(
+    container: &AppStateContainer,
+    entry_ids: Vec<String>,
+) -> Result<AppState, String> {
+    let state = mutate_and_reload(container, |conn| {
+        library::keep_auto_role(conn, &entry_ids)
+    })?;
+    request_rescore_if_enabled(container);
+    Ok(state)
 }
 
 pub fn update_library_entry_type(
@@ -353,10 +426,15 @@ pub fn update_library_entry_type(
     entry_id: &str,
     entry_type: &str,
 ) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| {
-        library::update_library_entry_type(conn, entry_id, entry_type)?;
+    let mut became_music = false;
+    let state = mutate_and_reload(container, |conn| {
+        became_music = library::update_library_entry_type(conn, entry_id, entry_type)?;
         Ok(())
-    })
+    })?;
+    if became_music && autotag_enabled(container) {
+        container.autotag.queue_entries(vec![entry_id.to_string()]);
+    }
+    Ok(state)
 }
 
 pub fn update_library_entry_markers(
@@ -491,6 +569,8 @@ fn run_bulk_import(container: Arc<AppStateContainer>, paths: Vec<String>, tags: 
     let total = paths.len() as u32;
     let mut imported: u32 = 0;
     let mut skipped: u32 = 0;
+    // Ids of the entries this import added, handed to the auto-tag worker at the end.
+    let mut new_ids: Vec<String> = Vec::new();
 
     // Announce the task so the frontend can show an indicator before the first file completes.
     container.emit(
@@ -552,6 +632,7 @@ fn run_bulk_import(container: Arc<AppStateContainer>, paths: Vec<String>, tags: 
         match file_result {
             Ok(Some(id)) => {
                 imported += 1;
+                new_ids.push(id.clone());
                 // Probe duration after the insert tx has committed so the UI sees
                 // the row immediately and the duration fills in shortly after.
                 if let Some(dur) = crate::audio::util::probe_duration(file_path) {
@@ -583,6 +664,10 @@ fn run_bulk_import(container: Arc<AppStateContainer>, paths: Vec<String>, tags: 
     // the import finishes (cheap atomic store; redundant marks are harmless).
     container.mark_state_dirty();
     container.release_import();
+
+    if is_music(&entry_type) {
+        container.autotag.queue_entries(new_ids);
+    }
 }
 
 fn emit_progress(
@@ -596,6 +681,112 @@ fn emit_progress(
         "library-import-progress",
         BulkImportProgress { processed, imported, skipped, total },
     );
+}
+
+/// True if an import with this entry type creates music entries.
+fn is_music(entry_type: &str) -> bool {
+    matches!(EntryType::from_str(entry_type), EntryType::Music)
+}
+
+// --- Auto-tagging ---
+
+/// True if auto-tagging is turned on. A settings read error counts as off.
+fn autotag_enabled(container: &AppStateContainer) -> bool {
+    with_db(container, autotag_settings::load_autotag)
+        .map(|s| s.enabled)
+        .unwrap_or(false)
+}
+
+/// Asks the worker to re-score after a tag change, if auto-tagging is on.
+fn request_rescore_if_enabled(container: &AppStateContainer) {
+    if autotag_enabled(container) {
+        container.autotag.request_rescore();
+    }
+}
+
+/// Queues every entry whose analysis is missing, failed, or stale. Called at
+/// app start; does nothing while auto-tagging is off.
+pub fn queue_unanalyzed_on_startup(container: &AppStateContainer) {
+    if autotag_enabled(container) {
+        container.autotag.analyze_library();
+    }
+}
+
+pub fn get_autotag_settings(container: &AppStateContainer) -> Result<AutoTagSettings, String> {
+    with_db(container, autotag_settings::load_autotag)
+}
+
+/// Saves the connection settings. Turning auto-tagging on starts analyzing
+/// the library right away.
+pub fn save_autotag_settings(container: &AppStateContainer, settings: AutoTagSettings) -> Result<(), String> {
+    let was_enabled = autotag_enabled(container);
+    with_db(container, |conn| autotag_settings::save_autotag(conn, &settings))?;
+    if settings.enabled && !was_enabled {
+        container.autotag.analyze_library();
+    }
+    Ok(())
+}
+
+pub fn get_scene_config(container: &AppStateContainer) -> Result<SceneConfig, String> {
+    with_db(container, autotag_settings::load_scene_config)
+}
+
+/// Saves the scene config and re-scores, since the vocabulary may have
+/// changed.
+pub fn save_scene_config(container: &AppStateContainer, config: SceneConfig) -> Result<(), String> {
+    with_db(container, |conn| autotag_settings::save_scene_config(conn, &config))?;
+    request_rescore_if_enabled(container);
+    Ok(())
+}
+
+/// Calls the analyzer's `/health` with `settings`, which need not be saved.
+/// Blocks for up to a few seconds.
+pub fn test_autotag_connection(settings: &AutoTagSettings) -> Result<String, String> {
+    HttpAnalyzer::new(&settings.analyzer_url, &settings.token).health()
+}
+
+/// Starts analyzing every music entry, including those already embedded, so
+/// the library recovers if the analyzer lost its cache. Progress arrives as
+/// `autotag-progress` events.
+pub fn analyze_library(container: &AppStateContainer) -> Result<(), String> {
+    if !autotag_enabled(container) {
+        return Err("Auto-tagging is turned off".to_string());
+    }
+    container.autotag.reanalyze_library();
+    Ok(())
+}
+
+pub fn get_autotag_report(container: &AppStateContainer) -> AutoTagReport {
+    container.autotag.last_report()
+}
+
+/// Music entries most like the selected ones. Blocks while the analyzer
+/// works, so callers run it off the UI thread.
+pub fn similar_entries(container: &AppStateContainer, entry_ids: &[String], limit: u32) -> Result<Vec<VibeHit>, String> {
+    let client = vibe::client_for(&container.db)?;
+    vibe::similar(&container.db, &client, entry_ids, limit)
+}
+
+/// Music entries ranked by how well they match a text description. Blocks
+/// while the analyzer works.
+pub fn search_vibe(container: &AppStateContainer, text: &str, limit: u32) -> Result<Vec<VibeHit>, String> {
+    let client = vibe::client_for(&container.db)?;
+    vibe::search(&container.db, &client, text, limit)
+}
+
+/// A 2D position for every analyzed music entry. Blocks while the analyzer
+/// works.
+pub fn vibe_map(container: &AppStateContainer) -> Result<Vec<VibePoint>, String> {
+    let client = vibe::client_for(&container.db)?;
+    vibe::map(&container.db, &client)
+}
+
+/// The entry's stored scores, or `None` if it has not been scored.
+pub fn get_entry_tag_scores(
+    container: &AppStateContainer,
+    entry_id: &str,
+) -> Result<Option<EntryTagScores>, String> {
+    with_db(container, |conn| autotag_db::load_scores(conn, entry_id))
 }
 
 pub fn relocate_library_entry(
@@ -800,12 +991,14 @@ pub fn play_track_clip(container: &AppStateContainer, track_id: &str, clip_id: &
     audio.play_track_clip(track_id, clip_id)
 }
 
-pub fn play_track_from_position(container: &AppStateContainer, track_id: &str, position: f64) -> Result<(), String> {
+/// `paused = true` seeks without un-pausing: the track ends up paused at
+/// `position` (one audio lock, so nothing plays in between).
+pub fn play_track_from_position(container: &AppStateContainer, track_id: &str, clip_id: Option<&str>, position: f64, paused: bool) -> Result<(), String> {
     let track_config = find_track_ref(container, track_id)?;
     update_clip_file_state(container, &track_config);
     let mut audio = container.lock_audio();
     ensure_track_ready(&mut audio, &track_config)?;
-    audio.play_track_from(track_id, position)
+    audio.play_track_from(track_id, clip_id, position, paused)
 }
 
 pub fn pause_track_audio(container: &AppStateContainer, track_id: &str) -> Result<(), String> {
@@ -935,6 +1128,7 @@ pub fn play_library_sound(
     trim_end: Option<f64>,
     loop_start: Option<f64>,
     loop_end: Option<f64>,
+    paused: bool,
 ) -> Result<(), String> {
     // Check the file is usable (exists and is not empty) before attempting playback
     if !is_file_usable(file_path) {
@@ -960,7 +1154,7 @@ pub fn play_library_sound(
         loop_region,
         fade_in: None,
         fade_out: None,
-    })
+    }, paused)
 }
 
 pub fn stop_library_sound(container: &AppStateContainer) -> Result<(), String> {
@@ -1196,7 +1390,7 @@ pub fn restore_broadcast_on_startup(container: &AppStateContainer) {
 mod tests {
     use super::{
         find_missing_file_candidates, get_broadcast_status, hash_file, is_file_usable, public_url,
-        relocate_library_entry,
+        relocate_library_entry, get_autotag_settings, save_autotag_settings,
         restore_broadcast_on_startup, sanitize_volume, scan_missing_files, set_broadcast_enabled,
         set_broadcast_settings, with_db,
     };
@@ -1212,6 +1406,23 @@ mod tests {
         crate::database::ensure_default_configuration(&conn).unwrap();
         let dir = tempfile::tempdir().unwrap().keep();
         AppStateContainer::new(conn, crate::audio::AudioEngine::new().unwrap(), dir.join("peaks"), dir.join("db"))
+    }
+
+    #[test]
+    fn enabling_autotag_starts_library_analysis_once() {
+        let c = test_container();
+        let mut settings = get_autotag_settings(&c).unwrap();
+        assert!(!settings.enabled);
+
+        save_autotag_settings(&c, settings.clone()).unwrap();
+        assert_eq!(c.autotag.pending_analyze_requests(), 0, "saving while off starts nothing");
+
+        settings.enabled = true;
+        save_autotag_settings(&c, settings.clone()).unwrap();
+        assert_eq!(c.autotag.pending_analyze_requests(), 1, "turning on starts an analysis");
+
+        save_autotag_settings(&c, settings).unwrap();
+        assert_eq!(c.autotag.pending_analyze_requests(), 0, "saving while already on starts nothing");
     }
 
     #[test]

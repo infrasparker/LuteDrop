@@ -3,4 +3,11 @@
 /**
  * Sent from Rust to the frontend when track playback state changes.
  */
-export type TrackPlaybackState = { trackId: string, isPlaying: boolean, isPaused: boolean, currentClipId: string | null, currentTime: number, };
+export type TrackPlaybackState = { trackId: string, isPlaying: boolean, isPaused: boolean, currentClipId: string | null, currentTime: number, 
+/**
+ * True when a sound is loaded (playing, paused, or just ended). False
+ * while a Gap transition waits to start the next clip: `is_playing` is
+ * still true then, but `current_time` is 0 and `current_clip_id` is the
+ * clip that just finished, so there is nothing to show a position for.
+ */
+hasSound: boolean, };

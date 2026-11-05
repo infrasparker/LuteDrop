@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useAppStore } from '../stores/appStore';
+import { useSoundstageUiStore } from '../stores/soundstageUi';
 import { useContextMenuState } from '../composables/useContextMenu';
 import type { Group } from '@generated/index';
 import { isGroupActive } from '../shared/playback';
@@ -13,7 +14,16 @@ import PromptDialog from '../components/PromptDialog.vue';
 const store = useAppStore();
 const { groups, activeConfigurationId } = storeToRefs(store);
 
-const activeTab = ref(0);
+const ui = useSoundstageUiStore();
+
+// The open tab is remembered by group id (in a store) so leaving and returning
+// to the Soundstage keeps it; an unknown id falls back to the first tab.
+const activeTab = computed({
+  get: () => Math.max(0, groups.value.findIndex((g) => g.id === ui.groupId)),
+  set: (i: number) => {
+    ui.groupId = groups.value[i]?.id ?? null;
+  },
+});
 
 watch(activeConfigurationId, () => {
   activeTab.value = 0;
@@ -62,9 +72,6 @@ function confirmOrDeleteGroup(): void {
 
 async function deleteGroup(): Promise<void> {
   await store.command('delete_group', { groupId: contextGroupId.value });
-  if (activeTab.value >= groups.value.length) {
-    activeTab.value = Math.max(0, groups.value.length - 1);
-  }
 }
 
 async function createGroup(name: string): Promise<void> {

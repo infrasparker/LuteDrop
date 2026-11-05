@@ -35,8 +35,261 @@ pub struct LibraryEntry {
     pub loop_start: Option<f64>,
     pub loop_end: Option<f64>,
     pub created_at: String,
+    /// Names of every tag on the entry, both user-applied and auto-applied.
     pub tags: Vec<String>,
     pub entry_type: EntryType,
+    /// The auto-applied tags with the score that earned each one.
+    pub auto_tags: Vec<AutoTag>,
+    /// Analyzer state for this entry; `None` if it was never submitted.
+    pub analysis: Option<EntryAnalysis>,
+    /// Combat or non-combat; `None` when unset or when the user cleared it.
+    pub role: Option<Role>,
+    /// Who set `role`. `Some(User)` with `role: None` means the user cleared
+    /// it, so the analyzer leaves it empty.
+    pub role_source: Option<TagSource>,
+    /// The analyzer's Combat probability, kept while `role_source` is auto.
+    pub role_score: Option<f64>,
+}
+
+/// Whether a music entry is meant for combat scenes.
+///
+/// Two string forms: the database stores `"combat"` and `"non_combat"`
+/// (`as_db_str` / `from_db_str`), while serde and the generated TypeScript use
+/// `"combat"` and `"nonCombat"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub enum Role {
+    Combat,
+    NonCombat,
+}
+
+impl Role {
+    /// The value stored in `library_entries.role`.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            Role::Combat => "combat",
+            Role::NonCombat => "non_combat",
+        }
+    }
+
+    /// Parses a stored value; anything unrecognised is `None`.
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        match s {
+            "combat" => Some(Role::Combat),
+            "non_combat" => Some(Role::NonCombat),
+            _ => None,
+        }
+    }
+}
+
+/// Who put a tag on an entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub enum TagSource {
+    User,
+    Auto,
+}
+
+impl TagSource {
+    /// The value stored in `library_entry_tags.source`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TagSource::User => "user",
+            TagSource::Auto => "auto",
+        }
+    }
+
+    /// Anything other than `"auto"` counts as a user tag.
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "auto" => TagSource::Auto,
+            _ => TagSource::User,
+        }
+    }
+}
+
+/// A tag applied by the analyzer, with the score that earned it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct AutoTag {
+    pub tag: String,
+    pub score: f64,
+}
+
+/// Where an entry is in the analysis pipeline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub enum AnalysisStatus {
+    Pending,
+    Embedded,
+    Failed,
+    UnreachablePath,
+}
+
+impl AnalysisStatus {
+    /// The value stored in `entry_analysis.status`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AnalysisStatus::Pending => "pending",
+            AnalysisStatus::Embedded => "embedded",
+            AnalysisStatus::Failed => "failed",
+            AnalysisStatus::UnreachablePath => "unreachable_path",
+        }
+    }
+
+    /// Unknown values read back as `Pending`.
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "embedded" => AnalysisStatus::Embedded,
+            "failed" => AnalysisStatus::Failed,
+            "unreachable_path" => AnalysisStatus::UnreachablePath,
+            _ => AnalysisStatus::Pending,
+        }
+    }
+}
+
+/// Analysis state of one library entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct EntryAnalysis {
+    pub status: AnalysisStatus,
+    /// When the entry was last scored (milliseconds since the Unix epoch).
+    pub scored_at: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Connection settings for the analyzer service.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct AutoTagSettings {
+    pub enabled: bool,
+    pub analyzer_url: String,
+    pub token: String,
+    /// Start of library file paths on this machine; swapped for `remote_prefix`
+    /// when paths are sent to the analyzer.
+    pub local_prefix: String,
+    /// Where that same folder is mounted on the analyzer host.
+    pub remote_prefix: String,
+}
+
+/// The tags the analyzer scores on every music entry. Older saved configs
+/// also hold `scene`, `gateTag` and `negativeSceneTags`; serde ignores those
+/// fields when loading, and a config with no `vocabulary` gets the default one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase", default)]
+pub struct SceneConfig {
+    /// Tags that can be auto-applied to music entries.
+    pub vocabulary: Vec<String>,
+}
+
+impl Default for SceneConfig {
+    fn default() -> Self {
+        Self {
+            vocabulary: [
+                "brass", "folk", "choir", "synth", "bright", "dark", "heroic", "horror",
+                "lively", "peaceful", "ominous", "majestic", "moody", "mischievous", "haunting",
+                "somber", "slow", "driving", "frantic",
+            ]
+            .iter()
+            .map(|w| w.to_string())
+            .collect(),
+        }
+    }
+}
+
+/// How well the analyzer can predict one tag, from leave-one-out testing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TagQuality {
+    pub tag: String,
+    pub auc: Option<f64>,
+    pub pos: u32,
+    pub neg: u32,
+    pub trusted: bool,
+    pub threshold: Option<f64>,
+}
+
+/// Summary of the most recent auto-tagging run.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct AutoTagReport {
+    pub finished_at: Option<String>,
+    pub analyzed: u32,
+    pub added: u32,
+    pub removed: u32,
+    pub failed: u32,
+    pub unreachable: u32,
+    pub gate: Option<TagQuality>,
+    pub tags: Vec<TagQuality>,
+    pub error: Option<String>,
+    /// Up to 5 "entry name: error" lines from entries that failed or could
+    /// not be reached in this run.
+    pub sample_errors: Vec<String>,
+}
+
+/// Emitted to the frontend while an auto-tagging run is in progress.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct AutoTagProgress {
+    /// One of `"embedding"`, `"scoring"`, `"done"`, `"error"`.
+    pub phase: String,
+    pub processed: u32,
+    pub total: u32,
+    pub message: Option<String>,
+}
+
+/// One entry in a Vibe ranking (similar tracks or text search), with the
+/// analyzer's similarity score.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct VibeHit {
+    pub entry_id: String,
+    pub score: f64,
+}
+
+/// One entry's position on the Vibe map. `x` and `y` are in [0, 1].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct VibePoint {
+    pub entry_id: String,
+    pub x: f64,
+    pub y: f64,
+}
+
+/// One tag's score for one entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TagScore {
+    pub tag: String,
+    pub score: f64,
+    pub threshold: Option<f64>,
+    pub trusted: bool,
+    /// Who currently has this tag on the entry, if anyone.
+    pub applied: Option<TagSource>,
+}
+
+/// The gate score and per-tag scores for one entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct EntryTagScores {
+    /// The Combat probability, with `tag` `"combat"`. Its `applied` is the
+    /// source of the entry's role, or `None` when the entry has no role.
+    pub gate: TagScore,
+    pub tags: Vec<TagScore>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -155,6 +408,11 @@ pub struct TrackPlaybackState {
     pub is_paused: bool,
     pub current_clip_id: Option<String>,
     pub current_time: f64,
+    /// True when a sound is loaded (playing, paused, or just ended). False
+    /// while a Gap transition waits to start the next clip: `is_playing` is
+    /// still true then, but `current_time` is 0 and `current_clip_id` is the
+    /// clip that just finished, so there is nothing to show a position for.
+    pub has_sound: bool,
 }
 
 /// One location (clip) where a library entry is referenced.

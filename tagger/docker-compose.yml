@@ -1,0 +1,16 @@
+services:
+  tagger:
+    build: .
+    env_file: .env
+    ports:
+      - "8765:8765"
+    volumes:
+      - /srv/media/audio:/media/audio:ro
+      - ./cache:/cache
+      - ./hf:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+    restart: unless-stopped

@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from './stores/appStore';
 import { useAudio } from './composables/useAudio';
 import { useToast } from './composables/useToast';
+import { useAutoTagEvents } from './composables/useAutoTagEvents';
 import { useRouter } from 'vue-router';
 import type { AppState } from '@generated/index';
 import TransportBar from './components/TransportBar.vue';
@@ -18,6 +19,7 @@ const showBroadcast = ref(false);
 
 // Initialize audio early to register event listeners
 const audio = useAudio();
+useAutoTagEvents();
 
 const router = useRouter();
 
@@ -34,8 +36,11 @@ const showEditorDialog = computed({
   },
 });
 
+// Views that preview library sounds; leaving one stops the preview.
+const PREVIEW_ROUTES = ['/library', '/scry'];
+
 watch(() => router.currentRoute.value.path, (newPath, oldPath) => {
-  if (oldPath === '/library' && newPath !== '/library') {
+  if (PREVIEW_ROUTES.includes(oldPath) && newPath !== oldPath) {
     audio.stopLibrarySound();
   }
 });
@@ -66,6 +71,14 @@ onMounted(async () => {
           to="/library"
           :active="$route.path === '/library'"
           color="primary"
+        />
+        <VListItem
+          prepend-icon="mdi-compass-outline"
+          to="/scry"
+          :active="$route.path === '/scry'"
+          color="primary"
+          title="Scry"
+          aria-label="Scry"
         />
       </VList>
 

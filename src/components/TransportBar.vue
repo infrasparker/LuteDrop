@@ -3,18 +3,11 @@ import { computed } from 'vue';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
 import { useBroadcast } from '../composables/useBroadcast';
+import TransportScrubber from './TransportScrubber.vue';
 
 const store = useAppStore();
 const audio = useAudio();
 const broadcast = useBroadcast();
-
-const playingCount = computed(() => {
-  let count = 0;
-  for (const state of store.playbackStates.values()) {
-    if (state.isPlaying) count++;
-  }
-  return count;
-});
 
 const anyPlaying = computed(() => {
   for (const state of store.playbackStates.values()) {
@@ -57,8 +50,35 @@ function togglePause(): void {
 </script>
 
 <template>
-  <VFooter app color="surface" elevation="4" class="pa-2 footer-grid">
+  <!-- One fixed-height row: now-playing + scrubber | transport | volume.
+       Every slot keeps its size whatever is playing, so the footer (and
+       --v-layout-bottom, which pages size themselves from) never changes. -->
+  <VFooter app :height="56" color="surface" elevation="4" class="px-3 py-0 footer-grid">
     <div class="footer-slot footer-slot-left">
+      <TransportScrubber />
+    </div>
+
+    <div class="transport-center">
+      <VBtn
+        :icon="showPlayIcon ? 'mdi-play' : 'mdi-pause'"
+        :disabled="!anyPlaying && !anyPaused"
+        variant="tonal"
+        size="small"
+        rounded="circle"
+        :title="showPlayIcon ? 'Resume' : 'Pause'"
+        @click="togglePause"
+      />
+      <VBtn
+        icon="mdi-stop"
+        variant="tonal"
+        size="small"
+        rounded="circle"
+        title="Stop all"
+        @click="stopAll"
+      />
+    </div>
+
+    <div class="footer-slot footer-slot-right">
       <div v-if="store.importProgress" class="import-indicator" :title="`Importing ${store.importProgress.processed} of ${store.importProgress.total}`">
         <VProgressCircular
           :model-value="importProgressPercent"
@@ -70,59 +90,28 @@ function togglePause(): void {
           Importing {{ store.importProgress.processed }}/{{ store.importProgress.total }}
         </span>
       </div>
-    </div>
-
-    <div class="transport-grid">
-      <div class="transport-left">
-        <span style="white-space: nowrap;" :class="playingCount > 0 ? 'text-primary' : 'text-medium-emphasis'">
-          {{ playingCount === 1 ? '1 clip playing' : `${playingCount} clips playing` }}
-        </span>
-      </div>
-
-      <div class="transport-center">
-        <VBtn
-          :icon="showPlayIcon ? 'mdi-play' : 'mdi-pause'"
-          :disabled="!anyPlaying && !anyPaused"
-          variant="tonal"
-          size="small"
-          rounded="circle"
-          @click="togglePause"
-        />
-        <VBtn
-          icon="mdi-stop"
-          variant="tonal"
-          size="small"
-          rounded="circle"
-          @click="stopAll"
-        />
-      </div>
-
-      <div class="transport-right">
-        <VBtn
-          :icon="store.masterMuted ? 'mdi-volume-off' : 'mdi-volume-high'"
-          :color="store.masterMuted ? 'error' : undefined"
-          variant="text"
-          size="small"
-          :title="store.masterMuted ? 'Unmute master' : 'Mute master'"
-          @click="audio.toggleMasterMute()"
-        />
-        <VSlider
-          :model-value="audio.masterVolume.value"
-          @update:model-value="setMasterVolume"
-          :min="0"
-          :max="1"
-          :step="0.01"
-          hide-details
-          density="compact"
-          class="volume-slider"
-        />
-      </div>
-    </div>
-
-    <div class="footer-slot footer-slot-right">
-      <VChip v-if="broadcast.status.value?.enabled" size="small" variant="tonal" color="primary" prepend-icon="mdi-broadcast" title="Broadcasting">
+      <VChip v-if="broadcast.status.value?.enabled" size="small" variant="tonal" color="primary" prepend-icon="mdi-broadcast" title="Broadcasting" class="flex-shrink-0">
         {{ broadcast.status.value.listenerCount === 1 ? '1 listening' : `${broadcast.status.value.listenerCount} listening` }}
       </VChip>
+      <VBtn
+        :icon="store.masterMuted ? 'mdi-volume-off' : 'mdi-volume-high'"
+        :color="store.masterMuted ? 'error' : undefined"
+        variant="text"
+        size="small"
+        class="flex-shrink-0"
+        :title="store.masterMuted ? 'Unmute master' : 'Mute master'"
+        @click="audio.toggleMasterMute()"
+      />
+      <VSlider
+        :model-value="audio.masterVolume.value"
+        @update:model-value="setMasterVolume"
+        :min="0"
+        :max="1"
+        :step="0.01"
+        hide-details
+        density="compact"
+        class="volume-slider"
+      />
     </div>
   </VFooter>
 </template>
@@ -130,9 +119,11 @@ function togglePause(): void {
 <style scoped>
 .footer-grid {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  /* Equal side columns keep the transport buttons centred. */
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  gap: 12px;
+  gap: 24px;
+  overflow: hidden;
 }
 
 .footer-slot {
@@ -143,19 +134,7 @@ function togglePause(): void {
 
 .footer-slot-right {
   justify-content: flex-end;
-}
-
-.transport-grid {
-  display: grid;
-  grid-template-columns: auto auto 1fr;
-  align-items: center;
-  width: 100%;
-  max-width: 600px;
-  gap: 12px;
-}
-
-.transport-left {
-  justify-self: start;
+  gap: 8px;
 }
 
 .transport-center {
@@ -163,30 +142,24 @@ function togglePause(): void {
   gap: 8px;
 }
 
-.transport-right {
-  display: flex;
-  align-items: center;
-  justify-content: end;
-  gap: 8px;
-}
-
 .volume-slider {
-  min-width: 100px;
-  max-width: 240px;
-  flex: 1;
+  flex: 0 1 160px;
+  min-width: 80px;
 }
 
 .import-indicator {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 8px;
+  min-width: 0;
   font-size: 0.85rem;
   color: rgba(255, 255, 255, 0.72);
   white-space: nowrap;
 }
 
 .import-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-variant-numeric: tabular-nums;
 }
 </style>
