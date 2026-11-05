@@ -441,10 +441,10 @@ pub fn open_db(path: &Path) -> Result<Connection, String> {
         .map_err(|e| format!("Failed to inspect database: {e}"))?;
 
     // Migrations rewrite the user's library (v7 cleans up their tags, v8
-    // splits every facet and tag into auto and user layers, v9 clears the
-    // user's mood steps), so an
-    // existing database behind the current schema is copied first, before
-    // anything changes it. No copy, no migration.
+    // splits every facet and tag into auto and user layers, v9 drops the old
+    // Light/Heavy and pace values), so an existing database behind the
+    // current schema is copied first, before anything changes it. No copy,
+    // no migration.
     if !fresh {
         let on_disk = match read_schema_version(&conn) {
             0 => 3, // pre-runner database; see the stamp below
