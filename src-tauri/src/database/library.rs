@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::database::now_millis;
 use crate::database::DbError;
-use crate::models::{AutoTag, LibraryEntryUsage};
+use crate::models::{AutoTag, LibraryEntryUsage, TagSource};
 
 // ─── Library Entry CRUD ───────────────────────────────────────────────────────
 
@@ -469,7 +469,7 @@ fn remove_tag_row(conn: &Connection, entry_id: &str, tag_id: &str) -> Result<(),
         params![entry_id, tag_id],
     )
     .map_err(|e| format!("Failed to remove tag from entry: {e}"))?;
-    if source.as_deref() == Some("auto") {
+    if source.as_deref().map(TagSource::from_str) == Some(TagSource::Auto) {
         insert_rejection(conn, entry_id, tag_id)?;
     }
     Ok(())
@@ -481,7 +481,18 @@ fn remove_tag_row(conn: &Connection, entry_id: &str, tag_id: &str) -> Result<(),
 /// - a listed tag the entry doesn't have is added as a user tag;
 /// - a stored auto tag that is missing from the list is removed and rejected;
 /// - a stored user tag that is missing from the list is simply removed.
-pub fn set_entry_tags(conn: &Connection, entry_id: &str, tags: &[String]) -> Result<(), String> {
+///
+/// `seen_auto_tags` names the auto tags the editor was showing when the list
+/// was built. When it is `Some`, a missing auto tag is only removed and
+/// rejected if it is in that list; an auto tag added after the editor loaded
+/// (by a background run) is left alone. With `None`, every missing auto tag
+/// is removed and rejected.
+pub fn set_entry_tags(
+    conn: &Connection,
+    entry_id: &str,
+    tags: &[String],
+    seen_auto_tags: Option<&[String]>,
+) -> Result<(), String> {
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("Failed to begin tag transaction: {e}"))?;
@@ -491,20 +502,39 @@ pub fn set_entry_tags(conn: &Connection, entry_id: &str, tags: &[String]) -> Res
         wanted_ids.push(ensure_tag(conn, tag_name)?);
     }
 
-    let stored_ids: Vec<String> = {
+    let seen: Option<Vec<String>> =
+        seen_auto_tags.map(|names| names.iter().map(|n| n.trim().to_lowercase()).collect());
+
+    // (tag id, tag name, source) for every tag the entry has now.
+    let stored: Vec<(String, String, TagSource)> = {
         let mut stmt = conn
-            .prepare("SELECT tag_id FROM library_entry_tags WHERE library_entry_id = ?1")
+            .prepare(
+                "SELECT lt.tag_id, t.name, lt.source FROM library_entry_tags lt
+                 JOIN tags t ON t.id = lt.tag_id
+                 WHERE lt.library_entry_id = ?1",
+            )
             .map_err(|e| format!("Failed to prepare stored tag query: {e}"))?;
         let rows = stmt
-            .query_map(params![entry_id], |row| row.get::<_, String>(0))
+            .query_map(params![entry_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    TagSource::from_str(&row.get::<_, String>(2)?),
+                ))
+            })
             .map_err(|e| format!("Failed to query stored tags: {e}"))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("Failed to collect stored tags: {e}"))?;
         rows
     };
 
-    for tag_id in &stored_ids {
-        if !wanted_ids.contains(tag_id) {
+    for (tag_id, name, source) in &stored {
+        if wanted_ids.contains(tag_id) {
+            continue;
+        }
+        let unseen_auto = *source == TagSource::Auto
+            && seen.as_ref().is_some_and(|seen| !seen.contains(name));
+        if !unseen_auto {
             remove_tag_row(conn, entry_id, tag_id)?;
         }
     }
@@ -682,7 +712,7 @@ pub fn apply_auto_tags(
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("Failed to collect stored tags: {e}"))?;
         for (tag_id, source) in rows {
-            if source == "auto" {
+            if TagSource::from_str(&source) == TagSource::Auto {
                 auto_ids.push(tag_id);
             } else {
                 user_ids.push(tag_id);
@@ -1155,7 +1185,7 @@ mod tests {
         add_tag_to_entry(&conn, &e, "old-only").unwrap();
         add_tag_to_entry(&conn, &e, "kept").unwrap();
 
-        set_entry_tags(&conn, &e, &["kept".to_string(), "new".to_string()]).unwrap();
+        set_entry_tags(&conn, &e, &["kept".to_string(), "new".to_string()], None).unwrap();
 
         assert_eq!(get_tags_for_entry(&conn, &e).unwrap(), vec!["kept", "new"]);
         // "old-only" is orphaned and must be gone from tags entirely:
@@ -1175,9 +1205,9 @@ mod tests {
         let c = insert_library_entry(&conn, "/tmp/c.mp3", None, "C", None, None, None, "music")
             .expect("insert c");
 
-        set_entry_tags(&conn, &a, &["combat".into(), "night".into()]).expect("tag a");
-        set_entry_tags(&conn, &b, &["night".into()]).expect("tag b");
-        set_entry_tags(&conn, &c, &["night".into()]).expect("tag c");
+        set_entry_tags(&conn, &a, &["combat".into(), "night".into()], None).expect("tag a");
+        set_entry_tags(&conn, &b, &["night".into()], None).expect("tag b");
+        set_entry_tags(&conn, &c, &["night".into()], None).expect("tag c");
 
         // Add "boss" and remove "night" from a and b only; c is untouched.
         bulk_edit_entry_tags(
@@ -1236,7 +1266,7 @@ mod tests {
         let conn = open_memory_db();
         let e = new_entry(&conn, "/a.mp3");
         add_auto(&conn, &e, "brass", 0.8);
-        set_entry_tags(&conn, &e, &["brass".into(), "night".into()]).unwrap();
+        set_entry_tags(&conn, &e, &["brass".into(), "night".into()], None).unwrap();
         assert_eq!(row_of(&conn, &e, "brass"), Some(("auto".into(), Some(0.8))));
         assert_eq!(row_of(&conn, &e, "night"), Some(("user".into(), None)));
     }
@@ -1246,9 +1276,28 @@ mod tests {
         let conn = open_memory_db();
         let e = new_entry(&conn, "/a.mp3");
         add_auto(&conn, &e, "brass", 0.8);
-        set_entry_tags(&conn, &e, &[]).unwrap();
+        set_entry_tags(&conn, &e, &[], None).unwrap();
         assert_eq!(row_of(&conn, &e, "brass"), None);
         assert!(is_rejected(&conn, &e, "brass").unwrap());
+    }
+
+    #[test]
+    fn set_tags_only_rejects_seen_auto_tags() {
+        let conn = open_memory_db();
+        let e = new_entry(&conn, "/a.mp3");
+        add_auto(&conn, &e, "brass", 0.8);
+        // Added by a run after the editor loaded the entry, so not in `seen`.
+        add_auto(&conn, &e, "dark", 0.7);
+        add_tag_to_entry(&conn, &e, "night").unwrap();
+
+        let seen = vec![" Brass".to_string()];
+        set_entry_tags(&conn, &e, &[], Some(&seen)).unwrap();
+
+        assert_eq!(row_of(&conn, &e, "brass"), None);
+        assert!(is_rejected(&conn, &e, "brass").unwrap());
+        assert_eq!(row_of(&conn, &e, "dark"), Some(("auto".into(), Some(0.7))));
+        assert!(!is_rejected(&conn, &e, "dark").unwrap());
+        assert_eq!(row_of(&conn, &e, "night"), None, "user tags are still removed");
     }
 
     #[test]
@@ -1256,7 +1305,7 @@ mod tests {
         let conn = open_memory_db();
         let e = new_entry(&conn, "/a.mp3");
         add_tag_to_entry(&conn, &e, "night").unwrap();
-        set_entry_tags(&conn, &e, &[]).unwrap();
+        set_entry_tags(&conn, &e, &[], None).unwrap();
         assert_eq!(row_of(&conn, &e, "night"), None);
         assert!(!is_rejected(&conn, &e, "night").unwrap());
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM tag_rejections"), 0);
@@ -1267,10 +1316,10 @@ mod tests {
         let conn = open_memory_db();
         let e = new_entry(&conn, "/a.mp3");
         add_auto(&conn, &e, "brass", 0.8);
-        set_entry_tags(&conn, &e, &[]).unwrap();
+        set_entry_tags(&conn, &e, &[], None).unwrap();
         assert!(is_rejected(&conn, &e, "brass").unwrap());
 
-        set_entry_tags(&conn, &e, &["brass".into()]).unwrap();
+        set_entry_tags(&conn, &e, &["brass".into()], None).unwrap();
         assert_eq!(row_of(&conn, &e, "brass"), Some(("user".into(), None)));
         assert!(!is_rejected(&conn, &e, "brass").unwrap());
 
@@ -1406,7 +1455,7 @@ mod tests {
         let conn = open_memory_db();
         let e = new_entry(&conn, "/a.mp3");
         add_auto(&conn, &e, "x", 0.8);
-        set_entry_tags(&conn, &e, &[]).unwrap();
+        set_entry_tags(&conn, &e, &[], None).unwrap();
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM tags WHERE name = 'x'"), 1);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM tag_rejections"), 1);
         assert!(list_all_tags(&conn).unwrap().is_empty());

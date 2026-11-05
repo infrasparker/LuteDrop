@@ -329,12 +329,17 @@ pub fn import_library_entry(
     })
 }
 
+/// Saves an entry's full tag list. `seen_auto_tags` is the set of auto tags
+/// the editor showed; see `library::set_entry_tags`.
 pub fn update_library_entry_tags(
     container: &AppStateContainer,
     entry_id: &str,
     tags: Vec<String>,
+    seen_auto_tags: Option<Vec<String>>,
 ) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| library::set_entry_tags(conn, entry_id, &tags))
+    mutate_and_reload(container, |conn| {
+        library::set_entry_tags(conn, entry_id, &tags, seen_auto_tags.as_deref())
+    })
 }
 
 pub fn bulk_edit_library_entry_tags(

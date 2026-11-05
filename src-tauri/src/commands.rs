@@ -252,8 +252,9 @@ pub fn update_library_entry_tags(
     state: State<'_, Arc<AppStateContainer>>,
     entry_id: String,
     tags: Vec<String>,
+    seen_auto_tags: Option<Vec<String>>,
 ) -> Result<AppState, String> {
-    actions::update_library_entry_tags(&state, &entry_id, tags)
+    actions::update_library_entry_tags(&state, &entry_id, tags, seen_auto_tags)
 }
 
 #[tauri::command]
