@@ -510,7 +510,8 @@ def test_score_returns_raw_mood_for_targets(tmp_path, monkeypatch):
     from tagger import moods
 
     dirs = {}
-    for i, text in enumerate(moods.BRIGHT + moods.DARK + moods.LIGHT + moods.HEAVY):
+    texts = [t for pole in moods.POLES.values() for t in pole]
+    for i, text in enumerate(texts):
         v = np.zeros(DIM)
         v[i % DIM] = 1.0
         dirs[text] = v
@@ -530,7 +531,7 @@ def test_score_returns_raw_mood_for_targets(tmp_path, monkeypatch):
     body = {"gate": {}, "targets": ["a", "b", "ghost"]}
     data = c.post("/score", json=body, headers=HEADERS).json()
     c.post("/score", json=body, headers=HEADERS)
-    assert MoodEmbedder.calls == 4  # one embed_text per pole, computed once
+    assert MoodEmbedder.calls == len(moods.POLES)  # one embed_text per pole, computed once
     assert set(data["mood"]) == {"a", "b"}
 
     mean = cache.get("a")
@@ -540,7 +541,12 @@ def test_score_returns_raw_mood_for_targets(tmp_path, monkeypatch):
 
     assert data["mood"]["a"]["bright"] == pytest.approx(pole(moods.BRIGHT) - pole(moods.DARK))
     assert data["mood"]["a"]["light"] == pytest.approx(pole(moods.LIGHT) - pole(moods.HEAVY))
+    assert data["mood"]["a"]["grand"] == pytest.approx(pole(moods.GRAND) - pole(moods.INTIMATE))
+    assert data["mood"]["a"]["energy"] == pytest.approx(pole(moods.ENERGETIC) - pole(moods.CALM))
+    assert set(data["mood"]["a"]) == {"bright", "light", "grand", "energy"}
     assert data["mood"]["a"]["bright"] != 0
+    assert data["mood"]["a"]["grand"] != 0
+    assert data["mood"]["a"]["energy"] != 0
 
 
 def test_score_mood_recovers_after_partial_embed_failure(tmp_path, monkeypatch):
@@ -562,7 +568,7 @@ def test_score_mood_recovers_after_partial_embed_failure(tmp_path, monkeypatch):
     assert first.status_code == 200 and "mood" not in first.json()
     second = c.post("/score", json=body, headers=HEADERS)
     assert second.status_code == 200
-    assert set(second.json()["mood"]["a"]) == {"bright", "light"}
+    assert set(second.json()["mood"]["a"]) == {"bright", "light", "grand", "energy"}
 
 
 def test_score_without_loaded_model_omits_mood(tmp_path, monkeypatch):

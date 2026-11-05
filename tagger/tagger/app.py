@@ -46,6 +46,9 @@ class ScoreRequest(BaseModel):
     scene: str = ""
     gate: Examples
     tags: dict[str, Examples] = {}
+    # Pace (Still/Moving) on rhythm features. App versions after v0.12 no
+    # longer send it (the Calm - Energetic mood axis replaced it); this head
+    # and the rhythm features can be removed once older versions are retired.
     pace: Examples | None = None
     targets: list[str] = []
 
@@ -243,11 +246,16 @@ def create_app(
         if poles is None:
             return None
         sims = {name: (X_targets @ v.T).mean(axis=1) for name, v in poles.items()}
-        bright = sims["bright"] - sims["dark"]
-        light = sims["light"] - sims["heavy"]
+        axes = {
+            "bright": sims["bright"] - sims["dark"],
+            "grand": sims["grand"] - sims["intimate"],
+            "energy": sims["energetic"] - sims["calm"],
+            # Deprecated: only app versions up to v0.12 read `light`.
+            "light": sims["light"] - sims["heavy"],
+        }
         return {
-            h: {"bright": float(b), "light": float(li)}
-            for h, b, li in zip(target_hashes, bright, light)
+            h: {name: float(values[i]) for name, values in axes.items()}
+            for i, h in enumerate(target_hashes)
         }
 
     @app.post("/score")
