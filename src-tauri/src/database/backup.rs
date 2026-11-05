@@ -11,6 +11,14 @@ use crate::state::AppStateContainer;
 const BACKUP_PREFIX: &str = "lutedrop-backup-";
 const BACKUP_EXT: &str = ".db";
 const MAX_BACKUPS: usize = 5;
+/// Copies taken before a schema migration. A different prefix from the
+/// rolling backups, so `prune_old_backups` never deletes them.
+const PRE_MIGRATION_PREFIX: &str = "pre-migration-v";
+
+/// The folder backups of the database at `db_path` go in: `backups` beside it.
+pub fn backup_dir_for(db_path: &Path) -> PathBuf {
+    db_path.parent().unwrap_or(db_path).join("backups")
+}
 
 /// Deletes all but the `keep` most recent backup files in `backup_dir`.
 /// Files are sorted by filename (which sorts chronologically due to the
@@ -54,11 +62,30 @@ pub fn prune_old_backups(backup_dir: &Path, keep: usize) {
 /// After a successful backup, prunes old backups to keep only `MAX_BACKUPS`.
 /// Returns the path to the new backup file.
 pub fn perform_backup(src: &Connection, backup_dir: &Path) -> Result<PathBuf, String> {
+    let dest_path = backup_to(src, backup_dir, BACKUP_PREFIX)?;
+    prune_old_backups(backup_dir, MAX_BACKUPS);
+    Ok(dest_path)
+}
+
+/// Copies the database into `backup_dir` as
+/// `pre-migration-v<from_version>-<timestamp>.db` before a schema migration.
+/// These copies are kept until the user deletes them.
+pub fn perform_pre_migration_backup(
+    src: &Connection,
+    backup_dir: &Path,
+    from_version: i64,
+) -> Result<PathBuf, String> {
+    backup_to(src, backup_dir, &format!("{PRE_MIGRATION_PREFIX}{from_version}-"))
+}
+
+/// Writes a consistent snapshot of `src` to `<backup_dir>/<prefix><timestamp>.db`
+/// with SQLite's Online Backup API and returns its path.
+fn backup_to(src: &Connection, backup_dir: &Path, prefix: &str) -> Result<PathBuf, String> {
     fs::create_dir_all(backup_dir)
         .map_err(|e| format!("Failed to create backup directory: {e}"))?;
 
     let timestamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let filename = format!("{BACKUP_PREFIX}{timestamp}{BACKUP_EXT}");
+    let filename = format!("{prefix}{timestamp}{BACKUP_EXT}");
     let dest_path = backup_dir.join(&filename);
 
     let mut dst = Connection::open(&dest_path)
@@ -70,8 +97,6 @@ pub fn perform_backup(src: &Connection, backup_dir: &Path) -> Result<PathBuf, St
     backup
         .run_to_completion(256, Duration::from_millis(0), None)
         .map_err(|e| format!("Backup failed: {e}"))?;
-
-    prune_old_backups(backup_dir, MAX_BACKUPS);
 
     Ok(dest_path)
 }
@@ -96,11 +121,7 @@ pub fn backup_once(db_path: &Path, backup_dir: &Path) -> Result<PathBuf, String>
 /// Intended to be spawned on a dedicated background thread.
 /// Never panics — errors are logged and the loop continues.
 pub fn start_backup_loop(container: Arc<AppStateContainer>) {
-    let backup_dir = container
-        .db_path
-        .parent()
-        .unwrap_or(&container.db_path)
-        .join("backups");
+    let backup_dir = backup_dir_for(&container.db_path);
 
     loop {
         match backup_once(&container.db_path, &backup_dir) {
@@ -248,6 +269,24 @@ mod tests {
             })
             .count();
         assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn pre_migration_backup_is_named_and_never_pruned() {
+        let src = crate::database::open_memory_db();
+        let dir = tempfile::tempdir().expect("create temp dir");
+
+        let path = perform_pre_migration_backup(&src, dir.path(), 6).expect("backup");
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        assert!(name.starts_with("pre-migration-v6-") && name.ends_with(".db"), "{name}");
+
+        // Rolling backups prune only their own files.
+        for i in 1..=6 {
+            File::create(dir.path().join(format!("lutedrop-backup-2026040{i}-100000.db")))
+                .expect("create file");
+        }
+        perform_backup(&src, dir.path()).expect("rolling backup");
+        assert!(path.exists(), "pre-migration copy must survive pruning");
     }
 
     #[test]

@@ -277,11 +277,12 @@ impl Worker {
 }
 
 /// A failed run measures no tag quality. So that the quality table stays
-/// visible next to the error, a failed report takes the `gate` and `tags`
+/// visible next to the error, a failed report takes the `gate`, `pace` and `tags`
 /// of the previous report. A successful report is left as it is.
 fn keep_previous_quality(previous: &AutoTagReport, report: &mut AutoTagReport) {
     if report.error.is_some() {
         report.gate = previous.gate.clone();
+        report.pace = previous.pace.clone();
         report.tags = previous.tags.clone();
     }
 }
@@ -515,6 +516,22 @@ fn run_steps(
                 None => (None, 0.0),
             };
             library::apply_auto_role(&conn, id, role, role_score)?;
+            // Pace: with a pace head in the response, an entry that earns no
+            // pace loses its auto pace (like the role). Entries the head did
+            // not score (no rhythm features), and every entry when the run
+            // had no head, keep what they have.
+            if response.pace.as_ref().is_some_and(|head| head.scores.contains_key(hash)) {
+                let (pace, pace_score) = match decision.pace {
+                    Some((pace, score)) => (Some(pace), score),
+                    None => (None, 0.0),
+                };
+                library::apply_auto_pace(&conn, id, pace, pace_score)?;
+            }
+            // Mood: only entries with fresh raw scores change. A response
+            // without mood (model not loaded) leaves stored values alone.
+            if let Some((bright, light)) = decision.mood {
+                library::apply_auto_mood(&conn, id, Some(bright), Some(light))?;
+            }
             let (a, r) = library::apply_auto_tags(&conn, id, &decision.tags)?;
             added += a;
             removed += r;
@@ -533,6 +550,7 @@ fn run_steps(
     report.added = added;
     report.removed = removed;
     report.gate = Some(quality(plan::GATE_NAME, &response.gate));
+    report.pace = response.pace.as_ref().map(|set| quality("pace", set));
     let mut tags: Vec<TagQuality> = response
         .tags
         .iter()
@@ -558,10 +576,10 @@ fn entry_is_music(conn: &Connection, id: &str) -> Result<bool, String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::client::{AnalyzerClient, EmbedResult, HashPoint, HashScore};
-    use super::plan::{Quality, ScoreRequest, ScoreResponse, ScoreSet};
+    use super::plan::{MoodRaw, Quality, ScoreRequest, ScoreResponse, ScoreSet};
     use super::*;
     use crate::database::{autotag_db, library, open_memory_db, settings};
-    use crate::models::{AnalysisStatus, AutoTagProgress, AutoTagSettings, Role, SceneConfig, TagSource};
+    use crate::models::{AnalysisStatus, AutoTagProgress, AutoTagSettings, Pace, Role, SceneConfig, TagSource};
     use rusqlite::{params, Connection, OptionalExtension};
     use std::collections::{HashMap, HashSet};
     use std::sync::{Arc, Mutex};
@@ -578,6 +596,14 @@ pub(crate) mod tests {
         pub(crate) gate: HashMap<String, f64>,
         pub(crate) untrusted_gate: bool,
         pub(crate) tags: HashMap<String, HashMap<String, f64>>,
+        /// Moving probability per hash. `Some` makes the response carry a
+        /// trusted pace head; `None` leaves the head out.
+        pub(crate) pace: Option<HashMap<String, f64>>,
+        pub(crate) untrusted_pace: bool,
+        /// The request of the last `score` call.
+        pub(crate) last_score: Mutex<Option<ScoreRequest>>,
+        /// Raw (bright, light) mood scores per hash; empty omits mood.
+        pub(crate) mood: HashMap<String, (f64, f64)>,
         /// Runs inside `score`, before it returns.
         pub(crate) on_score: Option<Box<dyn Fn() + Send + Sync>>,
         pub(crate) embedded: Mutex<Vec<String>>,
@@ -645,6 +671,7 @@ pub(crate) mod tests {
             if let Some(e) = &self.down {
                 return Err(e.clone());
             }
+            *self.last_score.lock().unwrap() = Some(req.clone());
             if let Some(hook) = &self.on_score {
                 hook();
             }
@@ -658,6 +685,16 @@ pub(crate) mod tests {
                     .tags
                     .iter()
                     .map(|(name, scores)| (name.clone(), trusted_set(scores, &req.targets)))
+                    .collect(),
+                pace: self.pace.as_ref().map(|scores| ScoreSet {
+                    trusted: !self.untrusted_pace,
+                    ..trusted_set(scores, &req.targets)
+                }),
+                mood: self
+                    .mood
+                    .iter()
+                    .filter(|(h, _)| req.targets.contains(h))
+                    .map(|(h, (bright, light))| (h.clone(), MoodRaw { bright: *bright, light: *light }))
                     .collect(),
             })
         }
@@ -1010,6 +1047,169 @@ pub(crate) mod tests {
         assert_eq!(report.error, None);
         assert_eq!(role_of(&db, &a), (Some("non_combat".into()), Some("user".into()), None));
         assert_eq!(role_of(&db, &b), (None, Some("user".into()), None));
+    }
+
+    /// The entry's stored (pace, pace_source, pace_score).
+    fn pace_of(db: &Mutex<Connection>, entry: &str) -> (Option<String>, Option<String>, Option<f64>) {
+        db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT pace, pace_source, pace_score FROM library_entries WHERE id = ?1",
+                params![entry],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+    }
+
+    /// The entry's stored (mood_bright, mood_light).
+    fn mood_of(db: &Mutex<Connection>, entry: &str) -> (Option<f64>, Option<f64>) {
+        db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT mood_bright, mood_light FROM library_entries WHERE id = ?1",
+                params![entry],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    }
+
+    fn mood_scores(rows: &[(&str, f64, f64)]) -> HashMap<String, (f64, f64)> {
+        rows.iter().map(|(h, b, l)| (h.to_string(), (*b, *l))).collect()
+    }
+
+    #[test]
+    fn run_applies_pace_and_mood() {
+        let db = setup();
+        let a = add(&db, "a", "music");
+        let b = add(&db, "b", "music");
+        let c = add(&db, "c", "music");
+        let fake = FakeAnalyzer {
+            gate: scores(&[("h-a", 0.9), ("h-b", 0.9), ("h-c", 0.9)]),
+            pace: Some(scores(&[("h-a", 0.9), ("h-b", 0.1)])),
+            mood: mood_scores(&[("h-a", 0.0, 2.0), ("h-b", 1.0, 2.0), ("h-c", 2.0, 2.0)]),
+            ..Default::default()
+        };
+
+        let report = run_once(&db, &fake, &[a.clone(), b.clone(), c.clone()], &no_progress);
+
+        assert_eq!(report.error, None);
+        assert_eq!(report.pace.as_ref().map(|q| q.tag.as_str()), Some("pace"));
+        assert_eq!(pace_of(&db, &a), (Some("moving".into()), Some("auto".into()), Some(0.9)));
+        assert_eq!(pace_of(&db, &b), (Some("still".into()), Some("auto".into()), Some(0.1)));
+        // c has no rhythm features: no pace.
+        assert_eq!(pace_of(&db, &c), (None, None, None));
+        let z = (3.0_f64 / 2.0).sqrt();
+        let (bright_a, light_a) = mood_of(&db, &a);
+        assert!((bright_a.unwrap() + z).abs() < 1e-9);
+        assert_eq!(light_a, Some(0.0));
+        assert_eq!(mood_of(&db, &b).0, Some(0.0));
+        assert!((mood_of(&db, &c).0.unwrap() - z).abs() < 1e-9);
+    }
+
+    #[test]
+    fn run_clears_auto_pace_only_when_head_present_and_keeps_mood_without_scores() {
+        let db = setup();
+        let a = add(&db, "a", "music");
+        let first = FakeAnalyzer {
+            gate: scores(&[("h-a", 0.9)]),
+            pace: Some(scores(&[("h-a", 0.9)])),
+            mood: mood_scores(&[("h-a", 1.0, 1.0)]),
+            ..Default::default()
+        };
+        run_once(&db, &first, &[a.clone()], &no_progress);
+        assert_eq!(pace_of(&db, &a).0.as_deref(), Some("moving"));
+        assert_eq!(mood_of(&db, &a), (Some(0.0), Some(0.0)));
+
+        // No pace head and no mood in the response: both are left alone.
+        let bare = FakeAnalyzer { gate: scores(&[("h-a", 0.9)]), ..Default::default() };
+        let report = run_once(&db, &bare, &[], &no_progress);
+        assert_eq!(report.error, None);
+        assert_eq!(report.pace, None);
+        assert_eq!(pace_of(&db, &a).0.as_deref(), Some("moving"));
+        assert_eq!(mood_of(&db, &a), (Some(0.0), Some(0.0)));
+
+        // A scored head that is no longer trusted clears the auto pace.
+        let untrusted = FakeAnalyzer {
+            gate: scores(&[("h-a", 0.9)]),
+            pace: Some(scores(&[("h-a", 0.9)])),
+            untrusted_pace: true,
+            ..Default::default()
+        };
+        run_once(&db, &untrusted, &[], &no_progress);
+        assert_eq!(pace_of(&db, &a), (None, None, None));
+    }
+
+    #[test]
+    fn run_does_not_overwrite_pace_set_during_scoring() {
+        let db = setup();
+        let a = add(&db, "a", "music");
+        let b = add(&db, "b", "music");
+        let hook_db = db.clone();
+        let (hook_a, hook_b) = (a.clone(), b.clone());
+        let fake = FakeAnalyzer {
+            gate: scores(&[("h-a", 0.9), ("h-b", 0.9)]),
+            pace: Some(scores(&[("h-a", 0.9), ("h-b", 0.9)])),
+            on_score: Some(Box::new(move || {
+                let conn = hook_db.try_lock().expect("database is free during /score");
+                library::set_user_pace(&conn, &[hook_a.clone()], Some(Pace::Still)).unwrap();
+                // A cleared pace is a user decision too.
+                library::set_user_pace(&conn, &[hook_b.clone()], None).unwrap();
+            })),
+            ..Default::default()
+        };
+
+        let report = run_once(&db, &fake, &[a.clone(), b.clone()], &no_progress);
+
+        assert_eq!(report.error, None);
+        assert_eq!(pace_of(&db, &a), (Some("still".into()), Some("user".into()), None));
+        assert_eq!(pace_of(&db, &b), (None, Some("user".into()), None));
+    }
+
+    #[test]
+    fn run_sends_user_pace_examples_to_analyzer() {
+        let db = setup();
+        let a = add(&db, "a", "music");
+        let b = add(&db, "b", "music");
+        library::set_user_pace(&db.lock().unwrap(), &[a.clone()], Some(Pace::Moving)).unwrap();
+        library::set_user_pace(&db.lock().unwrap(), &[b.clone()], Some(Pace::Still)).unwrap();
+        let fake = FakeAnalyzer::default();
+
+        run_once(&db, &fake, &[a, b], &no_progress);
+
+        let request = fake.last_score.lock().unwrap().clone().expect("score was called");
+        let pace = request.pace.expect("pace examples sent");
+        assert_eq!(pace.positives, vec!["h-a".to_string()]);
+        assert_eq!(pace.negatives, vec!["h-b".to_string()]);
+    }
+
+    #[test]
+    fn old_analyzer_without_pace_or_mood_still_works() {
+        // The response carries neither key, as an analyzer that predates pace sends it.
+        let json = r#"{"model":"m","gate":{"quality":{"auc":0.9,"pos":3,"neg":3},
+            "trusted":true,"threshold":0.5,"neg_threshold":0.5,"scores":{"h-a":0.9}},"tags":{}}"#;
+        let response: ScoreResponse = serde_json::from_str(json).unwrap();
+
+        struct Canned(ScoreResponse, FakeAnalyzer);
+        impl AnalyzerClient for Canned {
+            fn health(&self) -> Result<String, String> { self.1.health() }
+            fn embed(&self, items: &[(String, String)]) -> Result<Vec<EmbedResult>, String> { self.1.embed(items) }
+            fn score(&self, _: &ScoreRequest) -> Result<ScoreResponse, String> { Ok(self.0.clone()) }
+            fn similar(&self, q: &[String], c: &[String], l: u32) -> Result<Vec<HashScore>, String> { self.1.similar(q, c, l) }
+            fn search(&self, t: &str, c: &[String], l: u32) -> Result<Vec<HashScore>, String> { self.1.search(t, c, l) }
+            fn map(&self, h: &[String]) -> Result<Vec<HashPoint>, String> { self.1.map(h) }
+        }
+
+        let db = setup();
+        let a = add(&db, "a", "music");
+        let client = Canned(response, FakeAnalyzer::default());
+        let report = run_once(&db, &client, &[a.clone()], &no_progress);
+
+        assert_eq!(report.error, None);
+        assert_eq!(report.analyzed, 1);
+        assert_eq!(report.pace, None);
+        assert_eq!(role_of(&db, &a), auto_combat(0.9));
+        assert_eq!(pace_of(&db, &a), (None, None, None));
+        assert_eq!(mood_of(&db, &a), (None, None));
     }
 
     #[test]

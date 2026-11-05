@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { useToast } from '../composables/useToast';
 import { useAutoTagEvents } from '../composables/useAutoTagEvents';
@@ -7,7 +7,7 @@ import { useAppStore } from '../stores/appStore';
 import type { EntryTagScores, TagScore } from '@generated/index';
 
 // Expansion panel for the entry editor: how strongly the analyzer thinks each
-// vocabulary tag fits this entry. Scores load when the panel is opened, and
+// vocabulary tag fits this entry. It starts open and loads on mount, and
 // the panel is hidden for ambiance entries and for entries with no scores.
 const props = defineProps<{
   entryId: string;
@@ -24,11 +24,12 @@ const loading = ref(false);
 // True once a load has finished for the current entry.
 const loaded = ref(false);
 // v-model of the VExpansionPanels: the panel value while open, else undefined.
-const open = ref<string | undefined>(undefined);
+const open = ref<string | undefined>('scores');
 // Bumped on every request so a slow answer for a previous entry is dropped.
 let requestId = 0;
 
 async function load(): Promise<void> {
+  if (props.isAmbiance) return; // ambiance entries are never scored
   const id = ++requestId;
   loading.value = true;
   try {
@@ -51,6 +52,10 @@ async function load(): Promise<void> {
 watch(open, (value) => {
   if (value !== undefined) void load();
 });
+// Open from the start, so the first load is not triggered by a change.
+onMounted(() => {
+  if (open.value !== undefined) void load();
+});
 watch(completedRuns, () => {
   if (open.value !== undefined) void load();
   else loaded.value = false; // a hidden panel may have scores now
@@ -62,7 +67,10 @@ watch(
     scores.value = null;
     loaded.value = false;
     loading.value = false;
-    open.value = undefined;
+    // A collapsed panel reopens, and its open watcher does the load.
+    const wasOpen = open.value !== undefined;
+    open.value = 'scores';
+    if (wasOpen) void load();
   },
 );
 
@@ -89,6 +97,22 @@ function gateLabel(): string | null {
   const name = e.role === 'combat' ? 'Combat' : 'Non-combat';
   return `${name} · ${e.roleSource === 'user' ? 'yours' : 'auto'}`;
 }
+
+function signed(z: number): string {
+  return `${z >= 0 ? '+' : ''}${z.toFixed(2)}`;
+}
+
+const soundRows = computed<{ label: string; value: string }[]>(() => {
+  const e = entry.value;
+  if (!e) return [];
+  const rows: { label: string; value: string }[] = [];
+  if (e.moodBright !== null) rows.push({ label: 'Bright ↔ Dark', value: `z = ${signed(e.moodBright)}` });
+  if (e.moodLight !== null) rows.push({ label: 'Light ↔ Heavy', value: `z = ${signed(e.moodLight)}` });
+  if (e.paceSource === 'auto' && e.paceScore !== null) {
+    rows.push({ label: 'Moving', value: `p = ${e.paceScore.toFixed(2)}` });
+  }
+  return rows;
+});
 
 function percent(score: number): number {
   return Math.max(0, Math.min(1, score)) * 100;
@@ -150,6 +174,14 @@ function appliedLabel(s: TagScore): string | null {
               <span v-else class="score-chip" />
             </div>
           </template>
+        </template>
+        <template v-if="scores && soundRows.length > 0">
+          <VDivider class="my-2" />
+          <div class="text-caption text-medium-emphasis mb-1">Sound</div>
+          <div v-for="row in soundRows" :key="row.label" class="score-row">
+            <span class="score-name text-truncate">{{ row.label }}</span>
+            <span class="text-caption">{{ row.value }}</span>
+          </div>
         </template>
       </VExpansionPanelText>
     </VExpansionPanel>

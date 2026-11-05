@@ -169,6 +169,19 @@ pub fn save_scene_config(conn: &Connection, c: &SceneConfig) -> Result<(), Strin
     write_meta(conn, KEY_AUTOTAG_SCENE, &text)
 }
 
+/// Replaces a saved scene configuration with `SceneConfig::default()`. A
+/// database that never saved one already loads the default and is left as is.
+/// Used by the v6→v7 migration, hence the rusqlite error type.
+pub(crate) fn reset_saved_scene_config(conn: &Connection) -> rusqlite::Result<()> {
+    let text = serde_json::to_string(&SceneConfig::default())
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    conn.execute(
+        "UPDATE meta SET value = ?1 WHERE key = ?2",
+        params![text, KEY_AUTOTAG_SCENE],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,11 +280,7 @@ mod tests {
 
     #[test]
     fn scene_config_default_vocabulary() {
-        let words: Vec<String> = [
-            "brass", "folk", "choir", "synth", "bright", "dark", "heroic", "horror", "lively",
-            "peaceful", "ominous", "majestic", "moody", "mischievous", "haunting", "somber",
-            "slow", "driving", "frantic",
-        ]
+        let words: Vec<String> = ["folk", "electronic", "playful", "driving"]
         .iter()
         .map(|w| w.to_string())
         .collect();

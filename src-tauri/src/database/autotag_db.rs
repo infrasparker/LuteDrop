@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use super::now_millis;
 use crate::autotag::plan::EntryFacts;
-use crate::models::{AnalysisStatus, EntryAnalysis, EntryTagScores, EntryType, Role, TagScore, TagSource};
+use crate::models::{AnalysisStatus, EntryAnalysis, EntryTagScores, EntryType, Pace, Role, TagScore, TagSource};
 
 /// One library entry as an auto-tagging run sees it.
 #[derive(Debug, Clone)]
@@ -20,9 +20,9 @@ pub struct RunEntry {
     pub analysis: Option<(AnalysisStatus, Option<String>)>,
 }
 
-/// Loads every library entry with its user tags, rejected tags, user role,
-/// file path and analysis status. Auto tags are left out of `user_tags` and
-/// auto roles out of `user_role`, so the analyzer never trains on its own
+/// Loads every library entry with its user tags, rejected tags, user role and
+/// pace, file path and analysis status. Auto tags are left out of `user_tags`,
+/// auto roles out of `user_role` and auto paces out of `user_pace`, so the analyzer never trains on its own
 /// guesses.
 pub fn load_run_entries(conn: &Connection) -> Result<Vec<RunEntry>, String> {
     // Tag names per entry, split into user tags and rejections.
@@ -66,12 +66,24 @@ pub fn load_run_entries(conn: &Connection) -> Result<Vec<RunEntry>, String> {
         }
     }
 
-    /// One `library_entries` row: id, name, file path, hash, type, role, role source.
-    type EntryRow = (String, String, String, Option<String>, String, Option<String>, Option<String>);
+    /// One `library_entries` row: id, name, file path, hash, type, role, role
+    /// source, pace, pace source.
+    type EntryRow = (
+        String,
+        String,
+        String,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
     let entries: Vec<EntryRow> = {
         let mut stmt = conn
             .prepare(
-                "SELECT id, name, file_path, content_hash, entry_type, role, role_source
+                "SELECT id, name, file_path, content_hash, entry_type, role, role_source,
+                        pace, pace_source
                  FROM library_entries ORDER BY name",
             )
             .map_err(|e| format!("Failed to prepare entry query: {e}"))?;
@@ -85,6 +97,8 @@ pub fn load_run_entries(conn: &Connection) -> Result<Vec<RunEntry>, String> {
                     row.get(4)?,
                     row.get(5)?,
                     row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
                 ))
             })
             .map_err(|e| format!("Failed to query entries: {e}"))?
@@ -94,12 +108,18 @@ pub fn load_run_entries(conn: &Connection) -> Result<Vec<RunEntry>, String> {
     };
 
     let mut out = Vec::with_capacity(entries.len());
-    for (id, name, file_path, hash, entry_type, role, role_source) in entries {
+    for (id, name, file_path, hash, entry_type, role, role_source, pace, pace_source) in entries {
         let analysis = get_analysis(conn, &id)?.map(|(a, stored_hash)| (a.status, stored_hash));
         let role_user_set = role_source.as_deref().map(TagSource::from_str) == Some(TagSource::User);
         // Only a user role is a fact; an auto role is the analyzer's own guess.
         let user_role = if role_user_set {
             role.as_deref().and_then(Role::from_db_str)
+        } else {
+            None
+        };
+        let pace_user_set = pace_source.as_deref().map(TagSource::from_str) == Some(TagSource::User);
+        let user_pace = if pace_user_set {
+            pace.as_deref().and_then(Pace::from_db_str)
         } else {
             None
         };
@@ -110,6 +130,8 @@ pub fn load_run_entries(conn: &Connection) -> Result<Vec<RunEntry>, String> {
                 is_music: matches!(EntryType::from_str(&entry_type), EntryType::Music),
                 user_role,
                 role_user_set,
+                user_pace,
+                pace_user_set,
                 hash,
                 id,
             },
@@ -371,6 +393,26 @@ mod tests {
         assert_eq!(role(&cleared), (None, true));
         assert_eq!(role(&auto), (None, false), "an auto role is never a user role");
         assert_eq!(role(&unset), (None, false));
+    }
+
+    #[test]
+    fn facts_loader_reads_user_pace_only() {
+        let conn = open_memory_db();
+        let new = |path: &str| {
+            library::insert_library_entry(&conn, path, None, path, None, None, None, "music").unwrap()
+        };
+        let (user, cleared, auto, unset) = (new("/u.mp3"), new("/c.mp3"), new("/a.mp3"), new("/n.mp3"));
+        library::set_user_pace(&conn, &[user.clone()], Some(Pace::Moving)).unwrap();
+        library::set_user_pace(&conn, &[cleared.clone()], None).unwrap();
+        library::apply_auto_pace(&conn, &auto, Some(Pace::Still), 0.1).unwrap();
+
+        let entries = load_run_entries(&conn).unwrap();
+        let facts = |id: &str| entries.iter().find(|e| e.facts.id == id).unwrap().facts.clone();
+        let pace = |id: &str| (facts(id).user_pace, facts(id).pace_user_set);
+        assert_eq!(pace(&user), (Some(Pace::Moving), true));
+        assert_eq!(pace(&cleared), (None, true));
+        assert_eq!(pace(&auto), (None, false), "an auto pace is never a user pace");
+        assert_eq!(pace(&unset), (None, false));
     }
 
     #[test]

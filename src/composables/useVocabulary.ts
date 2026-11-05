@@ -3,10 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { SceneConfig } from '@generated/index';
 
 // Used to tell game tags from analyzer tags when the saved vocabulary cannot be read.
-export const DEFAULT_VOCABULARY = [
-  'brass', 'folk', 'choir', 'synth', 'bright', 'dark', 'heroic', 'horror', 'lively', 'peaceful',
-  'ominous', 'majestic', 'moody', 'mischievous', 'haunting', 'somber', 'slow', 'driving', 'frantic',
-];
+export const DEFAULT_VOCABULARY = ['folk', 'electronic', 'playful', 'driving'];
 
 // The analyzer vocabulary, loaded from the scene config on mount unless
 // `loadOnMount` is false (then call `reloadVocabulary`). Starts as the default

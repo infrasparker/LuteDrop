@@ -2,7 +2,7 @@
 //! role and tags its scores earn. Nothing here touches the database or the
 //! network.
 
-use crate::models::{AutoTag, EntryTagScores, Role, SceneConfig, TagScore};
+use crate::models::{AutoTag, EntryTagScores, Pace, Role, SceneConfig, TagScore};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -26,6 +26,11 @@ pub struct EntryFacts {
     /// True when the user decided the role (`role_source` is user), including
     /// a role the user cleared.
     pub role_user_set: bool,
+    /// The pace the user set, with the same meaning as `user_role`.
+    pub user_pace: Option<Pace>,
+    /// True when the user decided the pace (`pace_source` is user), including
+    /// a pace the user cleared.
+    pub pace_user_set: bool,
 }
 
 /// Hashes of the entries that are examples for one tag (or for the gate).
@@ -41,6 +46,11 @@ pub struct Examples {
 pub struct ScoreRequest {
     pub gate: Examples,
     pub tags: HashMap<String, Examples>,
+    /// Moving (positive) vs Still (negative) examples. Always sent, empty
+    /// when the user has set no pace, so the response carries an untrusted
+    /// pace head and stale auto paces get cleared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pace: Option<Examples>,
     pub targets: Vec<String>,
 }
 
@@ -75,6 +85,45 @@ pub struct ScoreResponse {
     pub model: String,
     pub gate: ScoreSet,
     pub tags: HashMap<String, ScoreSet>,
+    /// The pace head; absent when the request had no pace examples or the
+    /// analyzer predates pace.
+    #[serde(default)]
+    pub pace: Option<ScoreSet>,
+    /// Raw mood scores per entry hash. Empty when the analyzer sent none
+    /// (older analyzer, or its mood model is not loaded).
+    #[serde(default)]
+    pub mood: HashMap<String, MoodRaw>,
+}
+
+/// The analyzer's raw score for one entry on each mood scale; higher is
+/// Bright / Light.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MoodRaw {
+    pub bright: f64,
+    pub light: f64,
+}
+
+/// Standardizes each mood scale over every hash in `raw` (population
+/// standard deviation), so the steps are relative to the scored library.
+/// With fewer than two hashes, or no spread on a scale, that scale's z is 0.0.
+pub fn mood_zscores(raw: &HashMap<String, MoodRaw>) -> HashMap<String, (f64, f64)> {
+    fn standardizer(values: &[f64]) -> impl Fn(f64) -> f64 {
+        let n = values.len() as f64;
+        let mean = if values.is_empty() { 0.0 } else { values.iter().sum::<f64>() / n };
+        let var = if values.len() < 2 {
+            0.0
+        } else {
+            values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n
+        };
+        let sd = var.sqrt();
+        move |v| if sd > 1e-12 { (v - mean) / sd } else { 0.0 }
+    }
+    let bright: Vec<f64> = raw.values().map(|m| m.bright).collect();
+    let light: Vec<f64> = raw.values().map(|m| m.light).collect();
+    let (zb, zl) = (standardizer(&bright), standardizer(&light));
+    raw.iter()
+        .map(|(hash, m)| (hash.clone(), (zb(m.bright), zl(m.light))))
+        .collect()
 }
 
 /// What one scored entry should carry after a run.
@@ -83,6 +132,13 @@ pub struct Decision {
     /// The auto role and the Combat probability it is stored with. `None`
     /// clears an auto role; the writer never changes a role the user decided.
     pub role: Option<(Role, f64)>,
+    /// The auto pace and the Moving probability it is stored with. `None`
+    /// means no pace is earned (or the user decided it); the run clears an
+    /// auto pace on `None` only when the response has a pace head.
+    pub pace: Option<(Pace, f64)>,
+    /// Mood z-scores (Bright, Light), when the analyzer sent raw mood scores
+    /// for the entry.
+    pub mood: Option<(f64, f64)>,
     /// The auto tags the entry should have; the rest of its auto tags go.
     pub tags: Vec<AutoTag>,
 }
@@ -180,13 +236,22 @@ pub fn build_score_request(
         tags.insert(vocab_tag, examples);
     }
 
+    let mut pace = Examples::default();
+    for (entry, hash) in &hashed {
+        match entry.user_pace {
+            Some(Pace::Moving) => pace.positives.push((*hash).clone()),
+            Some(Pace::Still) => pace.negatives.push((*hash).clone()),
+            None => {}
+        }
+    }
+
     let targets = hashed
         .iter()
         .filter(|(_, hash)| embedded.contains(*hash))
         .map(|(_, hash)| (*hash).clone())
         .collect();
 
-    ScoreRequest { gate, tags, targets }
+    ScoreRequest { gate, tags, pace: Some(pace), targets }
 }
 
 /// The role a Combat probability `p` earns from the gate: Combat when the
@@ -206,6 +271,22 @@ fn role_for(gate: &ScoreSet, p: f64) -> Option<(Role, f64)> {
     }
 }
 
+/// The pace a Moving probability `p` earns from the pace head: Moving when
+/// the head is trusted and `p` reaches its threshold, otherwise Still when
+/// `1 - p` reaches the Still threshold, otherwise none.
+fn pace_for(head: &ScoreSet, p: f64) -> Option<(Pace, f64)> {
+    if !head.trusted {
+        return None;
+    }
+    if head.threshold.is_some_and(|t| p >= t) {
+        Some((Pace::Moving, p))
+    } else if head.neg_threshold.is_some_and(|t| 1.0 - p >= t) {
+        Some((Pace::Still, p))
+    } else {
+        None
+    }
+}
+
 /// Decides the auto role and auto tags of each scored entry.
 ///
 /// Only entries the analyzer scored (music with a hash found in the gate's
@@ -220,6 +301,7 @@ pub fn decide(
     resp: &ScoreResponse,
 ) -> HashMap<String, Decision> {
     let vocabulary = vocabulary(scene);
+    let mood = mood_zscores(&resp.mood);
 
     let mut decisions = HashMap::new();
     for entry in entries.iter().filter(|e| e.is_music) {
@@ -232,6 +314,14 @@ pub fn decide(
             None
         } else {
             role_for(&resp.gate, gate_score)
+        };
+
+        let pace = if entry.pace_user_set {
+            None
+        } else {
+            resp.pace
+                .as_ref()
+                .and_then(|head| pace_for(head, *head.scores.get(hash)?))
         };
 
         let mut tags = Vec::new();
@@ -254,7 +344,15 @@ pub fn decide(
             }
         }
 
-        decisions.insert(entry.id.clone(), Decision { role, tags });
+        decisions.insert(
+            entry.id.clone(),
+            Decision {
+                role,
+                pace,
+                mood: mood.get(hash).copied(),
+                tags,
+            },
+        );
     }
     decisions
 }
@@ -306,6 +404,8 @@ mod tests {
             is_music: true,
             user_role: None,
             role_user_set: false,
+            user_pace: None,
+            pace_user_set: false,
         }
     }
 
@@ -345,6 +445,8 @@ mod tests {
 
     fn response(gate: ScoreSet, tags: &[(&str, ScoreSet)]) -> ScoreResponse {
         ScoreResponse {
+            pace: None,
+            mood: HashMap::new(),
             model: "test".into(),
             gate,
             tags: tags
@@ -606,6 +708,111 @@ mod tests {
         // An older analyzer that sends no `neg_threshold` still parses.
         assert_eq!(resp.tags["dark"].neg_threshold, None);
         assert_eq!(resp.tags["dark"].quality.auc, None);
+    }
+
+    fn with_pace(mut e: EntryFacts, pace: Option<Pace>) -> EntryFacts {
+        e.user_pace = pace;
+        e.pace_user_set = true;
+        e
+    }
+
+    #[test]
+    fn request_includes_user_pace_examples_only() {
+        let entries = vec![
+            with_pace(entry("m", &[]), Some(Pace::Moving)),
+            with_pace(entry("s", &[]), Some(Pace::Still)),
+            with_pace(entry("cleared", &[]), None),
+            entry("unset", &[]),
+        ];
+        let req = build_score_request(&entries, &scene(), &HashSet::new());
+        let pace = req.pace.clone().expect("pace examples present");
+        assert_eq!(pace.positives, hashes(&["h-m"]));
+        assert_eq!(pace.negatives, hashes(&["h-s"]));
+        assert!(serde_json::to_value(&req).unwrap().get("pace").is_some());
+
+        // No examples: the key is still sent, with empty lists.
+        let req = build_score_request(&[entry("unset", &[])], &scene(), &HashSet::new());
+        assert_eq!(req.pace, Some(Examples::default()));
+        assert!(serde_json::to_value(&req).unwrap().get("pace").is_some());
+    }
+
+    #[test]
+    fn decide_sets_pace_only_when_trusted_and_not_user_set() {
+        let entries = vec![
+            entry("a", &[]),
+            entry("b", &[]),
+            entry("c", &[]),
+            with_pace(entry("u", &[]), Some(Pace::Still)),
+            entry("norhythm", &[]),
+        ];
+        let all = [("h-a", 0.9), ("h-b", 0.2), ("h-c", 0.4), ("h-u", 0.9), ("h-norhythm", 0.9)];
+        let gate_set = gate(true, Some(0.6), None, &all);
+        let head = |trusted| ScoreResponse {
+            // The last entry has no rhythm features, so it is not scored.
+            pace: Some(gate(trusted, Some(0.6), Some(0.7), &all[..4])),
+            ..response(gate_set.clone(), &[])
+        };
+
+        let out = decide(&entries, &scene(), &head(true));
+        assert_eq!(out["a"].pace, Some((Pace::Moving, 0.9)));
+        assert_eq!(out["b"].pace, Some((Pace::Still, 0.2)));
+        assert_eq!(out["c"].pace, None);
+        assert_eq!(out["u"].pace, None, "user-set pace is left alone");
+        assert_eq!(out["norhythm"].pace, None);
+
+        let out = decide(&entries, &scene(), &head(false));
+        assert!(out.values().all(|d| d.pace.is_none()));
+
+        // No pace head at all.
+        let out = decide(&entries, &scene(), &response(gate_set, &[]));
+        assert!(out.values().all(|d| d.pace.is_none()));
+    }
+
+    #[test]
+    fn mood_zscores_cover_all_scored_entries() {
+        let raw: HashMap<String, MoodRaw> = [
+            ("a", MoodRaw { bright: 1.0, light: 5.0 }),
+            ("b", MoodRaw { bright: 2.0, light: 5.0 }),
+            ("c", MoodRaw { bright: 3.0, light: 5.0 }),
+        ]
+        .iter()
+        .map(|(h, m)| (h.to_string(), *m))
+        .collect();
+        let z = mood_zscores(&raw);
+        assert_eq!(z.len(), 3);
+        let mean: f64 = z.values().map(|v| v.0).sum::<f64>() / 3.0;
+        let var: f64 = z.values().map(|v| (v.0 - mean).powi(2)).sum::<f64>() / 3.0;
+        assert!(mean.abs() < 1e-9);
+        assert!((var - 1.0).abs() < 1e-9);
+        assert!(z["a"].0 < 0.0 && z["c"].0 > 0.0);
+        // No spread on the light scale.
+        assert!(z.values().all(|v| v.1 == 0.0));
+
+        let one: HashMap<String, MoodRaw> = [("a".to_string(), MoodRaw { bright: 4.0, light: -2.0 })].into();
+        assert_eq!(mood_zscores(&one)["a"], (0.0, 0.0));
+        assert!(mood_zscores(&HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn decide_carries_mood_z_for_scored_entries() {
+        let mut resp = response(gate(true, Some(0.6), None, &[("h-a", 0.9), ("h-b", 0.9)]), &[]);
+        resp.mood = [
+            ("h-a".to_string(), MoodRaw { bright: 0.0, light: 0.0 }),
+            ("h-b".to_string(), MoodRaw { bright: 2.0, light: 2.0 }),
+        ]
+        .into();
+        let out = decide(&[entry("a", &[]), entry("b", &[])], &scene(), &resp);
+        assert_eq!(out["a"].mood, Some((-1.0, -1.0)));
+        assert_eq!(out["b"].mood, Some((1.0, 1.0)));
+    }
+
+    #[test]
+    fn old_analyzer_response_parses_without_pace_or_mood() {
+        let json = r#"{"model":"m","gate":{"quality":{"auc":0.9,"pos":12,"neg":9},
+            "trusted":true,"threshold":0.61,"scores":{}},"tags":{}}"#;
+        let resp: ScoreResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.pace.is_none());
+        assert!(resp.mood.is_empty());
     }
 
     #[test]

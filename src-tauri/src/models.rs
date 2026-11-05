@@ -49,6 +49,21 @@ pub struct LibraryEntry {
     pub role_source: Option<TagSource>,
     /// The analyzer's Combat probability, kept while `role_source` is auto.
     pub role_score: Option<f64>,
+    /// Still or moving; `None` when unset or when the user cleared it.
+    pub pace: Option<Pace>,
+    /// Who set `pace`, with the same meaning as `role_source`.
+    pub pace_source: Option<TagSource>,
+    /// The analyzer's Moving probability, kept while `pace_source` is auto.
+    pub pace_score: Option<f64>,
+    /// The analyzer's Bright ↔ Dark position as a z-score across the
+    /// library's analyzed music; positive is Bright.
+    pub mood_bright: Option<f64>,
+    /// The analyzer's Light ↔ Heavy position as a z-score; positive is Light.
+    pub mood_light: Option<f64>,
+    /// The user's Bright ↔ Dark step; when set it overrides `mood_bright`.
+    pub mood_bright_user: Option<MoodStep>,
+    /// The user's Light ↔ Heavy step; when set it overrides `mood_light`.
+    pub mood_light_user: Option<MoodStep>,
 }
 
 /// Whether a music entry is meant for combat scenes.
@@ -78,6 +93,77 @@ impl Role {
         match s {
             "combat" => Some(Role::Combat),
             "non_combat" => Some(Role::NonCombat),
+            _ => None,
+        }
+    }
+}
+
+/// Whether a music entry is still or moving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub enum Pace {
+    Still,
+    Moving,
+}
+
+impl Pace {
+    /// The value stored in `library_entries.pace`.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            Pace::Still => "still",
+            Pace::Moving => "moving",
+        }
+    }
+
+    /// Parses a stored value; anything unrecognised is `None`.
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        match s {
+            "still" => Some(Pace::Still),
+            "moving" => Some(Pace::Moving),
+            _ => None,
+        }
+    }
+}
+
+/// One of the three steps on a mood scale. `High` is the positive pole
+/// (Bright on Bright ↔ Dark, Light on Light ↔ Heavy).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub enum MoodStep {
+    Low,
+    Mid,
+    High,
+}
+
+/// Which of the two mood scales a user step applies to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub enum MoodScale {
+    /// Bright <-> Dark.
+    Bright,
+    /// Light <-> Heavy.
+    Light,
+}
+
+impl MoodStep {
+    /// The value stored in the `mood_*_user` columns.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            MoodStep::Low => "low",
+            MoodStep::Mid => "mid",
+            MoodStep::High => "high",
+        }
+    }
+
+    /// Parses a stored value; anything unrecognised is `None`.
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        match s {
+            "low" => Some(MoodStep::Low),
+            "mid" => Some(MoodStep::Mid),
+            "high" => Some(MoodStep::High),
             _ => None,
         }
     }
@@ -192,11 +278,7 @@ pub struct SceneConfig {
 impl Default for SceneConfig {
     fn default() -> Self {
         Self {
-            vocabulary: [
-                "brass", "folk", "choir", "synth", "bright", "dark", "heroic", "horror",
-                "lively", "peaceful", "ominous", "majestic", "moody", "mischievous", "haunting",
-                "somber", "slow", "driving", "frantic",
-            ]
+            vocabulary: ["folk", "electronic", "playful", "driving"]
             .iter()
             .map(|w| w.to_string())
             .collect(),
@@ -229,6 +311,8 @@ pub struct AutoTagReport {
     pub failed: u32,
     pub unreachable: u32,
     pub gate: Option<TagQuality>,
+    /// Quality of the pace head (Moving = positive), like `gate` for Role.
+    pub pace: Option<TagQuality>,
     pub tags: Vec<TagQuality>,
     pub error: Option<String>,
     /// Up to 5 "entry name: error" lines from entries that failed or could
@@ -525,6 +609,23 @@ pub struct ClipRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pace_and_mood_step_db_strings_round_trip() {
+        for pace in [Pace::Still, Pace::Moving] {
+            assert_eq!(Pace::from_db_str(pace.as_db_str()), Some(pace));
+        }
+        assert_eq!((Pace::Still.as_db_str(), Pace::Moving.as_db_str()), ("still", "moving"));
+        for step in [MoodStep::Low, MoodStep::Mid, MoodStep::High] {
+            assert_eq!(MoodStep::from_db_str(step.as_db_str()), Some(step));
+        }
+        assert_eq!(
+            [MoodStep::Low.as_db_str(), MoodStep::Mid.as_db_str(), MoodStep::High.as_db_str()],
+            ["low", "mid", "high"]
+        );
+        assert_eq!(Pace::from_db_str("steady"), None);
+        assert_eq!(MoodStep::from_db_str(""), None);
+    }
 
     #[test]
     fn track_updates_deserializes_camel_case_and_defaults_absent() {

@@ -11,8 +11,8 @@ import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from . import heads, vibe
-from .embed import Embedder, EmbeddingCache, MuqEmbedder, load_windows
+from . import heads, moods, rhythm, vibe
+from .embed import Embedder, EmbeddingCache, MuqEmbedder, decode_track
 
 MAX_EMBED_ITEMS = 32
 
@@ -45,6 +45,7 @@ class ScoreRequest(BaseModel):
     scene: str = ""
     gate: Examples
     tags: dict[str, Examples] = {}
+    pace: Examples | None = None
     targets: list[str] = []
 
 
@@ -68,9 +69,9 @@ def _limit(n: int) -> int:
     return min(max(n, 0), MAX_RESULTS)
 
 
-def _decode(path: str) -> np.ndarray:
+def _decode(path: str) -> tuple[np.ndarray, dict[str, float] | None]:
     # Module-level so a process pool can pickle it by reference.
-    return load_windows(path)
+    return decode_track(path)
 
 
 def _failure(hash: str, e: Exception) -> dict:
@@ -142,7 +143,7 @@ def create_app(
         results: dict[str, dict] = {}
         pending = {}
         for item in req.items:
-            if cache.has(item.hash):
+            if cache.has(item.hash) and cache.has_rhythm(item.hash):
                 results[item.hash] = {"hash": item.hash, "ok": True}
             elif item.hash not in pending:
                 try:
@@ -152,8 +153,13 @@ def create_app(
                     results[item.hash] = _failure(item.hash, e)
         for hash, (pool, future) in pending.items():
             try:
-                windows = future.result()
-                cache.put(hash, embedder.embed_windows(windows))
+                windows, feats = future.result()
+                if not cache.has(hash):
+                    cache.put(hash, embedder.embed_windows(windows))
+                if feats is not None:
+                    cache.put_rhythm(hash, feats)
+                else:
+                    log.warning("No rhythm features for %s; pace is unavailable for it", hash)
                 results[hash] = {"hash": hash, "ok": True}
             except BrokenProcessPool as e:
                 replace_pool(pool)
@@ -172,13 +178,24 @@ def create_app(
                 rows.append(v)
         return found, (np.vstack(rows) if rows else np.empty((0, 0)))
 
-    def score_head(examples: Examples, target_hashes, X_targets):
-        _, X_pos = vectors(examples.positives)
-        _, X_neg = vectors(examples.negatives)
+    def rhythm_vectors(hashes: list[str]) -> tuple[list[str], np.ndarray]:
+        """Rhythm feature rows (FEATURES order) for the hashes that have them."""
+        found, rows = [], []
+        for h in dict.fromkeys(hashes):
+            feats = cache.get_rhythm(h)
+            # A cached file written with a different feature set is skipped.
+            if feats is not None and all(k in feats for k in rhythm.FEATURES):
+                found.append(h)
+                rows.append([feats[k] for k in rhythm.FEATURES])
+        return found, (np.array(rows) if rows else np.empty((0, len(rhythm.FEATURES))))
+
+    def score_head(examples: Examples, target_hashes, X_targets, get=vectors, scale=False):
+        _, X_pos = get(examples.positives)
+        _, X_neg = get(examples.negatives)
         # fit_and_score cannot predict on an empty array; score one example
         # row instead and drop the result when there are no targets.
         probe = X_targets if len(target_hashes) else (X_pos[:1] if len(X_pos) else X_neg[:1])
-        r = heads.fit_and_score(X_pos, X_neg, probe)
+        r = heads.fit_and_score(X_pos, X_neg, probe, scale)
         return {
             "quality": {"auc": r.auc, "pos": r.pos, "neg": r.neg},
             "trusted": r.trusted,
@@ -189,10 +206,49 @@ def create_app(
             else {},
         }
 
+    # Unit-length mood prompt vectors per pole, embedded the first time /score
+    # finds the model loaded and reused after that. Published only once every
+    # pole succeeded, so a failure part-way leaves nothing half-filled.
+    mood_vecs: dict[str, np.ndarray] = {}
+    mood_lock = threading.Lock()
+
+    def mood_poles() -> dict[str, np.ndarray] | None:
+        """The pole vectors, or None while the model is not ready (or the
+        prompts could not be embedded); /score then omits mood. Never waits."""
+        if not loaded.is_set() or load_error:
+            return None
+        with mood_lock:
+            if not mood_vecs:
+                built = {}
+                try:
+                    for name, texts in moods.POLES.items():
+                        vecs = np.asarray(embedder.embed_text(texts), dtype=np.float64)
+                        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+                        built[name] = vecs / np.where(norms == 0, 1, norms)
+                except Exception:
+                    log.exception("Mood prompts failed to embed")
+                    return None
+                mood_vecs.update(built)
+            return dict(mood_vecs)
+
+    def mood_scores(target_hashes: list[str], X_targets: np.ndarray) -> dict[str, dict] | None:
+        if not target_hashes:
+            return {}
+        poles = mood_poles()
+        if poles is None:
+            return None
+        sims = {name: (X_targets @ v.T).mean(axis=1) for name, v in poles.items()}
+        bright = sims["bright"] - sims["dark"]
+        light = sims["light"] - sims["heavy"]
+        return {
+            h: {"bright": float(b), "light": float(li)}
+            for h, b, li in zip(target_hashes, bright, light)
+        }
+
     @app.post("/score")
     def score(req: ScoreRequest):
         target_hashes, X_targets = vectors(req.targets)
-        return {
+        out = {
             "model": embedder.name,
             "gate": score_head(req.gate, target_hashes, X_targets),
             "tags": {
@@ -200,6 +256,13 @@ def create_app(
                 for tag, ex in req.tags.items()
             },
         }
+        if req.pace is not None:
+            r_hashes, R_targets = rhythm_vectors(req.targets)
+            out["pace"] = score_head(req.pace, r_hashes, R_targets, rhythm_vectors, scale=True)
+        mood = mood_scores(target_hashes, X_targets)
+        if mood is not None:
+            out["mood"] = mood
+        return out
 
     @app.post("/similar")
     def similar(req: SimilarRequest):

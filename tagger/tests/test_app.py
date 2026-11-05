@@ -7,13 +7,14 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from tagger import app as app_module
+from tagger import app as app_module, rhythm
 from tagger.app import create_app
 from tagger.embed import EmbeddingCache
 
 TOKEN = "secret"
 HEADERS = {"X-LuteDrop-Token": TOKEN}
 DIM = 8
+FEATS = {k: 0.0 for k in rhythm.FEATURES}
 
 
 class FakeEmbedder:
@@ -55,7 +56,7 @@ def client(tmp_path, monkeypatch, calls):
         level = 1.0 if kind == "hi" else -1.0
         return synthetic(level, int(idx))
 
-    monkeypatch.setattr(app_module, "load_windows", fake_load)
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (fake_load(p), FEATS))
     app = create_app(
         FakeEmbedder(), EmbeddingCache(tmp_path), TOKEN, executor_factory=lambda: ThreadPoolExecutor(2)
     )
@@ -101,7 +102,7 @@ class SlowEmbedder(FakeEmbedder):
 
 def test_embed_waits_for_model_then_answers_503(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "LOAD_WAIT_SECONDS", 0.05)
-    monkeypatch.setattr(app_module, "load_windows", lambda p: synthetic(1.0, 1))
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), FEATS))
     embedder = SlowEmbedder()
     c = TestClient(
         create_app(embedder, EmbeddingCache(tmp_path), TOKEN, executor_factory=lambda: ThreadPoolExecutor(1))
@@ -223,7 +224,7 @@ class BrokenPool:
 
 @pytest.mark.parametrize("fail_on", ["submit", "result"])
 def test_embed_recovers_from_broken_pool(tmp_path, monkeypatch, fail_on):
-    monkeypatch.setattr(app_module, "load_windows", lambda p: synthetic(1.0, 1))
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), FEATS))
     pools = iter([BrokenPool(fail_on)])
     app = create_app(
         FakeEmbedder(),
@@ -385,3 +386,208 @@ def test_endpoints_drop_uncached_hashes(client):
 def test_vibe_endpoints_require_token(client, path, body):
     assert client.post(path, json=body).status_code == 401
     assert client.post(path, json=body, headers={"X-LuteDrop-Token": "nope"}).status_code == 401
+
+
+def _rhythm_client(tmp_path, monkeypatch, calls):
+    def fake_decode(path):
+        calls.append(path)
+        return synthetic(1.0, 1), {k: 0.5 for k in rhythm.FEATURES}
+
+    monkeypatch.setattr(app_module, "decode_track", fake_decode)
+    cache = EmbeddingCache(tmp_path)
+    app = create_app(FakeEmbedder(), cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2))
+    return TestClient(app), cache
+
+
+def test_embed_backfills_rhythm_for_cached_embedding(tmp_path, monkeypatch):
+    calls = []
+    c, cache = _rhythm_client(tmp_path, monkeypatch, calls)
+    cache.put("h1", np.ones((2, DIM), dtype=np.float32))
+    monkeypatch.setattr(
+        FakeEmbedder, "embed_windows", lambda self, w: (_ for _ in ()).throw(AssertionError("embedder called"))
+    )
+    assert not cache.has_rhythm("h1")
+    r = embed(c, [("h1", "hi-1")])
+    assert r.json()["results"] == [{"hash": "h1", "ok": True}]
+    assert calls == ["hi-1"]
+    assert cache.has_rhythm("h1")
+    assert cache.get_rhythm("h1") == {k: 0.5 for k in rhythm.FEATURES}
+    assert np.array_equal(cache.get_windows("h1"), np.ones((2, DIM), dtype=np.float32))
+
+
+def test_embed_stores_rhythm_for_new_files(tmp_path, monkeypatch):
+    c, cache = _rhythm_client(tmp_path, monkeypatch, [])
+    assert embed(c, [("h2", "hi-1")]).json()["results"] == [{"hash": "h2", "ok": True}]
+    assert cache.has("h2") and cache.has_rhythm("h2")
+
+
+def test_embed_skips_rhythm_when_features_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), None))
+    cache = EmbeddingCache(tmp_path)
+    app = create_app(FakeEmbedder(), cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2))
+    c = TestClient(app)
+    assert embed(c, [("h3", "hi-1")]).json()["results"] == [{"hash": "h3", "ok": True}]
+    assert cache.has("h3") and not cache.has_rhythm("h3")
+
+
+def _rhythm_scored(client, cache, n=6):
+    """Seed embeddings plus rhythm vectors where positives have high perc_ratio."""
+    hashes = seed(client, n)
+    rng = np.random.default_rng(3)
+    for h in hashes:
+        feats = {k: float(rng.normal(0, 1)) for k in rhythm.FEATURES}
+        feats["perc_ratio"] = (5.0 if h.startswith("hi") else -5.0) + float(rng.normal(0, 0.3))
+        cache.put_rhythm(h, feats)
+    return hashes
+
+
+@pytest.fixture
+def scored(tmp_path, monkeypatch):
+    def fake_decode(path):
+        kind, idx = path.split("-")
+        return synthetic(1.0 if kind == "hi" else -1.0, int(idx)), FEATS
+
+    monkeypatch.setattr(app_module, "decode_track", fake_decode)
+    cache = EmbeddingCache(tmp_path)
+    app = create_app(FakeEmbedder(), cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2))
+    return TestClient(app), cache
+
+
+def test_score_returns_pace_head_on_rhythm(scored):
+    client, cache = scored
+    hashes = _rhythm_scored(client, cache)
+    pos = [h for h in hashes if h.startswith("hi")]
+    neg = [h for h in hashes if h.startswith("lo")]
+    cache._rhythm_path("lo0").unlink()  # one target without rhythm
+    body = {
+        "gate": {"positives": pos, "negatives": neg},
+        "pace": {"positives": pos, "negatives": neg[1:]},
+        "targets": hashes,
+    }
+    data = client.post("/score", json=body, headers=HEADERS).json()
+    pace = data["pace"]
+    assert set(pace) == {"quality", "trusted", "threshold", "neg_threshold", "scores"}
+    assert pace["trusted"] is True
+    assert set(pace["scores"]) == set(hashes) - {"lo0"}
+    assert all(pace["scores"][h] > 0.5 for h in pos)
+    assert all(pace["scores"][h] < 0.5 for h in neg[1:])
+
+
+def test_score_ignores_cached_rhythm_with_other_keys(scored):
+    client, cache = scored
+    hashes = _rhythm_scored(client, cache)
+    pos = [h for h in hashes if h.startswith("hi")]
+    neg = [h for h in hashes if h.startswith("lo")]
+    cache.put_rhythm("lo0", {"other_feature": 1.0})  # written with a different feature set
+    body = {
+        "gate": {"positives": pos, "negatives": neg},
+        "pace": {"positives": pos, "negatives": neg[1:]},
+        "targets": hashes,
+    }
+    r = client.post("/score", json=body, headers=HEADERS)
+    assert r.status_code == 200
+    assert set(r.json()["pace"]["scores"]) == set(hashes) - {"lo0"}
+
+
+def test_embed_warns_when_rhythm_features_missing(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), None))
+    cache = EmbeddingCache(tmp_path)
+    app = create_app(FakeEmbedder(), cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2))
+    with caplog.at_level("WARNING"):
+        embed(TestClient(app), [("h9", "hi-1")])
+    assert any("h9" in m for m in caplog.messages)
+
+
+def test_score_without_pace_has_no_pace_key(client):
+    hashes = seed(client)
+    pos = [h for h in hashes if h.startswith("hi")]
+    neg = [h for h in hashes if h.startswith("lo")]
+    body = {"gate": {"positives": pos, "negatives": neg}, "targets": hashes}
+    assert "pace" not in client.post("/score", json=body, headers=HEADERS).json()
+
+
+def test_score_returns_raw_mood_for_targets(tmp_path, monkeypatch):
+    from tagger import moods
+
+    dirs = {}
+    for i, text in enumerate(moods.BRIGHT + moods.DARK + moods.LIGHT + moods.HEAVY):
+        v = np.zeros(DIM)
+        v[i % DIM] = 1.0
+        dirs[text] = v
+
+    class MoodEmbedder(FakeEmbedder):
+        calls = 0
+
+        def embed_text(self, texts):
+            MoodEmbedder.calls += 1
+            return np.vstack([dirs[t] for t in texts])
+
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), FEATS))
+    cache = EmbeddingCache(tmp_path)
+    app = create_app(MoodEmbedder(), cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2))
+    c = TestClient(app)
+    embed(c, [("a", "x-1"), ("b", "x-2")])
+    body = {"gate": {}, "targets": ["a", "b", "ghost"]}
+    data = c.post("/score", json=body, headers=HEADERS).json()
+    c.post("/score", json=body, headers=HEADERS)
+    assert MoodEmbedder.calls == 4  # one embed_text per pole, computed once
+    assert set(data["mood"]) == {"a", "b"}
+
+    mean = cache.get("a")
+
+    def pole(texts):
+        return float(np.mean([mean @ dirs[t] for t in texts]))
+
+    assert data["mood"]["a"]["bright"] == pytest.approx(pole(moods.BRIGHT) - pole(moods.DARK))
+    assert data["mood"]["a"]["light"] == pytest.approx(pole(moods.LIGHT) - pole(moods.HEAVY))
+    assert data["mood"]["a"]["bright"] != 0
+
+
+def test_score_mood_recovers_after_partial_embed_failure(tmp_path, monkeypatch):
+    class FlakyEmbedder(FakeEmbedder):
+        calls = 0
+
+        def embed_text(self, texts):
+            FlakyEmbedder.calls += 1
+            if FlakyEmbedder.calls == 3:  # fail part-way through the poles
+                raise RuntimeError("transient")
+            return super().embed_text(texts)
+
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), FEATS))
+    cache = EmbeddingCache(tmp_path)
+    c = TestClient(create_app(FlakyEmbedder(), cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2)))
+    embed(c, [("a", "x-1")])
+    body = {"gate": {}, "targets": ["a"]}
+    first = c.post("/score", json=body, headers=HEADERS)
+    assert first.status_code == 200 and "mood" not in first.json()
+    second = c.post("/score", json=body, headers=HEADERS)
+    assert second.status_code == 200
+    assert set(second.json()["mood"]["a"]) == {"bright", "light"}
+
+
+def test_score_without_loaded_model_omits_mood(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), FEATS))
+    cache = EmbeddingCache(tmp_path)
+    cache.put("a", np.ones((2, DIM), dtype=np.float32))
+    embedder = SlowEmbedder()
+    c = TestClient(create_app(embedder, cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(1)))
+    body = {"gate": {"positives": ["a"], "negatives": []}, "targets": ["a"]}
+    r = c.post("/score", json=body, headers=HEADERS)
+    assert r.status_code == 200
+    assert "gate" in r.json() and "mood" not in r.json()
+    embedder.release.set()
+
+
+def test_score_with_failed_model_omits_mood(tmp_path):
+    cache = EmbeddingCache(tmp_path)
+    cache.put("a", np.ones((2, DIM), dtype=np.float32))
+    c = TestClient(create_app(BrokenEmbedder(), cache, TOKEN))
+    c.get("/health", headers=HEADERS)
+    import time
+
+    for _ in range(100):
+        if c.get("/health", headers=HEADERS).json()["error"]:
+            break
+        time.sleep(0.02)
+    r = c.post("/score", json={"gate": {}, "targets": ["a"]}, headers=HEADERS)
+    assert r.status_code == 200 and "mood" not in r.json()
