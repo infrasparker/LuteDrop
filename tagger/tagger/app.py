@@ -11,10 +11,14 @@ import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from . import heads
+from . import heads, vibe
 from .embed import Embedder, EmbeddingCache, MuqEmbedder, load_windows
 
 MAX_EMBED_ITEMS = 32
+
+DEFAULT_RESULTS = 50
+MAX_RESULTS = 500
+MAP_CACHE_SIZE = 8
 
 # How long /embed waits for the model to finish loading before it answers
 # 503. Loading starts when the app is created.
@@ -42,6 +46,26 @@ class ScoreRequest(BaseModel):
     gate: Examples
     tags: dict[str, Examples] = {}
     targets: list[str] = []
+
+
+class SimilarRequest(BaseModel):
+    query: list[str] = []
+    candidates: list[str] = []
+    limit: int = DEFAULT_RESULTS
+
+
+class SearchRequest(BaseModel):
+    text: str
+    candidates: list[str] = []
+    limit: int = DEFAULT_RESULTS
+
+
+class MapRequest(BaseModel):
+    hashes: list[str] = []
+
+
+def _limit(n: int) -> int:
+    return min(max(n, 0), MAX_RESULTS)
 
 
 def _decode(path: str) -> np.ndarray:
@@ -159,6 +183,7 @@ def create_app(
             "quality": {"auc": r.auc, "pos": r.pos, "neg": r.neg},
             "trusted": r.trusted,
             "threshold": r.threshold,
+            "neg_threshold": r.neg_threshold,
             "scores": {h: float(s) for h, s in zip(target_hashes, r.scores)}
             if len(target_hashes)
             else {},
@@ -175,6 +200,51 @@ def create_app(
                 for tag, ex in req.tags.items()
             },
         }
+
+    @app.post("/similar")
+    def similar(req: SimilarRequest):
+        _, Q = vectors(req.query)
+        excluded = set(req.query)
+        c_hashes, C = vectors([h for h in req.candidates if h not in excluded])
+        if len(Q) == 0 or len(C) == 0:
+            return {"results": []}
+        ranked = vibe.similar(vibe.centroid(Q), C, _limit(req.limit))
+        return {"results": [{"hash": c_hashes[i], "score": s} for i, s in ranked]}
+
+    @app.post("/search")
+    def search(req: SearchRequest):
+        c_hashes, C = vectors(req.candidates)
+        if not req.text.strip() or not c_hashes:
+            return {"results": []}
+        if not loaded.wait(LOAD_WAIT_SECONDS):
+            raise HTTPException(status_code=503, detail="model is still loading")
+        if load_error:
+            raise HTTPException(status_code=503, detail=f"model failed to load: {load_error[0]}")
+        text_vec = embedder.embed_text([req.text])[0]
+        ranked = vibe.rank_by_text(text_vec, C, _limit(req.limit))
+        return {"results": [{"hash": c_hashes[i], "score": s} for i, s in ranked]}
+
+    # Layouts keyed by the sorted hash tuple; the oldest entry is dropped first.
+    map_cache: dict[tuple[str, ...], list[dict]] = {}
+    map_lock = threading.Lock()
+
+    @app.post("/map")
+    def map_points(req: MapRequest):
+        found, X = vectors(req.hashes)
+        key = tuple(sorted(found))
+        with map_lock:
+            points = map_cache.get(key)
+        if points is None:
+            row = {h: i for i, h in enumerate(found)}
+            coords = vibe.layout_2d(X[[row[h] for h in key]] if key else X)
+            points = [
+                {"hash": h, "x": float(x), "y": float(y)} for h, (x, y) in zip(key, coords)
+            ]
+            with map_lock:
+                map_cache[key] = points
+                while len(map_cache) > MAP_CACHE_SIZE:
+                    map_cache.pop(next(iter(map_cache)))
+        return {"points": points}
 
     return app
 

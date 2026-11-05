@@ -15,6 +15,9 @@ class HeadResult:
     neg: int
     trusted: bool
     threshold: float | None
+    # The same rule on 1 - p with the classes swapped: the smallest 1 - p at
+    # which "not this class" predictions reach the target precision.
+    neg_threshold: float | None
     scores: np.ndarray
 
 
@@ -48,12 +51,12 @@ def fit_and_score(
     """Fit a logistic head and score the targets.
 
     With fewer than two examples in either class, leave-one-out cannot train
-    on both classes, so the result is untrusted (auc and threshold None) and
+    on both classes, so the result is untrusted (auc and thresholds None) and
     the scores are all 0.0.
     """
     n_pos, n_neg = len(X_pos), len(X_neg)
     if min(n_pos, n_neg) < 2:
-        return HeadResult(None, n_pos, n_neg, False, None, np.zeros(len(X_targets)))
+        return HeadResult(None, n_pos, n_neg, False, None, None, np.zeros(len(X_targets)))
 
     X = np.vstack([X_pos, X_neg])
     y = np.array([1] * n_pos + [0] * n_neg)
@@ -61,6 +64,7 @@ def fit_and_score(
     loo = loo_scores(X, y)
     auc = float(roc_auc_score(y, loo))
     threshold = _precision_threshold(loo, y)
+    neg_threshold = _precision_threshold(1 - loo, 1 - y)
     trusted = (
         n_pos >= config.MIN_POS
         and n_neg >= config.MIN_NEG
@@ -68,4 +72,4 @@ def fit_and_score(
         and threshold is not None
     )
     scores = _new_model().fit(X, y).predict_proba(X_targets)[:, 1]
-    return HeadResult(auc, n_pos, n_neg, trusted, threshold, scores)
+    return HeadResult(auc, n_pos, n_neg, trusted, threshold, neg_threshold, scores)

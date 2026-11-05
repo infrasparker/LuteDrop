@@ -22,6 +22,10 @@ class Embedder(Protocol):
         """Embed windows (windows x samples at SAMPLE_RATE) into windows x dim."""
         ...
 
+    def embed_text(self, texts: list[str]) -> np.ndarray:
+        """Embed texts into the audio embedding space, one L2-normalized row each."""
+        ...
+
 
 class MuqEmbedder:
     """MuQ-MuLan audio embedder. torch and muq are imported on first use so
@@ -56,6 +60,17 @@ class MuqEmbedder:
             with torch.no_grad():
                 x = torch.tensor(wavs, dtype=torch.float32, device=self._device)
                 return self._model(wavs=x).cpu().numpy()
+
+    def embed_text(self, texts: list[str]) -> np.ndarray:
+        import torch
+
+        with self._lock:
+            if self._model is None:
+                self._load()
+            with torch.no_grad():
+                out = self._model(texts=texts).cpu().numpy()
+        norms = np.linalg.norm(out, axis=1, keepdims=True)
+        return out / np.where(norms == 0, 1, norms)
 
 
 class EmbeddingCache:
