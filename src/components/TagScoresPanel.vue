@@ -124,7 +124,7 @@ const soundRows = computed<{ label: string; value: string }[]>(() => {
   if (!e) return [];
   const rows: { label: string; value: string }[] = [];
   if (e.moodBright !== null) rows.push({ label: 'Bright ↔ Dark', value: `z = ${signed(e.moodBright)}` });
-  if (e.moodLight !== null) rows.push({ label: 'Light ↔ Heavy', value: `z = ${signed(e.moodLight)}` });
+  if (e.moodLight !== null) rows.push({ label: 'Airy ↔ Heavy', value: `z = ${signed(e.moodLight)}` });
   if (e.paceAutoScore !== null) {
     // The probability is the analyzer's; the label says which layer the shown
     // pace comes from.
