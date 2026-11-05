@@ -48,15 +48,17 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  // --- Command helper: invoke a Rust command and hydrate ---
+  // --- Command helper: invoke a Rust command and hydrate; resolves false when it failed ---
 
-  async function command(cmd: string, args?: Record<string, unknown>): Promise<void> {
+  async function command(cmd: string, args?: Record<string, unknown>): Promise<boolean> {
     try {
       const state = await invoke<AppState>(cmd, args);
       hydrate(state);
+      return true;
     } catch (e) {
       const toast = useToast();
       toast.showError(String(e));
+      return false;
     }
   }
 

@@ -5,7 +5,7 @@
 //! - **Actions**: Business logic orchestrating state mutations and notifications.
 //! - **Persistence & Audio**: SQLite database and audio engine.
 //!
-//! ## Background Threads Spawned in Setup (5)
+//! ## Background Threads Spawned in Setup (6)
 //! 1. **Peak preload**: Precomputes waveform peaks for the library on startup.
 //! 2. **Backup loop**: Automatic database snapshots every 30 minutes.
 //! 3. **WebSocket server**: Axum HTTP + WS for remote control (with tokio runtime).
@@ -13,6 +13,8 @@
 //! 5. **Broadcast restore**: Short-lived; turns the live stream back on if it
 //!    was on at last exit (the stream's own encoder/server threads then run
 //!    until it is turned off).
+//! 6. **Auto-tag worker**: Sleeps until imports, tag edits or "Analyze
+//!    library" give it work, then calls the analyzer service (see `autotag`).
 //!
 //! ## Tauri Events Emitted to Frontend
 //! - `playback-state-update`: Per-track playback position and state (every 50ms; listened: useAudio.ts).
@@ -21,6 +23,8 @@
 //! - `missing-entry-found`: Audio file relocated or found (listened: useAudio.ts).
 //! - `library-import-progress`: Bulk import progress (listened: useLibraryImport.ts).
 //! - `library-import-complete`: Bulk import finished (listened: useLibraryImport.ts).
+//! - `autotag-progress`: Auto-tag run progress, `AutoTagProgress` (listened: useAutoTagEvents.ts).
+//! - `autotag-complete`: Auto-tag run finished, carrying its `AutoTagReport`; the frontend reloads state with `load_data` (listened: useAutoTagEvents.ts).
 //! - `broadcast-listeners`: Live-stream listener count, `null` when off; sent only on change (listened: useBroadcast.ts).
 //!
 //! ## WebSocket Message Types to Remote Clients
@@ -29,6 +33,7 @@
 
 mod actions;
 mod audio;
+mod autotag;
 mod broadcast;
 mod commands;
 mod database;
@@ -44,6 +49,38 @@ use tauri::Emitter;
 use tauri::Manager;
 use state::AppStateContainer;
 
+/// Turn off WebView2's general autofill ("Saved info" dropdown under text inputs).
+/// This is a desktop app; the browser's list of previously typed values (track
+/// titles, search terms) is noise here. Tauri/wry 0.54 only expose this at webview
+/// creation time via an option Tauri doesn't surface, so set it on the live webview.
+/// Password and credit-card autosave are unaffected (not used by this app).
+#[cfg(windows)]
+fn disable_webview_autofill(app: &tauri::App) {
+    use tauri::Manager;
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings4;
+    use windows_core::Interface;
+
+    for (label, window) in app.webview_windows() {
+        let result = window.with_webview(|webview| unsafe {
+            let applied = webview
+                .controller()
+                .CoreWebView2()
+                .and_then(|core| core.Settings())
+                .and_then(|settings| settings.cast::<ICoreWebView2Settings4>())
+                .and_then(|settings| settings.SetIsGeneralAutofillEnabled(false));
+            if let Err(e) = applied {
+                log::warn!("could not disable WebView2 general autofill: {e}");
+            }
+        });
+        if let Err(e) = result {
+            log::warn!("with_webview failed for window {label}: {e}");
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn disable_webview_autofill(_app: &tauri::App) {}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -54,6 +91,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            disable_webview_autofill(app);
             // Determine file paths
             let db_path = {
                 let app_data = app.path().app_data_dir().expect("failed to get app data dir");
@@ -91,6 +129,11 @@ pub fn run() {
 
             // Share the Arc with Tauri's managed state
             app.manage(container.clone());
+
+            // Start the auto-tag worker, and hand it any entries left
+            // unanalyzed since the last session.
+            autotag::Worker::spawn(container.clone());
+            actions::queue_unanalyzed_on_startup(&container);
 
             // Preload peak caches in background
             let preload_container = container.clone();
@@ -172,6 +215,10 @@ pub fn run() {
             commands::bulk_import_library_entries,
             commands::scan_folder_for_audio,
             commands::update_library_entry_tags,
+            commands::keep_auto_tags,
+            commands::reject_auto_tags,
+            commands::set_entry_role,
+            commands::keep_auto_role,
             commands::bulk_edit_library_entry_tags,
             commands::update_library_entry_type,
             commands::update_library_entry_markers,
@@ -197,6 +244,17 @@ pub fn run() {
             commands::set_broadcast_enabled,
             commands::set_broadcast_settings,
             commands::regenerate_broadcast_key,
+            commands::get_autotag_settings,
+            commands::save_autotag_settings,
+            commands::get_scene_config,
+            commands::save_scene_config,
+            commands::test_autotag_connection,
+            commands::analyze_library,
+            commands::get_autotag_report,
+            commands::get_entry_tag_scores,
+            commands::similar_entries,
+            commands::search_vibe,
+            commands::vibe_map,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LuteDrop");

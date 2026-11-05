@@ -1,3 +1,4 @@
+pub mod autotag_db;
 pub mod backup;
 pub mod configurations;
 pub mod error;
@@ -13,12 +14,13 @@ use std::path::Path;
 use uuid::Uuid;
 
 use crate::models::{
-    AppState, Clip, Comp, Configuration, EntryType, Group, LibraryEntry, Track, TrackMode, TrackTransition,
+    AnalysisStatus, AppState, AutoTag, Clip, Comp, Configuration, EntryAnalysis, EntryType, Group,
+    LibraryEntry, Role, TagSource, Track, TrackMode, TrackTransition,
 };
 
 /// Current schema version. Bump when adding a migration below; fresh
 /// databases are stamped with this directly.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// Spacing between sibling `sort_order` values, leaving room for insertions
 /// between neighbours without renumbering. Shared by hierarchy + configurations.
@@ -54,9 +56,51 @@ fn migrate_v3_to_v4(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(INDEX_DDL)
 }
 
+/// Tables for auto-tagging, shared by init_schema (fresh DBs) and the
+/// v4→v5 migration. IF NOT EXISTS makes running both harmless.
+const AUTOTAG_TABLES_DDL: &str = "
+    CREATE TABLE IF NOT EXISTS tag_rejections (
+        library_entry_id TEXT NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,
+        tag_id           TEXT NOT NULL REFERENCES tags(id)            ON DELETE CASCADE,
+        created_at       TEXT NOT NULL,
+        PRIMARY KEY (library_entry_id, tag_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS entry_analysis (
+        library_entry_id TEXT PRIMARY KEY REFERENCES library_entries(id) ON DELETE CASCADE,
+        content_hash     TEXT,
+        status           TEXT NOT NULL,
+        error            TEXT,
+        analyzed_at      TEXT,
+        scores_json      TEXT
+    );
+";
+
+/// Records who applied each tag and, for auto tags, the score behind it.
+/// Existing tags were all applied by the user.
+fn migrate_v4_to_v5(conn: &Connection) -> SqlResult<()> {
+    conn.execute_batch(
+        "ALTER TABLE library_entry_tags ADD COLUMN source TEXT NOT NULL DEFAULT 'user';
+         ALTER TABLE library_entry_tags ADD COLUMN score REAL;",
+    )?;
+    conn.execute_batch(AUTOTAG_TABLES_DDL)
+}
+
+/// Adds the combat / non-combat role columns. Existing entries start with no
+/// role.
+fn migrate_v5_to_v6(conn: &Connection) -> SqlResult<()> {
+    conn.execute_batch(
+        "ALTER TABLE library_entries ADD COLUMN role TEXT;
+         ALTER TABLE library_entries ADD COLUMN role_source TEXT;
+         ALTER TABLE library_entries ADD COLUMN role_score REAL;",
+    )
+}
+
 /// Ordered migrations: entry `(n, f)` upgrades version n → n+1.
 const MIGRATIONS: &[(i64, Migration)] = &[
     (3, migrate_v3_to_v4),
+    (4, migrate_v4_to_v5),
+    (5, migrate_v5_to_v6),
 ];
 
 fn read_schema_version(conn: &Connection) -> i64 {
@@ -168,7 +212,10 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
             loop_start   REAL,
             loop_end     REAL,
             created_at   TEXT NOT NULL,
-            entry_type   TEXT NOT NULL DEFAULT 'music'
+            entry_type   TEXT NOT NULL DEFAULT 'music',
+            role         TEXT,
+            role_source  TEXT,
+            role_score   REAL
         );
 
         CREATE TABLE IF NOT EXISTS tags (
@@ -179,6 +226,8 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
         CREATE TABLE IF NOT EXISTS library_entry_tags (
             library_entry_id TEXT NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,
             tag_id           TEXT NOT NULL REFERENCES tags(id)            ON DELETE CASCADE,
+            source           TEXT NOT NULL DEFAULT 'user',
+            score            REAL,
             PRIMARY KEY (library_entry_id, tag_id)
         );
 
@@ -226,6 +275,7 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
             sort_order       INTEGER NOT NULL
         );
     ")?;
+    conn.execute_batch(AUTOTAG_TABLES_DDL)?;
     conn.execute_batch(INDEX_DDL)
 }
 
@@ -337,12 +387,14 @@ pub fn load_full_state(conn: &Connection) -> Result<AppState, String> {
     })
 }
 
-/// Queries all library_entries ordered by name and fills in tags for each.
+/// Queries all library_entries ordered by name and fills in tags, auto tags
+/// and analysis state for each.
 fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, file_path, content_hash, name, duration, sample_rate, file_size,
-                    volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type
+                    volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type,
+                    role, role_source, role_score
              FROM library_entries
              ORDER BY name ASC",
         )
@@ -365,6 +417,9 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
                 row.get::<_, Option<f64>>(11)?,     // loop_end
                 row.get::<_, String>(12)?,          // created_at
                 row.get::<_, String>(13)?,          // entry_type
+                row.get::<_, Option<String>>(14)?,  // role
+                row.get::<_, Option<String>>(15)?,  // role_source
+                row.get::<_, Option<f64>>(16)?,     // role_score
             ))
         })
         .map_err(|e| format!("Failed to query library_entries: {e}"))?
@@ -391,11 +446,68 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
         }
     }
 
+    // Auto-applied tags with their scores, same shape as the tag map above.
+    let mut auto_map: HashMap<String, Vec<AutoTag>> = HashMap::new();
+    {
+        let mut astmt = conn
+            .prepare(
+                "SELECT let.library_entry_id, t.name, let.score
+                 FROM library_entry_tags let
+                 JOIN tags t ON t.id = let.tag_id
+                 WHERE let.source = 'auto'
+                 ORDER BY t.name ASC",
+            )
+            .map_err(|e| format!("Failed to prepare auto tag query: {e}"))?;
+        let auto_rows = astmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<f64>>(2)?,
+                ))
+            })
+            .map_err(|e| format!("Failed to query auto tags: {e}"))?;
+        for row in auto_rows {
+            let (entry_id, tag, score) = row.map_err(|e| format!("Failed to read auto tag row: {e}"))?;
+            auto_map
+                .entry(entry_id)
+                .or_default()
+                .push(AutoTag { tag, score: score.unwrap_or(0.0) });
+        }
+    }
+
+    // Analysis state per entry.
+    let mut analysis_map: HashMap<String, EntryAnalysis> = HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT library_entry_id, status, analyzed_at, error FROM entry_analysis")
+            .map_err(|e| format!("Failed to prepare analysis query: {e}"))?;
+        let analysis_rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    EntryAnalysis {
+                        status: AnalysisStatus::from_str(&row.get::<_, String>(1)?),
+                        scored_at: row.get(2)?,
+                        error: row.get(3)?,
+                    },
+                ))
+            })
+            .map_err(|e| format!("Failed to query analysis: {e}"))?;
+        for row in analysis_rows {
+            let (entry_id, analysis) = row.map_err(|e| format!("Failed to read analysis row: {e}"))?;
+            analysis_map.insert(entry_id, analysis);
+        }
+    }
+
     let mut entries = Vec::with_capacity(rows.len());
     for (id, file_path, content_hash, name, duration, sample_rate, file_size,
-         volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type) in rows
+         volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type,
+         role, role_source, role_score) in rows
     {
         let tags = tag_map.remove(&id).unwrap_or_default();
+        let auto_tags = auto_map.remove(&id).unwrap_or_default();
+        let analysis = analysis_map.remove(&id);
         entries.push(LibraryEntry {
             id,
             file_path,
@@ -412,6 +524,11 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
             created_at,
             tags,
             entry_type: EntryType::from_str(&entry_type),
+            auto_tags,
+            analysis,
+            role: role.as_deref().and_then(Role::from_db_str),
+            role_source: role_source.as_deref().map(TagSource::from_str),
+            role_score,
         });
     }
 
@@ -820,11 +937,11 @@ mod tests {
     ];
 
     #[test]
-    fn fresh_database_has_indexes_and_v4_stamp() {
+    fn fresh_database_has_indexes_and_current_stamp() {
         let dir = tempfile::tempdir().unwrap();
         let conn = open_db(&dir.path().join("fresh.db")).unwrap();
         assert_eq!(index_names(&conn), EXPECTED_INDEXES);
-        assert_eq!(read_schema_version(&conn), 4);
+        assert_eq!(read_schema_version(&conn), 6);
     }
 
     #[test]
@@ -835,10 +952,27 @@ mod tests {
         for name in EXPECTED_INDEXES {
             conn.execute_batch(&format!("DROP INDEX IF EXISTS {name}")).unwrap();
         }
+        // init_schema now builds the v5 tag table, auto-tagging tables and v6
+        // role columns; put them back in their v3 shape so the v4→v5 and
+        // v5→v6 steps have work to do.
+        conn.execute_batch(
+            "ALTER TABLE library_entries DROP COLUMN role;
+             ALTER TABLE library_entries DROP COLUMN role_source;
+             ALTER TABLE library_entries DROP COLUMN role_score;
+             DROP TABLE tag_rejections;
+             DROP TABLE entry_analysis;
+             DROP TABLE library_entry_tags;
+             CREATE TABLE library_entry_tags (
+                 library_entry_id TEXT NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,
+                 tag_id           TEXT NOT NULL REFERENCES tags(id)            ON DELETE CASCADE,
+                 PRIMARY KEY (library_entry_id, tag_id)
+             );",
+        )
+        .unwrap();
         conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '3')", []).unwrap();
         run_migrations(&conn).unwrap();
         assert_eq!(index_names(&conn), EXPECTED_INDEXES);
-        assert_eq!(read_schema_version(&conn), 4);
+        assert_eq!(read_schema_version(&conn), 6);
     }
 
     #[test]
@@ -890,7 +1024,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("schema_version row should exist");
-        assert_eq!(version, "4");
+        assert_eq!(version, "6");
     }
 
     #[test]
@@ -1123,6 +1257,159 @@ mod tests {
 
         assert!(load_track_by_id(&conn, "nope").unwrap_err().contains("Track not found"));
         assert!(load_tracks_for_comp(&conn, "nope").unwrap_err().contains("Comp not found"));
+    }
+
+    fn table_exists(conn: &Connection, name: &str) -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+            [name],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+            == 1
+    }
+
+    #[test]
+    fn v4_database_migrates_tags_to_user_source() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        // The v4 shape of the tables the migration touches.
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE library_entries (
+                 id TEXT PRIMARY KEY, file_path TEXT NOT NULL UNIQUE, content_hash TEXT,
+                 name TEXT NOT NULL, duration REAL, sample_rate INTEGER, file_size INTEGER,
+                 volume REAL NOT NULL DEFAULT 1.0, trim_start REAL, trim_end REAL,
+                 loop_start REAL, loop_end REAL, created_at TEXT NOT NULL,
+                 entry_type TEXT NOT NULL DEFAULT 'music');
+             CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE);
+             CREATE TABLE library_entry_tags (
+                 library_entry_id TEXT NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,
+                 tag_id           TEXT NOT NULL REFERENCES tags(id)            ON DELETE CASCADE,
+                 PRIMARY KEY (library_entry_id, tag_id));
+             INSERT INTO meta (key, value) VALUES ('schema_version', '4');
+             INSERT INTO library_entries (id, file_path, name, created_at) VALUES ('e1', '/a.mp3', 'A', '0');
+             INSERT INTO tags (id, name) VALUES ('t1', 'folk'), ('t2', 'brass');
+             INSERT INTO library_entry_tags (library_entry_id, tag_id) VALUES ('e1', 't1'), ('e1', 't2');",
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        assert_eq!(read_schema_version(&conn), 6);
+        let rows: Vec<(String, Option<f64>)> = conn
+            .prepare("SELECT source, score FROM library_entry_tags")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows, vec![("user".to_string(), None), ("user".to_string(), None)]);
+        assert!(table_exists(&conn, "tag_rejections"));
+        assert!(table_exists(&conn, "entry_analysis"));
+    }
+
+    #[test]
+    fn fresh_database_has_autotag_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_db(&dir.path().join("fresh.db")).unwrap();
+        assert_eq!(read_schema_version(&conn), 6);
+        assert!(table_exists(&conn, "tag_rejections"));
+        assert!(table_exists(&conn, "entry_analysis"));
+        // The tag provenance columns exist on a fresh database too.
+        conn.prepare("SELECT source, score FROM library_entry_tags").unwrap();
+    }
+
+    #[test]
+    fn library_entry_exposes_auto_tags_and_analysis() {
+        use crate::models::{AnalysisStatus, AutoTag};
+
+        let conn = open_memory_db();
+        let with_data = library::insert_library_entry(&conn, "/a.mp3", None, "A", None, None, None, "music").unwrap();
+        let untouched = library::insert_library_entry(&conn, "/b.mp3", None, "B", None, None, None, "music").unwrap();
+        library::add_tag_to_entry(&conn, &with_data, "folk").unwrap();
+        library::add_tag_to_entry(&conn, &with_data, "brass").unwrap();
+        conn.execute(
+            "UPDATE library_entry_tags SET source = 'auto', score = 0.82
+             WHERE tag_id = (SELECT id FROM tags WHERE name = 'brass')",
+            [],
+        )
+        .unwrap();
+        autotag_db::set_analysis(&conn, &with_data, Some("h1"), AnalysisStatus::Failed, Some("bad file")).unwrap();
+
+        let entries = load_library_entries(&conn).unwrap();
+        let a = entries.iter().find(|e| e.id == with_data).unwrap();
+        assert_eq!(a.tags, vec!["brass", "folk"]);
+        assert_eq!(a.auto_tags, vec![AutoTag { tag: "brass".into(), score: 0.82 }]);
+        let analysis = a.analysis.as_ref().unwrap();
+        assert_eq!(analysis.status, AnalysisStatus::Failed);
+        assert_eq!(analysis.error.as_deref(), Some("bad file"));
+
+        let b = entries.iter().find(|e| e.id == untouched).unwrap();
+        assert!(b.auto_tags.is_empty());
+        assert!(b.analysis.is_none());
+    }
+
+    #[test]
+    fn v5_database_migrates_to_v6_with_null_roles() {
+        let conn = Connection::open_in_memory().unwrap();
+        // The v5 shape of library_entries: no role columns.
+        conn.execute_batch(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             CREATE TABLE library_entries (
+                 id TEXT PRIMARY KEY, file_path TEXT NOT NULL UNIQUE, content_hash TEXT,
+                 name TEXT NOT NULL, duration REAL, sample_rate INTEGER, file_size INTEGER,
+                 volume REAL NOT NULL DEFAULT 1.0, trim_start REAL, trim_end REAL,
+                 loop_start REAL, loop_end REAL, created_at TEXT NOT NULL,
+                 entry_type TEXT NOT NULL DEFAULT 'music');
+             INSERT INTO meta (key, value) VALUES ('schema_version', '5');
+             INSERT INTO library_entries (id, file_path, name, created_at) VALUES ('e1', '/a.mp3', 'A', '0');",
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        assert_eq!(read_schema_version(&conn), 6);
+        let row: (Option<String>, Option<String>, Option<f64>) = conn
+            .query_row(
+                "SELECT role, role_source, role_score FROM library_entries WHERE id = 'e1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (None, None, None));
+    }
+
+    #[test]
+    fn fresh_database_is_v6() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open_db(&dir.path().join("fresh.db")).unwrap();
+        assert_eq!(read_schema_version(&conn), 6);
+        conn.prepare("SELECT role, role_source, role_score FROM library_entries").unwrap();
+    }
+
+    #[test]
+    fn library_entry_exposes_role_fields() {
+        use crate::models::{Role, TagSource};
+
+        let conn = open_memory_db();
+        let set = library::insert_library_entry(&conn, "/a.mp3", None, "A", None, None, None, "music").unwrap();
+        let cleared = library::insert_library_entry(&conn, "/b.mp3", None, "B", None, None, None, "music").unwrap();
+        let unset = library::insert_library_entry(&conn, "/c.mp3", None, "C", None, None, None, "music").unwrap();
+        library::apply_auto_role(&conn, &set, Some(Role::Combat), 0.9).unwrap();
+        library::set_user_role(&conn, &[cleared.clone()], None).unwrap();
+
+        let entries = load_library_entries(&conn).unwrap();
+        let a = entries.iter().find(|e| e.id == set).unwrap();
+        assert_eq!(a.role, Some(Role::Combat));
+        assert_eq!(a.role_source, Some(TagSource::Auto));
+        assert_eq!(a.role_score, Some(0.9));
+
+        let b = entries.iter().find(|e| e.id == cleared).unwrap();
+        assert_eq!((b.role, b.role_source, b.role_score), (None, Some(TagSource::User), None));
+
+        let c = entries.iter().find(|e| e.id == unset).unwrap();
+        assert_eq!((c.role, c.role_source, c.role_score), (None, None, None));
     }
 
 }

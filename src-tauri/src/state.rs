@@ -28,6 +28,8 @@ pub struct AppStateContainer {
     /// Set by any action that changes persisted app state or the missing-entries snapshot; the broadcast tick
     /// consumes it to decide when remotes need a fresh structural snapshot.
     pub state_dirty: AtomicBool,
+    /// Sends work to the auto-tag worker thread and holds its last report.
+    pub autotag: crate::autotag::Handle,
     app_handle: Mutex<Option<tauri::AppHandle>>,
 }
 
@@ -44,6 +46,7 @@ impl AppStateContainer {
             missing_entry_ids: Mutex::new(HashSet::new()),
             import_in_progress: AtomicBool::new(false),
             state_dirty: AtomicBool::new(false),
+            autotag: crate::autotag::Handle::new(),
             app_handle: Mutex::new(None),
         }
     }

@@ -39,7 +39,8 @@ function registerListener(): void {
 
   // Clear the "currently previewing" entry id whenever the single library
   // preview voice stops (was duplicated as a per-component watch in three
-  // library components).
+  // library components). A paused preview keeps its id so the transport
+  // scrubber (and the editor playhead) still know which entry it is.
   //
   // Detached scope: registerListener() runs inside the first useAudio()
   // caller's setup, so a bare watch() would be bound to that component's
@@ -48,9 +49,12 @@ function registerListener(): void {
   // the watcher from any component so it lives for the app's lifetime.
   effectScope(true).run(() => {
     watch(
-      () => store.playbackStates.get(LIBRARY_PLAYBACK_ID)?.isPlaying ?? false,
-      (isPlaying) => {
-        if (!isPlaying) store.libraryPlayingEntryId = null;
+      () => {
+        const s = store.playbackStates.get(LIBRARY_PLAYBACK_ID);
+        return !!s && (s.isPlaying || s.isPaused);
+      },
+      (active) => {
+        if (!active) store.libraryPlayingEntryId = null;
       },
     );
   });
@@ -68,9 +72,13 @@ export function useAudio() {
     }
   }
 
-  async function playTrackFrom(trackId: string, position: number): Promise<void> {
+  // `clipId` keeps the seek in that clip; omitted, the track's first clip plays.
+  // `paused` seeks a paused track and leaves it paused (one backend call).
+  async function playTrackFrom(
+    trackId: string, position: number, clipId?: string, paused = false,
+  ): Promise<void> {
     try {
-      await invoke('play_track_from', { trackId, position });
+      await invoke('play_track_from', { trackId, clipId: clipId ?? null, position, paused });
     } catch (e) {
       toast.showError(String(e));
     }
@@ -197,6 +205,8 @@ export function useAudio() {
     trimEnd?: number | null,
     loopStart?: number | null,
     loopEnd?: number | null,
+    // Seek a paused preview and leave it paused (one backend call).
+    paused = false,
   ): Promise<void> {
     try {
       await invoke('play_library_sound', {
@@ -206,6 +216,7 @@ export function useAudio() {
         trimEnd: trimEnd ?? null,
         loopStart: loopStart ?? null,
         loopEnd: loopEnd ?? null,
+        paused,
       });
       const appStore = useAppStore();
       appStore.libraryPlayingEntryId = entryId;

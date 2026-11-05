@@ -1,0 +1,57 @@
+# LuteDrop tagger
+
+An analyzer service that embeds audio with MuQ-MuLan and scores tracks against
+tag examples sent by LuteDrop. It keeps no tag state: every `/score` request
+carries the current positive and negative examples, and the only thing stored
+is the per-track embedding cache.
+
+## Deploy
+
+Needs Docker with the NVIDIA container toolkit.
+
+```
+cp .env.example .env     # set LUTEDROP_TAGGER_TOKEN
+docker compose up -d --build
+curl -H "X-LuteDrop-Token: <token>" http://localhost:8765/health
+```
+
+The service starts loading the model as soon as it starts. On first start the
+weights download into `./hf`, which can take several minutes; `/health`
+reports `ready: false` until loading finishes, and `/embed` answers 503 in the
+meantime. If loading fails, `/health` carries the reason in `error`. Embeddings
+are cached as
+`<content hash>.npy` files in `./cache`. The audio library is mounted read-only
+at `/media/audio`; `path` values in `/embed` are paths inside the container.
+
+## API
+
+Every request needs the `X-LuteDrop-Token` header. A server with an empty
+token rejects all requests.
+
+| Endpoint | Request | Response |
+|---|---|---|
+| `GET /health` | none | `{model, cache_count, ready, error}`; `error` is null unless the model failed to load |
+| `POST /embed` | `{items: [{hash, path}]}`, at most 32 items | `{results: [{hash, ok, error?}]}`; cached hashes return immediately; 503 while the model is loading or if it failed to load |
+| `POST /score` | `{gate: {positives, negatives}, tags: {name: {positives, negatives}}, targets}`; an optional `scene` field is accepted and ignored | `{model, gate, tags}`, each head with `quality {auc, pos, neg}`, `trusted`, `threshold` and `scores` keyed by hash |
+| `POST /similar` | `{query: [hash], candidates: [hash], limit}` | `{results: [{hash, score}]}`; cosine similarity to the normalized centroid of the query vectors, query hashes excluded, best first |
+| `POST /search` | `{text, candidates: [hash], limit}` | `{results: [{hash, score}]}`; cosine similarity of the text embedding with each candidate's mean audio embedding; 503 while the model is loading |
+| `POST /map` | `{hashes: [hash]}` | `{points: [{hash, x, y}]}`; 2D layout normalized to [0, 1] (t-SNE with cosine metric, PCA below 5 items), cached in memory by the sorted hash set |
+
+`limit` defaults to 50 and is capped at 500. The `/score` gate also returns
+`neg_threshold`, the leave-one-out precision threshold applied to `1 - score`
+with the classes swapped. It is null when no cutoff reaches the target
+precision, including when a class has fewer than two examples, so consumers
+check `trusted` before using it.
+
+Hashes with no cached embedding are ignored as examples and receive no score
+as targets.
+
+## Development
+
+```
+python -m venv .venv
+.venv/Scripts/pip install -r requirements-dev.txt   # Scripts -> bin on Linux/macOS
+python -m pytest -q
+```
+
+Tests use a fake embedder, so torch and muq are not needed.

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { LibraryEntry } from '@generated/index';
+import type { AutoTag, LibraryEntry } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
+import TagChip from './TagChip.vue';
 import { useAudio } from '../composables/useAudio';
 import { formatDuration } from '../shared/format';
 import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
@@ -41,7 +42,12 @@ async function removeTag(tag: string): Promise<void> {
   await store.command('update_library_entry_tags', {
     entryId: props.entry.id,
     tags: newTags,
+    seenAutoTags: props.entry.autoTags.map((a) => a.tag),
   });
+}
+
+function autoFor(tag: string): AutoTag | null {
+  return props.entry.autoTags.find((a) => a.tag === tag) ?? null;
 }
 
 function handleClick(): void {
@@ -74,21 +80,23 @@ function openEditor(): void {
       <VIcon v-else class="mr-2">mdi-music-note</VIcon>
     </template>
 
-    <VListItemTitle class="font-weight-medium">{{ entry.name }}</VListItemTitle>
+    <VListItemTitle class="font-weight-medium">
+      <span class="entry-name" title="Open details" @click.stop="openEditor">{{ entry.name }}</span>
+    </VListItemTitle>
 
     <VListItemSubtitle>
       <span class="mr-3">{{ formatDuration(entry.duration) }}</span>
-      <VChip
+      <TagChip
         v-for="tag in entry.tags"
         :key="tag"
-        size="small"
+        :tag="tag"
+        :auto="autoFor(tag)"
+        :entry-id="entry.id"
         class="mr-1"
         closable
-        @click:close.stop="removeTag(tag)"
+        @remove="removeTag(tag)"
         @click.stop
-      >
-        {{ tag }}
-      </VChip>
+      />
     </VListItemSubtitle>
 
     <template #append>
@@ -113,6 +121,12 @@ function openEditor(): void {
 .preview-active {
   background: rgba(240, 168, 48, 0.08) !important;
   border-left: 3px solid #F0A830;
+}
+.entry-name {
+  cursor: pointer;
+}
+.entry-name:hover {
+  text-decoration: underline;
 }
 .entry-selected {
   outline: 2px solid rgb(var(--v-theme-primary));

@@ -2,7 +2,10 @@ use serde::Serialize;
 use tauri::State;
 use std::sync::Arc;
 use crate::actions;
-use crate::models::{AppState, BroadcastStatus, LibraryEntryUsage, TrackUpdates};
+use crate::models::{
+    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, Role,
+    SceneConfig, TrackUpdates, VibeHit, VibePoint,
+};
 use crate::state::AppStateContainer;
 use crate::waveform;
 
@@ -110,9 +113,19 @@ pub fn play_track(state: State<'_, Arc<AppStateContainer>>, track_id: String) ->
     actions::play_track_audio(&state, &track_id)
 }
 
+/// `clip_id` is optional: when the frontend omits it, the track's first clip
+/// is picked (waveform click-to-play); the transport scrubber passes the
+/// playing clip so a seek stays in that clip. `paused` (optional, default
+/// false) seeks a paused track and leaves it paused.
 #[tauri::command]
-pub fn play_track_from(state: State<'_, Arc<AppStateContainer>>, track_id: String, position: f64) -> Result<(), String> {
-    actions::play_track_from_position(&state, &track_id, position)
+pub fn play_track_from(
+    state: State<'_, Arc<AppStateContainer>>,
+    track_id: String,
+    clip_id: Option<String>,
+    position: f64,
+    paused: Option<bool>,
+) -> Result<(), String> {
+    actions::play_track_from_position(&state, &track_id, clip_id.as_deref(), position, paused.unwrap_or(false))
 }
 
 #[tauri::command]
@@ -252,8 +265,9 @@ pub fn update_library_entry_tags(
     state: State<'_, Arc<AppStateContainer>>,
     entry_id: String,
     tags: Vec<String>,
+    seen_auto_tags: Option<Vec<String>>,
 ) -> Result<AppState, String> {
-    actions::update_library_entry_tags(&state, &entry_id, tags)
+    actions::update_library_entry_tags(&state, &entry_id, tags, seen_auto_tags)
 }
 
 #[tauri::command]
@@ -264,6 +278,41 @@ pub fn bulk_edit_library_entry_tags(
     remove: Vec<String>,
 ) -> Result<AppState, String> {
     actions::bulk_edit_library_entry_tags(&state, entry_ids, add, remove)
+}
+
+#[tauri::command]
+pub fn keep_auto_tags(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_ids: Vec<String>,
+    tags: Option<Vec<String>>,
+) -> Result<AppState, String> {
+    actions::keep_auto_tags(&state, entry_ids, tags)
+}
+
+#[tauri::command]
+pub fn set_entry_role(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_ids: Vec<String>,
+    role: Option<Role>,
+) -> Result<AppState, String> {
+    actions::set_entry_role(&state, entry_ids, role)
+}
+
+#[tauri::command]
+pub fn keep_auto_role(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_ids: Vec<String>,
+) -> Result<AppState, String> {
+    actions::keep_auto_role(&state, entry_ids)
+}
+
+#[tauri::command]
+pub fn reject_auto_tags(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_ids: Vec<String>,
+    tags: Option<Vec<String>>,
+) -> Result<AppState, String> {
+    actions::reject_auto_tags(&state, entry_ids, tags)
 }
 
 #[tauri::command]
@@ -375,8 +424,14 @@ pub fn play_library_sound(
     trim_end: Option<f64>,
     loop_start: Option<f64>,
     loop_end: Option<f64>,
+    // Optional (default false): seek a paused preview and leave it paused.
+    paused: Option<bool>,
 ) -> Result<(), String> {
-    actions::play_library_sound(&state, &entry_id, &file_path, position, volume, trim_start, trim_end, loop_start, loop_end)
+    actions::play_library_sound(
+        &state, &entry_id, &file_path, position, volume,
+        trim_start, trim_end, loop_start, loop_end,
+        paused.unwrap_or(false),
+    )
 }
 
 #[tauri::command]
@@ -433,4 +488,91 @@ pub fn set_broadcast_settings(
 #[tauri::command]
 pub fn regenerate_broadcast_key(state: State<'_, Arc<AppStateContainer>>) -> Result<BroadcastStatus, String> {
     actions::regenerate_broadcast_key(&state)
+}
+
+// --- Auto-tagging commands ---
+
+#[tauri::command]
+pub fn get_autotag_settings(state: State<'_, Arc<AppStateContainer>>) -> Result<AutoTagSettings, String> {
+    actions::get_autotag_settings(&state)
+}
+
+#[tauri::command]
+pub fn save_autotag_settings(
+    state: State<'_, Arc<AppStateContainer>>,
+    settings: AutoTagSettings,
+) -> Result<(), String> {
+    actions::save_autotag_settings(&state, settings)
+}
+
+#[tauri::command]
+pub fn get_scene_config(state: State<'_, Arc<AppStateContainer>>) -> Result<SceneConfig, String> {
+    actions::get_scene_config(&state)
+}
+
+#[tauri::command]
+pub fn save_scene_config(state: State<'_, Arc<AppStateContainer>>, config: SceneConfig) -> Result<(), String> {
+    actions::save_scene_config(&state, config)
+}
+
+/// Async on purpose: the request can take seconds when the analyzer host is
+/// slow or down, and a plain command would freeze the window meanwhile.
+#[tauri::command]
+pub async fn test_autotag_connection(settings: AutoTagSettings) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || actions::test_autotag_connection(&settings))
+        .await
+        .map_err(|e| format!("Connection test failed: {e}"))?
+}
+
+#[tauri::command]
+pub fn analyze_library(state: State<'_, Arc<AppStateContainer>>) -> Result<(), String> {
+    actions::analyze_library(&state)
+}
+
+#[tauri::command]
+pub fn get_autotag_report(state: State<'_, Arc<AppStateContainer>>) -> AutoTagReport {
+    actions::get_autotag_report(&state)
+}
+
+/// The three Vibe commands are async for the same reason as
+/// `test_autotag_connection`: each waits on the analyzer. The database lock
+/// is taken only inside, to read entries.
+#[tauri::command]
+pub async fn similar_entries(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_ids: Vec<String>,
+    limit: u32,
+) -> Result<Vec<VibeHit>, String> {
+    let container = state.inner().clone();
+    tokio::task::spawn_blocking(move || actions::similar_entries(&container, &entry_ids, limit))
+        .await
+        .map_err(|e| format!("Similar search failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn search_vibe(
+    state: State<'_, Arc<AppStateContainer>>,
+    text: String,
+    limit: u32,
+) -> Result<Vec<VibeHit>, String> {
+    let container = state.inner().clone();
+    tokio::task::spawn_blocking(move || actions::search_vibe(&container, &text, limit))
+        .await
+        .map_err(|e| format!("Scry search failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn vibe_map(state: State<'_, Arc<AppStateContainer>>) -> Result<Vec<VibePoint>, String> {
+    let container = state.inner().clone();
+    tokio::task::spawn_blocking(move || actions::vibe_map(&container))
+        .await
+        .map_err(|e| format!("Scry map failed: {e}"))?
+}
+
+#[tauri::command]
+pub fn get_entry_tag_scores(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_id: String,
+) -> Result<Option<EntryTagScores>, String> {
+    actions::get_entry_tag_scores(&state, &entry_id)
 }

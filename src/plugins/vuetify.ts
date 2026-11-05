@@ -4,6 +4,14 @@ import { createVuetify } from 'vuetify';
 
 export const vuetify = createVuetify({
   defaults: {
+    // Desktop app: the browser's "Saved info" autofill list (previously typed titles,
+    // search terms) is not meaningful here, so every text-like input opts out. The
+    // Rust side also disables WebView2 general autofill; this is the per-input fallback.
+    VTextField: { autocomplete: 'off' },
+    VTextarea: { autocomplete: 'off' },
+    VCombobox: { autocomplete: 'off' },
+    VAutocomplete: { autocomplete: 'off' },
+    VNumberInput: { autocomplete: 'off' },
     VSlider: { color: 'primary', trackColor: 'surface-light' },
   },
   theme: {

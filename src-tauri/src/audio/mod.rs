@@ -170,9 +170,11 @@ impl AudioEngine {
         orchestrator::play_track_clip(&mut self.tracks, &self.engine, track_id, clip_id, &self.mute_state)
     }
 
-    pub fn play_track_from(&mut self, track_id: &str, position: f64) -> Result<(), String> {
+    /// Start (or seek) a track at `position`. `paused = true` leaves it paused
+    /// there — see `orchestrator::play_track_from`.
+    pub fn play_track_from(&mut self, track_id: &str, clip_id: Option<&str>, position: f64, paused: bool) -> Result<(), String> {
         self.invalidate_preload(track_id);
-        orchestrator::play_track_from(&mut self.tracks, &self.engine, track_id, position, &self.mute_state)
+        orchestrator::play_track_from(&mut self.tracks, &self.engine, track_id, clip_id, position, paused, &self.mute_state)
     }
 
     pub fn pause_track(&mut self, track_id: &str) -> Result<(), String> {
@@ -293,17 +295,24 @@ impl AudioEngine {
 
     // --- Library playback ---
 
-    pub fn play_library_sound(&mut self, params: PlayParams) -> Result<(), String> {
-        // A SEEK is `stop_library_sound` + `play_library_sound`; the de-click stop
-        // (below) keeps the outgoing sound mixing through its fade so the
-        // replacement doesn't click.
+    /// Play the library preview. A SEEK is just another call with the new
+    /// position; `paused = true` (seeking a paused preview) leaves the new
+    /// sound paused at that position. Start and pause happen together under
+    /// the caller's one audio lock, so nothing audible plays in between.
+    pub fn play_library_sound(&mut self, params: PlayParams, paused: bool) -> Result<(), String> {
+        // Retire the old sound first; the de-click stop keeps it mixing
+        // through its fade so the replacement doesn't click.
         self.stop_library_sound();
         // Scheduled de-clicked stop at trim_end — replaces the old late
         // poll-check hard cut. The library preview never crossfades and
         // `poll_loop(stop_at_end=StopAtEnd::Yes)` still detects the resulting
         // Stopped state to finish. For a looping preview `play_with_trim_stop`
         // no-ops the schedule (loop_region is Some).
-        self.library.play_with_trim_stop(&self.engine, params)
+        self.library.play_with_trim_stop(&self.engine, params)?;
+        if paused {
+            self.library.pause();
+        }
+        Ok(())
     }
 
     pub fn stop_library_sound(&mut self) {
@@ -331,6 +340,7 @@ impl AudioEngine {
                 is_paused: matches!(st, PlaybackState::Paused),
                 current_clip_id: None,
                 current_time: self.library.position(),
+                has_sound: true,
             });
         }
 
@@ -390,6 +400,7 @@ impl AudioEngine {
                 is_paused: matches!(st, PlaybackState::Paused),
                 current_clip_id: None,
                 current_time: self.library.position(),
+                has_sound: true,
             }
         } else {
             TrackPlaybackState {
@@ -398,6 +409,7 @@ impl AudioEngine {
                 is_paused: false,
                 current_clip_id: None,
                 current_time: 0.0,
+                has_sound: false,
             }
         };
         states.push(lib_state);
@@ -621,7 +633,7 @@ mod tests {
                 loop_region: None,
                 fade_in: None,
                 fade_out: None,
-            })
+            }, false)
             .expect("play preview");
         std::thread::sleep(Duration::from_millis(300));
         let captured = drain_tap(&audio);
@@ -689,7 +701,7 @@ mod tests {
                 loop_region: None,
                 fade_in: None,
                 fade_out: None,
-            })
+            }, false)
             .expect("play preview");
         std::thread::sleep(Duration::from_millis(200));
         audio.pause_all();
@@ -741,5 +753,171 @@ mod tests {
             voice.position()
         );
         audio.stop_all();
+    }
+
+    /// The scrubber's seek while paused (`paused = true`) starts the clip and
+    /// pauses it in one call. Resuming afterwards must still stop at trim_end,
+    /// for a track clip and for the library preview.
+    #[test]
+    fn seek_while_paused_then_resume_keeps_trim_end_stop() {
+        let mut audio = AudioEngine::new().expect("engine");
+        let track = Track {
+            id: "t1".into(),
+            name: "Track".into(),
+            clips: vec![Clip {
+                id: "c1".into(),
+                name: "Clip".into(),
+                file_path: fixture(),
+                volume: 1.0,
+                library_entry_id: "e1".into(),
+                library_volume: 1.0,
+                trim_start: Some(TRIM_START),
+                trim_end: Some(TRIM_END),
+            }],
+            volume: 1.0,
+            mode: TrackMode::Sequence { repeat: false, transition: TrackTransition::Gapless },
+            fade_in: 0.0,
+            fade_out: 0.0,
+        };
+        audio.setup_track(&track).expect("setup track");
+        audio.play_track("t1").expect("play track");
+        audio.pause_track("t1").expect("pause");
+        // Seek to 0.4 s before trim_end, staying paused.
+        audio.play_track_from("t1", Some("c1"), TRIM_END - 0.4, true).expect("paused seek");
+        std::thread::sleep(Duration::from_millis(300));
+        audio.resume_track("t1").expect("resume");
+        std::thread::sleep(Duration::from_millis(1200));
+        let voice = &audio.tracks["t1"].voice;
+        assert!(
+            matches!(voice.state(), super::PlaybackState::Stopped),
+            "track clip played past trim_end after paused seek + resume (position {:.2} s)",
+            voice.position()
+        );
+        audio.stop_all();
+
+        let params = super::sound::PlayParams {
+            file_path: fixture(),
+            start_position: TRIM_END - 0.4,
+            volume: 1.0,
+            trim_start: Some(TRIM_START),
+            trim_end: Some(TRIM_END),
+            loop_region: None,
+            fade_in: None,
+            fade_out: None,
+        };
+        audio.play_library_sound(params, true).expect("paused preview seek");
+        std::thread::sleep(Duration::from_millis(300));
+        audio.resume_all();
+        std::thread::sleep(Duration::from_millis(1200));
+        assert!(
+            matches!(audio.library.state(), super::PlaybackState::Stopped),
+            "preview played past trim_end after paused seek + resume (position {:.2} s)",
+            audio.library.position()
+        );
+        audio.stop_library_sound();
+    }
+
+    /// A clip pointing at `file_path` (the test fixture, or a bad path).
+    fn clip(id: &str, file_path: String) -> Clip {
+        Clip {
+            id: id.into(),
+            name: id.into(),
+            file_path,
+            volume: 1.0,
+            library_entry_id: format!("e-{id}"),
+            library_volume: 1.0,
+            trim_start: None,
+            trim_end: None,
+        }
+    }
+
+    /// A Sequence track "t1" with clips c1, c2 (the fixture) and c3 (a file
+    /// that does not exist, so starting it fails).
+    fn three_clip_track() -> Track {
+        Track {
+            id: "t1".into(),
+            name: "Track".into(),
+            clips: vec![
+                clip("c1", fixture()),
+                clip("c2", fixture()),
+                clip("c3", "Z:/definitely/missing.opus".into()),
+            ],
+            volume: 1.0,
+            mode: TrackMode::Sequence { repeat: false, transition: TrackTransition::Gapless },
+            fade_in: 0.0,
+            fade_out: 0.0,
+        }
+    }
+
+    /// The scrubber's seek (`play_track_from` with a clip id) plays the given
+    /// clip without counting a new play; a failed start or unknown clip leaves
+    /// the count alone; without a clip id it is a fresh play from the first clip.
+    #[test]
+    fn play_track_from_clip_id_seeks_without_counting_a_play() {
+        let mut audio = AudioEngine::new().expect("engine");
+        audio.setup_track(&three_clip_track()).expect("setup track");
+        audio.play_track("t1").expect("play track");
+        let played = |a: &AudioEngine| a.tracks["t1"].clips_played;
+        let current = |a: &AudioEngine| a.tracks["t1"].current_clip_index;
+        assert_eq!(played(&audio), 1);
+        assert_eq!(current(&audio), Some(0));
+
+        // Seek within the playing clip: same clip, count unchanged.
+        audio.play_track_from("t1", Some("c1"), 5.0, false).expect("seek c1");
+        assert_eq!(current(&audio), Some(0));
+        assert_eq!(played(&audio), 1);
+
+        // The given clip's index is used, not the first clip.
+        audio.play_track_from("t1", Some("c2"), 5.0, false).expect("seek c2");
+        assert_eq!(current(&audio), Some(1));
+        assert_eq!(played(&audio), 1);
+
+        // Unknown clip: error, nothing changed.
+        assert!(audio.play_track_from("t1", Some("nope"), 1.0, false).is_err());
+        assert_eq!(played(&audio), 1);
+
+        // Known clip whose file fails to open: error, count restored.
+        assert!(audio.play_track_from("t1", Some("c3"), 1.0, false).is_err());
+        assert_eq!(played(&audio), 1);
+
+        // No clip id: a fresh play — count reset (then this play counted),
+        // first clip of a Sequence.
+        audio.tracks.get_mut("t1").unwrap().clips_played = 5;
+        audio.play_track_from("t1", None, 2.0, false).expect("play from");
+        assert_eq!(played(&audio), 1);
+        assert_eq!(current(&audio), Some(0));
+        audio.stop_all();
+    }
+
+    /// Seeking a paused track or preview with `paused = true` leaves it
+    /// paused at the new position (one call, no play-then-pause round trip).
+    #[test]
+    fn seek_with_paused_flag_stays_paused() {
+        let mut audio = AudioEngine::new().expect("engine");
+        audio.setup_track(&three_clip_track()).expect("setup track");
+        audio.play_track("t1").expect("play track");
+        audio.pause_track("t1").expect("pause");
+
+        audio.play_track_from("t1", Some("c1"), 12.0, true).expect("paused seek");
+        let st = super::orchestrator::get_playback_state(&audio.tracks["t1"]);
+        assert!(st.is_paused && !st.is_playing, "track should stay paused: {st:?}");
+        assert!(st.has_sound);
+        assert!((st.current_time - 12.0).abs() < 0.5, "cursor at {}", st.current_time);
+        assert_eq!(audio.tracks["t1"].clips_played, 1);
+        audio.stop_all();
+
+        let params = super::sound::PlayParams {
+            file_path: fixture(),
+            start_position: 8.0,
+            volume: 1.0,
+            trim_start: None,
+            trim_end: None,
+            loop_region: None,
+            fade_in: None,
+            fade_out: None,
+        };
+        audio.play_library_sound(params, true).expect("paused preview seek");
+        assert_eq!(audio.library.state(), super::sound::PlaybackState::Paused);
+        audio.stop_library_sound();
     }
 }

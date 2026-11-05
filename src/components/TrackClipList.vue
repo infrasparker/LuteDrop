@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import type { Track } from '@generated/index';
+import { useRouter } from 'vue-router';
 import { useAppStore } from '../stores/appStore';
+import { useSoundstageUiStore } from '../stores/soundstageUi';
 import Sortable from 'sortablejs';
 import ClipRow from './ClipRow.vue';
+import FindSimilarButton from './FindSimilarButton.vue';
 
 const props = defineProps<{
   track: Track;
@@ -21,6 +24,27 @@ const seamlessClip = computed(() => props.track.clips[0] ?? null);
 
 function addClips(): void {
   emit('open-library-browser', props.track.id);
+}
+
+// --- Find similar ---
+
+// Distinct music entries behind the track's clips.
+const similarSeeds = computed(() => {
+  const ids = new Set<string>();
+  for (const clip of props.track.clips) {
+    const entry = store.findLibraryEntry(clip.libraryEntryId);
+    if (entry?.entryType === 'music') ids.add(entry.id);
+  }
+  return [...ids];
+});
+
+// Opens Scry seeded with the track's music, targeting this track.
+// The Soundstage scrolls back to this track on return.
+const router = useRouter();
+const ui = useSoundstageUiStore();
+function findSimilar(): void {
+  ui.focusTrackId = props.track.id;
+  router.push({ name: 'scry', query: { seed: similarSeeds.value, target: props.track.id } });
 }
 
 // --- SortableJS for sequence/shuffle clip reordering ---
@@ -77,6 +101,7 @@ onUnmounted(() => {
     <div class="d-flex align-center mb-2">
       <span class="text-subtitle-2">Clip</span>
       <VSpacer />
+      <FindSimilarButton :disabled="similarSeeds.length === 0" @click="findSimilar" />
       <VBtn
         v-if="!hasClips"
         prepend-icon="mdi-plus"
@@ -100,6 +125,7 @@ onUnmounted(() => {
     <div class="d-flex align-center mb-2">
       <span class="text-subtitle-2">Clips</span>
       <VSpacer />
+      <FindSimilarButton :disabled="similarSeeds.length === 0" @click="findSimilar" />
       <VBtn prepend-icon="mdi-plus" variant="tonal" rounded="xl" @click="addClips">
         Add Clips
       </VBtn>

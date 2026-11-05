@@ -6,7 +6,7 @@ import globals from 'globals';
 export default tseslint.config(
   // .claude/** is gitignored tooling/worktree scratch space (not app source) —
   // excluded so stray agent worktrees under it never leak into lint results.
-  { ignores: ['dist/**', 'dist-remote/**', 'generated/**', 'src-tauri/**', 'node_modules/**', '.claude/**'] },
+  { ignores: ['dist/**', 'dist-remote/**', 'generated/**', 'src-tauri/**', 'node_modules/**', '.claude/**', 'tagger/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   ...pluginVue.configs['flat/recommended'],
