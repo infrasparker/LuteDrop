@@ -29,6 +29,7 @@
 
 mod actions;
 mod audio;
+mod autotag;
 mod broadcast;
 mod commands;
 mod database;
