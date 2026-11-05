@@ -1,4 +1,5 @@
 import hmac
+import logging
 import os
 import threading
 from collections.abc import Callable
@@ -14,6 +15,12 @@ from . import heads
 from .embed import Embedder, EmbeddingCache, MuqEmbedder, load_windows
 
 MAX_EMBED_ITEMS = 32
+
+# How long /embed waits for the model to finish loading before it answers
+# 503. Loading starts when the app is created.
+LOAD_WAIT_SECONDS = 10
+
+log = logging.getLogger(__name__)
 
 
 class EmbedItem(BaseModel):
@@ -52,6 +59,23 @@ def create_app(
     token: str,
     executor_factory: Callable[[], Executor] | None = None,
 ) -> FastAPI:
+    # Load the model in the background so /health answers while the weights
+    # download on first start. `loaded` is set once loading has finished,
+    # whether it worked or not; `load_error` holds the failure, if any.
+    loaded = threading.Event()
+    load_error: list[str] = []
+
+    def load_model() -> None:
+        try:
+            embedder.load()
+        except Exception as e:
+            log.exception("Model failed to load")
+            load_error.append(str(e) or type(e).__name__)
+        finally:
+            loaded.set()
+
+    threading.Thread(target=load_model, daemon=True).start()
+
     make_pool = executor_factory or (lambda: ProcessPoolExecutor(os.cpu_count()))
     pool_lock = threading.Lock()
     current = [make_pool()]
@@ -78,10 +102,19 @@ def create_app(
 
     @app.get("/health")
     def health():
-        return {"model": embedder.name, "cache_count": cache.count()}
+        return {
+            "model": embedder.name,
+            "cache_count": cache.count(),
+            "ready": loaded.is_set() and not load_error,
+            "error": load_error[0] if load_error else None,
+        }
 
     @app.post("/embed")
     def embed(req: EmbedRequest):
+        if not loaded.wait(LOAD_WAIT_SECONDS):
+            raise HTTPException(status_code=503, detail="model is still loading")
+        if load_error:
+            raise HTTPException(status_code=503, detail=f"model failed to load: {load_error[0]}")
         results: dict[str, dict] = {}
         pending = {}
         for item in req.items:

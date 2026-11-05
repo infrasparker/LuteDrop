@@ -44,7 +44,7 @@ pub struct HttpAnalyzer {
 }
 
 impl HttpAnalyzer {
-    /// `base` is the analyzer URL, such as `http://gargantua:8765`.
+    /// `base` is the analyzer URL, such as `http://analyzer.example:8765`.
     pub fn new(base: &str, token: &str) -> Self {
         Self {
             base: base.trim().trim_end_matches('/').to_string(),
@@ -65,6 +65,31 @@ impl HttpAnalyzer {
 struct HealthResponse {
     model: String,
     cache_count: u64,
+    /// False while the analyzer is still loading its model.
+    #[serde(default = "default_ready")]
+    ready: bool,
+    /// Why the model failed to load, if it did.
+    #[serde(default)]
+    error: Option<String>,
+}
+
+/// Analyzers that predate the `ready` field load the model on first use.
+fn default_ready() -> bool {
+    true
+}
+
+impl HealthResponse {
+    /// One line for the connection test, or an error if the model failed to load.
+    fn describe(&self) -> Result<String, String> {
+        if let Some(error) = &self.error {
+            return Err(format!("Connected, but model {} failed to load: {error}", self.model));
+        }
+        let state = if self.ready { "ready" } else { "still loading" };
+        Ok(format!(
+            "Connected: model {} ({state}), {} cached embeddings",
+            self.model, self.cache_count
+        ))
+    }
 }
 
 #[derive(Serialize)]
@@ -111,10 +136,7 @@ impl AnalyzerClient for HttpAnalyzer {
             .call()
             .map_err(describe)?;
         let health: HealthResponse = read_json(response)?;
-        Ok(format!(
-            "Connected: model {}, {} cached embeddings",
-            health.model, health.cache_count
-        ))
+        health.describe()
     }
 
     fn embed(&self, items: &[(String, String)]) -> Result<Vec<EmbedResult>, String> {
@@ -161,6 +183,27 @@ mod tests {
     fn trailing_slash_is_dropped_from_base() {
         let client = HttpAnalyzer::new("http://host:8765/", "t");
         assert_eq!(client.url("/score").unwrap(), "http://host:8765/score");
+    }
+
+    #[test]
+    fn health_line_shows_readiness_and_load_errors() {
+        let parse = |json: &str| serde_json::from_str::<HealthResponse>(json).unwrap().describe();
+        assert_eq!(
+            parse(r#"{"model":"m","cache_count":3,"ready":true,"error":null}"#),
+            Ok("Connected: model m (ready), 3 cached embeddings".to_string())
+        );
+        assert_eq!(
+            parse(r#"{"model":"m","cache_count":0,"ready":false,"error":null}"#),
+            Ok("Connected: model m (still loading), 0 cached embeddings".to_string())
+        );
+        assert_eq!(
+            parse(r#"{"model":"m","cache_count":0,"ready":false,"error":"no weights"}"#),
+            Err("Connected, but model m failed to load: no weights".to_string())
+        );
+        assert_eq!(
+            parse(r#"{"model":"m","cache_count":1}"#),
+            Ok("Connected: model m (ready), 1 cached embeddings".to_string())
+        );
     }
 
     #[test]

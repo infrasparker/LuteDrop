@@ -14,6 +14,10 @@ _SAFE_HASH = re.compile(r"^[A-Za-z0-9_-]+$")
 class Embedder(Protocol):
     name: str
 
+    def load(self) -> None:
+        """Prepare the model so the first embed does not wait for it."""
+        ...
+
     def embed_windows(self, wavs: np.ndarray) -> np.ndarray:
         """Embed windows (windows x samples at SAMPLE_RATE) into windows x dim."""
         ...
@@ -29,6 +33,12 @@ class MuqEmbedder:
         self._model = None
         self._device = None
         self._lock = threading.Lock()
+
+    def load(self) -> None:
+        """Load the model weights, downloading them on first use."""
+        with self._lock:
+            if self._model is None:
+                self._load()
 
     def _load(self) -> None:
         import torch

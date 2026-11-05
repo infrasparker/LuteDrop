@@ -1,6 +1,8 @@
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 
+import threading
+
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
@@ -16,6 +18,9 @@ DIM = 8
 
 class FakeEmbedder:
     name = "fake@test"
+
+    def load(self):
+        pass
 
     def embed_windows(self, wavs):
         out = np.zeros((len(wavs), DIM), dtype=np.float32)
@@ -76,7 +81,50 @@ def test_empty_server_token_rejects_empty_header(tmp_path):
 def test_health_reports_model_and_cache_count(client):
     embed(client, [("h1", "hi-1")])
     body = client.get("/health", headers=HEADERS).json()
-    assert body == {"model": "fake@test", "cache_count": 1}
+    assert body == {"model": "fake@test", "cache_count": 1, "ready": True, "error": None}
+
+
+class SlowEmbedder(FakeEmbedder):
+    """Stays loading until `release` is set."""
+
+    def __init__(self):
+        self.release = threading.Event()
+
+    def load(self):
+        self.release.wait(5)
+
+
+def test_embed_waits_for_model_then_answers_503(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "LOAD_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(app_module, "load_windows", lambda p: synthetic(1.0, 1))
+    embedder = SlowEmbedder()
+    c = TestClient(
+        create_app(embedder, EmbeddingCache(tmp_path), TOKEN, executor_factory=lambda: ThreadPoolExecutor(1))
+    )
+    assert c.get("/health", headers=HEADERS).json()["ready"] is False
+    r = embed(c, [("h1", "hi-1")])
+    assert r.status_code == 503
+    assert "loading" in r.json()["detail"]
+
+    embedder.release.set()
+    monkeypatch.setattr(app_module, "LOAD_WAIT_SECONDS", 5)
+    assert embed(c, [("h1", "hi-1")]).json()["results"] == [{"hash": "h1", "ok": True}]
+    assert c.get("/health", headers=HEADERS).json()["ready"] is True
+
+
+class BrokenEmbedder(FakeEmbedder):
+    def load(self):
+        raise RuntimeError("no weights")
+
+
+def test_failed_model_load_is_reported(tmp_path):
+    c = TestClient(create_app(BrokenEmbedder(), EmbeddingCache(tmp_path), TOKEN))
+    r = embed(c, [("h1", "hi-1")])
+    assert r.status_code == 503
+    assert "no weights" in r.json()["detail"]
+    body = c.get("/health", headers=HEADERS).json()
+    assert body["ready"] is False
+    assert body["error"] == "no weights"
 
 
 def test_embed_caches_and_skips_cached(client, calls):
