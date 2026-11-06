@@ -70,18 +70,20 @@ pub struct LibraryEntry {
     pub mood_energy: Option<f64>,
     /// The user's Calm ↔ Energetic step; when set it overrides `mood_energy`.
     pub mood_energy_user: Option<MoodStep>,
-    /// The analyzer's Sad score as a z-score across the library's analyzed
-    /// music. Only meaningful on a track whose shown Bright ↔ Dark step is
-    /// Dark.
-    pub mood_sad: Option<f64>,
-    /// The analyzer's Scary score as a z-score, like `mood_sad`.
-    pub mood_scary: Option<f64>,
-    /// The analyzer's dark kind: whichever of `mood_sad` and `mood_scary` is
-    /// higher (Sad on a tie). `None` until both are scored. Derived when
-    /// loading, not stored.
-    pub dark_kind_auto: Option<DarkKind>,
-    /// The user's dark kind; when set it overrides `dark_kind_auto`.
-    pub dark_kind_user: Option<DarkKind>,
+    /// The analyzer's suggested mood pool, from the frozen pool calibration.
+    /// `None` until a run with a calibration scored the entry (and always on
+    /// ambiance). Never `Tension`: that pool is taught only.
+    pub pool_auto: Option<Pool>,
+    /// The suggestion's softmax probability (0..1); low means unsure.
+    pub pool_auto_p: Option<f64>,
+    /// The analyzer's second-best pool.
+    pub pool_auto_runner: Option<Pool>,
+    /// The user's pool; when set it overrides `pool_auto`. The pool shown is
+    /// `pool_user ?? pool_auto`.
+    pub pool_user: Option<Pool>,
+    /// When the user last set the pool or approved the entry in Review
+    /// (Unix milliseconds as a string, like `created_at`); `None` until then.
+    pub pool_reviewed_at: Option<String>,
 }
 
 /// Whether a music entry is meant for combat scenes.
@@ -141,55 +143,87 @@ pub enum MoodScale {
     Energy,
 }
 
-/// What kind of dark a Dark track is. Shown and filtered on only when the
-/// track's shown Bright ↔ Dark step is Dark.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+/// A music track's mood pool: a short, flat list of hedged mood words. A
+/// music track is in exactly one pool; ambiance has none. The vocabulary is
+/// fixed. The analyzer suggests the first six (zero-shot); `Tension` is
+/// taught only and never suggested.
+///
+/// The database, serde and the generated TypeScript all use the same
+/// lowercase ids (`"peaceful"`, ...).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
-pub enum DarkKind {
-    /// Sorrow, grief, loss.
-    Sad,
-    /// Threat: dread or menace.
-    Scary,
+pub enum Pool {
+    /// Peaceful & Tranquil.
+    Peaceful,
+    /// Lighthearted & Fun.
+    Lighthearted,
+    /// Reflective & Somber.
+    Somber,
+    /// Optimistic & Awe.
+    Awe,
+    /// Mysterious & Looming.
+    Mysterious,
+    /// Epic & Intense.
+    Epic,
+    /// Tense & Suspenseful. Taught only: never suggested.
+    Tension,
 }
 
-impl DarkKind {
-    /// The value stored in `library_entries.dark_kind_user`.
+impl Pool {
+    /// The six pools the analyzer scores and suggests, in vocabulary order.
+    pub const ZERO_SHOT: [Pool; 6] =
+        [Pool::Peaceful, Pool::Lighthearted, Pool::Somber, Pool::Awe, Pool::Mysterious, Pool::Epic];
+
+    /// The id stored in the `pool_*` columns and sent by the analyzer.
     pub fn as_db_str(&self) -> &'static str {
         match self {
-            DarkKind::Sad => "sad",
-            DarkKind::Scary => "scary",
+            Pool::Peaceful => "peaceful",
+            Pool::Lighthearted => "lighthearted",
+            Pool::Somber => "somber",
+            Pool::Awe => "awe",
+            Pool::Mysterious => "mysterious",
+            Pool::Epic => "epic",
+            Pool::Tension => "tension",
         }
     }
 
-    /// Parses a stored value; anything unrecognised is `None`.
+    /// Parses a stored id; anything unrecognised is `None`.
     pub fn from_db_str(s: &str) -> Option<Self> {
         match s {
-            "sad" => Some(DarkKind::Sad),
-            "scary" => Some(DarkKind::Scary),
+            "peaceful" => Some(Pool::Peaceful),
+            "lighthearted" => Some(Pool::Lighthearted),
+            "somber" => Some(Pool::Somber),
+            "awe" => Some(Pool::Awe),
+            "mysterious" => Some(Pool::Mysterious),
+            "epic" => Some(Pool::Epic),
+            "tension" => Some(Pool::Tension),
             _ => None,
         }
     }
+}
 
-    /// The analyzer's kind from the two z-scores: the higher one, Sad on a
-    /// tie. `None` unless both are present.
-    pub fn from_scores(sad: Option<f64>, scary: Option<f64>) -> Option<Self> {
-        let (sad, scary) = (sad?, scary?);
-        Some(if scary > sad { DarkKind::Scary } else { DarkKind::Sad })
-    }
+/// The analyzer's pool suggestion for one entry. Backend-only: the frontend
+/// reads it from `LibraryEntry` (`pool_auto`, `pool_auto_p`,
+/// `pool_auto_runner`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PoolSuggestion {
+    /// The most likely pool.
+    pub pool: Pool,
+    /// Its softmax probability.
+    pub p: f64,
+    /// The second most likely pool.
+    pub runner: Pool,
 }
 
 /// The analyzer's position on each mood scale for one entry, as z-scores
 /// across the library's analyzed music. Positive is Bright, Grand and
-/// Energetic; `sad` and `scary` are the two dark kinds' own z-scores.
-/// Backend-only: the frontend reads these from `LibraryEntry`.
+/// Energetic. Backend-only: the frontend reads these from `LibraryEntry`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MoodZ {
     pub bright: f64,
     pub grand: f64,
     pub energy: f64,
-    pub sad: f64,
-    pub scary: f64,
 }
 
 impl MoodStep {
@@ -639,21 +673,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dark_kind_db_strings_round_trip() {
-        for kind in [DarkKind::Sad, DarkKind::Scary] {
-            assert_eq!(DarkKind::from_db_str(kind.as_db_str()), Some(kind));
+    fn pool_db_strings_round_trip_and_match_serde() {
+        let all = [Pool::Tension, Pool::Peaceful, Pool::Lighthearted, Pool::Somber, Pool::Awe, Pool::Mysterious, Pool::Epic];
+        for pool in all {
+            assert_eq!(Pool::from_db_str(pool.as_db_str()), Some(pool));
+            assert_eq!(serde_json::to_value(pool).unwrap(), pool.as_db_str());
         }
-        assert_eq!([DarkKind::Sad.as_db_str(), DarkKind::Scary.as_db_str()], ["sad", "scary"]);
-        assert_eq!(DarkKind::from_db_str("angry"), None);
-    }
-
-    #[test]
-    fn dark_kind_auto_is_the_higher_score() {
-        assert_eq!(DarkKind::from_scores(Some(0.4), Some(1.1)), Some(DarkKind::Scary));
-        assert_eq!(DarkKind::from_scores(Some(-0.2), Some(-0.9)), Some(DarkKind::Sad));
-        assert_eq!(DarkKind::from_scores(Some(0.5), Some(0.5)), Some(DarkKind::Sad));
-        assert_eq!(DarkKind::from_scores(None, Some(1.0)), None);
-        assert_eq!(DarkKind::from_scores(Some(1.0), None), None);
+        assert_eq!(
+            Pool::ZERO_SHOT.map(|p| p.as_db_str()),
+            ["peaceful", "lighthearted", "somber", "awe", "mysterious", "epic"]
+        );
+        assert_eq!(Pool::from_db_str("sad"), None);
     }
 
     #[test]

@@ -3,9 +3,9 @@ import { computed } from 'vue';
 import type { AutoTag } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 
-/// One tag on a library entry. Your tag is a plain chip. An auto tag (shown
-/// only because the analyzer suggested it) is outlined with a sparkle and a
-/// score tooltip, and offers ✓ (vote yes: make it yours) next to its ✕.
+/// One tag on a library entry. A confirmed tag is a plain chip. A suggested
+/// tag (shown only because the analyzer suggested it) is outlined with a
+/// sparkle and a score tooltip, and offers ✓ (vote yes: confirm it) next to its ✕.
 /// ✕ on any chip votes no, so later analysis runs don't bring it back: with
 /// `closable` the parent removes it from the list (and saves the list), else
 /// an auto chip rejects itself directly. The auto chip sets `closable` to false
@@ -26,7 +26,7 @@ const emit = defineEmits<{
 
 const store = useAppStore();
 
-const scoreLabel = computed(() => (props.auto ? `Auto · ${props.auto.score.toFixed(2)}` : ''));
+const scoreLabel = computed(() => (props.auto ? `Suggested tag · ${props.auto.score.toFixed(2)}` : ''));
 
 function keep(): void {
   store.command('keep_auto_tags', { entryIds: [props.entryId], tags: [props.tag] });
@@ -62,7 +62,7 @@ function reject(): void {
       v-if="confirmable"
       size="small"
       class="chip-action ml-1"
-      title="Yes: keep this tag as yours"
+      title="Yes: confirm this tag"
       @mousedown.stop.prevent
       @click.stop="keep"
     >mdi-check</VIcon>

@@ -6,10 +6,8 @@ import WaveformEditor from './WaveformEditor.vue';
 import TagChip from './TagChip.vue';
 import TagScoresPanel from './TagScoresPanel.vue';
 import RoleControl from './RoleControl.vue';
-import MoodScaleControl from './MoodScaleControl.vue';
-import MoodPadPicker from './MoodPadPicker.vue';
-import DarkKindControl from './DarkKindControl.vue';
-import { isShownDark, MOOD_SCALES, SCALE_NAMES, scaleValues } from '../utils/mood';
+import PoolControl from './PoolControl.vue';
+import ScalesPanel from './ScalesPanel.vue';
 import { open } from '@tauri-apps/plugin-dialog';
 import { AUDIO_EXTENSIONS } from '../constants';
 import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
@@ -307,39 +305,21 @@ async function relocateFile(): Promise<void> {
           </template>
         </VCombobox>
 
-        <!-- Role and mood (music only): label | options | status grid -->
-        <div v-if="editEntryType === 'music'" class="facet-grid mb-3">
-          <span class="text-caption text-medium-emphasis">Role</span>
-          <RoleControl
-            :entry-ids="[props.entryId]"
-            :role-auto="entry.roleAuto"
-            :role-auto-score="entry.roleAutoScore"
-            :role-user="entry.roleUser"
-          />
-          <span class="text-caption text-medium-emphasis">Mood</span>
-          <MoodPadPicker :entries="[entry]" />
-          <span />
-          <template v-for="scale in MOOD_SCALES" :key="scale">
-            <span class="text-caption text-medium-emphasis mood-sub">{{ SCALE_NAMES[scale] }}</span>
-            <MoodScaleControl
+        <!-- Role and pool (music only): label | options | status grid, then the scales -->
+        <template v-if="editEntryType === 'music'">
+          <div class="facet-grid mb-3">
+            <span class="text-caption text-medium-emphasis">Role</span>
+            <RoleControl
               :entry-ids="[props.entryId]"
-              :scale="scale"
-              :z="scaleValues(entry, scale).z"
-              :user="scaleValues(entry, scale).user"
+              :role-auto="entry.roleAuto"
+              :role-auto-score="entry.roleAutoScore"
+              :role-user="entry.roleUser"
             />
-            <!-- Dark kind sits under Bright ↔ Dark, only while the shown step is Dark. -->
-            <template v-if="scale === 'bright' && isShownDark(entry)">
-              <span class="text-caption text-medium-emphasis dark-kind-sub">Dark kind</span>
-              <DarkKindControl
-                :entry-ids="[props.entryId]"
-                :auto="entry.darkKindAuto"
-                :user="entry.darkKindUser"
-                :sad-z="entry.moodSad"
-                :scary-z="entry.moodScary"
-              />
-            </template>
-          </template>
-        </div>
+            <span class="text-caption text-medium-emphasis">Pool</span>
+            <PoolControl :entry="entry" />
+          </div>
+          <ScalesPanel :entry="entry" class="mb-4" />
+        </template>
 
         <!-- Volume -->
         <div class="d-flex align-center ga-3 mb-4">
@@ -466,12 +446,6 @@ async function relocateFile(): Promise<void> {
 <style scoped>
 /* Label | options | status. Each facet control renders its options and status
    as two cells (display: contents), so the columns line up across rows. */
-.mood-sub {
-  padding-left: 12px;
-}
-.dark-kind-sub {
-  padding-left: 24px;
-}
 .facet-grid {
   display: grid;
   grid-template-columns: max-content max-content 1fr;

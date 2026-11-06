@@ -510,7 +510,7 @@ def test_score_returns_raw_mood_for_targets(tmp_path, monkeypatch):
     from tagger import moods
 
     dirs = {}
-    texts = [t for pole in moods.POLES.values() for t in pole]
+    texts = [t for group in (*moods.POLES.values(), *moods.POOLS.values()) for t in group]
     for i, text in enumerate(texts):
         v = np.zeros(DIM)
         v[i % DIM] = 1.0
@@ -531,7 +531,8 @@ def test_score_returns_raw_mood_for_targets(tmp_path, monkeypatch):
     body = {"gate": {}, "targets": ["a", "b", "ghost"]}
     data = c.post("/score", json=body, headers=HEADERS).json()
     c.post("/score", json=body, headers=HEADERS)
-    assert MoodEmbedder.calls == len(moods.POLES)  # one embed_text per pole, computed once
+    # One embed_text per pole and per pool, computed once.
+    assert MoodEmbedder.calls == len(moods.POLES) + len(moods.POOLS)
     assert set(data["mood"]) == {"a", "b"}
 
     mean = cache.get("a")
@@ -540,13 +541,15 @@ def test_score_returns_raw_mood_for_targets(tmp_path, monkeypatch):
         return float(np.mean([mean @ dirs[t] for t in texts]))
 
     assert data["mood"]["a"]["bright"] == pytest.approx(pole(moods.BRIGHT) - pole(moods.DARK))
-    assert data["mood"]["a"]["light"] == pytest.approx(pole(moods.LIGHT) - pole(moods.HEAVY))
     assert data["mood"]["a"]["grand"] == pytest.approx(pole(moods.GRAND) - pole(moods.INTIMATE))
     assert data["mood"]["a"]["energy"] == pytest.approx(pole(moods.ENERGETIC) - pole(moods.CALM))
-    # The dark kinds are absolute similarities, not pole differences.
-    assert data["mood"]["a"]["sad"] == pytest.approx(pole(moods.SAD))
-    assert data["mood"]["a"]["scary"] == pytest.approx(pole(moods.SCARY))
-    assert set(data["mood"]["a"]) == {"bright", "light", "grand", "energy", "sad", "scary"}
+    assert set(data["mood"]["a"]) == {"bright", "grand", "energy", "pools"}
+    # Pools are absolute similarities (mean cosine with the pool's prompts),
+    # not pole differences.
+    pools = data["mood"]["a"]["pools"]
+    assert set(pools) == {"peaceful", "lighthearted", "somber", "awe", "mysterious", "epic"}
+    for pool_id, prompts in moods.POOLS.items():
+        assert pools[pool_id] == pytest.approx(pole(prompts))
     assert data["mood"]["a"]["bright"] != 0
     assert data["mood"]["a"]["grand"] != 0
     assert data["mood"]["a"]["energy"] != 0
@@ -571,7 +574,8 @@ def test_score_mood_recovers_after_partial_embed_failure(tmp_path, monkeypatch):
     assert first.status_code == 200 and "mood" not in first.json()
     second = c.post("/score", json=body, headers=HEADERS)
     assert second.status_code == 200
-    assert set(second.json()["mood"]["a"]) == {"bright", "light", "grand", "energy", "sad", "scary"}
+    assert set(second.json()["mood"]["a"]) == {"bright", "grand", "energy", "pools"}
+    assert len(second.json()["mood"]["a"]["pools"]) == 6
 
 
 def test_score_without_loaded_model_omits_mood(tmp_path, monkeypatch):

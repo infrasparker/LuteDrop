@@ -4,8 +4,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { useToast } from '../composables/useToast';
 import { useAutoTagEvents } from '../composables/useAutoTagEvents';
 import { useAppStore } from '../stores/appStore';
-import type { DarkKind, EntryTagScores, TagScore } from '@generated/index';
-import { DARK_KIND_LABELS, entryDarkKind, isShownDark, MOOD_SCALES, SCALE_NAMES, scaleValues } from '../utils/mood';
+import type { EntryTagScores, TagScore } from '@generated/index';
+import { MOOD_SCALES, SCALE_NAMES, scaleValues } from '../utils/mood';
+import { poolName } from '../utils/pools';
 
 // Expansion panel for the entry editor: how strongly the analyzer thinks each
 // vocabulary tag fits this entry. It starts open and loads on mount, and
@@ -113,7 +114,7 @@ function gateLabel(): string | null {
   const e = entry.value;
   if (!e?.role) return null;
   const name = e.role === 'combat' ? 'Combat' : 'Non-combat';
-  return `${name} · ${e.roleUser !== null ? 'yours' : 'auto'}`;
+  return `${name} · ${e.roleUser !== null ? 'confirmed' : 'suggested'}`;
 }
 
 function signed(z: number): string {
@@ -128,12 +129,11 @@ const soundRows = computed<{ label: string; value: string }[]>(() => {
     const { z } = scaleValues(e, scale);
     if (z !== null) rows.push({ label: SCALE_NAMES[scale], value: `z = ${signed(z)}` });
   }
-  // The dark kind's two scores matter only on a track shown as Dark.
-  if (isShownDark(e)) {
-    const kind = entryDarkKind(e);
-    const mark = (k: DarkKind): string => (kind === k ? ` · ${e.darkKindUser !== null ? 'yours' : 'auto'}` : '');
-    if (e.moodSad !== null) rows.push({ label: `Dark: ${DARK_KIND_LABELS.sad}`, value: `z = ${signed(e.moodSad)}${mark('sad')}` });
-    if (e.moodScary !== null) rows.push({ label: `Dark: ${DARK_KIND_LABELS.scary}`, value: `z = ${signed(e.moodScary)}${mark('scary')}` });
+  // The pool suggestion with its probability and the runner-up.
+  if (e.poolAuto !== null) {
+    const p = e.poolAutoP === null ? '' : ` · p = ${e.poolAutoP.toFixed(2)}`;
+    const next = e.poolAutoRunner === null ? '' : ` · next: ${poolName(e.poolAutoRunner)}`;
+    rows.push({ label: 'Pool suggestion', value: `${poolName(e.poolAuto)}${p}${next}` });
   }
   return rows;
 });
@@ -143,8 +143,8 @@ function percent(score: number): number {
 }
 
 function appliedLabel(s: TagScore): string | null {
-  if (s.applied === 'auto') return 'auto';
-  if (s.applied === 'user') return 'yours';
+  if (s.applied === 'auto') return 'suggested';
+  if (s.applied === 'user') return 'confirmed';
   return null;
 }
 </script>
@@ -261,7 +261,7 @@ function appliedLabel(s: TagScore): string | null {
   text-align: right;
 }
 .score-chip {
-  flex: 0 0 52px;
+  flex: 0 0 76px;
   justify-content: center;
 }
 .score-chip-wide {

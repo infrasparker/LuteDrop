@@ -4,9 +4,8 @@ mean similarity to one pole's prompts and the other's.
 The three axes follow the PAD mood model: Bright - Dark (pleasure),
 Calm - Energetic (arousal) and Intimate - Grand (dominance).
 
-The dark kinds (SAD, SCARY) are not an axis: each is scored on its own as
-the absolute mean similarity, and the app picks the higher of the two
-(after z-scoring) as the kind of a Dark track."""
+The mood pools (POOLS) are not axes: each is scored on its own as the
+absolute mean similarity with its prompts."""
 
 BRIGHT = [
     "bright, warm, hopeful music",
@@ -39,32 +38,6 @@ CALM = [
     "soothing, gentle, peaceful music",
 ]
 
-# Dark kinds. Scary means threatening: dread or menace.
-SAD = [
-    "sad, sorrowful, mournful music",
-    "grieving, melancholic lament",
-    "tearful, heartbroken music",
-]
-SCARY = [
-    "scary, eerie, frightening music",
-    "creepy, unsettling horror music",
-    "dread-filled, uncanny music",
-]
-
-# Deprecated: the old Airy - Heavy axis. Kept only so app versions up to
-# v0.12, which read `light` from /score, keep working while the analyzer is
-# deployed ahead of the app. Remove once those versions are retired.
-LIGHT = [
-    "airy, wispy, sparse ethereal music",
-    "delicate floating atmospheric music",
-    "thin translucent misty soundscape",
-]
-HEAVY = [
-    "heavy, dense, pressing music",
-    "thick powerful massive orchestral music",
-    "weighty pounding full sound",
-]
-
 POLES = {
     "bright": BRIGHT,
     "dark": DARK,
@@ -72,8 +45,42 @@ POLES = {
     "intimate": INTIMATE,
     "energetic": ENERGETIC,
     "calm": CALM,
-    "sad": SAD,
-    "scary": SCARY,
-    "light": LIGHT,
-    "heavy": HEAVY,
+}
+
+# Mood pools: a flat list of hedged mood words, one per music track. Each
+# pool is scored on its own as the absolute mean similarity with its prompts;
+# the app z-scores the six against a frozen calibration and suggests the best.
+# The seventh pool, tension, has no prompts: it is taught only, never
+# suggested. Fixed vocabulary; the app knows these ids.
+POOLS = {
+    "peaceful": [
+        "peaceful, tranquil, serene music",
+        "calm relaxing music for resting",
+        "gentle soothing pastoral music",
+    ],
+    "lighthearted": [
+        "lighthearted, fun, cheerful music",
+        "playful, jaunty, merry tune",
+        "goofy, quirky, whimsical music",
+    ],
+    "somber": [
+        "reflective, somber, sorrowful music",
+        "sad, mournful, melancholic music",
+        "wistful, grieving, nostalgic music",
+    ],
+    "awe": [
+        "music full of wonder and awe",
+        "sacred, divine, celestial music, a choir in a cathedral",
+        "a breathtaking vista, hopeful and vast, slow and soaring",
+    ],
+    "mysterious": [
+        "mysterious, unsettling, eerie music",
+        "strange, uncanny, otherworldly sounds",
+        "quiet suspense and looming dread, something is about to happen",
+    ],
+    "epic": [
+        "epic, intense, heroic music",
+        "powerful triumphant orchestral battle music",
+        "driving, aggressive, dramatic action music",
+    ],
 }

@@ -10,8 +10,8 @@ use crate::database::autotag_db;
 use crate::database::settings::{self as broadcast_settings, BroadcastSettings};
 use crate::database::settings as autotag_settings;
 use crate::models::{
-    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, BulkImportProgress, DarkKind, EntryTagScores, EntryType,
-    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodScale, MoodStep, Role, SceneConfig, Track, TrackUpdates, VibeHit,
+    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
+    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodScale, MoodStep, Pool, Role, SceneConfig, Track, TrackUpdates, VibeHit,
     VibePoint,
 };
 use crate::relink;
@@ -438,18 +438,26 @@ pub fn set_entry_mood_step(
     Ok(state)
 }
 
-/// Sets (or, with `None`, clears so the analyzer's kind shows) the user's
-/// dark kind for the given entries.
-pub fn set_entry_dark_kind(
+/// Sets the user's pool on the given music entries (`None` goes back to the
+/// analyzer's suggestion) and marks each one reviewed now. No re-score: pools
+/// do not train anything yet (learned pool heads are a later release).
+pub fn set_entry_pool(
     container: &AppStateContainer,
     entry_ids: Vec<String>,
-    kind: Option<DarkKind>,
+    pool: Option<Pool>,
 ) -> Result<AppState, String> {
-    let state = mutate_and_reload(container, |conn| {
-        library::set_user_dark_kind(conn, &entry_ids, kind)
-    })?;
-    request_rescore_if_enabled(container);
-    Ok(state)
+    mutate_and_reload(container, |conn| library::set_user_pool(conn, &entry_ids, pool))
+}
+
+/// Approves one entry in Review: its shown pool and role become the user's
+/// and it is marked reviewed, atomically. Re-scores when that gave the entry
+/// a user role, since user roles train the Combat gate.
+pub fn approve_entry_review(container: &AppStateContainer, entry_id: &str) -> Result<AppState, String> {
+    let role_changed = with_db(container, |conn| library::approve_entry_review(conn, entry_id))?;
+    if role_changed {
+        request_rescore_if_enabled(container);
+    }
+    load_state(container)
 }
 
 /// Makes the analyzer's role the user's, on each entry that has one.

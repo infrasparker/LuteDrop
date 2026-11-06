@@ -46,26 +46,40 @@ Every music entry can have a role, **Combat** or **Non-combat**. The analyzer sc
 
 - A role set by hand always wins. Auto-tagging never changes it.
 - Clearing a role is a decision too: the entry stays without a role and auto-tagging does not fill it again.
-- An auto role is shown with a sparkle and its score. **Keep** turns it into the user's own choice.
+- An auto role is shown as **✨ Suggested** with its score. **Confirm** keeps it as a confirmed role.
 - The Library has a Role column and a Role filter (All, Combat, Non-combat, Unset). The entry editor has a Combat / Non-combat control with a clear action, and the bulk bar can set or clear the role on several music entries at once.
 - Only entries whose role was set by hand count as examples. Auto roles never do.
 
-### Mood
+### Mood pools
 
-Every analyzed music entry is placed on three mood scales, each with three steps:
+Every music entry sits in one **mood pool**, from a short fixed list:
 
-- **Bright ↔ Dark** (Dark, Neutral, Bright)
-- **Intimate ↔ Grand** (Intimate, Moderate, Grand)
-- **Calm ↔ Energetic** (Calm, Steady, Energetic)
+- **Peaceful & Tranquil**
+- **Lighthearted & Fun**
+- **Reflective & Somber**
+- **Optimistic & Awe**
+- **Mysterious & Looming**
+- **Epic & Intense**
+- **Tense & Suspenseful**
 
-The analyzer scores each scale as a z-score across the library's analyzed music, and a score more than 0.6 from the mean moves the entry off the middle step.
+Ambiance entries have no pool.
 
-A **Dark** entry also has a **dark kind**, **Sad** or **Scary**. The analyzer scores both and picks the higher. Scary covers dread and menace. The kind is shown only while the entry's Bright ↔ Dark step is Dark.
+The analyzer suggests a pool for each analyzed track by comparing its sound with a few descriptions of each pool. Its scores are put on a common footing with a calibration taken once, from the first analysis run that covers at least 50 music tracks; until then no pools are suggested. **Tense & Suspenseful** is never suggested: it is too close to combat music to tell apart by ear, so tracks are moved into it by hand.
 
-- A step or kind set by hand always wins over the analyzer's. Auto-tagging never changes it. **Confirm** makes the analyzer's value your own, and **Use auto** removes yours.
-- The **mood pad** names each combination: a size switch picks Intimate, Moderate or Grand, and a pad crosses energy (rows) with Sad, Scary, Neutral and Bright (columns). Dark names do not change with size: Desperate, Mournful and Sorrowful are Sad; Harrowing, Menacing and Eerie are Scary.
-- The entry editor has the mood pad and a row per scale, plus a Dark kind row for Dark entries. The bulk bar's **Set mood…** sets the mood of several music entries at once.
-- The Library and Scry filter by mood with the same pad: pick any number of moods, per size or across all sizes.
+- A suggested value is marked **✨ Suggested**; **✓ Confirm** keeps it. Picking a pool by hand confirms it. A confirmed value always wins over the analyzer's, and **↺ Use suggestion** clears it. When the two differ, the status reads "Confirmed · suggested: …". The same wording is used for roles, scales and tags.
+- The entry editor has a **Role** row, a **Pool** row with the seven pools, and a collapsed **Scales** section.
+- The Library and Scry have a filter bar: pool chips with counts (any number at once, plus **Unsorted** for music with no pool), the role filter, and a **Sort** menu (Name, Energy, Brightness, Size). The bulk bar's **Set pool…** sets the pool of several music entries at once.
+
+**Scales.** Every analyzed music entry also has three scales, each with three steps: **Bright ↔ Dark** (Dark, Neutral, Bright), **Intimate ↔ Grand** (Intimate, Moderate, Grand) and **Calm ↔ Energetic** (Calm, Steady, Energetic). The analyzer scores each scale as a z-score across the library's analyzed music, and a score more than 0.6 from the mean moves the entry off the middle step. The scales are used for sorting and shade the word on the Review card; they can be confirmed or changed in the Scales section.
+
+### Review
+
+The **Review** tab goes through new music one track at a time. Its badge counts the music entries that have a pool (suggested or confirmed) and have not been reviewed yet.
+
+- The card shows the track's name and folder, a play button, and a one-word readout of its feel (from the pool, the energy step and the size step, for example *Triumphant* for Epic, Energetic and Grand). Under it are the analyzer's suggestion with its confidence and its second choice.
+- The **Role** and **Pool** rows work as in the editor; changing them does not move on. **Sounds like** names the two closest confirmed tracks in the same pool, when the analyzer is available.
+- **Approve** (key **A**) confirms the role and pool shown and moves on. **Skip** (key **S**) moves the track to the end of the queue for this session without saving anything. **Space** plays or stops the track.
+- Newest imports come first, and within a day the least certain suggestions first.
 
 ### Auto tags
 
@@ -84,7 +98,7 @@ Auto tags are learned from the tags the user applied by hand.
 
 - **Text search.** A description such as "tense strings building to a battle" returns the closest tracks, ranked by score.
 - **More like this.** The action on a Library row opens Scry seeded with that track. Seeds are shown as removable chips, more can be added from the results, and the results are the tracks closest to the seeds together.
-- **Filters.** The results can be filtered by Role and by mood, with the mood pad.
+- **Filters.** The results can be filtered by pool and Role, and sorted by best match, name or a scale.
 - **Map.** A scatter plot of every analyzed music track, colored by role. Hovering shows the track name and clicking plays it. Dragging draws a lasso that adds the enclosed tracks to the selection. Seeds and results are highlighted.
 - **Playlists.** The selection can become a playlist with **Create playlist**, which adds a composition with one shuffle track holding the selected tracks to a chosen group of the active configuration, or be appended to a track with **Add to existing track**.
 

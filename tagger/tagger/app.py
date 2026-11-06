@@ -24,6 +24,8 @@ MAP_CACHE_SIZE = 8
 # How long /embed waits for the model to finish loading before it answers
 # 503. Loading starts when the app is created.
 LOAD_WAIT_SECONDS = 10
+# Keys the pool prompt vectors apart from the pole vectors in one cache.
+POOL_PREFIX = "pool:"
 
 log = logging.getLogger(__name__)
 
@@ -221,7 +223,7 @@ def create_app(
     mood_lock = threading.Lock()
 
     def mood_poles() -> dict[str, np.ndarray] | None:
-        """The pole vectors, or None while the model is not ready (or the
+        """The pole and pool vectors (pools keyed with POOL_PREFIX), or None while the model is not ready (or the
         prompts could not be embedded); /score then omits mood. Never waits."""
         if not loaded.is_set() or load_error:
             return None
@@ -229,7 +231,11 @@ def create_app(
             if not mood_vecs:
                 built = {}
                 try:
-                    for name, texts in moods.POLES.items():
+                    groups = {
+                        **moods.POLES,
+                        **{POOL_PREFIX + name: texts for name, texts in moods.POOLS.items()},
+                    }
+                    for name, texts in groups.items():
                         vecs = np.asarray(embedder.embed_text(texts), dtype=np.float64)
                         norms = np.linalg.norm(vecs, axis=1, keepdims=True)
                         built[name] = vecs / np.where(norms == 0, 1, norms)
@@ -250,14 +256,14 @@ def create_app(
             "bright": sims["bright"] - sims["dark"],
             "grand": sims["grand"] - sims["intimate"],
             "energy": sims["energetic"] - sims["calm"],
-            # Deprecated: only app versions up to v0.12 read `light`.
-            "light": sims["light"] - sims["heavy"],
-            # Dark kinds: absolute similarities; the app z-scores them.
-            "sad": sims["sad"],
-            "scary": sims["scary"],
         }
+        # Pools: absolute similarities; the app z-scores them.
+        pools = {name: sims[POOL_PREFIX + name] for name in moods.POOLS}
         return {
-            h: {name: float(values[i]) for name, values in axes.items()}
+            h: {
+                **{name: float(values[i]) for name, values in axes.items()},
+                "pools": {name: float(values[i]) for name, values in pools.items()},
+            }
             for i, h in enumerate(target_hashes)
         }
 

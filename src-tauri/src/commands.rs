@@ -3,7 +3,7 @@ use tauri::State;
 use std::sync::Arc;
 use crate::actions;
 use crate::models::{
-    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, DarkKind, EntryTagScores, LibraryEntryUsage, MoodScale, MoodStep,
+    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodScale, MoodStep, Pool,
     Role, SceneConfig, TrackUpdates, VibeHit, VibePoint,
 };
 use crate::state::AppStateContainer;
@@ -317,12 +317,20 @@ pub fn set_entry_mood_step(
 }
 
 #[tauri::command]
-pub fn set_entry_dark_kind(
+pub fn set_entry_pool(
     state: State<'_, Arc<AppStateContainer>>,
     entry_ids: Vec<String>,
-    kind: Option<DarkKind>,
+    pool: Option<Pool>,
 ) -> Result<AppState, String> {
-    actions::set_entry_dark_kind(&state, entry_ids, kind)
+    actions::set_entry_pool(&state, entry_ids, pool)
+}
+
+#[tauri::command]
+pub fn approve_entry_review(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_id: String,
+) -> Result<AppState, String> {
+    actions::approve_entry_review(&state, &entry_id)
 }
 
 #[tauri::command]
