@@ -361,9 +361,9 @@ fn progress_update(phase: &str, processed: u32, total: u32, message: Option<Stri
 /// 5. take the mood calibration: the analyzer's reference set when it offers
 ///    one for the current prompts (replacing a stored library calibration or
 ///    an older reference, unless identical), else, if none is stored yet and
-///    this response covers enough music, the library's own. Then decide each scored entry's analyzer layer
-///    (role, moods, tags); only moods whose prompts match the calibration's
-///    are scored;
+///    this response covers enough music, the library's own. Then decide each
+///    scored entry's analyzer layer (role, moods, tags); only moods whose
+///    prompts match the calibration's are scored;
 /// 6. write that layer, the scores and a new calibration in one transaction.
 ///    The user's layer is never written, so the run can't undo an edit made
 ///    meanwhile. A new calibration (library or reference) is saved in the same

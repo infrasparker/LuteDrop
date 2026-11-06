@@ -398,7 +398,7 @@ const calibratedLabel = computed(() => calibrationLabel(store.moodCalibration));
           shipped list.
         </VAlert>
         <VAlert v-if="store.moodsNeedRecalibration" type="warning" variant="tonal" density="compact" class="mb-3">
-          Some prompts changed since the last calibration. Those moods are not suggested again until you recalibrate.
+          Some prompts changed since the last calibration. Those moods are not suggested again until the next analysis run or a Recalibrate.
         </VAlert>
 
         <VDivider class="my-3" />

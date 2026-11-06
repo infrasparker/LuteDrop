@@ -214,7 +214,10 @@ pub struct MoodStat {
 /// `CALIBRATION_MIN_TRACKS` music tracks, and never recomputed automatically
 /// (only Recalibrate clears it), so values do not drift as the library grows.
 /// Stored as JSON `{calibratedAt, tracks, prompts: {id: [..]}, stats: {id:
-/// {mean, sd}}}` in the `mood_calibration` setting.
+/// {mean, sd}}}` in the `mood_calibration` setting, plus the optional keys
+/// `source` ("library" or "reference"; absent in older saves, read as
+/// library) and `referenceSet` (the reference set's id; only written for a
+/// reference calibration).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MoodCalibration {
@@ -315,11 +318,26 @@ pub fn reference_calibration(
     })
 }
 
+/// True when two floats are equal up to rounding noise: within a relative
+/// 1e-12 (or an absolute 1e-12 for values near zero).
+fn approx_eq(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 1e-12 * 1.0_f64.max(a.abs()).max(b.abs())
+}
+
 /// True when two calibrations are the same apart from when they were taken.
+/// The statistics are compared with a tiny tolerance: reading a float back
+/// from JSON can differ from the original in its last bit, and an exact
+/// comparison would then see a "change" and re-save the calibration every run.
 pub fn same_calibration(a: &MoodCalibration, b: &MoodCalibration) -> bool {
+    let stats_match = a.stats.len() == b.stats.len()
+        && a.stats.iter().all(|(id, sa)| {
+            b.stats
+                .get(id)
+                .is_some_and(|sb| approx_eq(sa.mean, sb.mean) && approx_eq(sa.sd, sb.sd))
+        });
     a.tracks == b.tracks
         && a.prompts == b.prompts
-        && a.stats == b.stats
+        && stats_match
         && a.source == b.source
         && a.reference_set == b.reference_set
 }
@@ -1052,6 +1070,31 @@ mod tests {
         let mut c = a.clone();
         c.source = CalibrationSource::Reference;
         assert!(!same_calibration(&a, &c));
+    }
+
+    #[test]
+    fn same_calibration_tolerates_float_noise_but_not_real_change() {
+        let a = flat_calibration(0.1, 0.05);
+
+        // One-ulp-scale noise (as a JSON round trip can cause) is still the same.
+        let mut noisy = a.clone();
+        for stat in noisy.stats.values_mut() {
+            stat.mean *= 1.0 + 1e-15;
+            stat.sd *= 1.0 - 1e-15;
+        }
+        assert!(same_calibration(&a, &noisy));
+
+        // A real difference is not.
+        let mut moved = a.clone();
+        for stat in moved.stats.values_mut() {
+            stat.mean += 1e-6;
+        }
+        assert!(!same_calibration(&a, &moved));
+
+        // A different reference set is not.
+        let mut other_set = a.clone();
+        other_set.reference_set = Some("other-set".into());
+        assert!(!same_calibration(&a, &other_set));
     }
 
     #[test]

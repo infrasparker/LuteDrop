@@ -320,8 +320,10 @@ export function sortByKey<T>(
 /** The line under "Calibration" in Settings → Moods: which statistics the
  * bars are measured against. */
 export function calibrationLabel(info: MoodCalibrationInfo | null): string {
-  if (!info) return 'Not calibrated yet. The next analysis run calibrates once it covers 50 music tracks.';
+  if (!info) return "Not calibrated yet. The next analysis run calibrates, against the analyzer's reference set, or once it covers 50 music tracks of your library.";
   if (info.source === 'reference') {
+    // The "(Kevin MacLeod, CC BY)" attribution is for the shipped set
+    // incompetech-300-v1. Change it together with the set if a new one ships.
     return `Calibrated against the reference set: ${info.tracks} soundtrack tracks (Kevin MacLeod, CC BY), ${info.referenceSet}`;
   }
   const date = new Date(Number(info.calibratedAt)).toLocaleString();

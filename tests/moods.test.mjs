@@ -179,5 +179,5 @@ test('calibrationLabel says where the calibration came from', () => {
   assert.ok(lib.includes('your library') && lib.includes('129 tracks'));
   const ref = calibrationLabel({ calibratedAt: '1700000000000', tracks: 300, source: 'reference', referenceSet: 'incompetech-300-v1' });
   assert.ok(ref.includes('reference set') && ref.includes('300') && ref.includes('incompetech-300-v1'));
-  assert.equal(calibrationLabel(null), 'Not calibrated yet. The next analysis run calibrates once it covers 50 music tracks.');
+  assert.equal(calibrationLabel(null), "Not calibrated yet. The next analysis run calibrates, against the analyzer's reference set, or once it covers 50 music tracks of your library.");
 });
