@@ -4,15 +4,16 @@ import multiprocessing
 import os
 import threading
 from collections.abc import Callable
+from typing import Annotated
 from concurrent.futures import Executor, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
-from . import heads, moods, rhythm, vibe
+from . import heads, moods, rhythm, scry
 from .embed import Embedder, EmbeddingCache, MuqEmbedder, decode_track
 
 MAX_EMBED_ITEMS = 32
@@ -21,11 +22,17 @@ DEFAULT_RESULTS = 50
 MAX_RESULTS = 500
 MAP_CACHE_SIZE = 8
 
+# Limits on the mood vocabulary a /score request may carry.
+MAX_MOODS = 32
+MAX_PROMPTS_PER_GROUP = 16
+MAX_PROMPT_CHARS = 300
+# Embedded prompt texts kept between requests. Past this the cache starts
+# over; it only grows when the user keeps editing prompts.
+MAX_CACHED_PROMPTS = 2048
+
 # How long /embed waits for the model to finish loading before it answers
 # 503. Loading starts when the app is created.
 LOAD_WAIT_SECONDS = 10
-# Keys the pool prompt vectors apart from the pole vectors in one cache.
-POOL_PREFIX = "pool:"
 
 log = logging.getLogger(__name__)
 
@@ -44,14 +51,33 @@ class Examples(BaseModel):
     negatives: list[str] = []
 
 
+PromptText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_PROMPT_CHARS)]
+PromptList = Annotated[list[PromptText], Field(min_length=1, max_length=MAX_PROMPTS_PER_GROUP)]
+MoodKey = Annotated[str, StringConstraints(pattern=r"^[a-z]+$", max_length=32)]
+
+
+class EnergyPrompts(BaseModel):
+    positive: PromptList
+    negative: PromptList
+
+
 class ScoreRequest(BaseModel):
     scene: str = ""
     gate: Examples
     tags: dict[str, Examples] = {}
     # Pace (Still/Moving) on rhythm features. App versions after v0.12 no
-    # longer send it (the Calm - Energetic mood axis replaced it); this head
+    # longer send it (the mood scales, since removed, replaced it); this head
     # and the rhythm features can be removed once older versions are retired.
     pace: Examples | None = None
+    targets: list[str] = []
+    # The app's mood vocabulary: prompts per mood id, and Energy's two sides.
+    # Either one, when given, replaces the matching defaults in `moods.py`.
+    mood_prompts: Annotated[dict[MoodKey, PromptList], Field(max_length=MAX_MOODS)] | None = None
+    energy_prompts: EnergyPrompts | None = None
+
+
+class PreviewRequest(BaseModel):
+    prompts: PromptList
     targets: list[str] = []
 
 
@@ -216,53 +242,58 @@ def create_app(
             else {},
         }
 
-    # Unit-length mood prompt vectors per pole, embedded the first time /score
-    # finds the model loaded and reused after that. Published only once every
-    # pole succeeded, so a failure part-way leaves nothing half-filled.
-    mood_vecs: dict[str, np.ndarray] = {}
-    mood_lock = threading.Lock()
+    # Unit-length vectors per prompt text, embedded the first time /score
+    # needs a text with the model loaded and reused after that, so changing
+    # one mood's prompts embeds only the new texts. A batch is added only once
+    # it embedded in full, so a failure part-way leaves nothing half-filled.
+    text_vecs: dict[str, np.ndarray] = {}
+    text_lock = threading.Lock()
 
-    def mood_poles() -> dict[str, np.ndarray] | None:
-        """The pole and pool vectors (pools keyed with POOL_PREFIX), or None while the model is not ready (or the
-        prompts could not be embedded); /score then omits mood. Never waits."""
+    def prompt_vectors(groups: dict[str, list[str]]) -> dict[str, np.ndarray] | None:
+        """One matrix of unit prompt vectors per group, or None while the
+        model is not ready (or the prompts could not be embedded); /score
+        then omits mood. Never waits for the model."""
         if not loaded.is_set() or load_error:
             return None
-        with mood_lock:
-            if not mood_vecs:
-                built = {}
+        with text_lock:
+            needed = list(dict.fromkeys(t for texts in groups.values() for t in texts))
+            missing = [t for t in needed if t not in text_vecs]
+            if len(text_vecs) + len(missing) > MAX_CACHED_PROMPTS:
+                # Start over, embedding every text this call needs, so the
+                # lookup below never misses a text cleared here.
+                text_vecs.clear()
+                missing = needed
+            if missing:
                 try:
-                    groups = {
-                        **moods.POLES,
-                        **{POOL_PREFIX + name: texts for name, texts in moods.POOLS.items()},
-                    }
-                    for name, texts in groups.items():
-                        vecs = np.asarray(embedder.embed_text(texts), dtype=np.float64)
-                        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-                        built[name] = vecs / np.where(norms == 0, 1, norms)
+                    vecs = np.asarray(embedder.embed_text(missing), dtype=np.float64)
                 except Exception:
                     log.exception("Mood prompts failed to embed")
                     return None
-                mood_vecs.update(built)
-            return dict(mood_vecs)
+                norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+                vecs = vecs / np.where(norms == 0, 1, norms)
+                text_vecs.update(zip(missing, vecs))
+            return {name: np.vstack([text_vecs[t] for t in texts]) for name, texts in groups.items()}
 
-    def mood_scores(target_hashes: list[str], X_targets: np.ndarray) -> dict[str, dict] | None:
+    def mood_scores(req: ScoreRequest, target_hashes: list[str], X_targets: np.ndarray) -> dict[str, dict] | None:
         if not target_hashes:
             return {}
-        poles = mood_poles()
-        if poles is None:
+        mood_groups = req.mood_prompts if req.mood_prompts is not None else moods.MOODS
+        if req.energy_prompts is not None:
+            energy_pos, energy_neg = req.energy_prompts.positive, req.energy_prompts.negative
+        else:
+            energy_pos, energy_neg = moods.ENERGY_POS, moods.ENERGY_NEG
+        # "energy+" / "energy-" cannot clash with a mood id (lowercase letters only).
+        vecs = prompt_vectors({**mood_groups, "energy+": energy_pos, "energy-": energy_neg})
+        if vecs is None:
             return None
-        sims = {name: (X_targets @ v.T).mean(axis=1) for name, v in poles.items()}
-        axes = {
-            "bright": sims["bright"] - sims["dark"],
-            "grand": sims["grand"] - sims["intimate"],
-            "energy": sims["energetic"] - sims["calm"],
-        }
-        # Pools: absolute similarities; the app z-scores them.
-        pools = {name: sims[POOL_PREFIX + name] for name in moods.POOLS}
+        # Raw scores; the app calibrates them. Each mood is the mean cosine
+        # with its prompts; energy is positive minus negative.
+        sims = {name: (X_targets @ v.T).mean(axis=1) for name, v in vecs.items()}
+        energy = sims["energy+"] - sims["energy-"]
         return {
             h: {
-                **{name: float(values[i]) for name, values in axes.items()},
-                "pools": {name: float(values[i]) for name, values in pools.items()},
+                "moods": {name: float(sims[name][i]) for name in mood_groups},
+                "energy": float(energy[i]),
             }
             for i, h in enumerate(target_hashes)
         }
@@ -281,10 +312,29 @@ def create_app(
         if req.pace is not None:
             r_hashes, R_targets = rhythm_vectors(req.targets)
             out["pace"] = score_head(req.pace, r_hashes, R_targets, rhythm_vectors, scale=True)
-        mood = mood_scores(target_hashes, X_targets)
+        mood = mood_scores(req, target_hashes, X_targets)
         if mood is not None:
             out["mood"] = mood
         return out
+
+    @app.post("/preview")
+    def preview(req: PreviewRequest):
+        """Raw similarity of each cached target with one set of prompts (the
+        mean cosine, as a mood is scored in /score), keyed by hash. No
+        calibration: for eyeballing which tracks a prompt set ranks first
+        before saving it. Waits for the model like /search."""
+        target_hashes, X_targets = vectors(req.targets)
+        if not target_hashes:
+            return {}
+        if not loaded.wait(LOAD_WAIT_SECONDS):
+            raise HTTPException(status_code=503, detail="model is still loading")
+        if load_error:
+            raise HTTPException(status_code=503, detail=f"model failed to load: {load_error[0]}")
+        vecs = prompt_vectors({"preview": req.prompts})
+        if vecs is None:
+            raise HTTPException(status_code=503, detail="the prompts could not be embedded")
+        sims = (X_targets @ vecs["preview"].T).mean(axis=1)
+        return {h: float(sims[i]) for i, h in enumerate(target_hashes)}
 
     @app.post("/similar")
     def similar(req: SimilarRequest):
@@ -293,7 +343,7 @@ def create_app(
         c_hashes, C = vectors([h for h in req.candidates if h not in excluded])
         if len(Q) == 0 or len(C) == 0:
             return {"results": []}
-        ranked = vibe.similar(vibe.centroid(Q), C, _limit(req.limit))
+        ranked = scry.similar(scry.centroid(Q), C, _limit(req.limit))
         return {"results": [{"hash": c_hashes[i], "score": s} for i, s in ranked]}
 
     @app.post("/search")
@@ -306,7 +356,7 @@ def create_app(
         if load_error:
             raise HTTPException(status_code=503, detail=f"model failed to load: {load_error[0]}")
         text_vec = embedder.embed_text([req.text])[0]
-        ranked = vibe.rank_by_text(text_vec, C, _limit(req.limit))
+        ranked = scry.rank_by_text(text_vec, C, _limit(req.limit))
         return {"results": [{"hash": c_hashes[i], "score": s} for i, s in ranked]}
 
     # Layouts keyed by the sorted hash tuple; the oldest entry is dropped first.
@@ -321,7 +371,7 @@ def create_app(
             points = map_cache.get(key)
         if points is None:
             row = {h: i for i, h in enumerate(found)}
-            coords = vibe.layout_2d(X[[row[h] for h in key]] if key else X)
+            coords = scry.layout_2d(X[[row[h] for h in key]] if key else X)
             points = [
                 {"hash": h, "x": float(x), "y": float(y)} for h, (x, y) in zip(key, coords)
             ]

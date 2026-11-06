@@ -50,36 +50,42 @@ Every music entry can have a role, **Combat** or **Non-combat**. The analyzer sc
 - The Library has a Role column and a Role filter (All, Combat, Non-combat, Unset). The entry editor has a Combat / Non-combat control with a clear action, and the bulk bar can set or clear the role on several music entries at once.
 - Only entries whose role was set by hand count as examples. Auto roles never do.
 
-### Mood pools
+### Moods
 
-Every music entry sits in one **mood pool**, from a short fixed list:
+A mood is a **lens**, not a label: picking a mood ranks the whole music library by how well each track fits it. No track belongs to a mood, and nothing is cut off. The moods are yours to edit (see **Mood vocabulary** below); a new library starts with eight moods and Energy:
 
-- **Peaceful**
-- **Lighthearted**
-- **Somber**
-- **Wonder**
-- **Mysterious**
-- **Epic**
-- **Tense**
+- **Peaceful**, **Sorrowful**, **Wondrous**, **Joyful**, **Quirky**, **Mysterious**, **Grim**, **Heroic**
+- **Energy** (calm and slow at 0, energetic at 1)
 
-Ambiance entries have no pool.
+Each music track has a **mood profile**: one value from 0 to 1 per mood, plus one for Energy. Ambiance entries have no moods.
 
-The analyzer suggests a pool for each analyzed track by comparing its sound with a few descriptions of each pool. Its scores are put on a common footing with a calibration taken once, from the first analysis run that covers at least 50 music tracks; until then no pools are suggested. **Tense** is never suggested: it is too close to combat music to tell apart by ear, so tracks are moved into it by hand.
+The analyzer suggests every value by comparing the track's sound with a few descriptions of each mood. Its scores are put on a common footing with a calibration taken once, from the first analysis run that covers at least 50 music tracks; until then no moods are suggested. Upgrading from the pools release clears the old pools; the next analysis run fills in the profiles.
 
-- A suggested value is marked **✨ Suggested**; **✓ Confirm** keeps it. Picking a pool by hand confirms it. A confirmed value always wins over the analyzer's, and **↺ Use suggestion** clears it. When the two differ, the status reads "Confirmed · suggested: …". The same wording is used for roles and tags.
-- The entry editor has a **Role** row and a **Pool** row with the seven pools.
-- The Library and Scry have a filter bar: pool chips with counts (any number at once, plus **Unsorted** for music with no pool), the role filter, and a **Sort** menu (Name, Energy, Brightness, Size). The bulk bar's **Set pool…** sets the pool of several music entries at once.
+- **The profile.** One bar per mood, each with five levels (0, 0.25, 0.5, 0.75, 1). A bar at the analyzer's value is **Suggested** and drawn muted. Clicking a bar (or using the arrow keys on a focused bar) sets the nearest level; the bar is then **Set by you**, drawn in the accent colour, and hovering it shows "Set by you · suggested 0.62". **↺** goes back to the suggestion. A level you set always wins over the analyzer's.
+- The entry editor has a **Role** row and the mood profile under it. The Library's bulk bar has **Set mood levels…**, which opens the profile for the selected music; a click sets that level on every selected track, and a bar whose tracks differ shows "mixed".
+- **Lenses.** The Library and Scry have a row of lens buttons, one per mood and one for Energy. One lens ranks the list by that score, highest first, with the score as a bar in its own column. With two or more lenses an **Any / All** switch appears: any (the default) ranks by a track's best score among them, all by its weakest. Ambiance is hidden while a lens is on.
+- The filter bar also has the role filter and a **Sort** menu (Name, Energy, and Lens score while a lens is on) with a direction arrow. Energy is a column in the Library too, sortable either way.
+- Tag chips work the same way: with two or more selected, **Any / All** chooses between entries with one of the tags (the default) and entries with every one.
 
-**Scales.** Every analyzed music entry also has three scales, each with three steps: **Bright ↔ Dark** (Dark, Neutral, Bright), **Intimate ↔ Grand** (Intimate, Moderate, Grand) and **Calm ↔ Energetic** (Calm, Steady, Energetic). The analyzer scores each scale as a z-score across the library's analyzed music, and a score more than 0.6 from the mean moves the entry off the middle step. The scales are not shown as controls; they drive the Sort menu and shade the word on the Review card.
+#### Mood vocabulary
+
+**Moods** in the left rail opens the mood vocabulary: the moods the analyzer scores and the text prompts it compares each track with.
+
+- Each mood has an **id** (lowercase letters; it cannot change once saved), a **name** (rename freely), and **prompts**, one per line. Moods can be added, removed and moved up or down; the order is the order of the lens buttons and the profile. Energy is always last and has two sides of prompts: energetic and calm.
+- The **word bank** above the list holds tag words the analyzer's text model knows well. Clicking one adds it, on a line of its own, to the prompt field you were last in. Single tag words work as well as sentences, but not every word is reliable, so check with Preview.
+- **Preview** on a mood lists the 15 tracks its current prompts rank highest, with their album folder and raw similarity, without saving or recalibrating anything. It needs the analyzer.
+- **Save** stores the vocabulary. Removing a mood deletes its values on every track; when that includes levels set by you, Save asks first and says how many.
+- **Recalibrate** clears the calibration and every suggested mood value (levels set by you stay) and starts an analysis run, which suggests every mood again from the current prompts. The panel shows when the calibration was taken and from how many tracks.
+- After you change a mood's prompts (or add a mood), Save offers to recalibrate. Until you do, the lens buttons show **Needs recalibration**, and the changed moods keep their old suggestions; the others are still suggested as before.
 
 ### Review
 
-The **Review** tab goes through new music one track at a time. Its badge counts the music entries that have a pool (suggested or confirmed) and have not been reviewed yet.
+The **Review** tab goes through music one track at a time. Its badge counts the music entries that have not been reviewed yet (no mood level set and not approved).
 
-- The card shows the track's name and folder, a play button, and a one-word readout of its feel (from the pool, the energy step and the size step, for example *Triumphant* for Epic, Energetic and Grand). Under it are the analyzer's suggestion with its confidence and its second choice.
-- The **Role** and **Pool** rows work as in the editor; changing them does not move on. **Sounds like** names the two closest confirmed tracks in the same pool, when the analyzer is available.
-- **Approve** (key **A**) confirms the role and pool shown and moves on. **Skip** (key **S**) moves the track to the end of the queue for this session without saving anything. **Space** plays or stops the track.
-- Newest imports come first, and within a day the least certain suggestions first.
+- The card shows the track's name and folder, a play button, and its two highest moods as a readout, for example "Mysterious 0.87 · Grim 0.74".
+- The **Role** row and the mood profile work as in the editor; changing them does not move on. **Sounds like** names the two closest reviewed tracks by sound, when the analyzer is available.
+- **Approve** (key **A**) confirms the role shown, marks the track reviewed and moves on. Mood bars you did not touch stay suggestions. **Skip** (key **S**) moves the track to the end of the queue for this session without saving anything. **Space** plays or stops the track.
+- Newest imports come first, and within a day the tracks with the lowest top mood score first.
 
 ### Auto tags
 
@@ -98,7 +104,7 @@ Auto tags are learned from the tags the user applied by hand.
 
 - **Text search.** A description such as "tense strings building to a battle" returns the closest tracks, ranked by score.
 - **More like this.** The action on a Library row opens Scry seeded with that track. Seeds are shown as removable chips, more can be added from the results, and the results are the tracks closest to the seeds together.
-- **Filters.** The results can be filtered by pool and Role, and sorted by best match, name or a scale.
+- **Filters.** The results can be ranked by mood lenses and filtered by Role, and sorted by best match, name, Energy or lens score.
 - **Map.** A scatter plot of every analyzed music track, colored by role. Hovering shows the track name and clicking plays it. Dragging draws a lasso that adds the enclosed tracks to the selection. Seeds and results are highlighted.
 - **Playlists.** The selection can become a playlist with **Create playlist**, which adds a composition with one shuffle track holding the selected tracks to a chosen group of the active configuration, or be appended to a track with **Add to existing track**.
 

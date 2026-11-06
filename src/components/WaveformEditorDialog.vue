@@ -6,7 +6,7 @@ import WaveformEditor from './WaveformEditor.vue';
 import TagChip from './TagChip.vue';
 import TagScoresPanel from './TagScoresPanel.vue';
 import RoleControl from './RoleControl.vue';
-import PoolControl from './PoolControl.vue';
+import MoodProfile from './MoodProfile.vue';
 import { open } from '@tauri-apps/plugin-dialog';
 import { AUDIO_EXTENSIONS } from '../constants';
 import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
@@ -304,7 +304,7 @@ async function relocateFile(): Promise<void> {
           </template>
         </VCombobox>
 
-        <!-- Role and pool (music only): label | options | status grid -->
+        <!-- Role and the mood profile (music only). Role: label | options | status grid -->
         <template v-if="editEntryType === 'music'">
           <div class="facet-grid mb-3">
             <span class="text-caption text-medium-emphasis">Role</span>
@@ -314,9 +314,9 @@ async function relocateFile(): Promise<void> {
               :role-auto-score="entry.roleAutoScore"
               :role-user="entry.roleUser"
             />
-            <span class="text-caption text-medium-emphasis">Pool</span>
-            <PoolControl :entry="entry" />
           </div>
+          <div class="text-caption text-medium-emphasis mb-1">Moods</div>
+          <MoodProfile :key="entry.id" :entries="[entry]" class="mb-4" />
         </template>
 
         <!-- Volume -->
@@ -446,7 +446,9 @@ async function relocateFile(): Promise<void> {
    as two cells (display: contents), so the columns line up across rows. */
 .facet-grid {
   display: grid;
-  grid-template-columns: max-content max-content 1fr;
+  /* The options take one line when the dialog has room and wrap (down to
+     their widest button) when it has not; the status never wraps. */
+  grid-template-columns: max-content minmax(min-content, max-content) minmax(max-content, 1fr);
   align-items: center;
   column-gap: 12px;
   row-gap: 12px;

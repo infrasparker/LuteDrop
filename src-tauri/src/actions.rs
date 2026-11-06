@@ -5,14 +5,14 @@ use crate::audio::util::{is_audio_path, is_file_usable};
 use crate::database;
 use crate::database::{configurations, hierarchy, library, DbError};
 use crate::autotag::client::{AnalyzerClient, HttpAnalyzer};
-use crate::autotag::vibe;
+use crate::autotag::scry;
 use crate::database::autotag_db;
 use crate::database::settings::{self as broadcast_settings, BroadcastSettings};
 use crate::database::settings as autotag_settings;
 use crate::models::{
     AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
-    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodScale, MoodStep, Pool, Role, SceneConfig, Track, TrackUpdates, VibeHit,
-    VibePoint,
+    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodVocabulary, Role, SceneConfig, Track, TrackUpdates, ScryHit,
+    ScryPoint,
 };
 use crate::relink;
 use crate::state::AppStateContainer;
@@ -423,34 +423,41 @@ pub fn set_entry_role(
     Ok(state)
 }
 
-/// Sets (or, with `None`, clears) the user's step on one mood scale for the
-/// given entries.
-pub fn set_entry_mood_step(
+/// Sets the user's level of one mood on the given music entries (`None` goes
+/// back to the analyzer's suggestion) and marks each one reviewed now. The
+/// level must be 0, 0.25, 0.5, 0.75 or 1. No re-score: levels do not train
+/// anything yet (learned mood heads are a later release).
+pub fn set_entry_mood_level(
     container: &AppStateContainer,
     entry_ids: Vec<String>,
-    scale: MoodScale,
-    step: Option<MoodStep>,
+    mood: String,
+    level: Option<f64>,
 ) -> Result<AppState, String> {
-    let state = mutate_and_reload(container, |conn| {
-        library::set_user_mood_step(conn, &entry_ids, scale, step)
-    })?;
-    request_rescore_if_enabled(container);
+    mutate_and_reload(container, |conn| library::set_user_mood_level(conn, &entry_ids, &mood, level))
+}
+
+/// Saves the mood vocabulary from Settings → Moods (see
+/// `library::save_mood_vocabulary`): removed moods lose their rows, changed
+/// prompts wait for Recalibrate.
+pub fn set_mood_vocabulary(container: &AppStateContainer, vocabulary: MoodVocabulary) -> Result<AppState, String> {
+    mutate_and_reload(container, |conn| library::save_mood_vocabulary(conn, &vocabulary).map(|_| ()))
+}
+
+/// Recalibrate: clears the mood calibration, every analyzer mood value and
+/// the stored scores (user levels stay), then starts an analysis run, which
+/// takes a new calibration from the current prompts. Refused while
+/// auto-tagging is off, since nothing could rebuild what it clears.
+pub fn recalibrate_moods(container: &AppStateContainer) -> Result<AppState, String> {
+    if !autotag_enabled(container) {
+        return Err("Turn on auto-tagging first: the analyzer rebuilds the calibration".to_string());
+    }
+    let state = mutate_and_reload(container, library::clear_mood_analysis)?;
+    container.autotag.analyze_library();
     Ok(state)
 }
 
-/// Sets the user's pool on the given music entries (`None` goes back to the
-/// analyzer's suggestion) and marks each one reviewed now. No re-score: pools
-/// do not train anything yet (learned pool heads are a later release).
-pub fn set_entry_pool(
-    container: &AppStateContainer,
-    entry_ids: Vec<String>,
-    pool: Option<Pool>,
-) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| library::set_user_pool(conn, &entry_ids, pool))
-}
-
-/// Approves one entry in Review: its shown pool and role become the user's
-/// and it is marked reviewed, atomically. Re-scores when that gave the entry
+/// Approves one entry in Review: its shown role becomes the user's and it is
+/// marked reviewed, atomically. Mood suggestions stay suggestions. Re-scores when that gave the entry
 /// a user role, since user roles train the Combat gate.
 pub fn approve_entry_review(container: &AppStateContainer, entry_id: &str) -> Result<AppState, String> {
     let role_changed = with_db(container, |conn| library::approve_entry_review(conn, entry_id))?;
@@ -813,23 +820,31 @@ pub fn get_autotag_report(container: &AppStateContainer) -> AutoTagReport {
 
 /// Music entries most like the selected ones. Blocks while the analyzer
 /// works, so callers run it off the UI thread.
-pub fn similar_entries(container: &AppStateContainer, entry_ids: &[String], limit: u32) -> Result<Vec<VibeHit>, String> {
-    let client = vibe::client_for(&container.db)?;
-    vibe::similar(&container.db, &client, entry_ids, limit)
+pub fn similar_entries(container: &AppStateContainer, entry_ids: &[String], limit: u32) -> Result<Vec<ScryHit>, String> {
+    let client = scry::client_for(&container.db)?;
+    scry::similar(&container.db, &client, entry_ids, limit)
 }
 
 /// Music entries ranked by how well they match a text description. Blocks
 /// while the analyzer works.
-pub fn search_vibe(container: &AppStateContainer, text: &str, limit: u32) -> Result<Vec<VibeHit>, String> {
-    let client = vibe::client_for(&container.db)?;
-    vibe::search(&container.db, &client, text, limit)
+pub fn search_scry(container: &AppStateContainer, text: &str, limit: u32) -> Result<Vec<ScryHit>, String> {
+    let client = scry::client_for(&container.db)?;
+    scry::search(&container.db, &client, text, limit)
+}
+
+/// The top music entries for a set of mood prompts, by raw similarity,
+/// without saving or recalibrating anything (Settings → Moods, Preview).
+/// Blocks while the analyzer works.
+pub fn preview_mood_prompts(container: &AppStateContainer, prompts: &[String]) -> Result<Vec<ScryHit>, String> {
+    let client = scry::client_for(&container.db)?;
+    scry::preview_prompts(&container.db, &client, prompts)
 }
 
 /// A 2D position for every analyzed music entry. Blocks while the analyzer
 /// works.
-pub fn vibe_map(container: &AppStateContainer) -> Result<Vec<VibePoint>, String> {
-    let client = vibe::client_for(&container.db)?;
-    vibe::map(&container.db, &client)
+pub fn scry_map(container: &AppStateContainer) -> Result<Vec<ScryPoint>, String> {
+    let client = scry::client_for(&container.db)?;
+    scry::map(&container.db, &client)
 }
 
 /// The entry's stored scores, or `None` if it has not been scored.

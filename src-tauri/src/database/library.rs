@@ -3,7 +3,8 @@ use uuid::Uuid;
 
 use crate::database::now_millis;
 use crate::database::DbError;
-use crate::models::{AutoTag, LibraryEntryUsage, MoodScale, MoodStep, MoodZ, Pool, PoolSuggestion, Role};
+use crate::database::settings;
+use crate::models::{AutoTag, LibraryEntryUsage, MoodVocabulary, Role, MOOD_LEVELS};
 
 // ─── Library Entry CRUD ───────────────────────────────────────────────────────
 
@@ -125,24 +126,12 @@ pub fn update_library_entry_type(
             params![id],
         )
         .map_err(|e| format!("Failed to clear role: {e}"))?;
-        conn.execute(
-            "UPDATE library_entries
-             SET mood_bright = NULL, mood_bright_user = NULL,
-                 mood_grand = NULL, mood_grand_user = NULL,
-                 mood_energy = NULL, mood_energy_user = NULL
-             WHERE id = ?1",
-            params![id],
-        )
-        .map_err(|e| format!("Failed to clear mood: {e}"))?;
-        // Ambiance has no pool: every pool column goes, review included.
-        conn.execute(
-            "UPDATE library_entries
-             SET pool_auto = NULL, pool_auto_p = NULL, pool_auto_runner = NULL,
-                 pool_user = NULL, pool_reviewed_at = NULL
-             WHERE id = ?1",
-            params![id],
-        )
-        .map_err(|e| format!("Failed to clear pool: {e}"))?;
+        // Ambiance has no moods: both layers go, and so does the review
+        // time (ambiance is never reviewed).
+        conn.execute("DELETE FROM library_entry_moods WHERE library_entry_id = ?1", params![id])
+            .map_err(|e| format!("Failed to clear moods: {e}"))?;
+        conn.execute("UPDATE library_entries SET mood_reviewed_at = NULL WHERE id = ?1", params![id])
+            .map_err(|e| format!("Failed to clear review time: {e}"))?;
     }
 
     tx.commit()
@@ -950,61 +939,74 @@ pub fn apply_auto_role(
     apply_auto_facet(conn, Facet::Role, entry_id, role.map(|r| r.as_db_str()), score)
 }
 
-/// Sets the user's step on one mood scale for each entry. `None` clears the
-/// user step, so the auto value shows again.
-pub fn set_user_mood_step(
+/// The level a user may set, snapped exactly onto `MOOD_LEVELS` (a value
+/// within 1e-9 of one counts, so float noise from the UI is harmless), or an
+/// error naming the allowed levels.
+fn checked_level(level: f64) -> Result<f64, String> {
+    MOOD_LEVELS
+        .into_iter()
+        .find(|l| (l - level).abs() < 1e-9)
+        .ok_or_else(|| format!("Mood level {level} is not one of 0, 0.25, 0.5, 0.75, 1"))
+}
+
+/// Sets the user's level of one mood on each music entry (`None` clears it,
+/// so the analyzer's suggestion shows again) and marks each one reviewed now.
+/// Ambiance entries have no moods and are skipped; so are missing ones. A
+/// level outside `MOOD_LEVELS`, or a mood not in the vocabulary, is refused
+/// before anything is written.
+///
+/// Levels do not train anything yet: learned mood heads are a later release,
+/// which regresses them on `user_level`.
+pub fn set_user_mood_level(
     conn: &Connection,
     entry_ids: &[String],
-    scale: MoodScale,
-    step: Option<MoodStep>,
+    mood: &str,
+    level: Option<f64>,
 ) -> Result<(), String> {
+    let level = level.map(checked_level).transpose()?;
+    if !settings::load_mood_vocabulary(conn)?.contains(mood) {
+        return Err(format!("There is no mood \"{mood}\""));
+    }
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("Failed to begin mood transaction: {e}"))?;
-
-    // The column comes from a closed enum, never from caller-supplied text.
-    let sql = match scale {
-        MoodScale::Bright => "UPDATE library_entries SET mood_bright_user = ?2 WHERE id = ?1",
-        MoodScale::Grand => "UPDATE library_entries SET mood_grand_user = ?2 WHERE id = ?1",
-        MoodScale::Energy => "UPDATE library_entries SET mood_energy_user = ?2 WHERE id = ?1",
-    };
-    let step_str = step.map(|s| s.as_db_str());
+    let now = now_millis();
     for entry_id in entry_ids {
-        conn.execute(sql, params![entry_id, step_str])
-            .map_err(|e| format!("Failed to set mood step: {e}"))?;
+        let is_music = conn
+            .execute(
+                "UPDATE library_entries SET mood_reviewed_at = ?2 WHERE id = ?1 AND entry_type = 'music'",
+                params![entry_id, now],
+            )
+            .map_err(|e| format!("Failed to mark entry reviewed: {e}"))?
+            > 0;
+        if !is_music {
+            continue;
+        }
+        match level {
+            Some(level) => conn.execute(
+                "INSERT INTO library_entry_moods (library_entry_id, mood, user_level)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT (library_entry_id, mood) DO UPDATE SET user_level = excluded.user_level",
+                params![entry_id, mood, level],
+            ),
+            // No row means no user level already; never insert an empty one.
+            None => conn.execute(
+                "UPDATE library_entry_moods SET user_level = NULL WHERE library_entry_id = ?1 AND mood = ?2",
+                params![entry_id, mood],
+            ),
+        }
+        .map_err(|e| format!("Failed to set mood level: {e}"))?;
     }
-
     tx.commit().map_err(|e| format!("Failed to commit mood transaction: {e}"))?;
     Ok(())
 }
 
-/// Sets the user's pool on each music entry (`None` clears it, so the
-/// analyzer's suggestion shows again) and marks each one reviewed now.
-/// Ambiance entries have no pool and are skipped.
-pub fn set_user_pool(conn: &Connection, entry_ids: &[String], pool: Option<Pool>) -> Result<(), String> {
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| format!("Failed to begin pool transaction: {e}"))?;
-    let pool_str = pool.map(|p| p.as_db_str());
-    let now = now_millis();
-    for entry_id in entry_ids {
-        conn.execute(
-            "UPDATE library_entries SET pool_user = ?2, pool_reviewed_at = ?3
-             WHERE id = ?1 AND entry_type = 'music'",
-            params![entry_id, pool_str, now],
-        )
-        .map_err(|e| format!("Failed to set pool: {e}"))?;
-    }
-    tx.commit().map_err(|e| format!("Failed to commit pool transaction: {e}"))?;
-    Ok(())
-}
-
-/// Approves a music entry in Review, in one transaction: the pool shown
-/// (`pool_user`, else `pool_auto`) becomes the user's, so does the role shown
-/// (`role_user`, else `role_auto`), and the entry is marked reviewed now.
-/// A facet with nothing shown stays empty. Returns whether the user's role
-/// changed (a new training example); a missing or ambiance entry is left
-/// alone and returns false.
+/// Approves a music entry in Review, in one transaction: the role shown
+/// (`role_user`, else `role_auto`) becomes the user's, and the entry is
+/// marked reviewed now. Mood suggestions are not copied into user levels: a
+/// bar the user did not touch stays the analyzer's. Returns whether the
+/// user's role changed (a new training example); a missing or ambiance entry
+/// is left alone and returns false.
 pub fn approve_entry_review(conn: &Connection, entry_id: &str) -> Result<bool, String> {
     let tx = conn
         .unchecked_transaction()
@@ -1022,9 +1024,8 @@ pub fn approve_entry_review(conn: &Connection, entry_id: &str) -> Result<bool, S
     };
     conn.execute(
         "UPDATE library_entries
-         SET pool_user = COALESCE(pool_user, pool_auto),
-             role_user = COALESCE(role_user, role_auto),
-             pool_reviewed_at = ?2
+         SET role_user = COALESCE(role_user, role_auto),
+             mood_reviewed_at = ?2
          WHERE id = ?1",
         params![entry_id, now_millis()],
     )
@@ -1033,73 +1034,86 @@ pub fn approve_entry_review(conn: &Connection, entry_id: &str) -> Result<bool, S
     Ok(role_user.is_none() && role_auto.is_some())
 }
 
-/// Writes the analyzer's pool suggestion for an entry (`None` clears it) and
-/// returns whether the row changed. Only `pool_auto`, `pool_auto_p` and
-/// `pool_auto_runner` are written; the user's pool and review time are never
-/// touched. Opens no transaction of its own.
-pub fn apply_auto_pool(
-    conn: &Connection,
-    entry_id: &str,
-    suggestion: Option<PoolSuggestion>,
-) -> Result<bool, String> {
-    let current: Option<(Option<String>, Option<f64>, Option<String>)> = conn
-        .query_row(
-            "SELECT pool_auto, pool_auto_p, pool_auto_runner FROM library_entries WHERE id = ?1",
-            params![entry_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+/// Writes the analyzer's 0..1 value of each given mood for an entry. Only
+/// `auto_score` is written; the user's levels and review time are never
+/// touched. The caller checks the entry is music. Opens no transaction of
+/// its own.
+pub fn apply_auto_moods(conn: &Connection, entry_id: &str, scores: &[(String, f64)]) -> Result<(), String> {
+    for (mood, score) in scores {
+        conn.execute(
+            "INSERT INTO library_entry_moods (library_entry_id, mood, auto_score)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT (library_entry_id, mood) DO UPDATE SET auto_score = excluded.auto_score",
+            params![entry_id, mood, score],
         )
-        .optional()
-        .map_err(|e| format!("Failed to read pool: {e}"))?;
-    let Some(current) = current else {
-        return Ok(false);
-    };
-    let new = (
-        suggestion.map(|s| s.pool.as_db_str().to_string()),
-        suggestion.map(|s| s.p),
-        suggestion.map(|s| s.runner.as_db_str().to_string()),
-    );
-    if current == new {
-        return Ok(false);
+        .map_err(|e| format!("Failed to write auto mood: {e}"))?;
     }
-    conn.execute(
-        "UPDATE library_entries SET pool_auto = ?2, pool_auto_p = ?3, pool_auto_runner = ?4 WHERE id = ?1",
-        params![entry_id, new.0, new.1, new.2],
-    )
-    .map_err(|e| format!("Failed to write auto pool: {e}"))?;
-    Ok(true)
+    Ok(())
 }
 
-/// Writes the analyzer's mood z-scores for an entry on the three scales
-/// (`None` clears all three) and returns whether the row changed. Only the
-/// auto columns are written; the user's steps are never touched. Opens no
-/// transaction of its own.
-pub fn apply_auto_mood(conn: &Connection, entry_id: &str, mood: Option<MoodZ>) -> Result<bool, String> {
-    let current: Option<[Option<f64>; 3]> = conn
-        .query_row(
-            "SELECT mood_bright, mood_grand, mood_energy FROM library_entries WHERE id = ?1",
-            params![entry_id],
-            |row| Ok([row.get(0)?, row.get(1)?, row.get(2)?]),
-        )
-        .optional()
-        .map_err(|e| format!("Failed to read mood: {e}"))?;
-
-    let Some(current) = current else {
-        return Ok(false);
-    };
-    let new = [mood.map(|m| m.bright), mood.map(|m| m.grand), mood.map(|m| m.energy)];
-    if current == new {
-        return Ok(false);
-    }
-
-    conn.execute(
-        "UPDATE library_entries SET mood_bright = ?2, mood_grand = ?3, mood_energy = ?4 WHERE id = ?1",
-        params![entry_id, new[0], new[1], new[2]],
+/// How many user-set levels each mood id holds, over the whole library.
+#[cfg(test)]
+fn user_level_count(conn: &Connection, mood: &str) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM library_entry_moods WHERE mood = ?1 AND user_level IS NOT NULL",
+        params![mood],
+        |r| r.get(0),
     )
-    .map_err(|e| format!("Failed to write auto mood: {e}"))?;
-    Ok(true)
+    .unwrap()
 }
 
-/// Returns the names of the tags the given library entry shows, sorted.
+/// The error `save_mood_vocabulary` gives while the stored one is unreadable.
+pub const MOOD_VOCABULARY_UNREADABLE: &str = "Stored mood list is unreadable; fix or reset it first";
+
+/// Saves a new mood vocabulary (Settings → Moods), in one transaction. It is
+/// normalized and checked first (see `MoodVocabulary::normalized`); a mood
+/// left out of it is removed, so its `library_entry_moods` rows go, user
+/// levels included (the UI confirms that first). Renaming a mood or editing
+/// its prompts keeps its rows; the calibration is not touched, so changed
+/// moods wait for Recalibrate. Returns the saved vocabulary. Refused while
+/// the stored vocabulary is unreadable: the app then shows the defaults, and
+/// saving a list built from them would delete the rows of the real moods.
+pub fn save_mood_vocabulary(conn: &Connection, vocabulary: &MoodVocabulary) -> Result<MoodVocabulary, String> {
+    if let Some(problem) = settings::mood_vocabulary_problem(conn)? {
+        log::warn!("Refusing to save the mood vocabulary over an unreadable one: {problem}");
+        return Err(MOOD_VOCABULARY_UNREADABLE.to_string());
+    }
+    let vocabulary = vocabulary.normalized()?;
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin vocabulary transaction: {e}"))?;
+    let kept = serde_json::to_string(&vocabulary.ids()).map_err(|e| format!("Failed to encode mood ids: {e}"))?;
+    conn.execute(
+        "DELETE FROM library_entry_moods WHERE mood NOT IN (SELECT value FROM json_each(?1))",
+        params![kept],
+    )
+    .map_err(|e| format!("Failed to delete removed moods: {e}"))?;
+    settings::save_mood_vocabulary(conn, &vocabulary)?;
+    tx.commit().map_err(|e| format!("Failed to commit vocabulary transaction: {e}"))?;
+    Ok(vocabulary)
+}
+
+/// Clears what the analyzer said about moods, for Recalibrate, in one
+/// transaction: the calibration, every `auto_score` (rows left with no level
+/// go), and every entry's stored scores (`scores_json`), so the next run
+/// takes a new calibration from the current prompts and scores everything
+/// again. User-set levels and review times are untouched.
+pub fn clear_mood_analysis(conn: &Connection) -> Result<(), String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin recalibrate transaction: {e}"))?;
+    settings::clear_mood_calibration(conn)?;
+    conn.execute_batch(
+        "UPDATE library_entry_moods SET auto_score = NULL;
+         DELETE FROM library_entry_moods WHERE user_level IS NULL;
+         UPDATE entry_analysis SET scores_json = NULL;",
+    )
+    .map_err(|e| format!("Failed to clear mood scores: {e}"))?;
+    tx.commit().map_err(|e| format!("Failed to commit recalibrate transaction: {e}"))?;
+    Ok(())
+}
+
+// Returns the names of the tags the given library entry shows, sorted.
 #[cfg(test)]
 pub fn get_tags_for_entry(
     conn: &Connection,
@@ -2041,57 +2055,31 @@ mod tests {
         assert_eq!(role_row(&conn, &a), (None, None, None));
     }
 
-    // ── Mood scales ───────────────────────────────────────────────────────────
+    // ── Moods ─────────────────────────────────────────────────────────────────
 
-    /// (bright z, grand z, energy z) as stored.
-    type MoodAuto = (Option<f64>, Option<f64>, Option<f64>);
-    /// (bright step, grand step, energy step) as stored.
-    type MoodUser = (Option<String>, Option<String>, Option<String>);
-
-    fn mood_auto(conn: &Connection, id: &str) -> MoodAuto {
+    /// (auto_score, user_level) of one mood as stored; `None` without a row.
+    fn mood_row(conn: &Connection, id: &str, mood: &str) -> Option<(Option<f64>, Option<f64>)> {
         conn.query_row(
-            "SELECT mood_bright, mood_grand, mood_energy FROM library_entries WHERE id = ?1",
-            params![id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .unwrap()
-    }
-
-    fn mood_user(conn: &Connection, id: &str) -> MoodUser {
-        conn.query_row(
-            "SELECT mood_bright_user, mood_grand_user, mood_energy_user FROM library_entries WHERE id = ?1",
-            params![id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .unwrap()
-    }
-
-    fn z(bright: f64, grand: f64, energy: f64) -> MoodZ {
-        MoodZ { bright, grand, energy }
-    }
-
-    // ── Pools ─────────────────────────────────────────────────────────────────
-
-    /// (pool_auto, pool_auto_p, pool_auto_runner) as stored.
-    type PoolAuto = (Option<String>, Option<f64>, Option<String>);
-
-    fn pool_auto(conn: &Connection, id: &str) -> PoolAuto {
-        conn.query_row(
-            "SELECT pool_auto, pool_auto_p, pool_auto_runner FROM library_entries WHERE id = ?1",
-            params![id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .unwrap()
-    }
-
-    /// (pool_user, pool_reviewed_at) as stored.
-    fn pool_user(conn: &Connection, id: &str) -> (Option<String>, Option<String>) {
-        conn.query_row(
-            "SELECT pool_user, pool_reviewed_at FROM library_entries WHERE id = ?1",
-            params![id],
+            "SELECT auto_score, user_level FROM library_entry_moods WHERE library_entry_id = ?1 AND mood = ?2",
+            params![id, mood],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
+        .optional()
         .unwrap()
+    }
+
+    fn mood_rows(conn: &Connection, id: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM library_entry_moods WHERE library_entry_id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn reviewed_at(conn: &Connection, id: &str) -> Option<String> {
+        conn.query_row("SELECT mood_reviewed_at FROM library_entries WHERE id = ?1", params![id], |r| r.get(0))
+            .unwrap()
     }
 
     fn role_user_of(conn: &Connection, id: &str) -> Option<String> {
@@ -2099,168 +2087,246 @@ mod tests {
             .unwrap()
     }
 
-    fn suggestion(pool: Pool, p: f64, runner: Pool) -> PoolSuggestion {
-        PoolSuggestion { pool, p, runner }
+    /// Every id of the default vocabulary at `v`.
+    fn all_moods(v: f64) -> Vec<(String, f64)> {
+        MoodVocabulary::defaults().ids().into_iter().map(|m| (m, v)).collect()
     }
 
+    /// How many ids the default vocabulary has (eight moods plus Energy).
+    const MOOD_COUNT: i64 = 9;
+
     #[test]
-    fn user_pool_sets_review_time_and_clears_to_suggestion() {
+    fn user_mood_level_sets_review_time_and_clears_to_suggestion() {
         let conn = open_memory_db();
         let a = music_entry(&conn, "/a.mp3");
         let b = music_entry(&conn, "/b.mp3");
         let amb = insert_library_entry(&conn, "/r.ogg", None, "R", None, None, None, "ambiance").unwrap();
-        apply_auto_pool(&conn, &a, Some(suggestion(Pool::Epic, 0.8, Pool::Awe))).unwrap();
+        apply_auto_moods(&conn, &a, &all_moods(0.6)).unwrap();
 
         let before = now_millis().parse::<u128>().unwrap();
-        set_user_pool(&conn, &[a.clone(), b.clone(), amb.clone()], Some(Pool::Tension)).unwrap();
-        let (pool, reviewed) = pool_user(&conn, &a);
-        assert_eq!(pool, s("tension"));
-        assert!(reviewed.unwrap().parse::<u128>().unwrap() >= before);
-        assert_eq!(pool_user(&conn, &b).0, s("tension"));
-        // Ambiance has no pool.
-        assert_eq!(pool_user(&conn, &amb), (None, None));
-        // The suggestion is untouched.
-        assert_eq!(pool_auto(&conn, &a), (s("epic"), Some(0.8), s("awe")));
+        set_user_mood_level(&conn, &[a.clone(), b.clone(), amb.clone(), "nope".into()], "grim", Some(0.75))
+            .unwrap();
+        assert_eq!(mood_row(&conn, &a, "grim"), Some((Some(0.6), Some(0.75))));
+        assert!(reviewed_at(&conn, &a).unwrap().parse::<u128>().unwrap() >= before);
+        // An entry without analyzer values gets a row with the level only.
+        assert_eq!(mood_row(&conn, &b, "grim"), Some((None, Some(0.75))));
+        assert_eq!(mood_rows(&conn, &b), 1);
+        assert!(reviewed_at(&conn, &b).is_some());
+        // Ambiance has no moods.
+        assert_eq!(mood_rows(&conn, &amb), 0);
+        assert_eq!(reviewed_at(&conn, &amb), None);
+        // Other moods are untouched.
+        assert_eq!(mood_row(&conn, &a, "heroic"), Some((Some(0.6), None)));
 
         // `None` goes back to the suggestion; the entry stays reviewed.
-        set_user_pool(&conn, std::slice::from_ref(&a), None).unwrap();
-        let (pool, reviewed) = pool_user(&conn, &a);
-        assert_eq!(pool, None);
-        assert!(reviewed.is_some());
-        assert_eq!(pool_user(&conn, &b).0, s("tension"));
+        set_user_mood_level(&conn, std::slice::from_ref(&a), "grim", None).unwrap();
+        assert_eq!(mood_row(&conn, &a, "grim"), Some((Some(0.6), None)));
+        assert!(reviewed_at(&conn, &a).is_some());
+        assert_eq!(mood_row(&conn, &b, "grim"), Some((None, Some(0.75))));
+        // Clearing a mood with no row adds none.
+        set_user_mood_level(&conn, std::slice::from_ref(&b), "quirky", None).unwrap();
+        assert_eq!(mood_row(&conn, &b, "quirky"), None);
     }
 
     #[test]
-    fn apply_auto_pool_writes_only_the_analyzer_layer() {
+    fn user_mood_level_takes_only_the_five_levels() {
         let conn = open_memory_db();
         let a = music_entry(&conn, "/a.mp3");
-        set_user_pool(&conn, std::slice::from_ref(&a), Some(Pool::Somber)).unwrap();
-        let user_before = pool_user(&conn, &a);
-
-        let first = suggestion(Pool::Mysterious, 0.62, Pool::Epic);
-        assert!(apply_auto_pool(&conn, &a, Some(first)).unwrap());
-        assert_eq!(pool_auto(&conn, &a), (s("mysterious"), Some(0.62), s("epic")));
-        assert!(!apply_auto_pool(&conn, &a, Some(first)).unwrap());
-        // Any one field moving is a change.
-        assert!(apply_auto_pool(&conn, &a, Some(PoolSuggestion { p: 0.63, ..first })).unwrap());
-        assert!(apply_auto_pool(&conn, &a, Some(PoolSuggestion { runner: Pool::Awe, ..first })).unwrap());
-        assert_eq!(pool_auto(&conn, &a), (s("mysterious"), Some(0.62), s("awe")));
-
-        assert!(apply_auto_pool(&conn, &a, None).unwrap());
-        assert_eq!(pool_auto(&conn, &a), (None, None, None));
-        // The user's pool and review time are never touched.
-        assert_eq!(pool_user(&conn, &a), user_before);
-        assert!(!apply_auto_pool(&conn, "nope", Some(first)).unwrap());
+        for level in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            set_user_mood_level(&conn, std::slice::from_ref(&a), "energy", Some(level)).unwrap();
+            assert_eq!(mood_row(&conn, &a, "energy"), Some((None, Some(level))));
+        }
+        // Float noise snaps onto the level.
+        set_user_mood_level(&conn, std::slice::from_ref(&a), "energy", Some(0.1 + 0.15)).unwrap();
+        assert_eq!(mood_row(&conn, &a, "energy"), Some((None, Some(0.25))));
+        for bad in [0.3, -0.25, 1.25, f64::NAN] {
+            assert!(set_user_mood_level(&conn, std::slice::from_ref(&a), "energy", Some(bad)).is_err());
+        }
+        assert_eq!(mood_row(&conn, &a, "energy"), Some((None, Some(0.25))));
+        // The table refuses anything else too.
+        assert!(conn
+            .execute(
+                "UPDATE library_entry_moods SET user_level = 0.3 WHERE library_entry_id = ?1",
+                params![a],
+            )
+            .is_err());
     }
 
     #[test]
-    fn approve_keeps_the_shown_pool_and_role() {
+    fn apply_auto_moods_writes_only_the_analyzer_layer() {
         let conn = open_memory_db();
-        // Suggested pool and role only.
+        let a = music_entry(&conn, "/a.mp3");
+        set_user_mood_level(&conn, std::slice::from_ref(&a), "peaceful", Some(1.0)).unwrap();
+        let reviewed = reviewed_at(&conn, &a);
+
+        apply_auto_moods(&conn, &a, &all_moods(0.4)).unwrap();
+        assert_eq!(mood_rows(&conn, &a), MOOD_COUNT);
+        assert_eq!(mood_row(&conn, &a, "peaceful"), Some((Some(0.4), Some(1.0))));
+        apply_auto_moods(&conn, &a, &[("peaceful".into(), 0.9), ("energy".into(), 0.1)]).unwrap();
+        assert_eq!(mood_row(&conn, &a, "peaceful"), Some((Some(0.9), Some(1.0))));
+        assert_eq!(mood_row(&conn, &a, "energy"), Some((Some(0.1), None)));
+        assert_eq!(mood_row(&conn, &a, "grim"), Some((Some(0.4), None)));
+        // The user's levels and review time are never touched.
+        assert_eq!(reviewed_at(&conn, &a), reviewed);
+    }
+
+    #[test]
+    fn approve_keeps_the_shown_role_and_leaves_moods_alone() {
+        let conn = open_memory_db();
+        // Suggested role and moods only.
         let auto = music_entry(&conn, "/a.mp3");
-        apply_auto_pool(&conn, &auto, Some(suggestion(Pool::Epic, 0.9, Pool::Awe))).unwrap();
+        apply_auto_moods(&conn, &auto, &all_moods(0.7)).unwrap();
         apply_auto_role(&conn, &auto, Some(Role::Combat), 0.8).unwrap();
         assert!(approve_entry_review(&conn, &auto).unwrap());
-        assert_eq!(pool_user(&conn, &auto).0, s("epic"));
-        assert!(pool_user(&conn, &auto).1.is_some());
+        assert!(reviewed_at(&conn, &auto).is_some());
         assert_eq!(role_user_of(&conn, &auto), s("combat"));
+        // An untouched bar stays the analyzer's.
+        for mood in MoodVocabulary::defaults().ids() {
+            assert_eq!(mood_row(&conn, &auto, &mood), Some((Some(0.7), None)));
+        }
 
-        // The user's own pool and role win over the suggestion.
+        // The user's own role wins over the suggestion.
         let user = music_entry(&conn, "/b.mp3");
-        apply_auto_pool(&conn, &user, Some(suggestion(Pool::Epic, 0.9, Pool::Awe))).unwrap();
         apply_auto_role(&conn, &user, Some(Role::Combat), 0.8).unwrap();
         set_user_role(&conn, std::slice::from_ref(&user), Some(Role::NonCombat)).unwrap();
-        conn.execute("UPDATE library_entries SET pool_user = 'tension' WHERE id = ?1", params![user]).unwrap();
         assert!(!approve_entry_review(&conn, &user).unwrap());
-        assert_eq!(pool_user(&conn, &user).0, s("tension"));
         assert_eq!(role_user_of(&conn, &user), s("non_combat"));
 
         // Nothing shown: nothing set, but the entry is reviewed.
         let bare = music_entry(&conn, "/c.mp3");
         assert!(!approve_entry_review(&conn, &bare).unwrap());
-        assert_eq!(pool_user(&conn, &bare).0, None);
-        assert!(pool_user(&conn, &bare).1.is_some());
+        assert!(reviewed_at(&conn, &bare).is_some());
         assert_eq!(role_user_of(&conn, &bare), None);
+        assert_eq!(mood_rows(&conn, &bare), 0);
 
         // Ambiance and missing entries are left alone.
         let amb = insert_library_entry(&conn, "/r.ogg", None, "R", None, None, None, "ambiance").unwrap();
         assert!(!approve_entry_review(&conn, &amb).unwrap());
-        assert_eq!(pool_user(&conn, &amb), (None, None));
+        assert_eq!(reviewed_at(&conn, &amb), None);
         assert!(!approve_entry_review(&conn, "nope").unwrap());
     }
 
     #[test]
-    fn user_mood_step_round_trips_and_clears() {
+    fn switching_to_ambiance_deletes_moods() {
         let conn = open_memory_db();
         let a = music_entry(&conn, "/a.mp3");
-        let b = music_entry(&conn, "/b.mp3");
+        let other = music_entry(&conn, "/b.mp3");
+        for id in [&a, &other] {
+            apply_auto_moods(&conn, id, &all_moods(0.5)).unwrap();
+            set_user_mood_level(&conn, std::slice::from_ref(id), "wondrous", Some(0.25)).unwrap();
+        }
 
-        set_user_mood_step(&conn, &[a.clone(), b.clone()], MoodScale::Bright, Some(MoodStep::High))
+        update_library_entry_type(&conn, &a, "ambiance").unwrap();
+
+        assert_eq!(mood_rows(&conn, &a), 0);
+        assert_eq!(reviewed_at(&conn, &a), None);
+        assert_eq!(mood_rows(&conn, &other), MOOD_COUNT);
+    }
+
+    #[test]
+    fn deleting_an_entry_deletes_its_moods() {
+        let conn = open_memory_db();
+        let a = music_entry(&conn, "/a.mp3");
+        apply_auto_moods(&conn, &a, &all_moods(0.5)).unwrap();
+        delete_library_entry(&conn, &a).unwrap();
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM library_entry_moods", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn user_mood_level_refuses_a_mood_outside_the_vocabulary() {
+        let conn = open_memory_db();
+        let a = music_entry(&conn, "/a.mp3");
+        let err = set_user_mood_level(&conn, std::slice::from_ref(&a), "menacing", Some(1.0)).unwrap_err();
+        assert!(err.contains("menacing"));
+        assert_eq!(mood_rows(&conn, &a), 0);
+        assert_eq!(reviewed_at(&conn, &a), None);
+    }
+
+    #[test]
+    fn saving_the_vocabulary_deletes_removed_moods_only() {
+        let conn = open_memory_db();
+        let a = music_entry(&conn, "/a.mp3");
+        apply_auto_moods(&conn, &a, &all_moods(0.5)).unwrap();
+        set_user_mood_level(&conn, std::slice::from_ref(&a), "quirky", Some(1.0)).unwrap();
+        set_user_mood_level(&conn, std::slice::from_ref(&a), "grim", Some(0.25)).unwrap();
+
+        // Rename Grim, drop Quirky, add Spooky.
+        let mut v = MoodVocabulary::defaults();
+        v.moods.retain(|m| m.id != "quirky");
+        v.moods.iter_mut().find(|m| m.id == "grim").unwrap().name = "Dread".into();
+        v.moods.push(crate::models::MoodDef {
+            id: "spooky".into(),
+            name: " Spooky ".into(),
+            prompts: vec!["ghosts".into(), "".into()],
+        });
+        let saved = save_mood_vocabulary(&conn, &v).unwrap();
+        assert_eq!(saved.moods.last().unwrap().name, "Spooky");
+        assert_eq!(settings::load_mood_vocabulary(&conn).unwrap(), saved);
+
+        assert_eq!(mood_row(&conn, &a, "quirky"), None);
+        assert_eq!(user_level_count(&conn, "quirky"), 0);
+        assert_eq!(mood_row(&conn, &a, "grim"), Some((Some(0.5), Some(0.25))));
+        assert_eq!(mood_row(&conn, &a, "energy"), Some((Some(0.5), None)));
+        assert_eq!(mood_rows(&conn, &a), MOOD_COUNT - 1);
+        // The new mood can be set right away.
+        set_user_mood_level(&conn, std::slice::from_ref(&a), "spooky", Some(0.75)).unwrap();
+
+        // A bad vocabulary changes nothing.
+        let mut bad = saved.clone();
+        bad.moods.clear();
+        assert!(save_mood_vocabulary(&conn, &bad).is_err());
+        assert_eq!(settings::load_mood_vocabulary(&conn).unwrap(), saved);
+        assert_eq!(mood_rows(&conn, &a), MOOD_COUNT);
+    }
+
+    #[test]
+    fn saving_over_an_unreadable_mood_vocabulary_is_refused() {
+        let conn = open_memory_db();
+        let a = music_entry(&conn, "/a.mp3");
+        let mut v = MoodVocabulary::defaults();
+        v.moods.push(crate::models::MoodDef { id: "spooky".into(), name: "Spooky".into(), prompts: vec!["ghosts".into()] });
+        save_mood_vocabulary(&conn, &v).unwrap();
+        set_user_mood_level(&conn, std::slice::from_ref(&a), "spooky", Some(0.75)).unwrap();
+
+        // A corrupt row reads as the defaults, which lack Spooky; saving them
+        // back would delete the user's level, so it is refused.
+        conn.execute("UPDATE meta SET value = '{oops' WHERE key = 'mood_vocabulary'", []).unwrap();
+        assert_eq!(settings::load_mood_vocabulary(&conn).unwrap(), MoodVocabulary::defaults());
+        let err = save_mood_vocabulary(&conn, &MoodVocabulary::defaults()).unwrap_err();
+        assert_eq!(err, MOOD_VOCABULARY_UNREADABLE);
+        assert_eq!(mood_row(&conn, &a, "spooky"), Some((None, Some(0.75))));
+    }
+
+    #[test]
+    fn clearing_mood_analysis_keeps_user_levels() {
+        use crate::autotag::plan::MoodCalibration;
+        let conn = open_memory_db();
+        let a = music_entry(&conn, "/a.mp3");
+        apply_auto_moods(&conn, &a, &all_moods(0.5)).unwrap();
+        set_user_mood_level(&conn, std::slice::from_ref(&a), "grim", Some(0.25)).unwrap();
+        let reviewed = reviewed_at(&conn, &a);
+        conn.execute(
+            "INSERT INTO entry_analysis (library_entry_id, status, scores_json) VALUES (?1, 'embedded', '{}')",
+            params![a],
+        )
+        .unwrap();
+        settings::save_mood_calibration(
+            &conn,
+            &MoodCalibration { calibrated_at: "1".into(), tracks: 50, prompts: Default::default(), stats: Default::default() },
+        )
+        .unwrap();
+
+        clear_mood_analysis(&conn).unwrap();
+
+        assert_eq!(settings::load_mood_calibration(&conn).unwrap(), None);
+        assert_eq!(mood_row(&conn, &a, "grim"), Some((None, Some(0.25))));
+        assert_eq!(mood_rows(&conn, &a), 1);
+        assert_eq!(reviewed_at(&conn, &a), reviewed);
+        let scores: Option<String> = conn
+            .query_row("SELECT scores_json FROM entry_analysis WHERE library_entry_id = ?1", params![a], |r| r.get(0))
             .unwrap();
-        set_user_mood_step(&conn, std::slice::from_ref(&a), MoodScale::Grand, Some(MoodStep::Low)).unwrap();
-        set_user_mood_step(&conn, std::slice::from_ref(&a), MoodScale::Energy, Some(MoodStep::Mid)).unwrap();
-        assert_eq!(mood_user(&conn, &a), (s("high"), s("low"), s("mid")));
-        assert_eq!(mood_user(&conn, &b), (s("high"), None, None));
-        // The analyzer's values are untouched.
-        assert_eq!(mood_auto(&conn, &a), (None, None, None));
-
-        // Clearing one scale is "use auto" for that scale alone.
-        set_user_mood_step(&conn, std::slice::from_ref(&a), MoodScale::Bright, None).unwrap();
-        assert_eq!(mood_user(&conn, &a), (None, s("low"), s("mid")));
-        set_user_mood_step(&conn, std::slice::from_ref(&a), MoodScale::Energy, None).unwrap();
-        assert_eq!(mood_user(&conn, &a), (None, s("low"), None));
-        assert_eq!(mood_user(&conn, &b).0, s("high"));
-    }
-
-    #[test]
-    fn apply_auto_mood_leaves_user_steps() {
-        let conn = open_memory_db();
-        let a = music_entry(&conn, "/a.mp3");
-        set_user_mood_step(&conn, std::slice::from_ref(&a), MoodScale::Bright, Some(MoodStep::Low)).unwrap();
-        set_user_mood_step(&conn, std::slice::from_ref(&a), MoodScale::Grand, Some(MoodStep::High)).unwrap();
-
-        assert!(apply_auto_mood(&conn, &a, Some(z(1.2, -0.4, 0.7))).unwrap());
-        assert_eq!(mood_auto(&conn, &a), (Some(1.2), Some(-0.4), Some(0.7)));
-        assert_eq!(mood_user(&conn, &a), (s("low"), s("high"), None));
-        // Same values again change nothing; any one scale moving does.
-        assert!(!apply_auto_mood(&conn, &a, Some(z(1.2, -0.4, 0.7))).unwrap());
-        assert!(apply_auto_mood(&conn, &a, Some(z(1.2, -0.4, 0.8))).unwrap());
-        assert_eq!(mood_auto(&conn, &a).2, Some(0.8));
-
-        assert!(apply_auto_mood(&conn, &a, None).unwrap());
-        assert_eq!(mood_auto(&conn, &a), (None, None, None));
-        assert_eq!(mood_user(&conn, &a), (s("low"), s("high"), None));
-        assert!(!apply_auto_mood(&conn, &a, None).unwrap());
-        // A missing entry is no change.
-        assert!(!apply_auto_mood(&conn, "nope", Some(z(1.0, 1.0, 1.0))).unwrap());
-    }
-
-    #[test]
-    fn switching_to_ambiance_clears_mood_and_pool() {
-        let conn = open_memory_db();
-        let auto = music_entry(&conn, "/a.mp3");
-        let user = music_entry(&conn, "/b.mp3");
-        let mood = z(1.0, -1.0, 0.5);
-        apply_auto_mood(&conn, &auto, Some(mood)).unwrap();
-        apply_auto_mood(&conn, &user, Some(mood)).unwrap();
-        for scale in [MoodScale::Bright, MoodScale::Grand, MoodScale::Energy] {
-            set_user_mood_step(&conn, std::slice::from_ref(&user), scale, Some(MoodStep::Mid)).unwrap();
-        }
-        for id in [&auto, &user] {
-            apply_auto_pool(&conn, id, Some(suggestion(Pool::Awe, 0.5, Pool::Peaceful))).unwrap();
-        }
-        set_user_pool(&conn, std::slice::from_ref(&user), Some(Pool::Somber)).unwrap();
-
-        for id in [&auto, &user] {
-            update_library_entry_type(&conn, id, "ambiance").unwrap();
-        }
-
-        for id in [&auto, &user] {
-            assert_eq!(mood_auto(&conn, id), (None, None, None));
-            assert_eq!(mood_user(&conn, id), (None, None, None));
-            assert_eq!(pool_auto(&conn, id), (None, None, None));
-            assert_eq!(pool_user(&conn, id), (None, None));
-        }
+        assert_eq!(scores, None);
     }
 
 }

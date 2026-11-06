@@ -5,6 +5,7 @@ import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
 import TagFilter from './TagFilter.vue';
 import LibraryPickerRow from './LibraryPickerRow.vue';
+import { matchesTagSelection, type MatchMode } from '../utils/moods';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -21,6 +22,7 @@ const { libraryEntries } = storeToRefs(store);
 
 const searchQuery = ref('');
 const selectedTags = ref<string[]>([]);
+const tagMode = ref<MatchMode>('any');
 const untagged = ref(false);
 const selectedType = ref<string>('all');
 const selectedIds = ref<Set<string>>(new Set());
@@ -32,8 +34,7 @@ const filteredEntries = computed(() => {
       entry.name.toLowerCase().includes(searchQuery.value.toLowerCase());
     const matchesTags = untagged.value
       ? entry.tags.length === 0
-      : selectedTags.value.length === 0 ||
-        selectedTags.value.every((tag) => entry.tags.includes(tag));
+      : matchesTagSelection(entry.tags, selectedTags.value, tagMode.value);
     const matchesType =
       selectedType.value === 'all' || entry.entryType === selectedType.value;
     return matchesSearch && matchesTags && matchesType;
@@ -55,6 +56,7 @@ function close(): void {
   selectedIds.value = new Set();
   searchQuery.value = '';
   selectedTags.value = [];
+  tagMode.value = 'any';
   untagged.value = false;
   selectedType.value = 'all';
   emit('update:modelValue', false);
@@ -102,7 +104,7 @@ async function addClips(): Promise<void> {
 
         <!-- Tag filter -->
         <div class="mb-3">
-          <TagFilter v-model:selected-tags="selectedTags" v-model:untagged="untagged" />
+          <TagFilter v-model:selected-tags="selectedTags" v-model:untagged="untagged" v-model:tag-mode="tagMode" />
         </div>
 
         <!-- Entry count -->

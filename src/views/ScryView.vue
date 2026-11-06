@@ -7,14 +7,14 @@
 import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { invoke } from '@tauri-apps/api/core';
-import type { LibraryEntry, VibeHit, VibePoint } from '@generated/index';
+import type { LibraryEntry, ScryHit, ScryPoint } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAutoTagEvents } from '../composables/useAutoTagEvents';
 import { useLibraryPreview } from '../composables/useLibraryPreview';
 import { useVocabulary } from '../composables/useVocabulary';
 import { useToast } from '../composables/useToast';
-import VibeMap from '../components/VibeMap.vue';
-import VibeResults from '../components/VibeResults.vue';
+import ScryMap from '../components/ScryMap.vue';
+import ScryResults from '../components/ScryResults.vue';
 import CreatePlaylistDialog from '../components/CreatePlaylistDialog.vue';
 import AutoTaggingDialog from '../components/AutoTaggingDialog.vue';
 
@@ -80,7 +80,7 @@ const searchText = ref('');
 const seeds = ref<string[]>([]);
 // What the current results answer: a submitted search, the seeds, or nothing yet.
 const query = ref<{ kind: 'search'; text: string } | { kind: 'seeds' } | null>(null);
-const hits = ref<VibeHit[]>([]);
+const hits = ref<ScryHit[]>([]);
 const resultsLoading = ref(false);
 const resultsError = ref<string | null>(null);
 
@@ -88,14 +88,14 @@ const resultsError = ref<string | null>(null);
 // request's response is applied.
 let resultsRequest = 0;
 
-async function fetchResults(cmd: 'search_vibe' | 'similar_entries', args: Record<string, unknown>): Promise<void> {
+async function fetchResults(cmd: 'search_scry' | 'similar_entries', args: Record<string, unknown>): Promise<void> {
   const id = ++resultsRequest;
   resultsLoading.value = true;
   resultsError.value = null;
   try {
     // Entries already in the target track are hidden, so ask for that many extra.
     const limit = RESULT_LIMIT + targetEntryIds.value.size;
-    const result = await invoke<VibeHit[]>(cmd, { ...args, limit });
+    const result = await invoke<ScryHit[]>(cmd, { ...args, limit });
     if (id !== resultsRequest) return;
     hits.value = result;
   } catch (e) {
@@ -120,7 +120,7 @@ function submitSearch(): void {
   if (!text) return;
   seeds.value = [];
   query.value = { kind: 'search', text };
-  fetchResults('search_vibe', { text });
+  fetchResults('search_scry', { text });
 }
 
 function runSeeds(): void {
@@ -152,7 +152,7 @@ function onSearchCleared(): void {
 
 function retryResults(): void {
   if (query.value?.kind === 'search') {
-    fetchResults('search_vibe', { text: query.value.text });
+    fetchResults('search_scry', { text: query.value.text });
   } else if (query.value?.kind === 'seeds') {
     runSeeds();
   }
@@ -182,7 +182,7 @@ const resultsHeading = computed(() => {
 
 // --- Map ---
 
-const mapPoints = ref<VibePoint[]>([]);
+const mapPoints = ref<ScryPoint[]>([]);
 const mapLoading = ref(false);
 const mapError = ref<string | null>(null);
 const mapLoaded = ref(false);
@@ -193,7 +193,7 @@ async function loadMap(): Promise<void> {
   mapLoading.value = true;
   mapError.value = null;
   try {
-    const points = await invoke<VibePoint[]>('vibe_map');
+    const points = await invoke<ScryPoint[]>('scry_map');
     if (id !== mapRequest) return;
     mapPoints.value = points;
     mapLoaded.value = true;
@@ -255,7 +255,7 @@ function removeFromSelection(ids: string[]): void {
 
 // --- Linking the results list and the map ---
 
-const resultsList = ref<InstanceType<typeof VibeResults> | null>(null);
+const resultsList = ref<InstanceType<typeof ScryResults> | null>(null);
 // Results row under the mouse; its map point is highlighted.
 const hoveredRowId = ref<string | null>(null);
 
@@ -312,7 +312,7 @@ const showAutoTagging = ref(false);
 </script>
 
 <template>
-  <div class="vibe-view d-flex flex-column pa-3">
+  <div class="scry-view d-flex flex-column pa-3">
     <Teleport to="#app-bar-main">
       <VTextField
         v-model="searchText"
@@ -380,8 +380,8 @@ const showAutoTagging = ref(false);
         </VChip>
       </div>
 
-      <div class="vibe-panes flex-grow-1" :class="{ 'has-selection': selectedIds.length > 0 }">
-        <section class="vibe-pane d-flex flex-column">
+      <div class="scry-panes flex-grow-1" :class="{ 'has-selection': selectedIds.length > 0 }">
+        <section class="scry-pane d-flex flex-column">
           <div v-if="resultsHeading" class="text-subtitle-2 mb-1 text-truncate">{{ resultsHeading }}</div>
 
           <VAlert v-if="resultsError" type="error" variant="tonal" density="compact" class="mb-2">
@@ -405,11 +405,11 @@ const showAutoTagging = ref(false);
               Library. Lasso tracks on the map to select them.
             </div>
           </div>
-          <VibeResults
+          <ScryResults
             v-else-if="!resultsError"
             ref="resultsList"
             v-model:selected-ids="selectedIds"
-            class="vibe-results-host"
+            class="scry-results-host"
             :hits="shownHits"
             :entries-by-id="entriesById"
             :seed-ids="seeds"
@@ -422,15 +422,15 @@ const showAutoTagging = ref(false);
           />
         </section>
 
-        <section class="vibe-pane d-flex flex-column">
+        <section class="scry-pane d-flex flex-column">
           <VAlert v-if="mapError" type="error" variant="tonal" density="compact" class="mb-2">
             {{ mapError }}
             <template #append>
               <VBtn size="small" variant="text" :loading="mapLoading" @click="loadMap">Retry</VBtn>
             </template>
           </VAlert>
-          <div class="vibe-map-host flex-grow-1">
-            <VibeMap
+          <div class="scry-map-host flex-grow-1">
+            <ScryMap
               :points="mappedPoints"
               :entries-by-id="entriesById"
               :seed-ids="seeds"
@@ -507,7 +507,7 @@ const showAutoTagging = ref(false);
 <style scoped>
 /* Exactly the space between the app bar and the transport bar, so the page
    never scrolls: the results list scrolls inside its pane instead. */
-.vibe-view {
+.scry-view {
   height: calc(100vh - var(--v-layout-top, 0px) - var(--v-layout-bottom, 0px));
   position: relative;
   overflow: hidden;
@@ -520,7 +520,7 @@ const showAutoTagging = ref(false);
   background: rgba(var(--v-theme-primary), 0.08);
 }
 
-.vibe-panes {
+.scry-panes {
   display: grid;
   grid-template-columns: minmax(340px, 1fr) minmax(320px, 1.2fr);
   grid-template-rows: minmax(0, 1fr);
@@ -529,29 +529,29 @@ const showAutoTagging = ref(false);
 }
 
 /* Room for the floating selection bar. */
-.vibe-panes.has-selection {
+.scry-panes.has-selection {
   padding-bottom: 56px;
 }
 
 @media (max-width: 900px) {
-  .vibe-panes {
+  .scry-panes {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
   }
 }
 
-.vibe-pane {
+.scry-pane {
   min-height: 0;
   min-width: 0;
   overflow: hidden;
 }
 
-.vibe-results-host {
+.scry-results-host {
   flex: 1 1 0;
   min-height: 0;
 }
 
-.vibe-map-host {
+.scry-map-host {
   position: relative;
   min-height: 0;
 }

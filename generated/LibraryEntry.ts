@@ -2,8 +2,7 @@
 import type { AutoTag } from "./AutoTag";
 import type { EntryAnalysis } from "./EntryAnalysis";
 import type { EntryType } from "./EntryType";
-import type { MoodStep } from "./MoodStep";
-import type { Pool } from "./Pool";
+import type { MoodValue } from "./MoodValue";
 import type { Role } from "./Role";
 
 export type LibraryEntry = { id: string, filePath: string, contentHash: string | null, name: string, duration: number | null, sampleRate: number | null, fileSize: bigint | null, volume: number, trimStart: number | null, trimEnd: number | null, loopStart: number | null, loopEnd: number | null, createdAt: string, 
@@ -43,53 +42,14 @@ roleAutoScore: number | null,
  */
 roleUser: Role | null, 
 /**
- * The analyzer's Bright ↔ Dark position as a z-score across the
- * library's analyzed music; positive is Bright.
+ * The mood profile: one value per id of the mood vocabulary, in its
+ * order (the moods, then Energy). Always every id; an id with no stored
+ * row (and every id on ambiance) has neither layer. The value shown is
+ * `user ?? auto`.
  */
-moodBright: number | null, 
+moods: Array<MoodValue>, 
 /**
- * The user's Bright ↔ Dark step; when set it overrides `mood_bright`.
- */
-moodBrightUser: MoodStep | null, 
-/**
- * The analyzer's Intimate ↔ Grand position as a z-score; positive is
- * Grand.
- */
-moodGrand: number | null, 
-/**
- * The user's Intimate ↔ Grand step; when set it overrides `mood_grand`.
- */
-moodGrandUser: MoodStep | null, 
-/**
- * The analyzer's Calm ↔ Energetic position as a z-score; positive is
- * Energetic.
- */
-moodEnergy: number | null, 
-/**
- * The user's Calm ↔ Energetic step; when set it overrides `mood_energy`.
- */
-moodEnergyUser: MoodStep | null, 
-/**
- * The analyzer's suggested mood pool, from the frozen pool calibration.
- * `None` until a run with a calibration scored the entry (and always on
- * ambiance). Never `Tension`: that pool is taught only.
- */
-poolAuto: Pool | null, 
-/**
- * The suggestion's softmax probability (0..1); low means unsure.
- */
-poolAutoP: number | null, 
-/**
- * The analyzer's second-best pool.
- */
-poolAutoRunner: Pool | null, 
-/**
- * The user's pool; when set it overrides `pool_auto`. The pool shown is
- * `pool_user ?? pool_auto`.
- */
-poolUser: Pool | null, 
-/**
- * When the user last set the pool or approved the entry in Review
+ * When the user last set a mood level or approved the entry in Review
  * (Unix milliseconds as a string, like `created_at`); `None` until then.
  */
-poolReviewedAt: string | null, };
+moodReviewedAt: string | null, };

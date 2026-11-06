@@ -8,6 +8,7 @@ export type { BulkImportProgress } from "./BulkImportProgress";
 export type { Clip } from "./Clip";
 export type { Comp } from "./Comp";
 export type { Configuration } from "./Configuration";
+export type { EnergyPrompts } from "./EnergyPrompts";
 export type { EntryTagScores } from "./EntryTagScores";
 export type { EntryType } from "./EntryType";
 export type { FixMissingReport } from "./FixMissingReport";
@@ -15,13 +16,16 @@ export type { Group } from "./Group";
 export type { LibraryEntry } from "./LibraryEntry";
 export type { LibraryEntryUsage } from "./LibraryEntryUsage";
 export type { MatchKind } from "./MatchKind";
-export type { MoodScale } from "./MoodScale";
-export type { MoodStep } from "./MoodStep";
 export type { MissingEntryCandidates } from "./MissingEntryCandidates";
-export type { Pool } from "./Pool";
+export type { MoodCalibrationInfo } from "./MoodCalibrationInfo";
+export type { MoodDef } from "./MoodDef";
+export type { MoodValue } from "./MoodValue";
+export type { MoodVocabulary } from "./MoodVocabulary";
 export type { RelinkCandidate } from "./RelinkCandidate";
 export type { Role } from "./Role";
 export type { SceneConfig } from "./SceneConfig";
+export type { ScryHit } from "./ScryHit";
+export type { ScryPoint } from "./ScryPoint";
 export type { TagQuality } from "./TagQuality";
 export type { TagScore } from "./TagScore";
 export type { TagSource } from "./TagSource";
@@ -29,7 +33,8 @@ export type { Track } from "./Track";
 export type { TrackMode } from "./TrackMode";
 export type { TrackPlaybackState } from "./TrackPlaybackState";
 export type { TrackTransition } from "./TrackTransition";
-export type { VibeHit } from "./VibeHit";
-export type { VibePoint } from "./VibePoint";
+
+/** A mood id of the vocabulary (`AppState.moodVocabulary`), or `"energy"`. */
+export type MoodId = string;
 
 export type CompStatus = "active" | "partial" | "paused" | "inactive";

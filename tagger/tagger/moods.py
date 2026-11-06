@@ -1,86 +1,68 @@
-"""Text prompts for the mood axes. Each axis is the difference between the
-mean similarity to one pole's prompts and the other's.
+"""Default text prompts for the mood profile: eight moods plus Energy.
 
-The three axes follow the PAD mood model: Bright - Dark (pleasure),
-Calm - Energetic (arousal) and Intimate - Grand (dominance).
+Each mood is scored on its own as the absolute mean similarity of a track with
+its prompts. Energy is the one two-sided score: the mean similarity with the
+positive prompts minus the mean similarity with the negative ones. The app
+calibrates the raw scores into 0..1.
 
-The mood pools (POOLS) are not axes: each is scored on its own as the
-absolute mean similarity with its prompts."""
+These are defaults only. The app keeps its own, editable vocabulary and sends
+it with each /score request (`mood_prompts`, `energy_prompts`); these are
+used when a request leaves them out.
+"""
 
-BRIGHT = [
-    "bright, warm, hopeful music",
-    "light uplifting major-key music",
-    "sunny cheerful music",
-]
-DARK = [
-    "dark, grim, foreboding music",
-    "brooding minor-key music",
-    "bleak sinister music",
-]
-GRAND = [
-    "grand, majestic music for a full orchestra",
-    "epic, powerful, monumental orchestral music",
-    "mighty brass and choir, commanding and imposing",
-]
-INTIMATE = [
-    "intimate music for a few instruments",
-    "modest, personal music played by a small group",
-    "a solo instrument, close and unassuming",
-]
-ENERGETIC = [
-    "energetic, lively, exciting music",
-    "fast, agitated, intense music",
-    "busy, driving, stimulating music",
-]
-CALM = [
-    "calm, relaxed, tranquil music",
-    "slow, sleepy, still music",
-    "soothing, gentle, peaceful music",
-]
-
-POLES = {
-    "bright": BRIGHT,
-    "dark": DARK,
-    "grand": GRAND,
-    "intimate": INTIMATE,
-    "energetic": ENERGETIC,
-    "calm": CALM,
-}
-
-# Mood pools: a flat list of hedged mood words, one per music track. Each
-# pool is scored on its own as the absolute mean similarity with its prompts;
-# the app z-scores the six against a frozen calibration and suggests the best.
-# The seventh pool, tension, has no prompts: it is taught only, never
-# suggested. Fixed vocabulary; the app knows these ids.
-POOLS = {
+MOODS = {
     "peaceful": [
-        "peaceful, tranquil, serene music",
-        "calm relaxing music for resting",
-        "gentle soothing pastoral music",
+        "benign, pleasant, agreeable music with no threat",
+        "music that signals safety, whatever its tempo",
+        "friendly and harmless",
     ],
-    "lighthearted": [
-        "lighthearted, fun, cheerful music",
-        "playful, jaunty, merry tune",
-        "goofy, quirky, whimsical music",
-    ],
-    "somber": [
+    "sorrowful": [
         "reflective, somber, sorrowful music",
         "sad, mournful, melancholic music",
         "wistful, grieving, nostalgic music",
     ],
-    "awe": [
+    "wondrous": [
         "music full of wonder and awe",
         "sacred, divine, celestial music, a choir in a cathedral",
         "a breathtaking vista, hopeful and vast, slow and soaring",
+    ],
+    "joyful": [
+        "joyful, glad music, any tempo",
+        "bright major-key happiness",
+        "contented and sunny",
+    ],
+    "quirky": [
+        "quirky, weird, offbeat music",
+        "groovy, funky, eccentric and strange",
+        "campy, oddball, mischievous tune",
     ],
     "mysterious": [
         "mysterious, unsettling, eerie music",
         "strange, uncanny, otherworldly sounds",
         "quiet suspense and looming dread, something is about to happen",
     ],
-    "epic": [
-        "epic, intense, heroic music",
-        "powerful triumphant orchestral battle music",
-        "driving, aggressive, dramatic action music",
+    "grim": [
+        "horror",
+        "dark",
+        "heavy",
+    ],
+    "heroic": [
+        "heroic, triumphant, bold orchestral music",
+        "a rousing victory anthem, brass and choir soaring",
+        "adventurous, noble, uplifting epic music",
     ],
 }
+
+# Energy: positive minus negative mean similarity.
+# Bare tag words: the model was trained on tag-like text. Never the bare
+# word "fast", which the model reads against energy.
+ENERGY_POS = [
+    "energetic",
+    "upbeat",
+    "powerful",
+]
+ENERGY_NEG = [
+    "slow",
+    "relaxing",
+    "calm",
+]

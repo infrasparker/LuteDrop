@@ -8,9 +8,9 @@
 
 pub mod client;
 pub mod plan;
-pub mod vibe;
+pub mod scry;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -19,7 +19,7 @@ use rusqlite::{params, Connection};
 
 use crate::database::autotag_db::{self, RunEntry};
 use crate::database::{library, now_millis, settings};
-use crate::models::{AnalysisStatus, AutoTagProgress, AutoTagReport, TagQuality};
+use crate::models::{AnalysisStatus, AutoTagProgress, AutoTagReport, MoodVocabulary, TagQuality};
 use crate::state::AppStateContainer;
 use client::{AnalyzerClient, HttpAnalyzer};
 use plan::{EntryFacts, ScoreSet};
@@ -356,13 +356,17 @@ fn progress_update(phase: &str, processed: u32, total: u32, message: Option<Stri
 /// 2. map the paths of the entries to embed (`queued`, plus any whose file
 ///    changed since it was embedded); unmappable ones become `UnreachablePath`;
 /// 3. embed them in batches of 32, marking each `Embedded` or `Failed`;
-/// 4. call `/score` once for every embedded music entry;
-/// 5. take the pool calibration if none is stored yet and this response
+/// 4. call `/score` once for every embedded music entry, sending the mood
+///    vocabulary's prompts;
+/// 5. take the mood calibration if none is stored yet and this response
 ///    covers enough music, then decide each scored entry's analyzer layer
-///    (role, mood, pool suggestion, tags);
+///    (role, moods, tags); only moods whose prompts match the calibration's
+///    are scored;
 /// 6. write that layer, the scores and a new calibration in one transaction.
 ///    The user's layer is never written, so the run can't undo an edit made
-///    meanwhile.
+///    meanwhile. If the calibration changed while the analyzer worked
+///    (Recalibrate cleared it), no mood is written: the run Recalibrate
+///    queued scores them.
 ///
 /// The database lock is released while the analyzer works, so the app stays
 /// usable. An analyzer or database error stops the run before step 6 commits,
@@ -390,13 +394,14 @@ fn run_steps(
     report: &mut AutoTagReport,
 ) -> Result<(), String> {
     // Step 1: read everything the run needs, then let go of the database.
-    let (settings, scene, entries, stored_calibration) = {
+    let (settings, scene, entries, stored_calibration, mood_vocabulary) = {
         let conn = lock(db)?;
         (
             settings::load_autotag(&conn)?,
             settings::load_scene_config(&conn)?,
             autotag_db::load_run_entries(&conn)?,
-            settings::load_pool_calibration(&conn)?,
+            settings::load_mood_calibration(&conn)?,
+            settings::load_mood_vocabulary(&conn)?,
         )
     };
 
@@ -482,7 +487,7 @@ fn run_steps(
 
     // Step 4: score every embedded music entry.
     let facts: Vec<EntryFacts> = entries.iter().map(|e| e.facts.clone()).collect();
-    let request = plan::build_score_request(&facts, &scene, &embedded);
+    let request = plan::build_score_request(&facts, &scene, &embedded).with_moods(&mood_vocabulary);
     if request.targets.is_empty() {
         progress(progress_update("done", 0, 0, None));
         return Ok(());
@@ -491,16 +496,18 @@ fn run_steps(
     progress(progress_update("scoring", 0, target_count, None));
     let response = client.score(&request)?;
 
-    // Step 5: decide. Only scored entries appear in `decisions`. The pool
+    // Step 5: decide. Only scored entries appear in `decisions`. The mood
     // calibration is frozen: taken from the first response that covers
-    // enough music and never recomputed after that. Until it exists, no
-    // pool is suggested.
+    // enough music and never recomputed after that (Recalibrate clears it).
+    // Until it exists, no mood is scored; after, only the moods whose
+    // prompts it was taken with.
     let new_calibration = match stored_calibration {
         Some(_) => None,
-        None => plan::calibrate(&response.mood),
+        None => plan::calibrate(&response.mood, &mood_vocabulary, now_millis()),
     };
     let calibration = stored_calibration.as_ref().or(new_calibration.as_ref());
-    let decisions = plan::decide(&facts, &scene, &response, calibration);
+    let mood_ids = calibration.map(|c| plan::scorable_ids(c, &mood_vocabulary)).unwrap_or_default();
+    let decisions = plan::decide(&facts, &scene, &response, calibration, &mood_ids);
 
     // Step 6: one transaction for every role, tag and score write. If
     // anything fails, `tx` is dropped without a commit and SQLite rolls it
@@ -511,9 +518,18 @@ fn run_steps(
         let tx = conn
             .unchecked_transaction()
             .map_err(|e| format!("Failed to begin auto-tag transaction: {e}"))?;
-        if let Some(calibration) = &new_calibration {
-            settings::save_pool_calibration(&conn, calibration)?;
-            log::info!("Pool calibration taken from {} tracks", calibration.tracks);
+        // Recalibrate (or a vocabulary save) may have run while the analyzer
+        // worked: write moods only if the calibration is still the one this
+        // run started with and every id still has the prompts the analyzer
+        // scored. A changed vocabulary means a calibration taken here would
+        // be signed with stale prompts, so the run skips moods and leaves
+        // them to the next run.
+        let vocabulary_now = settings::load_mood_vocabulary(&conn)?;
+        let moods_current = settings::load_mood_calibration(&conn)? == stored_calibration
+            && same_prompts(&vocabulary_now, &mood_vocabulary);
+        if let Some(calibration) = new_calibration.as_ref().filter(|_| moods_current) {
+            settings::save_mood_calibration(&conn, calibration)?;
+            log::info!("Mood calibration taken from {} tracks", calibration.tracks);
         }
         for entry in &entries {
             let id = &entry.facts.id;
@@ -532,16 +548,14 @@ fn run_steps(
                 None => (None, 0.0),
             };
             library::apply_auto_role(&conn, id, role, role_score)?;
-            // Mood: only entries with fresh raw scores change. A response
-            // without mood (model not loaded) leaves stored values alone.
-            if let Some(mood) = decision.mood {
-                library::apply_auto_mood(&conn, id, Some(mood))?;
-            }
-            // Pool: likewise, only entries with a fresh suggestion change.
-            // A run without a calibration, or without pool scores, leaves a
-            // stored suggestion alone.
-            if let Some(pool) = decision.pool {
-                library::apply_auto_pool(&conn, id, Some(pool))?;
+            // Moods: only entries with fresh values change. A run without
+            // mood (model not loaded), a calibration or the current mood
+            // shape leaves stored values alone. The user's levels are never
+            // written here.
+            if let Some(moods) = decision.moods.as_ref().filter(|_| moods_current) {
+                let moods: Vec<(String, f64)> =
+                    moods.iter().filter(|(m, _)| vocabulary_now.contains(m)).cloned().collect();
+                library::apply_auto_moods(&conn, id, &moods)?;
             }
             // Counts changes to the tags the entry shows (see apply_auto_tags).
             let (a, r) = library::apply_auto_tags(&conn, id, &decision.tags)?;
@@ -574,6 +588,15 @@ fn run_steps(
     Ok(())
 }
 
+/// True if both vocabularies have the same ids with the same prompt
+/// signature each (names and order may differ: they do not affect scores).
+fn same_prompts(a: &MoodVocabulary, b: &MoodVocabulary) -> bool {
+    let signatures = |v: &MoodVocabulary| -> BTreeMap<String, Option<Vec<String>>> {
+        v.ids().into_iter().map(|id| { let sig = v.prompt_signature(&id); (id, sig) }).collect()
+    };
+    signatures(a) == signatures(b)
+}
+
 /// True if the entry exists and is currently a music entry.
 fn entry_is_music(conn: &Connection, id: &str) -> Result<bool, String> {
     conn.query_row(
@@ -590,7 +613,7 @@ pub(crate) mod tests {
     use super::plan::{MoodRaw, Quality, ScoreRequest, ScoreResponse, ScoreSet};
     use super::*;
     use crate::database::{autotag_db, library, open_memory_db, settings};
-    use crate::models::{AnalysisStatus, AutoTagProgress, AutoTagSettings, Pool, Role, SceneConfig, TagSource};
+    use crate::models::{AnalysisStatus, AutoTagProgress, AutoTagSettings, MoodVocabulary, Role, SceneConfig, TagSource};
     use rusqlite::{params, Connection, OptionalExtension};
     use std::collections::{HashMap, HashSet};
     use std::sync::{Arc, Mutex};
@@ -715,6 +738,13 @@ pub(crate) mod tests {
         fn map(&self, hashes: &[String]) -> Result<Vec<HashPoint>, String> {
             self.record(hashes.to_vec(), &[], 0)?;
             Ok(self.points.clone())
+        }
+
+        /// Returns `ranked` as a map for the targets it names, recording the
+        /// prompts as the query and the targets as the candidates.
+        fn preview(&self, prompts: &[String], targets: &[String]) -> Result<HashMap<String, f64>, String> {
+            self.record(prompts.to_vec(), targets, 0)?;
+            Ok(self.ranked.iter().filter(|r| targets.contains(&r.hash)).map(|r| (r.hash.clone(), r.score)).collect())
         }
     }
 
@@ -1089,214 +1119,237 @@ pub(crate) mod tests {
         assert_eq!(role_of(&db, &a), (s("combat"), Some(0.9), s("non_combat")));
     }
 
-    /// The entry's stored (mood_bright, mood_grand, mood_energy).
-    fn mood_of(db: &Mutex<Connection>, entry: &str) -> (Option<f64>, Option<f64>, Option<f64>) {
+    /// Raw mood scores: `heroic` and `wondrous` as given, every other mood
+    /// and energy at `other`.
+    fn raw_mood(heroic: f64, wondrous: f64, other: f64) -> MoodRaw {
+        let mut moods: HashMap<String, f64> =
+            MoodVocabulary::defaults().moods.into_iter().map(|m| (m.id, other)).collect();
+        moods.insert("heroic".into(), heroic);
+        moods.insert("wondrous".into(), wondrous);
+        MoodRaw { moods, energy: other }
+    }
+
+    /// The entry's stored (auto_score, user_level) of one mood, `None`
+    /// without a row.
+    fn mood_of(db: &Mutex<Connection>, entry: &str, mood: &str) -> Option<(Option<f64>, Option<f64>)> {
         db.lock()
             .unwrap()
             .query_row(
-                "SELECT mood_bright, mood_grand, mood_energy FROM library_entries WHERE id = ?1",
-                params![entry],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                "SELECT auto_score, user_level FROM library_entry_moods WHERE library_entry_id = ?1 AND mood = ?2",
+                params![entry, mood],
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
+            .optional()
             .unwrap()
     }
 
-    /// Raw (bright, grand, energy) mood scores per hash, without pool scores.
-    fn mood_scores(rows: &[(&str, f64, f64, f64)]) -> HashMap<String, MoodRaw> {
-        rows.iter()
-            .map(|&(h, bright, grand, energy)| {
-                (h.to_string(), MoodRaw { bright, grand, energy, pools: HashMap::new() })
+    fn mood_row_count(db: &Mutex<Connection>, entry: &str) -> i64 {
+        db.lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM library_entry_moods WHERE library_entry_id = ?1", params![entry], |r| {
+                r.get(0)
             })
-            .collect()
-    }
-
-    /// Raw mood with pool scores: `epic` and `awe` as given, every other
-    /// pool at `other`.
-    fn pool_mood(epic: f64, awe: f64, other: f64) -> MoodRaw {
-        let mut pools: HashMap<String, f64> =
-            Pool::ZERO_SHOT.iter().map(|p| (p.as_db_str().to_string(), other)).collect();
-        pools.insert("epic".into(), epic);
-        pools.insert("awe".into(), awe);
-        MoodRaw { bright: 0.0, grand: 0.0, energy: 0.0, pools }
-    }
-
-    /// The entry's stored (pool_auto, pool_auto_p, pool_auto_runner).
-    fn pool_of(db: &Mutex<Connection>, entry: &str) -> (Option<String>, Option<f64>, Option<String>) {
-        db.lock()
-            .unwrap()
-            .query_row(
-                "SELECT pool_auto, pool_auto_p, pool_auto_runner FROM library_entries WHERE id = ?1",
-                params![entry],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
             .unwrap()
     }
 
-    /// `n` music entries "e0".. with hashes "h-e0"..; every fourth has epic
-    /// raised and the one after it awe (a z of about 1.7), while the other
-    /// pools alternate between two values (a z of 1), so every pool has
-    /// spread and e0 is clearly Epic, e1 clearly Awe.
-    fn pool_library(db: &Mutex<Connection>, n: usize) -> (Vec<String>, HashMap<String, f64>, HashMap<String, MoodRaw>) {
+    /// `n` music entries "e0".. with hashes "h-e0"..; every fourth has heroic
+    /// raised and the one after it wondrous, while every other id alternates
+    /// between two values, so every id has spread.
+    fn mood_library(db: &Mutex<Connection>, n: usize) -> (Vec<String>, HashMap<String, f64>, HashMap<String, MoodRaw>) {
         let mut ids = Vec::new();
         let (mut gate, mut mood) = (HashMap::new(), HashMap::new());
         for k in 0..n {
             ids.push(add(db, &format!("e{k}"), "music"));
             let hash = format!("h-e{k}");
             gate.insert(hash.clone(), 0.9);
-            let epic = if k % 4 == 0 { 0.3 } else { 0.2 };
-            let awe = if k % 4 == 1 { 0.3 } else { 0.2 };
-            let m = pool_mood(epic, awe, 0.2 + (k % 2) as f64 * 0.01);
-            mood.insert(hash, m);
+            let heroic = if k % 4 == 0 { 0.3 } else { 0.2 };
+            let wondrous = if k % 4 == 1 { 0.3 } else { 0.2 };
+            mood.insert(hash, raw_mood(heroic, wondrous, 0.2 + (k % 2) as f64 * 0.01));
         }
         (ids, gate, mood)
     }
 
     #[test]
-    fn run_takes_a_frozen_pool_calibration_and_suggests_pools() {
+    fn run_takes_a_frozen_mood_calibration_and_scores_moods() {
         let db = setup();
-        let (ids, gate, mood) = pool_library(&db, plan::CALIBRATION_MIN_TRACKS);
+        let (ids, gate, mood) = mood_library(&db, plan::CALIBRATION_MIN_TRACKS);
         let fake = FakeAnalyzer { gate, mood, ..Default::default() };
 
         let report = run_once(&db, &fake, &ids, &no_progress);
         assert_eq!(report.error, None);
 
-        let cal = settings::load_pool_calibration(&db.lock().unwrap()).unwrap().unwrap();
+        let cal = settings::load_mood_calibration(&db.lock().unwrap()).unwrap().unwrap();
+        assert_eq!(cal.stats.len(), 9);
         assert_eq!(cal.tracks, plan::CALIBRATION_MIN_TRACKS);
-        // epic: 13 of 50 at 0.3, the rest at 0.2.
-        assert!((cal.pools["epic"].mean - 0.226).abs() < 1e-12);
-        assert!((cal.pools["epic"].sd - 0.1 * (0.26f64 * 0.74).sqrt()).abs() < 1e-12);
-        let (pool, p, runner) = pool_of(&db, &ids[0]);
-        assert_eq!((pool.as_deref(), runner.as_deref()), (Some("epic"), Some("awe")));
-        assert!(p.unwrap() > 0.5);
-        assert_eq!(pool_of(&db, &ids[1]).0.as_deref(), Some("awe"));
+        // heroic: 13 of 50 at 0.3, the rest at 0.2.
+        let heroic = cal.stats["heroic"];
+        assert!((heroic.mean - 0.226).abs() < 1e-12);
+        assert!((heroic.sd - 0.1 * (0.26f64 * 0.74).sqrt()).abs() < 1e-12);
+        // Every id gets an analyzer value and no user level.
+        assert_eq!(mood_row_count(&db, &ids[0]), 9);
+        let (auto, user) = mood_of(&db, &ids[0], "heroic").unwrap();
+        assert!((auto.unwrap() - plan::mood_score(0.3, heroic)).abs() < 1e-12);
+        assert!(auto.unwrap() > 0.9);
+        assert_eq!(user, None);
+        assert!(mood_of(&db, &ids[1], "heroic").unwrap().0.unwrap() < 0.5);
+        assert!(mood_of(&db, &ids[1], "wondrous").unwrap().0.unwrap() > 0.9);
 
         // A later run with a different spread keeps the frozen calibration.
         let mood: HashMap<String, MoodRaw> = (0..plan::CALIBRATION_MIN_TRACKS)
-            .map(|k| (format!("h-e{k}"), pool_mood(0.9, 0.1 + k as f64 * 0.001, 0.2)))
+            .map(|k| (format!("h-e{k}"), raw_mood(0.9, 0.1 + k as f64 * 0.001, 0.2)))
             .collect();
         let gate = mood.keys().map(|h| (h.clone(), 0.9)).collect();
         let fake = FakeAnalyzer { gate, mood, ..Default::default() };
         run_once(&db, &fake, &[], &no_progress);
-        assert_eq!(settings::load_pool_calibration(&db.lock().unwrap()).unwrap().unwrap(), cal);
-        // Scored against the frozen calibration, epic wins everywhere.
-        assert_eq!(pool_of(&db, &ids[1]).0.as_deref(), Some("epic"));
+        assert_eq!(settings::load_mood_calibration(&db.lock().unwrap()).unwrap().unwrap(), cal);
+        // Scored against the frozen calibration, heroic is near the top.
+        let (auto, _) = mood_of(&db, &ids[1], "heroic").unwrap();
+        assert!((auto.unwrap() - plan::mood_score(0.9, heroic)).abs() < 1e-12);
     }
 
     #[test]
-    fn run_without_enough_music_suggests_no_pool() {
+    fn run_without_enough_music_scores_no_moods() {
         let db = setup();
-        let (ids, gate, mood) = pool_library(&db, plan::CALIBRATION_MIN_TRACKS - 1);
+        let (ids, gate, mood) = mood_library(&db, plan::CALIBRATION_MIN_TRACKS - 1);
         let fake = FakeAnalyzer { gate, mood, ..Default::default() };
 
         let report = run_once(&db, &fake, &ids, &no_progress);
         assert_eq!(report.error, None);
-        assert_eq!(settings::load_pool_calibration(&db.lock().unwrap()).unwrap(), None);
-        assert!(ids.iter().all(|id| pool_of(&db, id) == (None, None, None)));
-        // The scales are still written.
-        assert!(mood_of(&db, &ids[0]).0.is_some());
+        assert_eq!(settings::load_mood_calibration(&db.lock().unwrap()).unwrap(), None);
+        assert!(ids.iter().all(|id| mood_row_count(&db, id) == 0));
     }
 
     #[test]
-    fn run_never_touches_the_users_pool() {
+    fn run_never_touches_the_users_levels() {
         let db = setup();
-        let (ids, gate, mood) = pool_library(&db, plan::CALIBRATION_MIN_TRACKS);
-        library::set_user_pool(&db.lock().unwrap(), &ids[..1], Some(Pool::Tension)).unwrap();
-        let before: (Option<String>, Option<String>) = db
-            .lock()
-            .unwrap()
-            .query_row("SELECT pool_user, pool_reviewed_at FROM library_entries WHERE id = ?1", params![ids[0]], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
-            .unwrap();
+        let (ids, gate, mood) = mood_library(&db, plan::CALIBRATION_MIN_TRACKS);
+        library::set_user_mood_level(&db.lock().unwrap(), &ids[..1], "grim", Some(1.0)).unwrap();
+        let reviewed = |db: &Mutex<Connection>| -> Option<String> {
+            db.lock()
+                .unwrap()
+                .query_row("SELECT mood_reviewed_at FROM library_entries WHERE id = ?1", params![ids[0]], |r| r.get(0))
+                .unwrap()
+        };
+        let before = reviewed(&db);
+        assert!(before.is_some());
         let fake = FakeAnalyzer { gate, mood, ..Default::default() };
         run_once(&db, &fake, &ids, &no_progress);
-        let after: (Option<String>, Option<String>) = db
-            .lock()
-            .unwrap()
-            .query_row("SELECT pool_user, pool_reviewed_at FROM library_entries WHERE id = ?1", params![ids[0]], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
-            .unwrap();
-        assert_eq!(after, before);
-        assert_eq!(pool_of(&db, &ids[0]).0.as_deref(), Some("epic"));
+        assert_eq!(reviewed(&db), before);
+        let (auto, user) = mood_of(&db, &ids[0], "grim").unwrap();
+        assert!(auto.is_some());
+        assert_eq!(user, Some(1.0));
     }
 
     #[test]
-    fn run_applies_mood_on_all_three_scales() {
+    fn run_keeps_moods_without_mood() {
         let db = setup();
-        let a = add(&db, "a", "music");
-        let b = add(&db, "b", "music");
-        let c = add(&db, "c", "music");
-        let fake = FakeAnalyzer {
-            gate: scores(&[("h-a", 0.9), ("h-b", 0.9), ("h-c", 0.9)]),
-            mood: mood_scores(&[("h-a", 0.0, 2.0, 6.0), ("h-b", 1.0, 2.0, 4.0), ("h-c", 2.0, 2.0, 5.0)]),
-            ..Default::default()
-        };
+        let (ids, gate, mood) = mood_library(&db, plan::CALIBRATION_MIN_TRACKS);
+        let fake = FakeAnalyzer { gate: gate.clone(), mood, ..Default::default() };
+        run_once(&db, &fake, &ids, &no_progress);
+        let before = mood_of(&db, &ids[0], "heroic");
+        assert!(before.unwrap().0.is_some());
 
-        let report = run_once(&db, &fake, &[a.clone(), b.clone(), c.clone()], &no_progress);
-
-        assert_eq!(report.error, None);
-        let z = (3.0_f64 / 2.0).sqrt();
-        let close = |v: Option<f64>, want: f64| (v.unwrap() - want).abs() < 1e-9;
-        let (bright_a, grand_a, energy_a) = mood_of(&db, &a);
-        assert!(close(bright_a, -z));
-        // No spread on the grand scale.
-        assert_eq!(grand_a, Some(0.0));
-        assert!(close(energy_a, z));
-        assert_eq!(mood_of(&db, &b).0, Some(0.0));
-        assert!(close(mood_of(&db, &b).2, -z));
-        assert!(close(mood_of(&db, &c).0, z));
-        assert_eq!(mood_of(&db, &c).2, Some(0.0));
-    }
-
-    #[test]
-    fn run_keeps_mood_without_scores() {
-        let db = setup();
-        let a = add(&db, "a", "music");
-        let first = FakeAnalyzer {
-            gate: scores(&[("h-a", 0.9)]),
-            mood: mood_scores(&[("h-a", 1.0, 1.0, 1.0)]),
-            ..Default::default()
-        };
-        run_once(&db, &first, std::slice::from_ref(&a), &no_progress);
-        assert_eq!(mood_of(&db, &a), (Some(0.0), Some(0.0), Some(0.0)));
-
-        // No mood in the response (model not loaded): stored values stay.
-        let bare = FakeAnalyzer { gate: scores(&[("h-a", 0.9)]), ..Default::default() };
+        // No mood in the response (model not loaded): the values stay.
+        let bare = FakeAnalyzer { gate, ..Default::default() };
         let report = run_once(&db, &bare, &[], &no_progress);
         assert_eq!(report.error, None);
-        assert_eq!(mood_of(&db, &a), (Some(0.0), Some(0.0), Some(0.0)));
+        assert_eq!(mood_of(&db, &ids[0], "heroic"), before);
+        assert_eq!(mood_row_count(&db, &ids[0]), 9);
     }
 
     #[test]
-    fn run_does_not_overwrite_mood_step_set_during_scoring() {
-        use crate::models::{MoodScale, MoodStep};
-
+    fn run_sends_the_vocabulary_and_skips_moods_with_changed_prompts() {
         let db = setup();
-        let a = add(&db, "a", "music");
+        let (ids, gate, mood) = mood_library(&db, plan::CALIBRATION_MIN_TRACKS);
+        let fake = FakeAnalyzer { gate: gate.clone(), mood: mood.clone(), ..Default::default() };
+        run_once(&db, &fake, &ids, &no_progress);
+        let request = fake.last_score.lock().unwrap().clone().unwrap();
+        let vocab = MoodVocabulary::defaults();
+        assert_eq!(request.mood_prompts.unwrap()["grim"], vocab.moods[6].prompts);
+        assert_eq!(request.energy_prompts, Some(vocab.energy.clone()));
+        let heroic_before = mood_of(&db, &ids[1], "heroic");
+        let grim_before = mood_of(&db, &ids[1], "grim");
+
+        // Heroic's prompts change; a run with different raw scores leaves
+        // Heroic as it was (it waits for Recalibrate) and rescores the rest.
+        let mut edited = vocab.clone();
+        edited.moods[7].prompts = vec!["fanfare".into()];
+        library::save_mood_vocabulary(&db.lock().unwrap(), &edited).unwrap();
+        let mood: HashMap<String, MoodRaw> = mood.keys().map(|h| (h.clone(), raw_mood(0.5, 0.5, 0.5))).collect();
+        let fake = FakeAnalyzer { gate, mood, ..Default::default() };
+        run_once(&db, &fake, &[], &no_progress);
+        let sent = fake.last_score.lock().unwrap().clone().unwrap();
+        assert_eq!(sent.mood_prompts.unwrap()["heroic"], ["fanfare"]);
+        assert_eq!(mood_of(&db, &ids[1], "heroic"), heroic_before);
+        assert_ne!(mood_of(&db, &ids[1], "grim"), grim_before);
+    }
+
+    #[test]
+    fn run_writes_no_moods_when_recalibrate_ran_meanwhile() {
+        let db = setup();
+        let (ids, gate, mood) = mood_library(&db, plan::CALIBRATION_MIN_TRACKS);
         let hook_db = db.clone();
-        let hook_a = a.clone();
         let fake = FakeAnalyzer {
-            gate: scores(&[("h-a", 0.9)]),
-            mood: mood_scores(&[("h-a", 1.0, 1.0, 1.0)]),
+            gate,
+            mood,
             on_score: Some(Box::new(move || {
-                let conn = hook_db.try_lock().expect("database is free during /score");
-                let ids = std::slice::from_ref(&hook_a);
-                library::set_user_mood_step(&conn, ids, MoodScale::Energy, Some(MoodStep::Low)).unwrap();
+                library::clear_mood_analysis(&hook_db.try_lock().expect("database is free during /score")).unwrap();
             })),
             ..Default::default()
         };
-
-        let report = run_once(&db, &fake, std::slice::from_ref(&a), &no_progress);
-
+        let report = run_once(&db, &fake, &ids, &no_progress);
         assert_eq!(report.error, None);
-        let step: Option<String> = db
-            .lock()
-            .unwrap()
-            .query_row("SELECT mood_energy_user FROM library_entries WHERE id = ?1", params![a], |r| r.get(0))
-            .unwrap();
-        assert_eq!(step.as_deref(), Some("low"));
-        assert_eq!(mood_of(&db, &a).2, Some(0.0));
+        // Calibration-free at start and cleared meanwhile still compares
+        // equal (both none), so this run takes the calibration as usual.
+        assert!(settings::load_mood_calibration(&db.lock().unwrap()).unwrap().is_some());
+
+        // With a calibration stored, a Recalibrate during /score wins: the
+        // run neither writes moods nor restores a calibration.
+        let fake = FakeAnalyzer {
+            gate: fake.gate.clone(),
+            mood: fake.mood.clone(),
+            on_score: fake.on_score,
+            ..Default::default()
+        };
+        run_once(&db, &fake, &[], &no_progress);
+        assert_eq!(settings::load_mood_calibration(&db.lock().unwrap()).unwrap(), None);
+        assert!(ids.iter().all(|id| mood_row_count(&db, id) == 0));
+    }
+
+    #[test]
+    fn recalibrate_with_new_prompts_during_an_uncalibrated_run_is_not_lost() {
+        let db = setup();
+        let (ids, gate, mood) = mood_library(&db, plan::CALIBRATION_MIN_TRACKS);
+        let mut edited = MoodVocabulary::defaults();
+        edited.moods[7].prompts = vec!["fanfare".into()];
+        // The run starts with no calibration; during /score the user saves
+        // new prompts and recalibrates (a no-op on the calibration).
+        let hook_db = db.clone();
+        let hook_vocab = edited.clone();
+        let fake = FakeAnalyzer {
+            gate: gate.clone(),
+            mood: mood.clone(),
+            on_score: Some(Box::new(move || {
+                let conn = hook_db.try_lock().expect("database is free during /score");
+                library::save_mood_vocabulary(&conn, &hook_vocab).unwrap();
+                library::clear_mood_analysis(&conn).unwrap();
+            })),
+            ..Default::default()
+        };
+        let report = run_once(&db, &fake, &ids, &no_progress);
+        assert_eq!(report.error, None);
+        // Scored with the old prompts: no calibration and no moods saved.
+        assert_eq!(settings::load_mood_calibration(&db.lock().unwrap()).unwrap(), None);
+        assert!(ids.iter().all(|id| mood_row_count(&db, id) == 0));
+
+        // The next run calibrates with the new prompts; nothing needs
+        // recalibrating.
+        let fake = FakeAnalyzer { gate, mood, ..Default::default() };
+        run_once(&db, &fake, &[], &no_progress);
+        let cal = settings::load_mood_calibration(&db.lock().unwrap()).unwrap().unwrap();
+        assert_eq!(cal.prompts["heroic"], ["fanfare"]);
+        assert!(!plan::needs_recalibration(Some(&cal), &edited.normalized().unwrap()));
+        assert_eq!(mood_row_count(&db, &ids[0]), 9);
     }
 
     #[test]
@@ -1312,9 +1365,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn old_analyzer_without_three_axis_mood_still_works() {
+    fn old_analyzer_without_mood_profile_still_works() {
         // An analyzer from before pace and mood sends neither key; one from
-        // v0.12 sends a pace head and mood with only `bright` and `light`.
+        // v0.12 sends a pace head and mood with only `bright` and `light`;
+        // one from before pools sends only the three scales; one from v0.15
+        // sends pools.
         let gate = r#""gate":{"quality":{"auc":0.9,"pos":3,"neg":3},
             "trusted":true,"threshold":0.5,"neg_threshold":0.5,"scores":{"h-a":0.9}},"tags":{}"#;
         let bare = format!(r#"{{"model":"m",{gate}}}"#);
@@ -1322,6 +1377,9 @@ pub(crate) mod tests {
             r#"{{"model":"m",{gate},
                 "pace":{{"quality":{{"auc":null,"pos":0,"neg":0}},"trusted":false,"threshold":null,"scores":{{}}}},
                 "mood":{{"h-a":{{"bright":0.3,"light":0.1}}}}}}"#
+        );
+        let scales_only = format!(
+            r#"{{"model":"m",{gate},"mood":{{"h-a":{{"bright":0.3,"grand":0.1,"energy":-0.2}}}}}}"#
         );
 
         struct Canned(ScoreResponse, FakeAnalyzer);
@@ -1332,9 +1390,14 @@ pub(crate) mod tests {
             fn similar(&self, q: &[String], c: &[String], l: u32) -> Result<Vec<HashScore>, String> { self.1.similar(q, c, l) }
             fn search(&self, t: &str, c: &[String], l: u32) -> Result<Vec<HashScore>, String> { self.1.search(t, c, l) }
             fn map(&self, h: &[String]) -> Result<Vec<HashPoint>, String> { self.1.map(h) }
+            fn preview(&self, p: &[String], t: &[String]) -> Result<HashMap<String, f64>, String> { self.1.preview(p, t) }
         }
 
-        for json in [bare, two_axis] {
+        let pools = format!(
+            r#"{{"model":"m",{gate},"mood":{{"h-a":{{"pools":{{"peaceful":0.3,"heroic":0.1,"awe":0.2}}}}}}}}"#
+        );
+
+        for json in [bare, two_axis, scales_only, pools] {
             let response: ScoreResponse = serde_json::from_str(&json).unwrap();
             let db = setup();
             let a = add(&db, "a", "music");
@@ -1344,8 +1407,7 @@ pub(crate) mod tests {
             assert_eq!(report.error, None);
             assert_eq!(report.analyzed, 1);
             assert_eq!(role_of(&db, &a), auto_combat(0.9));
-            assert_eq!(mood_of(&db, &a), (None, None, None));
-            assert_eq!(pool_of(&db, &a), (None, None, None));
+            assert_eq!(mood_row_count(&db, &a), 0);
         }
     }
 

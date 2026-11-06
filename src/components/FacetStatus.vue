@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 
-/// Right-hand status column for one facet (Role, Pool or a mood scale).
+/// Right-hand status column for the Role facet.
 /// It says where the shown value comes from and offers the one action that
 /// makes sense in that state:
 /// - suggested: the analyzer's value is shown; ✓ Confirm keeps it as the
@@ -83,10 +83,17 @@ const differs = computed(
 
 <style scoped>
 /* Wide enough for most states ("Confirmed · suggested: Non-combat" + Use
-   suggestion), so the column does not jump when the state changes. */
+   suggestion), so the column does not jump when the state changes. One line
+   always: a grid track holding it grows to fit rather than wrap or clip. */
 .facet-status {
-  min-width: 300px;
+  min-width: 260px;
   min-height: 28px;
+  white-space: nowrap;
+  /* `text-caption` no longer exists in Vuetify 4, so size the text here. */
+  font-size: 0.8125rem;
+}
+.facet-status :deep(.v-btn) {
+  font-size: 0.8125rem;
 }
 .status-text {
   white-space: nowrap;

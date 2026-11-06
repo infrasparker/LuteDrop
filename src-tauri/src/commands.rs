@@ -3,8 +3,8 @@ use tauri::State;
 use std::sync::Arc;
 use crate::actions;
 use crate::models::{
-    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodScale, MoodStep, Pool,
-    Role, SceneConfig, TrackUpdates, VibeHit, VibePoint,
+    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodVocabulary,
+    Role, SceneConfig, TrackUpdates, ScryHit, ScryPoint,
 };
 use crate::state::AppStateContainer;
 use crate::waveform;
@@ -307,22 +307,26 @@ pub fn keep_auto_role(
 }
 
 #[tauri::command]
-pub fn set_entry_mood_step(
+pub fn set_entry_mood_level(
     state: State<'_, Arc<AppStateContainer>>,
     entry_ids: Vec<String>,
-    scale: MoodScale,
-    step: Option<MoodStep>,
+    mood: String,
+    level: Option<f64>,
 ) -> Result<AppState, String> {
-    actions::set_entry_mood_step(&state, entry_ids, scale, step)
+    actions::set_entry_mood_level(&state, entry_ids, mood, level)
 }
 
 #[tauri::command]
-pub fn set_entry_pool(
+pub fn set_mood_vocabulary(
     state: State<'_, Arc<AppStateContainer>>,
-    entry_ids: Vec<String>,
-    pool: Option<Pool>,
+    vocabulary: MoodVocabulary,
 ) -> Result<AppState, String> {
-    actions::set_entry_pool(&state, entry_ids, pool)
+    actions::set_mood_vocabulary(&state, vocabulary)
+}
+
+#[tauri::command]
+pub fn recalibrate_moods(state: State<'_, Arc<AppStateContainer>>) -> Result<AppState, String> {
+    actions::recalibrate_moods(&state)
 }
 
 #[tauri::command]
@@ -572,7 +576,7 @@ pub fn get_autotag_report(state: State<'_, Arc<AppStateContainer>>) -> AutoTagRe
     actions::get_autotag_report(&state)
 }
 
-/// The three Vibe commands are async for the same reason as
+/// The three Scry commands are async for the same reason as
 /// `test_autotag_connection`: each waits on the analyzer. The database lock
 /// is taken only inside, to read entries.
 #[tauri::command]
@@ -580,7 +584,7 @@ pub async fn similar_entries(
     state: State<'_, Arc<AppStateContainer>>,
     entry_ids: Vec<String>,
     limit: u32,
-) -> Result<Vec<VibeHit>, String> {
+) -> Result<Vec<ScryHit>, String> {
     let container = state.inner().clone();
     tokio::task::spawn_blocking(move || actions::similar_entries(&container, &entry_ids, limit))
         .await
@@ -588,21 +592,33 @@ pub async fn similar_entries(
 }
 
 #[tauri::command]
-pub async fn search_vibe(
+pub async fn search_scry(
     state: State<'_, Arc<AppStateContainer>>,
     text: String,
     limit: u32,
-) -> Result<Vec<VibeHit>, String> {
+) -> Result<Vec<ScryHit>, String> {
     let container = state.inner().clone();
-    tokio::task::spawn_blocking(move || actions::search_vibe(&container, &text, limit))
+    tokio::task::spawn_blocking(move || actions::search_scry(&container, &text, limit))
         .await
         .map_err(|e| format!("Scry search failed: {e}"))?
 }
 
+/// Async like the Scry commands: it waits on the analyzer.
 #[tauri::command]
-pub async fn vibe_map(state: State<'_, Arc<AppStateContainer>>) -> Result<Vec<VibePoint>, String> {
+pub async fn preview_mood_prompts(
+    state: State<'_, Arc<AppStateContainer>>,
+    prompts: Vec<String>,
+) -> Result<Vec<ScryHit>, String> {
     let container = state.inner().clone();
-    tokio::task::spawn_blocking(move || actions::vibe_map(&container))
+    tokio::task::spawn_blocking(move || actions::preview_mood_prompts(&container, &prompts))
+        .await
+        .map_err(|e| format!("Mood preview failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn scry_map(state: State<'_, Arc<AppStateContainer>>) -> Result<Vec<ScryPoint>, String> {
+    let container = state.inner().clone();
+    tokio::task::spawn_blocking(move || actions::scry_map(&container))
         .await
         .map_err(|e| format!("Scry map failed: {e}"))?
 }

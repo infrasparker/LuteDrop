@@ -12,6 +12,7 @@ import TransportBar from './components/TransportBar.vue';
 import WaveformEditorDialog from './components/WaveformEditorDialog.vue';
 import RemoteInfoDialog from './components/RemoteInfoDialog.vue';
 import BroadcastDialog from './components/BroadcastDialog.vue';
+import MoodSettingsDialog from './components/MoodSettingsDialog.vue';
 
 const store = useAppStore();
 const toast = useToast();
@@ -101,6 +102,12 @@ onMounted(async () => {
       <template #append>
         <VList nav density="compact">
           <VListItem
+            prepend-icon="mdi-palette-outline"
+            title="Moods"
+            aria-label="Moods"
+            @click="store.moodSettingsOpen = true"
+          />
+          <VListItem
             prepend-icon="mdi-broadcast"
             title="Broadcast"
             aria-label="Broadcast"
@@ -134,6 +141,7 @@ onMounted(async () => {
 
     <RemoteInfoDialog v-model="showRemoteInfo" />
     <BroadcastDialog v-model="showBroadcast" />
+    <MoodSettingsDialog v-model="store.moodSettingsOpen" />
 
     <VSnackbar v-model="toast.visible.value" :color="toast.color.value" :timeout="3000">
       {{ toast.message.value }}

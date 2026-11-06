@@ -1,25 +1,25 @@
 <script setup lang="ts">
-// The Review tab: one music track at a time, with the analyzer's pool and role
-// suggestions shown as the defaults. Approve confirms whatever is shown and
-// moves on; Skip moves on without saving anything (the track goes to the end
-// of the queue for this session). Changing Role or Pool on the card saves at
-// once but does not move on by itself.
+// The Review tab: one music track at a time, with its Role and mood profile.
+// Approve confirms the role shown, marks the track reviewed and moves on
+// (mood bars the user did not touch stay the analyzer's suggestions); Skip
+// moves on without saving anything (the track goes to the end of the queue
+// for this session). Changing Role or a mood level on the card saves at once
+// but does not move on by itself.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { VibeHit } from '@generated/index';
+import type { ScryHit } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useReviewQueue } from '../composables/useReviewQueue';
 import { useLibraryPreview } from '../composables/useLibraryPreview';
 import RoleControl from '../components/RoleControl.vue';
-import PoolControl from '../components/PoolControl.vue';
-import { effectivePool, suggestionText } from '../utils/pools';
-import { entryReadout } from '../utils/readout';
+import MoodProfile from '../components/MoodProfile.vue';
+import { topMoodText } from '../utils/moods';
 
 const store = useAppStore();
 const { queue, skippedWaiting, approvedCount, skip, noteApproved } = useReviewQueue();
 const { playingId, toggle: togglePreview, stop: stopPreview } = useLibraryPreview();
 
-// The card stays on its entry until Approve or Skip, even when a Role or Pool
+// The card stays on its entry until Approve or Skip, even when a Role or mood
 // change has already marked it reviewed (and so taken it out of the queue).
 const currentId = ref<string | null>(null);
 const current = computed(() => (currentId.value === null ? undefined : store.findLibraryEntry(currentId.value)));
@@ -44,12 +44,11 @@ const folder = computed(() => {
   return [parts[parts.length - 3], parts[parts.length - 2]].filter(Boolean).join(' / ');
 });
 
-const word = computed(() => (current.value ? entryReadout(current.value) : null));
-const suggestion = computed(() => (current.value ? suggestionText(current.value) : null));
-const shownPool = computed(() => (current.value ? effectivePool(current.value) : null));
+/// A readout only: the two highest moods shown, e.g. "Mysterious 0.87 · Grim 0.74".
+const readout = computed(() => (current.value ? topMoodText(current.value, 2) : ''));
 const isPlaying = computed(() => current.value !== undefined && playingId.value === current.value.id);
 
-// --- Sounds like: the two nearest confirmed tracks in the shown pool ---
+// --- Sounds like: the two nearest reviewed tracks by sound ---
 
 const SIMILAR_LIMIT = 200;
 const SIMILAR_TIMEOUT_MS = 5000;
@@ -77,20 +76,20 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 watch(
-  [currentId, shownPool],
-  async ([id, pool]) => {
+  currentId,
+  async (id) => {
     const request = ++neighbourRequest;
     neighbourIds.value = [];
-    if (id === null || pool === null) return;
+    if (id === null) return;
     try {
       const hits = await withTimeout(
-        invoke<VibeHit[]>('similar_entries', { entryIds: [id], limit: SIMILAR_LIMIT }),
+        invoke<ScryHit[]>('similar_entries', { entryIds: [id], limit: SIMILAR_LIMIT }),
         SIMILAR_TIMEOUT_MS,
       );
       if (request !== neighbourRequest) return;
       neighbourIds.value = hits
         .map((h) => h.entryId)
-        .filter((hitId) => hitId !== id && store.findLibraryEntry(hitId)?.poolUser === pool)
+        .filter((hitId) => hitId !== id && (store.findLibraryEntry(hitId)?.moodReviewedAt ?? null) !== null)
         .slice(0, 2);
     } catch {
       // Not analyzed, analyzer off or slow: the line is left out.
@@ -163,7 +162,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 </script>
 
 <template>
-  <div class="review-view pa-4 d-flex flex-column align-center">
+  <div class="review-view pa-6 d-flex flex-column align-center">
     <div
       v-if="!current"
       class="d-flex flex-column align-center justify-center text-medium-emphasis pa-8 flex-grow-1"
@@ -173,7 +172,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
       <span class="text-body-2 mt-1">New imports show up here.</span>
     </div>
 
-    <VCard v-else class="review-card pa-5" variant="flat" border>
+    <VCard v-else class="review-card pa-8" variant="flat" border>
       <div class="d-flex align-start ga-3">
         <VBtn
           :icon="isPlaying ? 'mdi-stop' : 'mdi-play'"
@@ -191,15 +190,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
         <span class="text-caption text-medium-emphasis progress">{{ position }} of {{ total }}</span>
       </div>
 
-      <div class="readout text-center my-6">
-        <div class="text-display-small font-weight-medium">{{ word ?? '—' }}</div>
-        <div class="text-caption text-medium-emphasis mt-2">
-          <template v-if="suggestion">suggested: {{ suggestion }}</template>
-          <template v-else>no suggestion</template>
-        </div>
+      <div class="readout text-body-1 text-medium-emphasis my-4">
+        {{ readout || 'Not analyzed yet' }}
       </div>
 
-      <div class="facet-grid mb-3">
+      <div class="facet-grid mb-4">
         <span class="text-caption text-medium-emphasis">Role</span>
         <RoleControl
           :entry-ids="[current.id]"
@@ -207,9 +202,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
           :role-auto-score="current.roleAutoScore"
           :role-user="current.roleUser"
         />
-        <span class="text-caption text-medium-emphasis">Pool</span>
-        <PoolControl :entry="current" />
       </div>
+
+      <MoodProfile :key="current.id" :entries="[current]" class="mb-4" />
 
 
       <div v-if="neighbours.length > 0" class="d-flex flex-wrap align-center ga-2 mb-3">
@@ -226,7 +221,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
         </VChip>
       </div>
 
-      <div class="d-flex align-center ga-2 mt-4">
+      <div class="action-row d-flex align-center ga-2 mt-6">
         <VBtn color="primary" prepend-icon="mdi-check" :loading="busy" @click="approve">
           Approve
           <span class="key-hint ml-2">A</span>
@@ -247,20 +242,32 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
   height: 100%;
   overflow-y: auto;
 }
+/* Up to 1100px wide, filling the view below that. min-width lets the card
+   grow past that rather than clip a row that cannot fit (the view scrolls). */
 .review-card {
-  width: min(960px, 100%);
+  width: 100%;
+  max-width: 1100px;
+  min-width: min-content;
+  overflow: visible;
 }
 .progress {
   white-space: nowrap;
   padding-top: 10px;
 }
-/* Label | options | status, as in the editor. */
+/* Label | options | status. The status column keeps its text on one line,
+   right-aligned, and is never squeezed. */
 .facet-grid {
   display: grid;
-  grid-template-columns: max-content max-content 1fr;
+  grid-template-columns: max-content minmax(min-content, 1fr) max-content;
   align-items: center;
-  column-gap: 12px;
-  row-gap: 12px;
+  column-gap: 16px;
+  row-gap: 16px;
+}
+.facet-grid :deep(.facet-status) {
+  justify-self: end;
+}
+.action-row {
+  width: 100%;
 }
 .key-hint {
   font-size: 0.7rem;

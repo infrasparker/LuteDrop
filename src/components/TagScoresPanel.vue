@@ -5,7 +5,6 @@ import { useToast } from '../composables/useToast';
 import { useAutoTagEvents } from '../composables/useAutoTagEvents';
 import { useAppStore } from '../stores/appStore';
 import type { EntryTagScores, TagScore } from '@generated/index';
-import { poolName } from '../utils/pools';
 
 // Expansion panel for the entry editor: how strongly the analyzer thinks each
 // vocabulary tag fits this entry. It starts open and loads on mount, and
@@ -116,19 +115,6 @@ function gateLabel(): string | null {
   return `${name} · ${e.roleUser !== null ? 'confirmed' : 'suggested'}`;
 }
 
-const soundRows = computed<{ label: string; value: string }[]>(() => {
-  const e = entry.value;
-  if (!e) return [];
-  const rows: { label: string; value: string }[] = [];
-  // The pool suggestion with its probability and the runner-up.
-  if (e.poolAuto !== null) {
-    const p = e.poolAutoP === null ? '' : ` · p = ${e.poolAutoP.toFixed(2)}`;
-    const next = e.poolAutoRunner === null ? '' : ` · next: ${poolName(e.poolAutoRunner)}`;
-    rows.push({ label: 'Pool suggestion', value: `${poolName(e.poolAuto)}${p}${next}` });
-  }
-  return rows;
-});
-
 function percent(score: number): number {
   return Math.max(0, Math.min(1, score)) * 100;
 }
@@ -209,14 +195,6 @@ function appliedLabel(s: TagScore): string | null {
                 Clear your no; the analyzer decides this tag again
               </VTooltip>
             </VChip>
-          </div>
-        </template>
-        <template v-if="scores && soundRows.length > 0">
-          <VDivider class="my-2" />
-          <div class="text-caption text-medium-emphasis mb-1">Sound</div>
-          <div v-for="row in soundRows" :key="row.label" class="score-row">
-            <span class="score-name text-truncate">{{ row.label }}</span>
-            <span class="text-caption">{{ row.value }}</span>
           </div>
         </template>
       </VExpansionPanelText>

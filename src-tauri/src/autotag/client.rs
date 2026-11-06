@@ -1,5 +1,6 @@
 //! HTTP client for the analyzer service.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,8 @@ const SCORE_TIMEOUT: Duration = Duration::from_secs(120);
 const SIMILAR_TIMEOUT: Duration = Duration::from_secs(30);
 /// `/search` embeds the text first, which can wait on the model loading.
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(60);
+/// `/preview` embeds a few prompts, which can wait on the model loading.
+const PREVIEW_TIMEOUT: Duration = Duration::from_secs(60);
 /// `/map` runs t-SNE over the whole library the first time it is asked.
 const MAP_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -65,6 +68,10 @@ pub trait AnalyzerClient: Send + Sync {
     /// Lays the given hashes out in 2D. Hashes the analyzer has not embedded
     /// are ignored.
     fn map(&self, hashes: &[String]) -> Result<Vec<HashPoint>, String>;
+    /// Each target's raw (uncalibrated) similarity with one set of mood
+    /// prompts, keyed by hash. Hashes the analyzer has not embedded are left
+    /// out. Fails while the analyzer's model is still loading.
+    fn preview(&self, prompts: &[String], targets: &[String]) -> Result<HashMap<String, f64>, String>;
 }
 
 /// `AnalyzerClient` over HTTP, using blocking `ureq` calls.
@@ -151,6 +158,12 @@ struct SearchRequest<'a> {
     text: &'a str,
     candidates: &'a [String],
     limit: u32,
+}
+
+#[derive(Serialize)]
+struct PreviewRequest<'a> {
+    prompts: &'a [String],
+    targets: &'a [String],
 }
 
 #[derive(Serialize)]
@@ -269,6 +282,17 @@ impl AnalyzerClient for HttpAnalyzer {
             .map_err(describe)?;
         Ok(read_json::<MapResponse>(response)?.points)
     }
+
+    fn preview(&self, prompts: &[String], targets: &[String]) -> Result<HashMap<String, f64>, String> {
+        let response = self
+            .agent
+            .post(&self.url("/preview")?)
+            .set(TOKEN_HEADER, &self.token)
+            .timeout(PREVIEW_TIMEOUT)
+            .send_json(&PreviewRequest { prompts, targets })
+            .map_err(describe)?;
+        read_json(response)
+    }
 }
 
 #[cfg(test)]
@@ -318,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn vibe_responses_parse() {
+    fn scry_responses_parse() {
         let ranked: RankedResponse = serde_json::from_str(r#"{"results":[{"hash":"a","score":0.5}]}"#).unwrap();
         assert_eq!(ranked.results, vec![HashScore { hash: "a".into(), score: 0.5 }]);
         let map: MapResponse = serde_json::from_str(r#"{"points":[{"hash":"a","x":0.1,"y":0.9}]}"#).unwrap();

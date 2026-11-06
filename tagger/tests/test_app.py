@@ -337,9 +337,9 @@ def test_search_empty_text_or_candidates(client):
 def test_map_shape_range_and_cache(client, monkeypatch):
     hashes = seed(client)
     n_calls = []
-    real = app_module.vibe.layout_2d
+    real = app_module.scry.layout_2d
     monkeypatch.setattr(
-        app_module.vibe, "layout_2d", lambda v: (n_calls.append(1), real(v))[1]
+        app_module.scry, "layout_2d", lambda v: (n_calls.append(1), real(v))[1]
     )
     first = client.post("/map", json={"hashes": hashes}, headers=HEADERS).json()["points"]
     second = client.post(
@@ -383,7 +383,7 @@ def test_endpoints_drop_uncached_hashes(client):
         ("/map", {"hashes": []}),
     ],
 )
-def test_vibe_endpoints_require_token(client, path, body):
+def test_scry_endpoints_require_token(client, path, body):
     assert client.post(path, json=body).status_code == 401
     assert client.post(path, json=body, headers={"X-LuteDrop-Token": "nope"}).status_code == 401
 
@@ -510,7 +510,8 @@ def test_score_returns_raw_mood_for_targets(tmp_path, monkeypatch):
     from tagger import moods
 
     dirs = {}
-    texts = [t for group in (*moods.POLES.values(), *moods.POOLS.values()) for t in group]
+    texts = [t for group in moods.MOODS.values() for t in group] + moods.ENERGY_POS + moods.ENERGY_NEG
+    assert len(set(texts)) == len(texts)
     for i, text in enumerate(texts):
         v = np.zeros(DIM)
         v[i % DIM] = 1.0
@@ -531,8 +532,8 @@ def test_score_returns_raw_mood_for_targets(tmp_path, monkeypatch):
     body = {"gate": {}, "targets": ["a", "b", "ghost"]}
     data = c.post("/score", json=body, headers=HEADERS).json()
     c.post("/score", json=body, headers=HEADERS)
-    # One embed_text per pole and per pool, computed once.
-    assert MoodEmbedder.calls == len(moods.POLES) + len(moods.POOLS)
+    # Every prompt text embedded in one call, then reused.
+    assert MoodEmbedder.calls == 1
     assert set(data["mood"]) == {"a", "b"}
 
     mean = cache.get("a")
@@ -540,19 +541,21 @@ def test_score_returns_raw_mood_for_targets(tmp_path, monkeypatch):
     def pole(texts):
         return float(np.mean([mean @ dirs[t] for t in texts]))
 
-    assert data["mood"]["a"]["bright"] == pytest.approx(pole(moods.BRIGHT) - pole(moods.DARK))
-    assert data["mood"]["a"]["grand"] == pytest.approx(pole(moods.GRAND) - pole(moods.INTIMATE))
-    assert data["mood"]["a"]["energy"] == pytest.approx(pole(moods.ENERGETIC) - pole(moods.CALM))
-    assert set(data["mood"]["a"]) == {"bright", "grand", "energy", "pools"}
-    # Pools are absolute similarities (mean cosine with the pool's prompts),
-    # not pole differences.
-    pools = data["mood"]["a"]["pools"]
-    assert set(pools) == {"peaceful", "lighthearted", "somber", "awe", "mysterious", "epic"}
-    for pool_id, prompts in moods.POOLS.items():
-        assert pools[pool_id] == pytest.approx(pole(prompts))
-    assert data["mood"]["a"]["bright"] != 0
-    assert data["mood"]["a"]["grand"] != 0
-    assert data["mood"]["a"]["energy"] != 0
+    # The default moods plus energy; the pools and the scales are gone.
+    assert set(data["mood"]["a"]) == {"moods", "energy"}
+    # Moods are absolute similarities (mean cosine with the mood's prompts).
+    scores = data["mood"]["a"]["moods"]
+    assert list(scores) == [
+        "peaceful", "sorrowful", "wondrous", "joyful", "quirky",
+        "mysterious", "grim", "heroic",
+    ]
+    for mood_id, prompts in moods.MOODS.items():
+        assert scores[mood_id] == pytest.approx(pole(prompts))
+    assert any(v != 0 for v in scores.values())
+    # Energy is two-sided: positive minus negative.
+    energy = data["mood"]["a"]["energy"]
+    assert energy == pytest.approx(pole(moods.ENERGY_POS) - pole(moods.ENERGY_NEG))
+    assert energy != 0
 
 
 def test_score_mood_recovers_after_partial_embed_failure(tmp_path, monkeypatch):
@@ -561,7 +564,7 @@ def test_score_mood_recovers_after_partial_embed_failure(tmp_path, monkeypatch):
 
         def embed_text(self, texts):
             FlakyEmbedder.calls += 1
-            if FlakyEmbedder.calls == 3:  # fail part-way through the poles
+            if FlakyEmbedder.calls == 1:  # the first prompt batch fails
                 raise RuntimeError("transient")
             return super().embed_text(texts)
 
@@ -574,8 +577,130 @@ def test_score_mood_recovers_after_partial_embed_failure(tmp_path, monkeypatch):
     assert first.status_code == 200 and "mood" not in first.json()
     second = c.post("/score", json=body, headers=HEADERS)
     assert second.status_code == 200
-    assert set(second.json()["mood"]["a"]) == {"bright", "grand", "energy", "pools"}
-    assert len(second.json()["mood"]["a"]["pools"]) == 6
+    assert set(second.json()["mood"]["a"]) == {"moods", "energy"}
+    assert len(second.json()["mood"]["a"]["moods"]) == 8
+
+
+def _text_embedder():
+    """An embedder that gives each new prompt text its own axis and counts
+    the texts it was asked to embed."""
+
+    class TextEmbedder(FakeEmbedder):
+        def __init__(self):
+            self.axes: dict[str, int] = {}
+            self.embedded: list[str] = []
+
+        def embed_text(self, texts):
+            self.embedded.extend(texts)
+            rows = []
+            for t in texts:
+                v = np.zeros(DIM)
+                v[self.axes.setdefault(t, len(self.axes) % DIM)] = 1.0
+                rows.append(v)
+            return np.vstack(rows)
+
+    return TextEmbedder()
+
+
+def test_score_uses_mood_prompts_from_the_request(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), FEATS))
+    cache = EmbeddingCache(tmp_path)
+    embedder = _text_embedder()
+    c = TestClient(create_app(embedder, cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2)))
+    embed(c, [("a", "x-1")])
+    vocab = {
+        "gate": {},
+        "targets": ["a"],
+        "mood_prompts": {"spooky": ["ghost music", "  haunted halls  "], "calm": ["still water"]},
+        "energy_prompts": {"positive": ["fast"], "negative": ["slow", "still water"]},
+    }
+    data = c.post("/score", json=vocab, headers=HEADERS).json()
+    # Only the request's moods come back, in its order; prompts are trimmed.
+    assert list(data["mood"]["a"]["moods"]) == ["spooky", "calm"]
+    assert sorted(embedder.embedded) == sorted(["ghost music", "haunted halls", "still water", "fast", "slow"])
+
+    mean = cache.get("a")
+
+    def pole(texts):
+        return float(np.mean([mean @ np.eye(DIM)[embedder.axes[t] % DIM] for t in texts]))
+
+    assert data["mood"]["a"]["moods"]["spooky"] == pytest.approx(pole(["ghost music", "haunted halls"]))
+    assert data["mood"]["a"]["energy"] == pytest.approx(pole(["fast"]) - pole(["slow", "still water"]))
+
+    # Changing one mood's prompts embeds only the new text.
+    embedder.embedded.clear()
+    vocab["mood_prompts"]["calm"] = ["still water", "a quiet lake"]
+    c.post("/score", json=vocab, headers=HEADERS)
+    assert embedder.embedded == ["a quiet lake"]
+
+    # Leaving the vocabulary out falls back to the defaults in moods.py.
+    from tagger import moods
+
+    data = c.post("/score", json={"gate": {}, "targets": ["a"]}, headers=HEADERS).json()
+    assert list(data["mood"]["a"]["moods"]) == list(moods.MOODS)
+
+
+def test_prompt_cache_overflow_keeps_the_texts_in_use(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "MAX_CACHED_PROMPTS", 5)
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), FEATS))
+    embedder = _text_embedder()
+    c = TestClient(create_app(embedder, EmbeddingCache(tmp_path), TOKEN, executor_factory=lambda: ThreadPoolExecutor(2)))
+    embed(c, [("a", "x-1")])
+    vocab = {
+        "gate": {},
+        "targets": ["a"],
+        "mood_prompts": {"calm": ["still water"]},
+        "energy_prompts": {"positive": ["fast"], "negative": ["slow"]},
+    }
+    assert c.post("/score", json=vocab, headers=HEADERS).status_code == 200
+    # Three cached texts plus three new ones overflow the cache: it starts
+    # over and still has every text this request uses.
+    vocab["mood_prompts"]["calm"] = ["still water", "a quiet lake", "dusk", "fog"]
+    embedder.embedded.clear()
+    res = c.post("/score", json=vocab, headers=HEADERS)
+    assert res.status_code == 200
+    assert res.json()["mood"]["a"]["moods"]["calm"] is not None
+    assert sorted(embedder.embedded) == sorted(["still water", "a quiet lake", "dusk", "fog", "fast", "slow"])
+
+
+def test_preview_ranks_targets_by_raw_prompt_similarity(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), FEATS))
+    cache = EmbeddingCache(tmp_path)
+    embedder = _text_embedder()
+    c = TestClient(create_app(embedder, cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2)))
+    embed(c, [("a", "x-1"), ("b", "x-2")])
+    body = {"prompts": ["ghost music", " dark "], "targets": ["a", "b", "ghost"]}
+    data = c.post("/preview", json=body, headers=HEADERS).json()
+    # Cached targets only, keyed by hash, raw mean cosine.
+    assert set(data) == {"a", "b"}
+    for h in ("a", "b"):
+        mean = cache.get(h)
+        expected = np.mean([mean @ np.eye(DIM)[embedder.axes[t] % DIM] for t in ["ghost music", "dark"]])
+        assert data[h] == pytest.approx(expected)
+    # The prompt embeddings are shared with /score's cache.
+    embedder.embedded.clear()
+    c.post("/preview", json=body, headers=HEADERS)
+    assert embedder.embedded == []
+    # No cached target: nothing to rank. No prompts: refused.
+    assert c.post("/preview", json={"prompts": ["x"], "targets": ["ghost"]}, headers=HEADERS).json() == {}
+    assert c.post("/preview", json={"prompts": [], "targets": ["a"]}, headers=HEADERS).status_code == 422
+    assert c.post("/preview", json=body).status_code == 401
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"mood_prompts": {"calm": []}},
+        {"mood_prompts": {"calm": ["   "]}},
+        {"mood_prompts": {"Calm": ["still"]}},
+        {"mood_prompts": {"energy+": ["still"]}},
+        {"energy_prompts": {"positive": ["fast"], "negative": []}},
+        {"energy_prompts": {"positive": ["fast"]}},
+    ],
+)
+def test_score_rejects_a_bad_vocabulary(client, extra):
+    r = client.post("/score", json={"gate": {}, "targets": [], **extra}, headers=HEADERS)
+    assert r.status_code == 422
 
 
 def test_score_without_loaded_model_omits_mood(tmp_path, monkeypatch):

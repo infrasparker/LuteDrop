@@ -5,10 +5,10 @@
 // removes them from it.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useTheme } from 'vuetify';
-import type { LibraryEntry, VibePoint } from '@generated/index';
+import type { LibraryEntry, ScryPoint } from '@generated/index';
 
 const props = defineProps<{
-  points: VibePoint[];
+  points: ScryPoint[];
   entriesById: Map<string, LibraryEntry>;
   seedIds: string[];
   resultIds: string[];
@@ -473,11 +473,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="vibe-map d-flex flex-column">
-    <div ref="wrapper" class="vibe-map-canvas-wrap flex-grow-1">
+  <div class="scry-map d-flex flex-column">
+    <div ref="wrapper" class="scry-map-canvas-wrap flex-grow-1">
       <canvas
         ref="canvas"
-        class="vibe-map-canvas"
+        class="scry-map-canvas"
         :class="{ 'is-hovering': !!hover }"
         role="img"
         :aria-label="ariaLabel"
@@ -488,7 +488,7 @@ onBeforeUnmount(() => {
         @lostpointercapture="onPointerCancel"
         @pointerleave="onPointerLeave"
       />
-      <div v-if="hover && hoverName" class="vibe-map-tooltip text-caption" :style="tooltipStyle">
+      <div v-if="hover && hoverName" class="scry-map-tooltip text-caption" :style="tooltipStyle">
         {{ hoverName }}
       </div>
     </div>
@@ -506,12 +506,12 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.vibe-map {
+.scry-map {
   min-height: 0;
   height: 100%;
 }
 
-.vibe-map-canvas-wrap {
+.scry-map-canvas-wrap {
   position: relative;
   min-height: 0;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
@@ -520,7 +520,7 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
-.vibe-map-canvas {
+.scry-map-canvas {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -529,11 +529,11 @@ onBeforeUnmount(() => {
   touch-action: none;
 }
 
-.vibe-map-canvas.is-hovering {
+.scry-map-canvas.is-hovering {
   cursor: pointer;
 }
 
-.vibe-map-tooltip {
+.scry-map-tooltip {
   position: absolute;
   pointer-events: none;
   max-width: 260px;

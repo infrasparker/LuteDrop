@@ -1,13 +1,13 @@
 //! Persisted app settings, stored as plain key/value rows in the `meta`
 //! table. This covers the Broadcast (live stream) settings, the folder
-//! the "Fix missing files" search starts in, the analyzer settings and the
-//! frozen mood pool calibration.
+//! the "Fix missing files" search starts in, the analyzer settings, the
+//! mood vocabulary and the frozen mood calibration.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
-use crate::autotag::plan::PoolCalibration;
-use crate::models::{AutoTagSettings, SceneConfig};
+use crate::autotag::plan::MoodCalibration;
+use crate::models::{AutoTagSettings, MoodVocabulary, SceneConfig};
 
 const KEY_ENABLED: &str = "broadcast_enabled";
 const KEY_PORT: &str = "broadcast_port";
@@ -20,7 +20,8 @@ const KEY_AUTOTAG_TOKEN: &str = "autotag_token";
 const KEY_AUTOTAG_LOCAL_PREFIX: &str = "autotag_local_prefix";
 const KEY_AUTOTAG_REMOTE_PREFIX: &str = "autotag_remote_prefix";
 const KEY_AUTOTAG_SCENE: &str = "autotag_scene_encounter";
-const KEY_POOL_CALIBRATION: &str = "pool_calibration";
+const KEY_MOOD_CALIBRATION: &str = "mood_calibration";
+pub(crate) const KEY_MOOD_VOCABULARY: &str = "mood_vocabulary";
 
 /// Where the analyzer host mounts the audio folder until the user says otherwise.
 pub const DEFAULT_REMOTE_PREFIX: &str = "/media/audio";
@@ -172,30 +173,81 @@ pub fn save_scene_config(conn: &Connection, c: &SceneConfig) -> Result<(), Strin
     write_meta(conn, KEY_AUTOTAG_SCENE, &text)
 }
 
-/// Loads the frozen mood pool calibration (JSON). `None` until the first
-/// analyzer run that covers enough music computed one. A stored value that
-/// does not parse is treated as missing (and logged), so the next qualifying
-/// run takes a new one.
-pub fn load_pool_calibration(conn: &Connection) -> Result<Option<PoolCalibration>, String> {
-    let Some(text) = read_meta(conn, KEY_POOL_CALIBRATION)? else {
+/// Loads the frozen mood calibration (see `MoodCalibration`). `None` until
+/// the first analyzer run that covers enough music computed one, and after
+/// Recalibrate cleared it. A stored value that does not parse is treated as
+/// missing (and logged), so the next qualifying run takes a new one.
+pub fn load_mood_calibration(conn: &Connection) -> Result<Option<MoodCalibration>, String> {
+    let Some(text) = read_meta(conn, KEY_MOOD_CALIBRATION)? else {
         return Ok(None);
     };
-    match serde_json::from_str(&text) {
+    match serde_json::from_str::<MoodCalibration>(&text) {
         Ok(calibration) => Ok(Some(calibration)),
         Err(e) => {
-            log::warn!("Invalid stored {KEY_POOL_CALIBRATION}: {e}; treating it as missing");
+            log::warn!("Invalid stored {KEY_MOOD_CALIBRATION}: {e}; treating it as missing");
             Ok(None)
         }
     }
 }
 
-/// Saves the mood pool calibration as JSON, replacing any stored one. Only
-/// the analyzer run calls this, and only while none is stored: the
-/// calibration is frozen once taken.
-pub fn save_pool_calibration(conn: &Connection, calibration: &PoolCalibration) -> Result<(), String> {
+/// Deletes the mood calibration, so the next run takes a new one.
+pub fn clear_mood_calibration(conn: &Connection) -> Result<(), String> {
+    conn.execute("DELETE FROM meta WHERE key = ?1", params![KEY_MOOD_CALIBRATION])
+        .map_err(|e| format!("Failed to clear mood calibration: {e}"))?;
+    Ok(())
+}
+
+/// The stored mood vocabulary row: `None` when there is none, otherwise the
+/// parsed and checked vocabulary, or why it is unreadable.
+fn read_mood_vocabulary(conn: &Connection) -> Result<Option<Result<MoodVocabulary, String>>, String> {
+    let Some(text) = read_meta(conn, KEY_MOOD_VOCABULARY)? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        serde_json::from_str::<MoodVocabulary>(&text).map_err(|e| e.to_string()).and_then(|v| v.normalized()),
+    ))
+}
+
+/// Loads the mood vocabulary for reading. A missing row (a database opened
+/// before it was seeded) gives the defaults; a stored value that does not
+/// parse or breaks the rules is logged and replaced by the defaults too, so
+/// moods keep working. Writers check `mood_vocabulary_problem` first, so the
+/// defaults never replace an unreadable row silently.
+pub fn load_mood_vocabulary(conn: &Connection) -> Result<MoodVocabulary, String> {
+    match read_mood_vocabulary(conn)? {
+        None => Ok(MoodVocabulary::defaults()),
+        Some(Ok(vocabulary)) => Ok(vocabulary),
+        Some(Err(e)) => {
+            log::warn!("Invalid stored {KEY_MOOD_VOCABULARY}: {e}; using the defaults");
+            Ok(MoodVocabulary::defaults())
+        }
+    }
+}
+
+/// Why the stored mood vocabulary is unreadable, or `None` when it reads
+/// fine (or there is none, which loads the defaults).
+pub fn mood_vocabulary_problem(conn: &Connection) -> Result<Option<String>, String> {
+    Ok(read_mood_vocabulary(conn)?.and_then(Result::err))
+}
+
+/// Saves the mood vocabulary as JSON. The caller has normalized it.
+pub fn save_mood_vocabulary(conn: &Connection, vocabulary: &MoodVocabulary) -> Result<(), String> {
+    let text = mood_vocabulary_json(vocabulary)?;
+    write_meta(conn, KEY_MOOD_VOCABULARY, &text)
+}
+
+/// The JSON stored in the `mood_vocabulary` row.
+pub(crate) fn mood_vocabulary_json(vocabulary: &MoodVocabulary) -> Result<String, String> {
+    serde_json::to_string(vocabulary).map_err(|e| format!("Failed to encode mood vocabulary: {e}"))
+}
+
+/// Saves the mood calibration as JSON, replacing any stored one. Only the
+/// analyzer run calls this, and only while none is stored: the calibration
+/// is frozen once taken (Recalibrate clears it first).
+pub fn save_mood_calibration(conn: &Connection, calibration: &MoodCalibration) -> Result<(), String> {
     let text = serde_json::to_string(calibration)
-        .map_err(|e| format!("Failed to encode pool calibration: {e}"))?;
-    write_meta(conn, KEY_POOL_CALIBRATION, &text)
+        .map_err(|e| format!("Failed to encode mood calibration: {e}"))?;
+    write_meta(conn, KEY_MOOD_CALIBRATION, &text)
 }
 
 /// Replaces a saved scene configuration with `SceneConfig::default()`. A
@@ -248,21 +300,57 @@ mod tests {
     use rusqlite::Connection;
 
     #[test]
-    fn pool_calibration_is_none_until_saved_then_round_trips() {
-        use crate::autotag::plan::PoolStat;
+    fn mood_calibration_is_none_until_saved_then_round_trips() {
+        use crate::autotag::plan::MoodStat;
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
-        assert_eq!(load_pool_calibration(&conn).unwrap(), None);
+        assert_eq!(load_mood_calibration(&conn).unwrap(), None);
 
-        let cal = PoolCalibration {
+        let cal = MoodCalibration {
+            calibrated_at: "1700000000000".into(),
             tracks: 64,
-            pools: [("epic".to_string(), PoolStat { mean: 0.21, sd: 0.03 })].into(),
+            prompts: [("grim".to_string(), vec!["horror".to_string()])].into(),
+            stats: [("energy".to_string(), MoodStat { mean: 0.21, sd: 0.03 })].into(),
         };
-        save_pool_calibration(&conn, &cal).unwrap();
-        assert_eq!(load_pool_calibration(&conn).unwrap(), Some(cal));
+        save_mood_calibration(&conn, &cal).unwrap();
+        assert_eq!(load_mood_calibration(&conn).unwrap(), Some(cal.clone()));
+        let text = read_meta(&conn, KEY_MOOD_CALIBRATION).unwrap().unwrap();
+        assert!(text.contains(r#""stats":{"energy":{"mean":0.21,"sd":0.03}}"#));
 
-        write_meta(&conn, KEY_POOL_CALIBRATION, "not json").unwrap();
-        assert_eq!(load_pool_calibration(&conn).unwrap(), None);
+        // Not the current shape (the flat map of earlier builds), or not
+        // JSON: treated as missing.
+        write_meta(&conn, KEY_MOOD_CALIBRATION, r#"{"energy":{"mean":0.1,"sd":0.1}}"#).unwrap();
+        assert_eq!(load_mood_calibration(&conn).unwrap(), None);
+        write_meta(&conn, KEY_MOOD_CALIBRATION, "not json").unwrap();
+        assert_eq!(load_mood_calibration(&conn).unwrap(), None);
+
+        save_mood_calibration(&conn, &cal).unwrap();
+        clear_mood_calibration(&conn).unwrap();
+        assert_eq!(load_mood_calibration(&conn).unwrap(), None);
+    }
+
+    #[test]
+    fn mood_vocabulary_defaults_when_missing_or_bad_and_round_trips() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        assert_eq!(load_mood_vocabulary(&conn).unwrap(), MoodVocabulary::defaults());
+
+        let mut v = MoodVocabulary::defaults();
+        v.moods.truncate(2);
+        v.moods[1].name = "Sad".into();
+        save_mood_vocabulary(&conn, &v).unwrap();
+        assert_eq!(load_mood_vocabulary(&conn).unwrap(), v);
+
+        assert_eq!(mood_vocabulary_problem(&conn).unwrap(), None);
+
+        write_meta(&conn, KEY_MOOD_VOCABULARY, "{oops").unwrap();
+        assert_eq!(load_mood_vocabulary(&conn).unwrap(), MoodVocabulary::defaults());
+        assert!(mood_vocabulary_problem(&conn).unwrap().is_some());
+        // Parses, but breaks the rules (no moods).
+        write_meta(&conn, KEY_MOOD_VOCABULARY, r#"{"moods":[],"energy":{"positive":["a"],"negative":["b"]}}"#)
+            .unwrap();
+        assert_eq!(load_mood_vocabulary(&conn).unwrap(), MoodVocabulary::defaults());
+        assert!(mood_vocabulary_problem(&conn).unwrap().is_some());
     }
 
     #[test]

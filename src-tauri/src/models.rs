@@ -55,35 +55,14 @@ pub struct LibraryEntry {
     pub role_auto_score: Option<f64>,
     /// The user's role. When set it is shown instead of `role_auto`.
     pub role_user: Option<Role>,
-    /// The analyzer's Bright ↔ Dark position as a z-score across the
-    /// library's analyzed music; positive is Bright.
-    pub mood_bright: Option<f64>,
-    /// The user's Bright ↔ Dark step; when set it overrides `mood_bright`.
-    pub mood_bright_user: Option<MoodStep>,
-    /// The analyzer's Intimate ↔ Grand position as a z-score; positive is
-    /// Grand.
-    pub mood_grand: Option<f64>,
-    /// The user's Intimate ↔ Grand step; when set it overrides `mood_grand`.
-    pub mood_grand_user: Option<MoodStep>,
-    /// The analyzer's Calm ↔ Energetic position as a z-score; positive is
-    /// Energetic.
-    pub mood_energy: Option<f64>,
-    /// The user's Calm ↔ Energetic step; when set it overrides `mood_energy`.
-    pub mood_energy_user: Option<MoodStep>,
-    /// The analyzer's suggested mood pool, from the frozen pool calibration.
-    /// `None` until a run with a calibration scored the entry (and always on
-    /// ambiance). Never `Tension`: that pool is taught only.
-    pub pool_auto: Option<Pool>,
-    /// The suggestion's softmax probability (0..1); low means unsure.
-    pub pool_auto_p: Option<f64>,
-    /// The analyzer's second-best pool.
-    pub pool_auto_runner: Option<Pool>,
-    /// The user's pool; when set it overrides `pool_auto`. The pool shown is
-    /// `pool_user ?? pool_auto`.
-    pub pool_user: Option<Pool>,
-    /// When the user last set the pool or approved the entry in Review
+    /// The mood profile: one value per id of the mood vocabulary, in its
+    /// order (the moods, then Energy). Always every id; an id with no stored
+    /// row (and every id on ambiance) has neither layer. The value shown is
+    /// `user ?? auto`.
+    pub moods: Vec<MoodValue>,
+    /// When the user last set a mood level or approved the entry in Review
     /// (Unix milliseconds as a string, like `created_at`); `None` until then.
-    pub pool_reviewed_at: Option<String>,
+    pub mood_reviewed_at: Option<String>,
 }
 
 /// Whether a music entry is meant for combat scenes.
@@ -118,133 +97,238 @@ impl Role {
     }
 }
 
-/// One of the three steps on a mood scale. `High` is the positive pole
-/// (Bright on Bright ↔ Dark, Grand on Intimate ↔ Grand, Energetic on
-/// Calm ↔ Energetic).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+/// The id of Energy, the one fixed entry of the mood vocabulary. It always
+/// comes last, after the user's moods. A mood id is lowercase letters only,
+/// so it can never be `energy+` / `energy-` (the analyzer's internal names).
+pub const ENERGY_ID: &str = "energy";
+
+/// One mood of the vocabulary: a lens every music track has a 0..1 value
+/// for. The id is stored in `library_entry_moods.mood` and never changes once
+/// created; the name is what the UI shows; the prompts are the text the
+/// analyzer compares tracks with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
-pub enum MoodStep {
-    Low,
-    Mid,
-    High,
+pub struct MoodDef {
+    pub id: String,
+    pub name: String,
+    pub prompts: Vec<String>,
 }
 
-/// Which of the three mood scales a user step applies to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+/// Energy's prompts: Energy is scored two-sided, the mean similarity with
+/// the positive prompts minus the mean similarity with the negative ones.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
-pub enum MoodScale {
-    /// Bright <-> Dark.
-    Bright,
-    /// Intimate <-> Grand.
-    Grand,
-    /// Calm <-> Energetic.
-    Energy,
+pub struct EnergyPrompts {
+    pub positive: Vec<String>,
+    pub negative: Vec<String>,
 }
 
-/// A music track's mood pool: a short, flat list of hedged mood words. A
-/// music track is in exactly one pool; ambiance has none. The vocabulary is
-/// fixed. The analyzer suggests the first six (zero-shot); `Tension` is
-/// taught only and never suggested.
-///
-/// The database, serde and the generated TypeScript all use the same
-/// lowercase ids (`"peaceful"`, ...).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+/// The app's mood vocabulary, edited in Settings → Moods and stored as JSON
+/// in the `mood_vocabulary` meta row: the moods in display order, plus the
+/// fixed Energy entry. It is sent to the analyzer with every `/score`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
-pub enum Pool {
-    /// Peaceful & Tranquil.
-    Peaceful,
-    /// Lighthearted & Fun.
-    Lighthearted,
-    /// Reflective & Somber.
-    Somber,
-    /// Optimistic & Awe.
-    Awe,
-    /// Mysterious & Looming.
-    Mysterious,
-    /// Epic & Intense.
-    Epic,
-    /// Tense & Suspenseful. Taught only: never suggested.
-    Tension,
+pub struct MoodVocabulary {
+    pub moods: Vec<MoodDef>,
+    pub energy: EnergyPrompts,
 }
 
-impl Pool {
-    /// The six pools the analyzer scores and suggests, in vocabulary order.
-    pub const ZERO_SHOT: [Pool; 6] =
-        [Pool::Peaceful, Pool::Lighthearted, Pool::Somber, Pool::Awe, Pool::Mysterious, Pool::Epic];
+/// Most moods a vocabulary may hold (the analyzer accepts as many).
+pub const MAX_MOODS: usize = 32;
+/// Most prompts per mood, and per side of Energy.
+pub const MAX_PROMPTS: usize = 16;
+/// Longest prompt, in characters.
+pub const MAX_PROMPT_CHARS: usize = 300;
+/// Longest mood id, in characters.
+pub const MAX_MOOD_ID_CHARS: usize = 32;
+/// Longest mood name, in characters.
+pub const MAX_MOOD_NAME_CHARS: usize = 40;
 
-    /// The id stored in the `pool_*` columns and sent by the analyzer.
-    pub fn as_db_str(&self) -> &'static str {
-        match self {
-            Pool::Peaceful => "peaceful",
-            Pool::Lighthearted => "lighthearted",
-            Pool::Somber => "somber",
-            Pool::Awe => "awe",
-            Pool::Mysterious => "mysterious",
-            Pool::Epic => "epic",
-            Pool::Tension => "tension",
+fn strings(items: &[&str]) -> Vec<String> {
+    items.iter().map(|s| s.to_string()).collect()
+}
+
+/// Trims every prompt and drops the blank ones (a blank line in the editor).
+fn clean_prompts(prompts: &[String]) -> Vec<String> {
+    prompts.iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()
+}
+
+fn check_prompts(what: &str, prompts: &[String]) -> Result<(), String> {
+    if prompts.is_empty() {
+        return Err(format!("{what} needs at least one prompt"));
+    }
+    if prompts.len() > MAX_PROMPTS {
+        return Err(format!("{what} has more than {MAX_PROMPTS} prompts"));
+    }
+    if prompts.iter().any(|p| p.chars().count() > MAX_PROMPT_CHARS) {
+        return Err(format!("{what} has a prompt longer than {MAX_PROMPT_CHARS} characters"));
+    }
+    Ok(())
+}
+
+impl MoodVocabulary {
+    /// The defaults the database is seeded with (spec "Revision 2"). Once
+    /// seeded, the app reads the vocabulary from the database, never from
+    /// here.
+    pub fn defaults() -> Self {
+        let mood = |id: &str, name: &str, prompts: &[&str]| MoodDef {
+            id: id.to_string(),
+            name: name.to_string(),
+            prompts: strings(prompts),
+        };
+        Self {
+            moods: vec![
+                mood("peaceful", "Peaceful", &[
+                    "benign, pleasant, agreeable music with no threat",
+                    "music that signals safety, whatever its tempo",
+                    "friendly and harmless",
+                ]),
+                mood("sorrowful", "Sorrowful", &[
+                    "reflective, somber, sorrowful music",
+                    "sad, mournful, melancholic music",
+                    "wistful, grieving, nostalgic music",
+                ]),
+                mood("wondrous", "Wondrous", &[
+                    "music full of wonder and awe",
+                    "sacred, divine, celestial music, a choir in a cathedral",
+                    "a breathtaking vista, hopeful and vast, slow and soaring",
+                ]),
+                mood("joyful", "Joyful", &[
+                    "joyful, glad music, any tempo",
+                    "bright major-key happiness",
+                    "contented and sunny",
+                ]),
+                mood("quirky", "Quirky", &[
+                    "quirky, weird, offbeat music",
+                    "groovy, funky, eccentric and strange",
+                    "campy, oddball, mischievous tune",
+                ]),
+                mood("mysterious", "Mysterious", &[
+                    "mysterious, unsettling, eerie music",
+                    "strange, uncanny, otherworldly sounds",
+                    "quiet suspense and looming dread, something is about to happen",
+                ]),
+                mood("grim", "Grim", &[
+                    "horror",
+                    "dark",
+                    "heavy",
+                ]),
+                mood("heroic", "Heroic", &[
+                    "heroic, triumphant, bold orchestral music",
+                    "a rousing victory anthem, brass and choir soaring",
+                    "adventurous, noble, uplifting epic music",
+                ]),
+            ],
+            energy: EnergyPrompts {
+                // Bare tag words; never the bare word "fast", which the model reads against energy.
+                positive: strings(&["energetic", "upbeat", "powerful"]),
+                negative: strings(&["slow", "relaxing", "calm"]),
+            },
         }
     }
 
-    /// Parses a stored id; anything unrecognised is `None`.
-    pub fn from_db_str(s: &str) -> Option<Self> {
-        match s {
-            "peaceful" => Some(Pool::Peaceful),
-            "lighthearted" => Some(Pool::Lighthearted),
-            "somber" => Some(Pool::Somber),
-            "awe" => Some(Pool::Awe),
-            "mysterious" => Some(Pool::Mysterious),
-            "epic" => Some(Pool::Epic),
-            "tension" => Some(Pool::Tension),
-            _ => None,
+    /// Every id in profile order: the moods, then Energy.
+    pub fn ids(&self) -> Vec<String> {
+        self.moods.iter().map(|m| m.id.clone()).chain([ENERGY_ID.to_string()]).collect()
+    }
+
+    /// True if `id` is one of the moods or Energy.
+    pub fn contains(&self, id: &str) -> bool {
+        id == ENERGY_ID || self.moods.iter().any(|m| m.id == id)
+    }
+
+    /// What one id's score is computed from, for telling whether a
+    /// calibration still matches: a mood's prompts, or Energy's prompts with
+    /// `+ ` / `- ` in front of each side's. `None` for an unknown id.
+    pub fn prompt_signature(&self, id: &str) -> Option<Vec<String>> {
+        if id == ENERGY_ID {
+            let pos = self.energy.positive.iter().map(|p| format!("+ {p}"));
+            let neg = self.energy.negative.iter().map(|p| format!("- {p}"));
+            return Some(pos.chain(neg).collect());
         }
+        self.moods.iter().find(|m| m.id == id).map(|m| m.prompts.clone())
+    }
+
+    /// Trims ids, names and prompts, drops blank prompt lines, and checks
+    /// the rules: 1 to `MAX_MOODS` moods; each id lowercase letters only,
+    /// unique and not `energy`; each name non-empty and unique (ignoring
+    /// case, and not "Energy"); at least one prompt per mood and per side of
+    /// Energy.
+    pub fn normalized(&self) -> Result<Self, String> {
+        if self.moods.is_empty() {
+            return Err("Keep at least one mood".to_string());
+        }
+        if self.moods.len() > MAX_MOODS {
+            return Err(format!("At most {MAX_MOODS} moods"));
+        }
+        let mut moods = Vec::with_capacity(self.moods.len());
+        let mut ids = std::collections::HashSet::new();
+        let mut names = std::collections::HashSet::new();
+        for m in &self.moods {
+            let id = m.id.trim().to_string();
+            if id.is_empty() || id.len() > MAX_MOOD_ID_CHARS || !id.bytes().all(|b| b.is_ascii_lowercase()) {
+                return Err(format!(
+                    "The mood id \"{id}\" must be 1 to {MAX_MOOD_ID_CHARS} lowercase letters (a-z)"
+                ));
+            }
+            if id == ENERGY_ID {
+                return Err("The id \"energy\" is kept for Energy".to_string());
+            }
+            if !ids.insert(id.clone()) {
+                return Err(format!("The mood id \"{id}\" is used twice"));
+            }
+            let name = m.name.trim().to_string();
+            if name.is_empty() || name.chars().count() > MAX_MOOD_NAME_CHARS {
+                return Err(format!("The mood \"{id}\" needs a name of 1 to {MAX_MOOD_NAME_CHARS} characters"));
+            }
+            if name.eq_ignore_ascii_case(ENERGY_ID) || !names.insert(name.to_lowercase()) {
+                return Err(format!("The name \"{name}\" is used twice"));
+            }
+            let prompts = clean_prompts(&m.prompts);
+            check_prompts(&name, &prompts)?;
+            moods.push(MoodDef { id, name, prompts });
+        }
+        let energy = EnergyPrompts {
+            positive: clean_prompts(&self.energy.positive),
+            negative: clean_prompts(&self.energy.negative),
+        };
+        check_prompts("Energy (energetic side)", &energy.positive)?;
+        check_prompts("Energy (calm side)", &energy.negative)?;
+        Ok(Self { moods, energy })
     }
 }
 
-/// The analyzer's pool suggestion for one entry. Backend-only: the frontend
-/// reads it from `LibraryEntry` (`pool_auto`, `pool_auto_p`,
-/// `pool_auto_runner`).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PoolSuggestion {
-    /// The most likely pool.
-    pub pool: Pool,
-    /// Its softmax probability.
-    pub p: f64,
-    /// The second most likely pool.
-    pub runner: Pool,
+/// When the frozen mood calibration was taken and from how many tracks, for
+/// "Last calibrated: <date>, N tracks" in Settings → Moods.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct MoodCalibrationInfo {
+    /// Unix milliseconds as a string, like `created_at`.
+    pub calibrated_at: String,
+    pub tracks: u32,
 }
 
-/// The analyzer's position on each mood scale for one entry, as z-scores
-/// across the library's analyzed music. Positive is Bright, Grand and
-/// Energetic. Backend-only: the frontend reads these from `LibraryEntry`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MoodZ {
-    pub bright: f64,
-    pub grand: f64,
-    pub energy: f64,
-}
+/// The levels a user can set a mood to (a 1-5 rating).
+pub const MOOD_LEVELS: [f64; 5] = [0.0, 0.25, 0.5, 0.75, 1.0];
 
-impl MoodStep {
-    /// The value stored in the `mood_*_user` columns.
-    pub fn as_db_str(&self) -> &'static str {
-        match self {
-            MoodStep::Low => "low",
-            MoodStep::Mid => "mid",
-            MoodStep::High => "high",
-        }
-    }
-
-    /// Parses a stored value; anything unrecognised is `None`.
-    pub fn from_db_str(s: &str) -> Option<Self> {
-        match s {
-            "low" => Some(MoodStep::Low),
-            "mid" => Some(MoodStep::Mid),
-            "high" => Some(MoodStep::High),
-            _ => None,
-        }
-    }
+/// One mood of an entry's profile, both layers. The value shown is
+/// `user ?? auto`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct MoodValue {
+    /// A mood id of the vocabulary, or `energy`.
+    pub mood: String,
+    /// The analyzer's suggestion, 0..1, from the frozen calibration. `None`
+    /// until a run with a calibration scored the entry.
+    pub auto: Option<f64>,
+    /// The level the user set, one of `MOOD_LEVELS`; `None` means the
+    /// suggestion shows.
+    pub user: Option<f64>,
 }
 
 /// Which layer a shown value comes from: the user's, or the analyzer's.
@@ -391,21 +475,21 @@ pub struct AutoTagProgress {
     pub message: Option<String>,
 }
 
-/// One entry in a Vibe ranking (similar tracks or text search), with the
+/// One entry in a Scry ranking (similar tracks or text search), with the
 /// analyzer's similarity score.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
-pub struct VibeHit {
+pub struct ScryHit {
     pub entry_id: String,
     pub score: f64,
 }
 
-/// One entry's position on the Vibe map. `x` and `y` are in [0, 1].
+/// One entry's position on the Scry map. `x` and `y` are in [0, 1].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
-pub struct VibePoint {
+pub struct ScryPoint {
     pub entry_id: String,
     pub x: f64,
     pub y: f64,
@@ -529,6 +613,18 @@ pub struct AppState {
     pub configurations: Vec<Configuration>,
     pub active_configuration_id: String,
     pub missing_entry_ids: Vec<String>,
+    /// The mood vocabulary every entry's `moods` follows.
+    pub mood_vocabulary: MoodVocabulary,
+    /// The frozen mood calibration's date and size; `None` until a run took
+    /// one (or after Recalibrate cleared it).
+    pub mood_calibration: Option<MoodCalibrationInfo>,
+    /// True when a calibration exists but some mood's prompts changed (or a
+    /// mood was added) since it was taken: those moods are not scored until
+    /// Recalibrate runs.
+    pub moods_need_recalibration: bool,
+    /// True when the stored mood vocabulary is unreadable: `mood_vocabulary`
+    /// then holds the defaults, and saving a new one is refused.
+    pub mood_vocabulary_unreadable: bool,
 }
 
 impl Default for AppState {
@@ -540,6 +636,10 @@ impl Default for AppState {
             configurations: Vec::new(),
             active_configuration_id: String::new(),
             missing_entry_ids: Vec::new(),
+            mood_vocabulary: MoodVocabulary::defaults(),
+            mood_calibration: None,
+            moods_need_recalibration: false,
+            mood_vocabulary_unreadable: false,
         }
     }
 }
@@ -673,29 +773,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pool_db_strings_round_trip_and_match_serde() {
-        let all = [Pool::Tension, Pool::Peaceful, Pool::Lighthearted, Pool::Somber, Pool::Awe, Pool::Mysterious, Pool::Epic];
-        for pool in all {
-            assert_eq!(Pool::from_db_str(pool.as_db_str()), Some(pool));
-            assert_eq!(serde_json::to_value(pool).unwrap(), pool.as_db_str());
-        }
+    fn default_vocabulary_is_eight_moods_then_energy_and_valid() {
+        let v = MoodVocabulary::defaults();
         assert_eq!(
-            Pool::ZERO_SHOT.map(|p| p.as_db_str()),
-            ["peaceful", "lighthearted", "somber", "awe", "mysterious", "epic"]
+            v.ids(),
+            ["peaceful", "sorrowful", "wondrous", "joyful", "quirky", "mysterious", "grim", "heroic", "energy"]
         );
-        assert_eq!(Pool::from_db_str("sad"), None);
+        assert_eq!(v.normalized().unwrap(), v);
+        assert!(v.contains("energy") && v.contains("grim") && !v.contains("menacing"));
+        assert_eq!(v.prompt_signature("joyful").unwrap().len(), 3);
+        let energy = v.prompt_signature("energy").unwrap();
+        assert_eq!(energy[0], "+ energetic");
+        assert_eq!(energy[5], "- calm");
+        assert_eq!(v.prompt_signature("menacing"), None);
     }
 
     #[test]
-    fn mood_step_db_strings_round_trip() {
-        for step in [MoodStep::Low, MoodStep::Mid, MoodStep::High] {
-            assert_eq!(MoodStep::from_db_str(step.as_db_str()), Some(step));
-        }
-        assert_eq!(
-            [MoodStep::Low.as_db_str(), MoodStep::Mid.as_db_str(), MoodStep::High.as_db_str()],
-            ["low", "mid", "high"]
-        );
-        assert_eq!(MoodStep::from_db_str(""), None);
+    fn vocabulary_normalizes_and_rejects_bad_input() {
+        let mut v = MoodVocabulary::defaults();
+        v.moods[0].name = "  Calm  ".into();
+        v.moods[0].prompts = vec!["  still water ".into(), "".into(), "   ".into()];
+        let n = v.normalized().unwrap();
+        assert_eq!(n.moods[0].name, "Calm");
+        assert_eq!(n.moods[0].prompts, ["still water"]);
+
+        let bad = |f: &dyn Fn(&mut MoodVocabulary)| {
+            let mut v = MoodVocabulary::defaults();
+            f(&mut v);
+            v.normalized().unwrap_err()
+        };
+        bad(&|v| v.moods.clear());
+        bad(&|v| v.moods[0].id = "Calm".into());
+        bad(&|v| v.moods[0].id = "calm2".into());
+        bad(&|v| v.moods[0].id = "energy".into());
+        bad(&|v| v.moods[0].id = "grim".into());
+        bad(&|v| v.moods[0].name = " ".into());
+        bad(&|v| v.moods[0].name = "GRIM".into());
+        bad(&|v| v.moods[0].name = "Energy".into());
+        bad(&|v| v.moods[0].prompts = vec!["  ".into()]);
+        bad(&|v| v.moods[0].prompts = vec!["x".repeat(MAX_PROMPT_CHARS + 1)]);
+        bad(&|v| v.energy.negative.clear());
+        bad(&|v| v.energy.positive = vec!["p".into(); MAX_PROMPTS + 1]);
+    }
+
+    #[test]
+    fn vocabulary_json_is_camel_case_moods_and_energy() {
+        let json = serde_json::to_value(MoodVocabulary::defaults()).unwrap();
+        assert_eq!(json["moods"][3]["id"], "joyful");
+        assert_eq!(json["moods"][3]["name"], "Joyful");
+        assert_eq!(json["energy"]["negative"].as_array().unwrap().len(), 3);
     }
 
     #[test]

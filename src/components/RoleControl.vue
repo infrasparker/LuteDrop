@@ -86,4 +86,8 @@ function choose(role: Role): void {
 .facet-control {
   display: contents;
 }
+/* The same text size as the other controls in the editor and Review card. */
+.facet-control :deep(.v-btn) {
+  font-size: 0.8125rem;
+}
 </style>

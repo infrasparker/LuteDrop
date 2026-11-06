@@ -2,5 +2,27 @@
 import type { Configuration } from "./Configuration";
 import type { Group } from "./Group";
 import type { LibraryEntry } from "./LibraryEntry";
+import type { MoodCalibrationInfo } from "./MoodCalibrationInfo";
+import type { MoodVocabulary } from "./MoodVocabulary";
 
-export type AppState = { groups: Array<Group>, libraryEntries: Array<LibraryEntry>, tags: Array<string>, configurations: Array<Configuration>, activeConfigurationId: string, missingEntryIds: Array<string>, };
+export type AppState = { groups: Array<Group>, libraryEntries: Array<LibraryEntry>, tags: Array<string>, configurations: Array<Configuration>, activeConfigurationId: string, missingEntryIds: Array<string>, 
+/**
+ * The mood vocabulary every entry's `moods` follows.
+ */
+moodVocabulary: MoodVocabulary, 
+/**
+ * The frozen mood calibration's date and size; `None` until a run took
+ * one (or after Recalibrate cleared it).
+ */
+moodCalibration: MoodCalibrationInfo | null, 
+/**
+ * True when a calibration exists but some mood's prompts changed (or a
+ * mood was added) since it was taken: those moods are not scored until
+ * Recalibrate runs.
+ */
+moodsNeedRecalibration: boolean, 
+/**
+ * True when the stored mood vocabulary is unreadable: `mood_vocabulary`
+ * then holds the defaults, and saving a new one is refused.
+ */
+moodVocabularyUnreadable: boolean, };
