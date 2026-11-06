@@ -86,4 +86,8 @@ function choose(role: Role): void {
 .facet-control {
   display: contents;
 }
+/* Same size as the Pool buttons (see PoolControl). */
+.facet-control :deep(.v-btn) {
+  font-size: 0.8125rem;
+}
 </style>

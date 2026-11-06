@@ -163,7 +163,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 </script>
 
 <template>
-  <div class="review-view pa-4 d-flex flex-column align-center">
+  <div class="review-view pa-6 d-flex flex-column align-center">
     <div
       v-if="!current"
       class="d-flex flex-column align-center justify-center text-medium-emphasis pa-8 flex-grow-1"
@@ -173,7 +173,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
       <span class="text-body-2 mt-1">New imports show up here.</span>
     </div>
 
-    <VCard v-else class="review-card pa-5" variant="flat" border>
+    <VCard v-else class="review-card pa-8" variant="flat" border>
       <div class="d-flex align-start ga-3">
         <VBtn
           :icon="isPlaying ? 'mdi-stop' : 'mdi-play'"
@@ -199,7 +199,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
         </div>
       </div>
 
-      <div class="facet-grid mb-3">
+      <div class="facet-grid mb-4">
         <span class="text-caption text-medium-emphasis">Role</span>
         <RoleControl
           :entry-ids="[current.id]"
@@ -226,7 +226,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
         </VChip>
       </div>
 
-      <div class="d-flex align-center ga-2 mt-4">
+      <div class="action-row d-flex align-center ga-2 mt-6">
         <VBtn color="primary" prepend-icon="mdi-check" :loading="busy" @click="approve">
           Approve
           <span class="key-hint ml-2">A</span>
@@ -247,20 +247,33 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
   height: 100%;
   overflow-y: auto;
 }
+/* Up to 1100px wide, filling the view below that. min-width lets the card
+   grow past that rather than clip a row that cannot fit (the view scrolls). */
 .review-card {
-  width: min(960px, 100%);
+  width: 100%;
+  max-width: 1100px;
+  min-width: min-content;
+  overflow: visible;
 }
 .progress {
   white-space: nowrap;
   padding-top: 10px;
 }
-/* Label | options | status, as in the editor. */
+/* Label | options | status. The options column wraps (the Pool buttons go
+   onto two lines) only when the card is too narrow for one; the status
+   column keeps its text on one line, right-aligned, and is never squeezed. */
 .facet-grid {
   display: grid;
-  grid-template-columns: max-content max-content 1fr;
+  grid-template-columns: max-content minmax(min-content, 1fr) max-content;
   align-items: center;
-  column-gap: 12px;
-  row-gap: 12px;
+  column-gap: 16px;
+  row-gap: 16px;
+}
+.facet-grid :deep(.facet-status) {
+  justify-self: end;
+}
+.action-row {
+  width: 100%;
 }
 .key-hint {
   font-size: 0.7rem;

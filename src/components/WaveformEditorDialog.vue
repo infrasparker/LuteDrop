@@ -446,7 +446,9 @@ async function relocateFile(): Promise<void> {
    as two cells (display: contents), so the columns line up across rows. */
 .facet-grid {
   display: grid;
-  grid-template-columns: max-content max-content 1fr;
+  /* The options take one line when the dialog has room and wrap (down to
+     their widest button) when it has not; the status never wraps. */
+  grid-template-columns: max-content minmax(min-content, max-content) minmax(max-content, 1fr);
   align-items: center;
   column-gap: 12px;
   row-gap: 12px;

@@ -74,7 +74,14 @@ function confirm(): void {
 .facet-control {
   display: contents;
 }
-.pool-buttons {
-  max-width: 600px;
+/* One line when the grid column has room; wraps only when it has not.
+   An explicit font size and padding, because Vuetify's own `size="small"`
+   loses to its CSS reset here (its layers load components first), which
+   leaves the buttons at 16px and the eight too wide for one line. Equal
+   minimum widths keep the row even. */
+.pool-buttons :deep(.v-btn) {
+  font-size: 0.8125rem;
+  padding: 0 10px;
+  min-width: 72px;
 }
 </style>
