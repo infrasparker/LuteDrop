@@ -252,6 +252,9 @@ def create_app(
             "energy": sims["energetic"] - sims["calm"],
             # Deprecated: only app versions up to v0.12 read `light`.
             "light": sims["light"] - sims["heavy"],
+            # Dark kinds: absolute similarities; the app z-scores them.
+            "sad": sims["sad"],
+            "scary": sims["scary"],
         }
         return {
             h: {name: float(values[i]) for name, values in axes.items()}
