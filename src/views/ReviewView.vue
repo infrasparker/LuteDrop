@@ -204,7 +204,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
         />
       </div>
 
-      <MoodProfile :entries="[current]" class="mb-4" />
+      <MoodProfile :key="current.id" :entries="[current]" class="mb-4" />
 
 
       <div v-if="neighbours.length > 0" class="d-flex flex-wrap align-center ga-2 mb-3">

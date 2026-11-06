@@ -316,7 +316,7 @@ async function relocateFile(): Promise<void> {
             />
           </div>
           <div class="text-caption text-medium-emphasis mb-1">Moods</div>
-          <MoodProfile :entries="[entry]" class="mb-4" />
+          <MoodProfile :key="entry.id" :entries="[entry]" class="mb-4" />
         </template>
 
         <!-- Volume -->

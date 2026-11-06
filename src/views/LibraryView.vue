@@ -649,7 +649,7 @@ async function relocateEntry(entryId: string): Promise<void> {
           <div class="text-caption text-medium-emphasis mb-3">
             Click a bar to set that level on every selected entry. "mixed" means the entries differ.
           </div>
-          <MoodProfile :entries="selectedMusic" />
+          <MoodProfile :key="selectedMusic.map((e) => e.id).join(',')" :entries="selectedMusic" />
         </VCardText>
         <VCardActions class="px-5 pb-4">
           <VSpacer />

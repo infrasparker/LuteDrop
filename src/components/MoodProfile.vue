@@ -25,10 +25,13 @@ const music = computed(() => props.entries.filter((e) => e.entryType === 'music'
 const ids = computed(() => music.value.map((e) => e.id));
 
 // A level clicked but not saved yet ('clear' = back to the suggestion), so
-// the bar answers at once and quick key presses build on each other.
-const pending = reactive(new Map<MoodId, number | 'clear'>());
-// Saves run one after another per mood, so the last one wins.
-const chains = new Map<MoodId, Promise<unknown>>();
+// the bar answers at once and quick key presses build on each other. Keyed
+// by the entries and the mood, so a save still running for other entries
+// never shows on the ones displayed now.
+const pending = reactive(new Map<string, number | 'clear'>());
+// Saves run one after another per entries and mood, so the last one wins.
+const chains = new Map<string, Promise<unknown>>();
+const slot = (entryIds: string[], mood: MoodId): string => `${entryIds.join(',')}|${mood}`;
 
 type SetState = 'suggested' | 'set' | 'mixed';
 
@@ -56,7 +59,7 @@ function range(values: number[]): string {
 
 const rows = computed<Row[]>(() =>
   moodList().map(({ id, name }) => {
-    const p = pending.get(id);
+    const p = pending.get(slot(ids.value, id));
     const layers = music.value.map((e) => {
       const { auto, user } = moodLayers(e, id);
       if (p === 'clear') return { auto, user: null };
@@ -89,17 +92,18 @@ const rows = computed<Row[]>(() =>
 
 function save(mood: MoodId, level: number | null): void {
   if (ids.value.length === 0) return;
-  pending.set(mood, level === null ? 'clear' : level);
   const entryIds = ids.value;
-  const run = (chains.get(mood) ?? Promise.resolve()).then(() =>
+  const key = slot(entryIds, mood);
+  pending.set(key, level === null ? 'clear' : level);
+  const run = (chains.get(key) ?? Promise.resolve()).then(() =>
     store.command('set_entry_mood_level', { entryIds, mood, level }),
   );
-  chains.set(mood, run);
+  chains.set(key, run);
   void run.finally(() => {
-    // Only the newest save for this mood clears the pending value.
-    if (chains.get(mood) === run) {
-      chains.delete(mood);
-      pending.delete(mood);
+    // Only the newest save for these entries and mood clears the pending value.
+    if (chains.get(key) === run) {
+      chains.delete(key);
+      pending.delete(key);
     }
   });
 }
