@@ -42,9 +42,9 @@ roleAutoScore: number | null,
  */
 roleUser: Role | null, 
 /**
- * The mood profile: one value per mood id, in `MoodId::ALL` order (nine
- * moods, then Energy). Always all ten; an id with no stored row (and
- * every id on ambiance) has neither layer. The value shown is
+ * The mood profile: one value per id of the mood vocabulary, in its
+ * order (the moods, then Energy). Always every id; an id with no stored
+ * row (and every id on ambiance) has neither layer. The value shown is
  * `user ?? auto`.
  */
 moods: Array<MoodValue>, 

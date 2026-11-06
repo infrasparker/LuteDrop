@@ -3,7 +3,7 @@ use tauri::State;
 use std::sync::Arc;
 use crate::actions;
 use crate::models::{
-    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodId,
+    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodVocabulary,
     Role, SceneConfig, TrackUpdates, ScryHit, ScryPoint,
 };
 use crate::state::AppStateContainer;
@@ -310,10 +310,23 @@ pub fn keep_auto_role(
 pub fn set_entry_mood_level(
     state: State<'_, Arc<AppStateContainer>>,
     entry_ids: Vec<String>,
-    mood: MoodId,
+    mood: String,
     level: Option<f64>,
 ) -> Result<AppState, String> {
     actions::set_entry_mood_level(&state, entry_ids, mood, level)
+}
+
+#[tauri::command]
+pub fn set_mood_vocabulary(
+    state: State<'_, Arc<AppStateContainer>>,
+    vocabulary: MoodVocabulary,
+) -> Result<AppState, String> {
+    actions::set_mood_vocabulary(&state, vocabulary)
+}
+
+#[tauri::command]
+pub fn recalibrate_moods(state: State<'_, Arc<AppStateContainer>>) -> Result<AppState, String> {
+    actions::recalibrate_moods(&state)
 }
 
 #[tauri::command]

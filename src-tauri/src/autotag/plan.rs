@@ -2,7 +2,7 @@
 //! role and tags its scores earn. Nothing here touches the database or the
 //! network.
 
-use crate::models::{AutoTag, EntryTagScores, MoodId, Role, SceneConfig, TagScore};
+use crate::models::{AutoTag, EnergyPrompts, EntryTagScores, MoodVocabulary, Role, SceneConfig, TagScore, ENERGY_ID};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -39,6 +39,23 @@ pub struct ScoreRequest {
     pub gate: Examples,
     pub tags: HashMap<String, Examples>,
     pub targets: Vec<String>,
+    /// The app's mood vocabulary: prompts per mood id. The analyzer uses its
+    /// own defaults when this is left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mood_prompts: Option<BTreeMap<String, Vec<String>>>,
+    /// Energy's prompts, both sides; defaults when left out, as above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub energy_prompts: Option<EnergyPrompts>,
+}
+
+impl ScoreRequest {
+    /// The request with the vocabulary's prompts, so the analyzer scores the
+    /// app's moods rather than its defaults.
+    pub fn with_moods(mut self, vocabulary: &MoodVocabulary) -> Self {
+        self.mood_prompts = Some(vocabulary.moods.iter().map(|m| (m.id.clone(), m.prompts.clone())).collect());
+        self.energy_prompts = Some(vocabulary.energy.clone());
+        self
+    }
 }
 
 /// How well a classifier did on its own training examples.
@@ -81,7 +98,7 @@ pub struct ScoreResponse {
 }
 
 /// The analyzer's raw mood scores for one entry: each mood's absolute prompt
-/// similarity keyed by mood id, and Energy (energetic minus calm prompt
+/// similarity keyed by mood id (the ids the request sent), and Energy (energetic minus calm prompt
 /// similarity). Any other field the analyzer sends (`pools`, or the scales
 /// `bright`, `grand`, `sad`, `scary` and `light`, from older analyzers) is
 /// ignored.
@@ -114,51 +131,94 @@ pub struct MoodStat {
     pub sd: f64,
 }
 
-/// The frozen mood calibration: per mood id (Energy included), the mean and
+/// The frozen mood calibration: per id (Energy included), the mean and
 /// population standard deviation of its raw score across the library's music
-/// when it was taken. Taken once, from the first `/score` response that
-/// covers at least `CALIBRATION_MIN_TRACKS` music tracks, and never
-/// recomputed automatically, so values do not drift as the library grows.
-/// Stored as JSON `{ id: {mean, sd}, ... }` in the `mood_calibration`
-/// setting.
+/// when it was taken, plus the prompts each id was scored with then. Taken
+/// once, from the first `/score` response that covers at least
+/// `CALIBRATION_MIN_TRACKS` music tracks, and never recomputed automatically
+/// (only Recalibrate clears it), so values do not drift as the library grows.
+/// Stored as JSON `{calibratedAt, tracks, prompts: {id: [..]}, stats: {id:
+/// {mean, sd}}}` in the `mood_calibration` setting.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct MoodCalibration(pub BTreeMap<String, MoodStat>);
-
-/// The raw scores of one entry, in `MoodId::ALL` order, or `None` if any mood
-/// is missing (an analyzer with another vocabulary).
-fn mood_raws(mood: &MoodRaw) -> Option<[f64; MoodId::COUNT]> {
-    let mut out = [0.0; MoodId::COUNT];
-    for (slot, id) in out.iter_mut().zip(MoodId::ALL) {
-        *slot = match id {
-            MoodId::Energy => mood.energy,
-            _ => *mood.moods.get(id.as_db_str())?,
-        };
-    }
-    Some(out)
+#[serde(rename_all = "camelCase")]
+pub struct MoodCalibration {
+    /// Unix milliseconds as a string.
+    pub calibrated_at: String,
+    /// How many music tracks the statistics come from.
+    pub tracks: usize,
+    /// Each id's prompt signature (`MoodVocabulary::prompt_signature`) at
+    /// the time. An id whose prompts changed since is not scored until
+    /// Recalibrate.
+    pub prompts: BTreeMap<String, Vec<String>>,
+    pub stats: BTreeMap<String, MoodStat>,
 }
 
-/// Computes a mood calibration from one `/score` response's raw mood scores
-/// (population standard deviation). `None` when fewer than
-/// `CALIBRATION_MIN_TRACKS` entries carry every score, or when an id has no
-/// spread (its z-scores would be meaningless). The response only holds music
-/// targets, so every row is a music track.
-pub fn calibrate(mood: &HashMap<String, MoodRaw>) -> Option<(MoodCalibration, usize)> {
-    let rows: Vec<[f64; MoodId::COUNT]> = mood.values().filter_map(mood_raws).collect();
+/// One raw score of an entry: a mood's, or Energy's.
+fn raw_score(mood: &MoodRaw, id: &str) -> Option<f64> {
+    if id == ENERGY_ID {
+        Some(mood.energy)
+    } else {
+        mood.moods.get(id).copied()
+    }
+}
+
+/// Computes a mood calibration for every id of `vocabulary` from one
+/// `/score` response's raw mood scores (population standard deviation).
+/// `None` when fewer than `CALIBRATION_MIN_TRACKS` entries carry every id's
+/// score, or when an id has no spread (its z-scores would be meaningless).
+/// The response only holds music targets, so every row is a music track.
+pub fn calibrate(
+    mood: &HashMap<String, MoodRaw>,
+    vocabulary: &MoodVocabulary,
+    calibrated_at: String,
+) -> Option<MoodCalibration> {
+    let ids = vocabulary.ids();
+    let rows: Vec<Vec<f64>> = mood
+        .values()
+        .filter_map(|m| ids.iter().map(|id| raw_score(m, id)).collect::<Option<Vec<f64>>>())
+        .collect();
     if rows.len() < CALIBRATION_MIN_TRACKS {
         return None;
     }
     let n = rows.len() as f64;
     let mut stats = BTreeMap::new();
-    for (i, id) in MoodId::ALL.iter().enumerate() {
+    let mut prompts = BTreeMap::new();
+    for (i, id) in ids.iter().enumerate() {
         let mean = rows.iter().map(|r| r[i]).sum::<f64>() / n;
         let sd = (rows.iter().map(|r| (r[i] - mean).powi(2)).sum::<f64>() / n).sqrt();
         if !sd.is_finite() || sd <= 1e-12 {
             return None;
         }
-        stats.insert(id.as_db_str().to_string(), MoodStat { mean, sd });
+        stats.insert(id.clone(), MoodStat { mean, sd });
+        prompts.insert(id.clone(), vocabulary.prompt_signature(id)?);
     }
-    Some((MoodCalibration(stats), rows.len()))
+    Some(MoodCalibration {
+        calibrated_at,
+        tracks: rows.len(),
+        prompts,
+        stats,
+    })
+}
+
+/// The ids of `vocabulary` the calibration can score: those it has
+/// statistics for, taken with the same prompts the vocabulary has now. In
+/// profile order.
+pub fn scorable_ids(calibration: &MoodCalibration, vocabulary: &MoodVocabulary) -> Vec<String> {
+    vocabulary
+        .ids()
+        .into_iter()
+        .filter(|id| {
+            calibration.stats.contains_key(id)
+                && calibration.prompts.get(id) == vocabulary.prompt_signature(id).as_ref()
+        })
+        .collect()
+}
+
+/// True when there is a calibration but it cannot score some id of the
+/// vocabulary (a mood added, or prompts changed, since it was taken). Without
+/// a calibration the next run takes one, so nothing needs recalibrating.
+pub fn needs_recalibration(calibration: Option<&MoodCalibration>, vocabulary: &MoodVocabulary) -> bool {
+    calibration.is_some_and(|cal| scorable_ids(cal, vocabulary).len() < vocabulary.moods.len() + 1)
 }
 
 /// Turns one raw score into 0..1: `z = (raw - mean) / sd`, then
@@ -168,9 +228,10 @@ pub fn mood_score(raw: f64, stat: MoodStat) -> f64 {
     (1.0 / (1.0 + (-MOOD_SLOPE * z).exp())).clamp(0.0, 1.0)
 }
 
-/// The analyzer's 0..1 value for every mood id of one entry, in
-/// `MoodId::ALL` order. `None` when the entry lacks a raw score or the
-/// calibration lacks an id.
+/// The analyzer's 0..1 value for each of `ids` (see `scorable_ids`) on one
+/// entry, in that order. An id the entry has no raw score for, or the
+/// calibration has no statistics for, is left out; `None` when that leaves
+/// nothing.
 ///
 /// Rule: moods never depend on Role. Only the entry's raw scores and the
 /// frozen calibration go in; a combat track can be Peaceful.
@@ -178,14 +239,16 @@ pub fn mood_score(raw: f64, stat: MoodStat) -> f64 {
 /// Learned mood heads are out of scope for this release: the user's levels
 /// are recorded in `library_entry_moods.user_level` for a later release to
 /// regress heads on, and the values here are zero-shot only.
-pub fn auto_moods(mood: &MoodRaw, calibration: &MoodCalibration) -> Option<[(MoodId, f64); MoodId::COUNT]> {
-    let raws = mood_raws(mood)?;
-    let mut out = [(MoodId::Peaceful, 0.0); MoodId::COUNT];
-    for ((slot, id), raw) in out.iter_mut().zip(MoodId::ALL).zip(raws) {
-        let stat = *calibration.0.get(id.as_db_str())?;
-        *slot = (id, mood_score(raw, stat));
-    }
-    Some(out)
+pub fn auto_moods(mood: &MoodRaw, calibration: &MoodCalibration, ids: &[String]) -> Option<Vec<(String, f64)>> {
+    let out: Vec<(String, f64)> = ids
+        .iter()
+        .filter_map(|id| {
+            let raw = raw_score(mood, id)?;
+            let stat = *calibration.stats.get(id)?;
+            Some((id.clone(), mood_score(raw, stat)))
+        })
+        .collect();
+    (!out.is_empty()).then_some(out)
 }
 
 /// The analyzer layer one scored entry should carry after a run. It is
@@ -195,9 +258,10 @@ pub struct Decision {
     /// The auto role and the Combat probability it is stored with. `None`
     /// clears the auto role.
     pub role: Option<(Role, f64)>,
-    /// The analyzer's value for every mood id, when there is a mood
-    /// calibration and the analyzer sent the entry's raw mood scores.
-    pub moods: Option<[(MoodId, f64); MoodId::COUNT]>,
+    /// The analyzer's value for each scorable mood id (see `auto_moods`),
+    /// when there is a mood calibration and the analyzer sent the entry's
+    /// raw mood scores.
+    pub moods: Option<Vec<(String, f64)>>,
     /// The tags the analyzer gives the entry; its other auto scores go.
     pub tags: Vec<AutoTag>,
 }
@@ -301,7 +365,13 @@ pub fn build_score_request(
         .map(|(_, hash)| (*hash).clone())
         .collect();
 
-    ScoreRequest { gate, tags, targets }
+    ScoreRequest {
+        gate,
+        tags,
+        targets,
+        mood_prompts: None,
+        energy_prompts: None,
+    }
 }
 
 /// The role a Combat probability `p` earns from the gate: Combat when the
@@ -329,13 +399,14 @@ fn role_for(gate: &ScoreSet, p: f64) -> Option<(Role, f64)> {
 /// that were not scored. The decision depends on the scores alone: entries
 /// the user has set get an analyzer layer too, shown beside the user's. A tag
 /// is earned when its classifier is trusted and the score reaches its
-/// threshold. Moods are scored only with a `calibration` (see
-/// `auto_moods`).
+/// threshold. Moods are scored only with a `calibration`, and only the
+/// `mood_ids` it can score (see `scorable_ids` and `auto_moods`).
 pub fn decide(
     entries: &[EntryFacts],
     scene: &SceneConfig,
     resp: &ScoreResponse,
     calibration: Option<&MoodCalibration>,
+    mood_ids: &[String],
 ) -> HashMap<String, Decision> {
     let vocabulary = vocabulary(scene);
 
@@ -368,7 +439,7 @@ pub fn decide(
             entry.id.clone(),
             Decision {
                 role,
-                moods: calibration.and_then(|cal| auto_moods(resp.mood.get(hash)?, cal)),
+                moods: calibration.and_then(|cal| auto_moods(resp.mood.get(hash)?, cal, mood_ids)),
                 tags,
             },
         );
@@ -406,7 +477,7 @@ pub fn entry_scores(hash: &str, resp: &ScoreResponse) -> Option<EntryTagScores> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::Role;
+    use crate::models::{MoodDef, Role};
 
     fn scene() -> SceneConfig {
         SceneConfig {
@@ -538,7 +609,7 @@ mod tests {
             gate(true, Some(0.6), None, &[("h-a", 0.9)]),
             &[("brass", set(true, Some(0.5), &[("h-a", 0.7)]))],
         );
-        let out = decide(&entries, &cfg, &resp, None);
+        let out = decide(&entries, &cfg, &resp, None, &[]);
         assert_eq!(tag_names(&out["a"]), vec!["brass"]);
 
         let req = build_score_request(&entries, &cfg, &HashSet::new());
@@ -615,7 +686,7 @@ mod tests {
         let entries = vec![entry("a", &[]), entry("b", &[]), entry("c", &[])];
         let scores = [("h-a", 0.9), ("h-b", 0.2), ("h-c", 0.4)];
 
-        let out = decide(&entries, &scene(), &response(gate(true, Some(0.6), Some(0.7), &scores), &[]), None);
+        let out = decide(&entries, &scene(), &response(gate(true, Some(0.6), Some(0.7), &scores), &[]), None, &[]);
         assert_eq!(out["a"].role, Some((Role::Combat, 0.9)));
         // 1 - 0.2 = 0.8 clears the Non-combat threshold; the score kept is p.
         assert_eq!(out["b"].role, Some((Role::NonCombat, 0.2)));
@@ -623,12 +694,12 @@ mod tests {
         assert_eq!(out["c"].role, None);
 
         // Without a Non-combat threshold only Combat can be set.
-        let out = decide(&entries, &scene(), &response(gate(true, Some(0.6), None, &scores), &[]), None);
+        let out = decide(&entries, &scene(), &response(gate(true, Some(0.6), None, &scores), &[]), None, &[]);
         assert_eq!(out["a"].role, Some((Role::Combat, 0.9)));
         assert_eq!(out["b"].role, None);
 
         // An untrusted gate sets no role.
-        let out = decide(&entries, &scene(), &response(gate(false, Some(0.6), Some(0.7), &scores), &[]), None);
+        let out = decide(&entries, &scene(), &response(gate(false, Some(0.6), Some(0.7), &scores), &[]), None, &[]);
         assert!(out.values().all(|d| d.role.is_none()));
     }
 
@@ -636,7 +707,7 @@ mod tests {
     fn decide_gives_user_set_entries_an_auto_role_too() {
         let entries = vec![with_role(entry("a", &[]), Role::NonCombat)];
         let resp = response(gate(true, Some(0.6), Some(0.6), &[("h-a", 0.95)]), &[]);
-        let out = decide(&entries, &scene(), &resp, None);
+        let out = decide(&entries, &scene(), &resp, None, &[]);
         assert_eq!(out["a"].role, Some((Role::Combat, 0.95)));
     }
 
@@ -648,7 +719,7 @@ mod tests {
             gate(false, None, None, &[("h-a", 0.1), ("h-b", 0.1)]),
             &[("brass", set(true, Some(0.5), &[("h-a", 0.7), ("h-b", 0.8)]))],
         );
-        let out = decide(&entries, &scene(), &resp, None);
+        let out = decide(&entries, &scene(), &resp, None, &[]);
         assert_eq!(tag_names(&out["a"]), vec!["brass"]);
         assert_eq!(out["a"].tags[0].score, 0.7);
         assert_eq!(tag_names(&out["b"]), vec!["brass"]);
@@ -664,7 +735,7 @@ mod tests {
                 ("dark", set(true, Some(0.5), &[("h-a", 0.4)])),
             ],
         );
-        let out = decide(&entries, &scene(), &resp, None);
+        let out = decide(&entries, &scene(), &resp, None, &[]);
         assert!(out["a"].tags.is_empty());
     }
 
@@ -678,7 +749,7 @@ mod tests {
             gate(true, Some(0.6), None, &hashes),
             &[("brass", set(true, Some(0.5), &hashes))],
         );
-        let out = decide(&[rejected_tag, user_has_tag], &scene(), &resp, None);
+        let out = decide(&[rejected_tag, user_has_tag], &scene(), &resp, None, &[]);
         assert_eq!(out["b"].tags, vec![AutoTag { tag: "brass".into(), score: 0.9 }]);
         assert_eq!(out["c"].tags, vec![AutoTag { tag: "brass".into(), score: 0.8 }]);
     }
@@ -691,7 +762,7 @@ mod tests {
         not_music.is_music = false;
         let entries = vec![entry("scored", &[]), entry("unscored", &[]), no_hash, not_music];
         let resp = response(gate(true, Some(0.6), None, &[("h-scored", 0.9), ("h-m", 0.9)]), &[]);
-        let out = decide(&entries, &scene(), &resp, None);
+        let out = decide(&entries, &scene(), &resp, None, &[]);
         assert!(out.contains_key("scored"));
         assert!(!out.contains_key("unscored"));
         assert!(!out.contains_key("n"));
@@ -721,17 +792,50 @@ mod tests {
         assert!(serde_json::to_value(&req).unwrap().get("pace").is_none());
     }
 
-    /// Raw scores in `MoodId::ALL` order (nine moods, then energy).
-    fn with_moods(raws: [f64; MoodId::COUNT]) -> MoodRaw {
+    /// The default vocabulary's ids: eight moods, then energy.
+    fn ids() -> Vec<String> {
+        MoodVocabulary::defaults().ids()
+    }
+
+    /// Raw scores in the default vocabulary's order (eight moods, then energy).
+    fn with_moods(raws: [f64; 9]) -> MoodRaw {
+        let ids = ids();
         MoodRaw {
-            moods: MoodId::ALL[..9].iter().zip(raws).map(|(m, v)| (m.as_db_str().to_string(), v)).collect(),
-            energy: raws[9],
+            moods: ids[..8].iter().zip(raws).map(|(m, v)| (m.clone(), v)).collect(),
+            energy: raws[8],
         }
     }
 
-    /// A calibration with the same mean and sd for every id.
+    /// A calibration of the default vocabulary with the same mean and sd for
+    /// every id.
     fn flat_calibration(mean: f64, sd: f64) -> MoodCalibration {
-        MoodCalibration(MoodId::ALL.iter().map(|m| (m.as_db_str().to_string(), MoodStat { mean, sd })).collect())
+        let v = MoodVocabulary::defaults();
+        MoodCalibration {
+            calibrated_at: "1".into(),
+            tracks: 50,
+            prompts: ids().into_iter().map(|id| (id.clone(), v.prompt_signature(&id).unwrap())).collect(),
+            stats: ids().into_iter().map(|id| (id, MoodStat { mean, sd })).collect(),
+        }
+    }
+
+    #[test]
+    fn request_carries_the_vocabulary_only_when_given() {
+        let req = build_score_request(&[entry("a", &[])], &scene(), &HashSet::new());
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("mood_prompts").is_none() && json.get("energy_prompts").is_none());
+
+        let mut v = MoodVocabulary::defaults();
+        v.moods.truncate(2);
+        let json = serde_json::to_value(req.with_moods(&v)).unwrap();
+        assert_eq!(
+            json["mood_prompts"],
+            serde_json::json!({
+                "peaceful": v.moods[0].prompts,
+                "sorrowful": v.moods[1].prompts,
+            })
+        );
+        assert_eq!(json["energy_prompts"]["positive"][0], "energetic, lively, exciting music");
+        assert_eq!(json["energy_prompts"]["negative"].as_array().unwrap().len(), 3);
     }
 
     #[test]
@@ -752,28 +856,62 @@ mod tests {
     fn auto_moods_scores_every_id_against_its_own_calibration() {
         let mut cal = flat_calibration(0.1, 0.05);
         // Peaceful has the highest raw score but also the highest mean.
-        cal.0.insert("peaceful".into(), MoodStat { mean: 0.3, sd: 0.05 });
+        cal.stats.insert("peaceful".into(), MoodStat { mean: 0.3, sd: 0.05 });
         // Energy is a difference, so it has its own centre and spread.
-        cal.0.insert("energy".into(), MoodStat { mean: -0.02, sd: 0.01 });
-        let m = with_moods([0.3, 0.15, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.0, -0.04]);
-        let out = auto_moods(&m, &cal).unwrap();
-        assert_eq!(out.map(|(id, _)| id), MoodId::ALL);
+        cal.stats.insert("energy".into(), MoodStat { mean: -0.02, sd: 0.01 });
+        let m = with_moods([0.3, 0.15, 0.1, 0.1, 0.1, 0.1, 0.1, 0.0, -0.04]);
+        let out = auto_moods(&m, &cal, &ids()).unwrap();
+        assert_eq!(out.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(), ids());
         assert_eq!(out[0].1, 0.5); // peaceful: z 0
         assert!((out[1].1 - 0.817_574_476_193_643_7).abs() < 1e-12); // sorrowful: z 1
-        assert!((out[8].1 - 0.047_425_873_177_566_78).abs() < 1e-12); // menacing: z -2
-        assert!((out[9].1 - 0.047_425_873_177_566_78).abs() < 1e-12); // energy: z -2
+        assert!((out[7].1 - 0.047_425_873_177_566_78).abs() < 1e-12); // heroic: z -2
+        assert!((out[8].1 - 0.047_425_873_177_566_78).abs() < 1e-12); // energy: z -2
     }
 
     #[test]
-    fn no_auto_moods_without_every_score() {
+    fn auto_moods_leaves_out_ids_without_a_score_or_statistics() {
         let cal = flat_calibration(0.0, 1.0);
-        let mut m = with_moods([0.1; MoodId::COUNT]);
+        let mut m = with_moods([0.1; 9]);
         m.moods.remove("wondrous");
-        assert_eq!(auto_moods(&m, &cal), None);
-        // A calibration missing an id gives none either.
-        let mut partial = flat_calibration(0.0, 1.0);
-        partial.0.remove("energy");
-        assert_eq!(auto_moods(&with_moods([0.1; MoodId::COUNT]), &partial), None);
+        let out = auto_moods(&m, &cal, &ids()).unwrap();
+        assert_eq!(out.len(), 8);
+        assert!(out.iter().all(|(id, _)| id != "wondrous"));
+        // An id the calibration lacks (a mood added since) is left out too.
+        let extra = ["energy".to_string(), "spooky".to_string()];
+        let out = auto_moods(&with_moods([0.1; 9]), &cal, &extra).unwrap();
+        assert_eq!(out.len(), 1);
+        // Nothing left: none.
+        assert_eq!(auto_moods(&m, &cal, &["wondrous".to_string()]), None);
+    }
+
+    #[test]
+    fn scorable_ids_skip_changed_and_new_moods() {
+        let cal = flat_calibration(0.0, 1.0);
+        let mut v = MoodVocabulary::defaults();
+        assert_eq!(scorable_ids(&cal, &v), ids());
+        assert!(!needs_recalibration(Some(&cal), &v));
+        assert!(!needs_recalibration(None, &v));
+
+        // Removing a mood keeps the rest scorable.
+        v.moods.retain(|m| m.id != "quirky");
+        assert_eq!(scorable_ids(&cal, &v).len(), 8);
+        assert!(!needs_recalibration(Some(&cal), &v));
+
+        // Changed prompts, a new mood and changed Energy prompts are not.
+        v.moods[0].prompts.push("gentle".into());
+        v.moods.push(MoodDef { id: "spooky".into(), name: "Spooky".into(), prompts: vec!["ghosts".into()] });
+        v.energy.negative.pop();
+        let ok = scorable_ids(&cal, &v);
+        assert!(!ok.contains(&"peaceful".to_string()));
+        assert!(!ok.contains(&"spooky".to_string()));
+        assert!(!ok.contains(&"energy".to_string()));
+        assert_eq!(ok.len(), 6);
+        assert!(needs_recalibration(Some(&cal), &v));
+
+        // Renaming changes nothing.
+        let mut renamed = MoodVocabulary::defaults();
+        renamed.moods[0].name = "Safe".into();
+        assert!(!needs_recalibration(Some(&cal), &renamed));
     }
 
     /// `n` entries whose id `i` scores `0.1 + i * 0.01 + (k % 2) * step`.
@@ -781,76 +919,99 @@ mod tests {
         (0..n)
             .map(|k| {
                 let bump = if k % 2 == 0 { 0.0 } else { step };
-                let raws: [f64; MoodId::COUNT] = std::array::from_fn(|i| 0.1 + i as f64 * 0.01 + bump);
+                let raws: [f64; 9] = std::array::from_fn(|i| 0.1 + i as f64 * 0.01 + bump);
                 (format!("h-{k}"), with_moods(raws))
             })
             .collect()
     }
 
+    fn calibrate_defaults(mood: &HashMap<String, MoodRaw>) -> Option<MoodCalibration> {
+        calibrate(mood, &MoodVocabulary::defaults(), "1700000000000".into())
+    }
+
     #[test]
     fn calibrate_needs_fifty_tracks_with_every_score() {
-        assert_eq!(calibrate(&library(49, 0.02)), None);
+        assert_eq!(calibrate_defaults(&library(49, 0.02)), None);
         // Entries missing a mood do not count.
         let mut short = library(49, 0.02);
-        let mut partial = with_moods([0.1; MoodId::COUNT]);
+        let mut partial = with_moods([0.1; 9]);
         partial.moods.remove("grim");
         short.insert("h-old".into(), partial);
-        assert_eq!(calibrate(&short), None);
+        assert_eq!(calibrate_defaults(&short), None);
 
-        let (cal, tracks) = calibrate(&library(50, 0.02)).unwrap();
-        assert_eq!(tracks, 50);
-        assert_eq!(cal.0.len(), MoodId::COUNT);
+        let cal = calibrate_defaults(&library(50, 0.02)).unwrap();
+        assert_eq!(cal.tracks, 50);
+        assert_eq!(cal.calibrated_at, "1700000000000");
+        assert_eq!(cal.stats.len(), 9);
         // Half at base, half at base + 0.02: mean base + 0.01, population sd 0.01.
-        for (i, id) in MoodId::ALL.iter().enumerate() {
-            let stat = cal.0[id.as_db_str()];
+        for (i, id) in ids().iter().enumerate() {
+            let stat = cal.stats[id];
             assert!((stat.mean - (0.11 + i as f64 * 0.01)).abs() < 1e-12);
             assert!((stat.sd - 0.01).abs() < 1e-12);
         }
+        // It records the prompts it was taken with.
+        let v = MoodVocabulary::defaults();
+        assert_eq!(cal.prompts["joyful"], v.moods[3].prompts);
+        assert_eq!(scorable_ids(&cal, &v), ids());
+    }
+
+    #[test]
+    fn calibrate_covers_the_vocabulary_it_is_given() {
+        // A vocabulary with fewer moods calibrates from the same response.
+        let mut v = MoodVocabulary::defaults();
+        v.moods.truncate(3);
+        let cal = calibrate(&library(50, 0.02), &v, "1".into()).unwrap();
+        assert_eq!(cal.stats.keys().collect::<Vec<_>>(), ["energy", "peaceful", "sorrowful", "wondrous"]);
+        // A mood the analyzer did not score blocks calibration.
+        v.moods.push(MoodDef { id: "spooky".into(), name: "Spooky".into(), prompts: vec!["ghosts".into()] });
+        assert_eq!(calibrate(&library(50, 0.02), &v, "1".into()), None);
     }
 
     #[test]
     fn calibrate_refuses_an_id_without_spread() {
-        assert_eq!(calibrate(&library(60, 0.0)), None);
+        assert_eq!(calibrate_defaults(&library(60, 0.0)), None);
     }
 
     #[test]
-    fn calibration_round_trips_as_flat_json() {
-        let (cal, _) = calibrate(&library(50, 0.02)).unwrap();
+    fn calibration_round_trips_as_json() {
+        let cal = calibrate_defaults(&library(50, 0.02)).unwrap();
         let text = serde_json::to_string(&cal).unwrap();
-        // `{ id: {mean, sd}, ... }`, nothing else.
-        assert!(text.starts_with(r#"{"cheerful":{"mean":"#));
-        assert!(text.contains(r#""energy":{"mean":"#));
+        assert!(text.starts_with(r#"{"calibratedAt":"1700000000000","tracks":50,"prompts":{"#));
+        assert!(text.contains(r#""stats":{"energy":{"mean":"#));
         let back: MoodCalibration = serde_json::from_str(&text).unwrap();
-        assert_eq!(back.0.keys().collect::<Vec<_>>(), cal.0.keys().collect::<Vec<_>>());
-        for (id, stat) in &cal.0 {
-            assert!((back.0[id].mean - stat.mean).abs() < 1e-15 && (back.0[id].sd - stat.sd).abs() < 1e-15);
+        assert_eq!(back.prompts, cal.prompts);
+        for (id, stat) in &cal.stats {
+            assert!((back.stats[id].mean - stat.mean).abs() < 1e-15 && (back.stats[id].sd - stat.sd).abs() < 1e-15);
         }
     }
 
     #[test]
     fn decide_scores_moods_only_with_a_calibration() {
         let mut resp = response(gate(true, Some(0.6), None, &[("h-a", 0.9), ("h-b", 0.9)]), &[]);
-        resp.mood = [("h-a".to_string(), with_moods([0.2; MoodId::COUNT]))].into();
+        resp.mood = [("h-a".to_string(), with_moods([0.2; 9]))].into();
         let entries = [entry("a", &[]), entry("b", &[])];
-        let out = decide(&entries, &scene(), &resp, None);
-        assert_eq!((out["a"].moods, out["b"].moods), (None, None));
+        let out = decide(&entries, &scene(), &resp, None, &ids());
+        assert_eq!((out["a"].moods.clone(), out["b"].moods.clone()), (None, None));
 
         let cal = flat_calibration(0.2, 0.01);
-        let out = decide(&entries, &scene(), &resp, Some(&cal));
-        assert_eq!(out["a"].moods, auto_moods(&resp.mood["h-a"], &cal));
-        assert!(out["a"].moods.unwrap().iter().all(|(_, v)| *v == 0.5));
+        let out = decide(&entries, &scene(), &resp, Some(&cal), &ids());
+        assert_eq!(out["a"].moods, auto_moods(&resp.mood["h-a"], &cal, &ids()));
+        assert!(out["a"].moods.as_ref().unwrap().iter().all(|(_, v)| *v == 0.5));
         // No mood for the entry: no moods.
         assert_eq!(out["b"].moods, None);
+        // Only the ids asked for are scored.
+        let out = decide(&entries, &scene(), &resp, Some(&cal), &["grim".to_string()]);
+        assert_eq!(out["a"].moods, Some(vec![("grim".to_string(), 0.5)]));
     }
 
     #[test]
     fn moods_do_not_depend_on_role() {
         // Same mood scores, opposite gate scores (Combat vs Non-combat).
         let mut resp = response(gate(true, Some(0.6), Some(0.6), &[("h-a", 0.95), ("h-b", 0.05)]), &[]);
-        let m = with_moods([0.25, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2]);
+        let m = with_moods([0.25, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2]);
         resp.mood = [("h-a".to_string(), m.clone()), ("h-b".to_string(), m)].into();
         let cal = flat_calibration(0.2, 0.01);
-        let out = decide(&[entry("a", &[]), entry("b", &[])], &scene(), &resp, Some(&cal));
+        let out = decide(&[entry("a", &[]), entry("b", &[])], &scene(), &resp, Some(&cal), &ids());
         assert_ne!(out["a"].role.map(|r| r.0), out["b"].role.map(|r| r.0));
         assert_eq!(out["a"].moods, out["b"].moods);
     }
@@ -868,8 +1029,8 @@ mod tests {
         let json = r#"{"model":"m","gate":{"quality":{"auc":0.9,"pos":12,"neg":9},
             "trusted":true,"threshold":0.61,"scores":{}},"tags":{},
             "pace":{"quality":{"auc":null,"pos":0,"neg":0},"trusted":false,"threshold":null,"scores":{}},
-            "mood":{"h-new":{"moods":{"peaceful":0.1,"sorrowful":0.2,"wondrous":0.3,"cheerful":0.4,
-                                      "quirky":0.5,"mysterious":0.6,"grim":0.7,"heroic":0.8,"menacing":0.9},
+            "mood":{"h-new":{"moods":{"peaceful":0.1,"sorrowful":0.2,"wondrous":0.3,"joyful":0.4,
+                                      "quirky":0.5,"mysterious":0.6,"grim":0.7,"heroic":0.8},
                              "energy":-0.05},
                     "h-pools":{"pools":{"peaceful":0.1,"cheerful":0.2,"quirky":0.3,"somber":0.4,"awe":0.5,
                                         "mysterious":0.6,"heroic":0.7,"menacing":0.8}},
@@ -879,7 +1040,7 @@ mod tests {
         // Entries from analyzers that predate the mood profile (pools, the
         // scales) count as no mood.
         assert_eq!(resp.mood.len(), 1);
-        assert_eq!(resp.mood["h-new"], with_moods([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, -0.05]));
+        assert_eq!(resp.mood["h-new"], with_moods([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, -0.05]));
     }
 
     #[test]

@@ -11,7 +11,7 @@ use crate::database::settings::{self as broadcast_settings, BroadcastSettings};
 use crate::database::settings as autotag_settings;
 use crate::models::{
     AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
-    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodId, Role, SceneConfig, Track, TrackUpdates, ScryHit,
+    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodVocabulary, Role, SceneConfig, Track, TrackUpdates, ScryHit,
     ScryPoint,
 };
 use crate::relink;
@@ -430,10 +430,30 @@ pub fn set_entry_role(
 pub fn set_entry_mood_level(
     container: &AppStateContainer,
     entry_ids: Vec<String>,
-    mood: MoodId,
+    mood: String,
     level: Option<f64>,
 ) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| library::set_user_mood_level(conn, &entry_ids, mood, level))
+    mutate_and_reload(container, |conn| library::set_user_mood_level(conn, &entry_ids, &mood, level))
+}
+
+/// Saves the mood vocabulary from Settings → Moods (see
+/// `library::save_mood_vocabulary`): removed moods lose their rows, changed
+/// prompts wait for Recalibrate.
+pub fn set_mood_vocabulary(container: &AppStateContainer, vocabulary: MoodVocabulary) -> Result<AppState, String> {
+    mutate_and_reload(container, |conn| library::save_mood_vocabulary(conn, &vocabulary).map(|_| ()))
+}
+
+/// Recalibrate: clears the mood calibration, every analyzer mood value and
+/// the stored scores (user levels stay), then starts an analysis run, which
+/// takes a new calibration from the current prompts. Refused while
+/// auto-tagging is off, since nothing could rebuild what it clears.
+pub fn recalibrate_moods(container: &AppStateContainer) -> Result<AppState, String> {
+    if !autotag_enabled(container) {
+        return Err("Turn on auto-tagging first: the analyzer rebuilds the calibration".to_string());
+    }
+    let state = mutate_and_reload(container, library::clear_mood_analysis)?;
+    container.autotag.analyze_library();
+    Ok(state)
 }
 
 /// Approves one entry in Review: its shown role becomes the user's and it is

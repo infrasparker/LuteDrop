@@ -1,13 +1,13 @@
 //! Persisted app settings, stored as plain key/value rows in the `meta`
 //! table. This covers the Broadcast (live stream) settings, the folder
-//! the "Fix missing files" search starts in, the analyzer settings and the
-//! frozen mood calibration.
+//! the "Fix missing files" search starts in, the analyzer settings, the
+//! mood vocabulary and the frozen mood calibration.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use crate::autotag::plan::MoodCalibration;
-use crate::models::{AutoTagSettings, MoodId, SceneConfig};
+use crate::models::{AutoTagSettings, MoodVocabulary, SceneConfig};
 
 const KEY_ENABLED: &str = "broadcast_enabled";
 const KEY_PORT: &str = "broadcast_port";
@@ -21,6 +21,7 @@ const KEY_AUTOTAG_LOCAL_PREFIX: &str = "autotag_local_prefix";
 const KEY_AUTOTAG_REMOTE_PREFIX: &str = "autotag_remote_prefix";
 const KEY_AUTOTAG_SCENE: &str = "autotag_scene_encounter";
 const KEY_MOOD_CALIBRATION: &str = "mood_calibration";
+pub(crate) const KEY_MOOD_VOCABULARY: &str = "mood_vocabulary";
 
 /// Where the analyzer host mounts the audio folder until the user says otherwise.
 pub const DEFAULT_REMOTE_PREFIX: &str = "/media/audio";
@@ -172,23 +173,16 @@ pub fn save_scene_config(conn: &Connection, c: &SceneConfig) -> Result<(), Strin
     write_meta(conn, KEY_AUTOTAG_SCENE, &text)
 }
 
-/// Loads the frozen mood calibration (JSON `{ id: {mean, sd}, ... }`).
-/// `None` until the first analyzer run that covers enough music computed one.
-/// A stored value that does not parse, or lacks one of the ten ids, is
-/// treated as missing (and logged), so the next qualifying run takes a new
-/// one.
+/// Loads the frozen mood calibration (see `MoodCalibration`). `None` until
+/// the first analyzer run that covers enough music computed one, and after
+/// Recalibrate cleared it. A stored value that does not parse is treated as
+/// missing (and logged), so the next qualifying run takes a new one.
 pub fn load_mood_calibration(conn: &Connection) -> Result<Option<MoodCalibration>, String> {
     let Some(text) = read_meta(conn, KEY_MOOD_CALIBRATION)? else {
         return Ok(None);
     };
     match serde_json::from_str::<MoodCalibration>(&text) {
-        Ok(calibration) if MoodId::ALL.iter().all(|id| calibration.0.contains_key(id.as_db_str())) => {
-            Ok(Some(calibration))
-        }
-        Ok(_) => {
-            log::warn!("Stored {KEY_MOOD_CALIBRATION} lacks a mood; treating it as missing");
-            Ok(None)
-        }
+        Ok(calibration) => Ok(Some(calibration)),
         Err(e) => {
             log::warn!("Invalid stored {KEY_MOOD_CALIBRATION}: {e}; treating it as missing");
             Ok(None)
@@ -196,9 +190,44 @@ pub fn load_mood_calibration(conn: &Connection) -> Result<Option<MoodCalibration
     }
 }
 
+/// Deletes the mood calibration, so the next run takes a new one.
+pub fn clear_mood_calibration(conn: &Connection) -> Result<(), String> {
+    conn.execute("DELETE FROM meta WHERE key = ?1", params![KEY_MOOD_CALIBRATION])
+        .map_err(|e| format!("Failed to clear mood calibration: {e}"))?;
+    Ok(())
+}
+
+/// Loads the mood vocabulary. A missing row (a database opened before it
+/// was seeded) gives the defaults; a stored value that does not parse or
+/// breaks the rules is logged and replaced by the defaults too, so moods
+/// keep working.
+pub fn load_mood_vocabulary(conn: &Connection) -> Result<MoodVocabulary, String> {
+    let Some(text) = read_meta(conn, KEY_MOOD_VOCABULARY)? else {
+        return Ok(MoodVocabulary::defaults());
+    };
+    match serde_json::from_str::<MoodVocabulary>(&text).map_err(|e| e.to_string()).and_then(|v| v.normalized()) {
+        Ok(vocabulary) => Ok(vocabulary),
+        Err(e) => {
+            log::warn!("Invalid stored {KEY_MOOD_VOCABULARY}: {e}; using the defaults");
+            Ok(MoodVocabulary::defaults())
+        }
+    }
+}
+
+/// Saves the mood vocabulary as JSON. The caller has normalized it.
+pub fn save_mood_vocabulary(conn: &Connection, vocabulary: &MoodVocabulary) -> Result<(), String> {
+    let text = mood_vocabulary_json(vocabulary)?;
+    write_meta(conn, KEY_MOOD_VOCABULARY, &text)
+}
+
+/// The JSON stored in the `mood_vocabulary` row.
+pub(crate) fn mood_vocabulary_json(vocabulary: &MoodVocabulary) -> Result<String, String> {
+    serde_json::to_string(vocabulary).map_err(|e| format!("Failed to encode mood vocabulary: {e}"))
+}
+
 /// Saves the mood calibration as JSON, replacing any stored one. Only the
 /// analyzer run calls this, and only while none is stored: the calibration
-/// is frozen once taken.
+/// is frozen once taken (Recalibrate clears it first).
 pub fn save_mood_calibration(conn: &Connection, calibration: &MoodCalibration) -> Result<(), String> {
     let text = serde_json::to_string(calibration)
         .map_err(|e| format!("Failed to encode mood calibration: {e}"))?;
@@ -261,25 +290,47 @@ mod tests {
         init_schema(&conn).unwrap();
         assert_eq!(load_mood_calibration(&conn).unwrap(), None);
 
-        let cal = MoodCalibration(
-            MoodId::ALL
-                .iter()
-                .map(|id| (id.as_db_str().to_string(), MoodStat { mean: 0.21, sd: 0.03 }))
-                .collect(),
-        );
+        let cal = MoodCalibration {
+            calibrated_at: "1700000000000".into(),
+            tracks: 64,
+            prompts: [("grim".to_string(), vec!["horror".to_string()])].into(),
+            stats: [("energy".to_string(), MoodStat { mean: 0.21, sd: 0.03 })].into(),
+        };
         save_mood_calibration(&conn, &cal).unwrap();
         assert_eq!(load_mood_calibration(&conn).unwrap(), Some(cal.clone()));
-        // Stored flat, keyed by id.
         let text = read_meta(&conn, KEY_MOOD_CALIBRATION).unwrap().unwrap();
-        assert!(text.contains(r#""energy":{"mean":0.21,"sd":0.03}"#));
+        assert!(text.contains(r#""stats":{"energy":{"mean":0.21,"sd":0.03}}"#));
 
-        // Missing an id, or not JSON: treated as missing.
-        let mut partial = cal;
-        partial.0.remove("grim");
-        save_mood_calibration(&conn, &partial).unwrap();
+        // Not the current shape (the flat map of earlier builds), or not
+        // JSON: treated as missing.
+        write_meta(&conn, KEY_MOOD_CALIBRATION, r#"{"energy":{"mean":0.1,"sd":0.1}}"#).unwrap();
         assert_eq!(load_mood_calibration(&conn).unwrap(), None);
         write_meta(&conn, KEY_MOOD_CALIBRATION, "not json").unwrap();
         assert_eq!(load_mood_calibration(&conn).unwrap(), None);
+
+        save_mood_calibration(&conn, &cal).unwrap();
+        clear_mood_calibration(&conn).unwrap();
+        assert_eq!(load_mood_calibration(&conn).unwrap(), None);
+    }
+
+    #[test]
+    fn mood_vocabulary_defaults_when_missing_or_bad_and_round_trips() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        assert_eq!(load_mood_vocabulary(&conn).unwrap(), MoodVocabulary::defaults());
+
+        let mut v = MoodVocabulary::defaults();
+        v.moods.truncate(2);
+        v.moods[1].name = "Sad".into();
+        save_mood_vocabulary(&conn, &v).unwrap();
+        assert_eq!(load_mood_vocabulary(&conn).unwrap(), v);
+
+        write_meta(&conn, KEY_MOOD_VOCABULARY, "{oops").unwrap();
+        assert_eq!(load_mood_vocabulary(&conn).unwrap(), MoodVocabulary::defaults());
+        // Parses, but breaks the rules (no moods).
+        write_meta(&conn, KEY_MOOD_VOCABULARY, r#"{"moods":[],"energy":{"positive":["a"],"negative":["b"]}}"#)
+            .unwrap();
+        assert_eq!(load_mood_vocabulary(&conn).unwrap(), MoodVocabulary::defaults());
     }
 
     #[test]

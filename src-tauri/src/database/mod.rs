@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::models::{
     AnalysisStatus, AppState, AutoTag, Clip, Comp, Configuration, EntryAnalysis, EntryType, Group,
-    LibraryEntry, MoodId, MoodValue, Role, Track, TrackMode, TrackTransition,
+    LibraryEntry, MoodCalibrationInfo, MoodValue, MoodVocabulary, Role, Track, TrackMode, TrackTransition,
 };
 
 /// Current schema version. Bump when adding a migration below; fresh
@@ -470,6 +470,8 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> SqlResult<bool
 ///   entries stay out of the Review queue.
 /// - The pool calibration is deleted and the stored scores are cleared, so
 ///   the next run scores moods and takes a new calibration.
+/// - The mood vocabulary (meta `mood_vocabulary`) is seeded with the
+///   defaults, unless one is already stored.
 /// - Role and tags are untouched. The pre-migration backup keeps everything
 ///   dropped here.
 fn migrate_v11_to_v12(conn: &Connection) -> SqlResult<()> {
@@ -485,7 +487,20 @@ fn migrate_v11_to_v12(conn: &Connection) -> SqlResult<()> {
          DELETE FROM meta WHERE key = 'pool_calibration';
 
          UPDATE entry_analysis SET scores_json = NULL;",
-    )
+    )?;
+    seed_mood_vocabulary(conn)
+}
+
+/// Stores the default mood vocabulary unless one is stored already. Run by
+/// the v11→v12 migration and on a fresh database.
+fn seed_mood_vocabulary(conn: &Connection) -> SqlResult<()> {
+    let json = settings::mood_vocabulary_json(&MoodVocabulary::defaults())
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+    conn.execute(
+        "INSERT OR IGNORE INTO meta (key, value) VALUES (?1, ?2)",
+        params![settings::KEY_MOOD_VOCABULARY, json],
+    )?;
+    Ok(())
 }
 
 // Ordered migrations: entry `(n, f)` upgrades version n → n+1.
@@ -604,6 +619,9 @@ pub fn open_db(path: &Path) -> Result<Connection, String> {
         params![stamp.to_string()],
     )
     .map_err(|e| format!("Failed to stamp schema version: {e}"))?;
+    if fresh {
+        seed_mood_vocabulary(&conn).map_err(|e| format!("Failed to seed the mood vocabulary: {e}"))?;
+    }
 
     run_migrations(&conn)?;
 
@@ -783,7 +801,9 @@ fn load_configurations(conn: &Connection) -> Result<Vec<Configuration>, String> 
 pub fn load_full_state(conn: &Connection) -> Result<AppState, String> {
     let active_configuration_id = get_active_configuration_id(conn)?;
     let configurations = load_configurations(conn)?;
-    let library_entries = load_library_entries(conn)?;
+    let mood_vocabulary = settings::load_mood_vocabulary(conn)?;
+    let calibration = settings::load_mood_calibration(conn)?;
+    let library_entries = load_library_entries(conn, &mood_vocabulary)?;
     let tags = library::list_all_tags(conn)?;
 
     // Build id → entry reference map for lookups in hierarchy loading.
@@ -801,12 +821,19 @@ pub fn load_full_state(conn: &Connection) -> Result<AppState, String> {
         configurations,
         active_configuration_id,
         missing_entry_ids: Vec::new(),
+        moods_need_recalibration: crate::autotag::plan::needs_recalibration(calibration.as_ref(), &mood_vocabulary),
+        mood_calibration: calibration.map(|c| MoodCalibrationInfo {
+            calibrated_at: c.calibrated_at,
+            tracks: c.tracks as u32,
+        }),
+        mood_vocabulary,
     })
 }
 
 /// Queries all library_entries ordered by name and fills in tags, auto tags,
-/// rejected tags and analysis state for each.
-fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> {
+/// rejected tags, analysis state and the mood profile (in `vocabulary`'s
+/// order) for each.
+fn load_library_entries(conn: &Connection, vocabulary: &MoodVocabulary) -> Result<Vec<LibraryEntry>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, file_path, content_hash, name, duration, sample_rate, file_size,
@@ -917,7 +944,7 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
 
     // Mood rows per entry: (auto_score, user_level) by mood. Rows with an
     // id outside the vocabulary are ignored.
-    type MoodLayers = HashMap<MoodId, (Option<f64>, Option<f64>)>;
+    type MoodLayers = HashMap<String, (Option<f64>, Option<f64>)>;
     let mut mood_map: HashMap<String, MoodLayers> = HashMap::new();
     {
         let mut stmt = conn
@@ -935,12 +962,13 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
             .map_err(|e| format!("Failed to query moods: {e}"))?;
         for row in mood_rows {
             let (entry_id, mood, auto, user) = row.map_err(|e| format!("Failed to read mood row: {e}"))?;
-            if let Some(mood) = MoodId::from_db_str(&mood) {
+            if vocabulary.contains(&mood) {
                 mood_map.entry(entry_id).or_default().insert(mood, (auto, user));
             }
         }
     }
 
+    let mood_ids = vocabulary.ids();
     let mut entries = Vec::with_capacity(rows.len());
     for (id, file_path, content_hash, name, duration, sample_rate, file_size,
          volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type,
@@ -952,11 +980,11 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
         let role_auto = role_auto.as_deref().and_then(Role::from_db_str);
         let role_user = role_user.as_deref().and_then(Role::from_db_str);
         let stored = mood_map.remove(&id).unwrap_or_default();
-        let moods = MoodId::ALL
+        let moods = mood_ids
             .iter()
-            .map(|&mood| {
-                let (auto, user) = stored.get(&mood).copied().unwrap_or((None, None));
-                MoodValue { mood, auto, user }
+            .map(|mood| {
+                let (auto, user) = stored.get(mood).copied().unwrap_or((None, None));
+                MoodValue { mood: mood.clone(), auto, user }
             })
             .collect();
         entries.push(LibraryEntry {
@@ -1908,7 +1936,7 @@ mod tests {
         library::keep_auto_tags(&conn, std::slice::from_ref(&with_data), Some(&["drums".to_string()])).unwrap();
         autotag_db::set_analysis(&conn, &with_data, Some("h1"), AnalysisStatus::Failed, Some("bad file")).unwrap();
 
-        let entries = load_library_entries(&conn).unwrap();
+        let entries = load_library_entries(&conn, &MoodVocabulary::defaults()).unwrap();
         let a = entries.iter().find(|e| e.id == with_data).unwrap();
         assert_eq!(a.tags, vec!["brass", "drums", "folk"]);
         // Only brass is shown because of the analyzer alone; folk and drums
@@ -1974,6 +2002,11 @@ mod tests {
         .unwrap();
         conn.prepare("SELECT library_entry_id, mood, auto_score, user_level FROM library_entry_moods")
             .unwrap();
+        // The default mood vocabulary is seeded.
+        let stored: String = conn
+            .query_row("SELECT value FROM meta WHERE key = 'mood_vocabulary'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(serde_json::from_str::<MoodVocabulary>(&stored).unwrap(), MoodVocabulary::defaults());
         for old in [
             "role", "role_source", "role_score", "pace", "pace_source", "pace_score",
             "pace_auto", "pace_auto_score", "pace_user", "mood_light", "mood_light_user",
@@ -2002,7 +2035,7 @@ mod tests {
         library::apply_auto_role(&conn, &both, Some(Role::Combat), 0.8).unwrap();
         library::set_user_role(&conn, &[both.clone(), user.clone()], Some(Role::NonCombat)).unwrap();
 
-        let entries = load_library_entries(&conn).unwrap();
+        let entries = load_library_entries(&conn, &MoodVocabulary::defaults()).unwrap();
         let get = |id: &str| entries.iter().find(|e| e.id == id).unwrap();
         let layers = |id: &str| {
             let e = get(id);
@@ -2921,7 +2954,7 @@ mod tests {
         assert_eq!(entry("K").mood_reviewed_at.as_deref(), Some("1700000000004"));
         assert_eq!(entry("A").mood_reviewed_at, None);
         for e in [t, entry("K"), entry("A")] {
-            assert_eq!(e.moods.iter().map(|m| m.mood).collect::<Vec<_>>(), MoodId::ALL);
+            assert_eq!(e.moods.iter().map(|m| m.mood.clone()).collect::<Vec<_>>(), MoodVocabulary::defaults().ids());
             assert!(e.moods.iter().all(|m| m.auto.is_none() && m.user.is_none()));
         }
         assert_eq!(
@@ -2938,6 +2971,13 @@ mod tests {
             .unwrap();
         assert_eq!(calibration, 0);
         assert_eq!(settings::load_mood_calibration(&conn).unwrap(), None);
+        // The default vocabulary is seeded and shown.
+        let stored: String = conn
+            .query_row("SELECT value FROM meta WHERE key = 'mood_vocabulary'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(serde_json::from_str::<MoodVocabulary>(&stored).unwrap(), MoodVocabulary::defaults());
+        assert_eq!(state.mood_vocabulary, MoodVocabulary::defaults());
+        assert_eq!((state.mood_calibration.clone(), state.moods_need_recalibration), (None, false));
         let scores: i64 = conn
             .query_row("SELECT COUNT(*) FROM entry_analysis WHERE scores_json IS NOT NULL", [], |r| r.get(0))
             .unwrap();
@@ -3022,31 +3062,74 @@ mod tests {
         ))
         .unwrap();
 
-        let entries = load_library_entries(&conn).unwrap();
+        let entries = load_library_entries(&conn, &MoodVocabulary::defaults()).unwrap();
         let a = entries.iter().find(|e| e.id == set).unwrap();
-        let v = |mood, auto, user| MoodValue { mood, auto, user };
+        let v = |mood: &str, auto, user| MoodValue { mood: mood.into(), auto, user };
         // Every id, in order; missing rows (and a retired id) give neither layer.
         assert_eq!(
             a.moods,
             vec![
-                v(MoodId::Peaceful, None, Some(1.0)),
-                v(MoodId::Sorrowful, None, None),
-                v(MoodId::Wondrous, None, None),
-                v(MoodId::Cheerful, None, None),
-                v(MoodId::Quirky, None, None),
-                v(MoodId::Mysterious, None, None),
-                v(MoodId::Grim, Some(0.8), Some(0.25)),
-                v(MoodId::Heroic, None, None),
-                v(MoodId::Menacing, None, None),
-                v(MoodId::Energy, Some(0.3), None),
+                v("peaceful", None, Some(1.0)),
+                v("sorrowful", None, None),
+                v("wondrous", None, None),
+                v("joyful", None, None),
+                v("quirky", None, None),
+                v("mysterious", None, None),
+                v("grim", Some(0.8), Some(0.25)),
+                v("heroic", None, None),
+                v("energy", Some(0.3), None),
             ]
         );
         assert_eq!(a.mood_reviewed_at.as_deref(), Some("1700000000000"));
 
         let b = entries.iter().find(|e| e.id == unset).unwrap();
-        assert_eq!(b.moods.len(), MoodId::COUNT);
+        assert_eq!(b.moods.len(), 9);
         assert!(b.moods.iter().all(|m| m.auto.is_none() && m.user.is_none()));
         assert_eq!(b.mood_reviewed_at, None);
+
+        // Another vocabulary: its own ids and order.
+        let mut custom = MoodVocabulary::defaults();
+        custom.moods.retain(|m| m.id == "grim" || m.id == "peaceful");
+        custom.moods.reverse();
+        let entries = load_library_entries(&conn, &custom).unwrap();
+        let a = entries.iter().find(|e| e.id == set).unwrap();
+        assert_eq!(
+            a.moods,
+            vec![v("grim", Some(0.8), Some(0.25)), v("peaceful", None, Some(1.0)), v("energy", Some(0.3), None)]
+        );
+    }
+
+    #[test]
+    fn state_reports_the_calibration_and_whether_moods_need_recalibration() {
+        use crate::autotag::plan::{calibrate, MoodRaw};
+        let conn = open_memory_db();
+        ensure_test_config(&conn);
+        let state = load_full_state(&conn).unwrap();
+        assert_eq!((state.mood_calibration, state.moods_need_recalibration), (None, false));
+
+        // A calibration of the defaults, taken from 50 tracks.
+        let vocab = MoodVocabulary::defaults();
+        let mood: HashMap<String, MoodRaw> = (0..50)
+            .map(|k| {
+                let raw = 0.1 + (k % 2) as f64 * 0.02;
+                let moods = vocab.moods.iter().map(|m| (m.id.clone(), raw)).collect();
+                (format!("h{k}"), MoodRaw { moods, energy: raw })
+            })
+            .collect();
+        let cal = calibrate(&mood, &vocab, "1700000000000".into()).unwrap();
+        settings::save_mood_calibration(&conn, &cal).unwrap();
+        let state = load_full_state(&conn).unwrap();
+        assert_eq!(
+            state.mood_calibration,
+            Some(MoodCalibrationInfo { calibrated_at: "1700000000000".into(), tracks: 50 })
+        );
+        assert!(!state.moods_need_recalibration);
+
+        // Changed prompts: needs recalibration.
+        let mut edited = vocab.clone();
+        edited.moods[2].prompts = vec!["awe".into()];
+        library::save_mood_vocabulary(&conn, &edited).unwrap();
+        assert!(load_full_state(&conn).unwrap().moods_need_recalibration);
     }
 
 }
