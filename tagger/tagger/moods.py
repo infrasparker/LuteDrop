@@ -54,13 +54,15 @@ MOODS = {
 }
 
 # Energy: positive minus negative mean similarity.
+# Bare tag words: the model was trained on tag-like text. Never the bare
+# word "fast", which the model reads against energy.
 ENERGY_POS = [
-    "energetic, lively, exciting music",
-    "fast, agitated, intense music",
-    "busy, driving, stimulating music",
+    "energetic",
+    "upbeat",
+    "powerful",
 ]
 ENERGY_NEG = [
-    "calm, relaxed, tranquil music",
-    "slow, sleepy, still music",
-    "soothing, gentle, peaceful music",
+    "slow",
+    "relaxing",
+    "calm",
 ]

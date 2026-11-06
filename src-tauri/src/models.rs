@@ -223,16 +223,9 @@ impl MoodVocabulary {
                 ]),
             ],
             energy: EnergyPrompts {
-                positive: strings(&[
-                    "energetic, lively, exciting music",
-                    "fast, agitated, intense music",
-                    "busy, driving, stimulating music",
-                ]),
-                negative: strings(&[
-                    "calm, relaxed, tranquil music",
-                    "slow, sleepy, still music",
-                    "soothing, gentle, peaceful music",
-                ]),
+                // Bare tag words; never the bare word "fast", which the model reads against energy.
+                positive: strings(&["energetic", "upbeat", "powerful"]),
+                negative: strings(&["slow", "relaxing", "calm"]),
             },
         }
     }
@@ -786,8 +779,8 @@ mod tests {
         assert!(v.contains("energy") && v.contains("grim") && !v.contains("menacing"));
         assert_eq!(v.prompt_signature("joyful").unwrap().len(), 3);
         let energy = v.prompt_signature("energy").unwrap();
-        assert_eq!(energy[0], "+ energetic, lively, exciting music");
-        assert_eq!(energy[5], "- soothing, gentle, peaceful music");
+        assert_eq!(energy[0], "+ energetic");
+        assert_eq!(energy[5], "- calm");
         assert_eq!(v.prompt_signature("menacing"), None);
     }
 

@@ -834,7 +834,7 @@ mod tests {
                 "sorrowful": v.moods[1].prompts,
             })
         );
-        assert_eq!(json["energy_prompts"]["positive"][0], "energetic, lively, exciting music");
+        assert_eq!(json["energy_prompts"]["positive"][0], "energetic");
         assert_eq!(json["energy_prompts"]["negative"].as_array().unwrap().len(), 3);
     }
 
