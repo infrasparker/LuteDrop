@@ -72,7 +72,8 @@ The analyzer suggests every value by comparing the track's sound with a few desc
 **Moods** in the left rail opens the mood vocabulary: the moods the analyzer scores and the text prompts it compares each track with.
 
 - Each mood has an **id** (lowercase letters; it cannot change once saved), a **name** (rename freely), and **prompts**, one per line. Moods can be added, removed and moved up or down; the order is the order of the lens buttons and the profile. Energy is always last and has two sides of prompts: energetic and calm.
-- The **word bank** above the list holds tag words the analyzer's text model knows well. Clicking one adds it, on a line of its own, to the prompt field you were last in. Single tag words work as well as sentences.
+- The **word bank** above the list holds tag words the analyzer's text model knows well. Clicking one adds it, on a line of its own, to the prompt field you were last in. Single tag words work as well as sentences, but not every word is reliable, so check with Preview.
+- **Preview** on a mood lists the 15 tracks its current prompts rank highest, with their album folder and raw similarity, without saving or recalibrating anything. It needs the analyzer.
 - **Save** stores the vocabulary. Removing a mood deletes its values on every track; when that includes levels set by you, Save asks first and says how many.
 - **Recalibrate** clears the calibration and every suggested mood value (levels set by you stay) and starts an analysis run, which suggests every mood again from the current prompts. The panel shows when the calibration was taken and from how many tracks.
 - After you change a mood's prompts (or add a mood), Save offers to recalibrate. Until you do, the lens buttons show **Needs recalibration**, and the changed moods keep their old suggestions; the others are still suggested as before.

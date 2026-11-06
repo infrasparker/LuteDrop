@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
-import type { MoodVocabulary } from '@generated/index';
+import { computed, reactive, ref, watch } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
+import type { MoodVocabulary, ScryHit } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import ConfirmDialog from './ConfirmDialog.vue';
 
@@ -18,6 +19,9 @@ import ConfirmDialog from './ConfirmDialog.vue';
 ///   again from the current prompts.
 /// - The word bank above the editor inserts a tag word into the prompt field
 ///   that last had focus, as a line of its own.
+/// - Preview on a row lists the 15 tracks its current prompts (saved or not)
+///   rank highest, by raw similarity, without saving or recalibrating, so a
+///   prompt set can be checked before committing to it.
 const open = defineModel<boolean>({ required: true });
 
 const store = useAppStore();
@@ -197,6 +201,47 @@ function insertWord(word: string): void {
   });
 }
 
+// --- Preview ---
+
+interface PreviewState {
+  loading: boolean;
+  error: string | null;
+  /// The prompts the list was made from, to tell when it is out of date.
+  prompts: string[];
+  tracks: { id: string; name: string; album: string; score: number }[];
+}
+
+/// Preview results per row key; a row without an entry shows none.
+const previews = reactive(new Map<number, PreviewState>());
+
+/// "Artist / Album" from the file's two parent folders.
+function albumOf(filePath: string): string {
+  const parts = filePath.split(/[\\/]/).filter((p) => p.length > 0 && !/^[A-Za-z]:$/.test(p));
+  return [parts[parts.length - 3], parts[parts.length - 2]].filter(Boolean).join(' / ');
+}
+
+async function preview(row: DraftRow): Promise<void> {
+  const prompts = lines(row.prompts);
+  if (prompts.length === 0) return;
+  // Reactive, so the updates below reach the template through the map.
+  const state = reactive<PreviewState>({ loading: true, error: null, prompts, tracks: [] });
+  previews.set(row.key, state);
+  try {
+    const hits = await invoke<ScryHit[]>('preview_mood_prompts', { prompts });
+    if (previews.get(row.key) !== state) return;
+    state.tracks = hits.map((h) => {
+      const entry = store.findLibraryEntry(h.entryId);
+      return { id: h.entryId, name: entry?.name ?? h.entryId, album: entry ? albumOf(entry.filePath) : '', score: h.score };
+    });
+  } catch (e) {
+    if (previews.get(row.key) === state) state.error = String(e);
+  } finally {
+    state.loading = false;
+  }
+}
+
+const previewStale = (row: DraftRow, state: PreviewState): boolean => !sameList(lines(row.prompts), state.prompts);
+
 // --- Save and recalibrate ---
 
 const confirmRemove = ref(false);
@@ -341,6 +386,48 @@ const calibratedLabel = computed(() => {
                 @focus="(e: FocusEvent) => onPromptFocus(row, e)"
               />
               <div v-if="errors[i]" class="text-caption text-error mt-1">{{ errors[i] }}</div>
+              <div class="d-flex align-center ga-2 mt-1">
+                <VBtn
+                  size="x-small"
+                  variant="tonal"
+                  prepend-icon="mdi-eye-outline"
+                  :loading="previews.get(row.key)?.loading"
+                  :disabled="lines(row.prompts).length === 0"
+                  @click="preview(row)"
+                >
+                  Preview
+                </VBtn>
+                <span v-if="previews.get(row.key)" class="text-caption text-medium-emphasis">
+                  <template v-if="previewStale(row, previews.get(row.key)!)">Prompts changed since this preview</template>
+                  <template v-else>Top tracks for these prompts, raw similarity (not saved)</template>
+                </span>
+                <VSpacer />
+                <VBtn
+                  v-if="previews.get(row.key)"
+                  icon="mdi-close"
+                  size="x-small"
+                  variant="text"
+                  aria-label="Close preview"
+                  @click="previews.delete(row.key)"
+                />
+              </div>
+              <div v-if="previews.get(row.key)?.error" class="text-caption text-error mt-1">
+                {{ previews.get(row.key)!.error }}
+              </div>
+              <ol
+                v-else-if="previews.get(row.key) && !previews.get(row.key)!.loading"
+                class="preview-list text-caption mt-1"
+                :class="{ stale: previewStale(row, previews.get(row.key)!) }"
+              >
+                <li v-for="t in previews.get(row.key)!.tracks" :key="t.id">
+                  <span class="preview-score">{{ t.score.toFixed(3) }}</span>
+                  <span class="preview-name">{{ t.name }}</span>
+                  <span v-if="t.album" class="text-medium-emphasis"> · {{ t.album }}</span>
+                </li>
+                <li v-if="previews.get(row.key)!.tracks.length === 0" class="text-medium-emphasis">
+                  No analyzed music yet.
+                </li>
+              </ol>
             </div>
             <VBtn
               icon="mdi-delete-outline"
@@ -451,6 +538,22 @@ const calibratedLabel = computed(() => {
   padding-top: 4px;
   padding-bottom: 4px;
   background: rgb(var(--v-theme-surface));
+}
+
+.preview-list {
+  padding-left: 22px;
+  margin: 0;
+}
+
+.preview-list.stale {
+  opacity: 0.5;
+}
+
+.preview-score {
+  display: inline-block;
+  min-width: 3.2em;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
 }
 
 .word-bank .v-chip {
