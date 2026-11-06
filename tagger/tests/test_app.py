@@ -640,6 +640,30 @@ def test_score_uses_mood_prompts_from_the_request(tmp_path, monkeypatch):
     assert list(data["mood"]["a"]["moods"]) == list(moods.MOODS)
 
 
+def test_preview_ranks_targets_by_raw_prompt_similarity(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), FEATS))
+    cache = EmbeddingCache(tmp_path)
+    embedder = _text_embedder()
+    c = TestClient(create_app(embedder, cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2)))
+    embed(c, [("a", "x-1"), ("b", "x-2")])
+    body = {"prompts": ["ghost music", " dark "], "targets": ["a", "b", "ghost"]}
+    data = c.post("/preview", json=body, headers=HEADERS).json()
+    # Cached targets only, keyed by hash, raw mean cosine.
+    assert set(data) == {"a", "b"}
+    for h in ("a", "b"):
+        mean = cache.get(h)
+        expected = np.mean([mean @ np.eye(DIM)[embedder.axes[t] % DIM] for t in ["ghost music", "dark"]])
+        assert data[h] == pytest.approx(expected)
+    # The prompt embeddings are shared with /score's cache.
+    embedder.embedded.clear()
+    c.post("/preview", json=body, headers=HEADERS)
+    assert embedder.embedded == []
+    # No cached target: nothing to rank. No prompts: refused.
+    assert c.post("/preview", json={"prompts": ["x"], "targets": ["ghost"]}, headers=HEADERS).json() == {}
+    assert c.post("/preview", json={"prompts": [], "targets": ["a"]}, headers=HEADERS).status_code == 422
+    assert c.post("/preview", json=body).status_code == 401
+
+
 @pytest.mark.parametrize(
     "extra",
     [

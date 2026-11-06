@@ -76,6 +76,11 @@ class ScoreRequest(BaseModel):
     energy_prompts: EnergyPrompts | None = None
 
 
+class PreviewRequest(BaseModel):
+    prompts: PromptList
+    targets: list[str] = []
+
+
 class SimilarRequest(BaseModel):
     query: list[str] = []
     candidates: list[str] = []
@@ -307,6 +312,25 @@ def create_app(
         if mood is not None:
             out["mood"] = mood
         return out
+
+    @app.post("/preview")
+    def preview(req: PreviewRequest):
+        """Raw similarity of each cached target with one set of prompts (the
+        mean cosine, as a mood is scored in /score), keyed by hash. No
+        calibration: for eyeballing which tracks a prompt set ranks first
+        before saving it. Waits for the model like /search."""
+        target_hashes, X_targets = vectors(req.targets)
+        if not target_hashes:
+            return {}
+        if not loaded.wait(LOAD_WAIT_SECONDS):
+            raise HTTPException(status_code=503, detail="model is still loading")
+        if load_error:
+            raise HTTPException(status_code=503, detail=f"model failed to load: {load_error[0]}")
+        vecs = prompt_vectors({"preview": req.prompts})
+        if vecs is None:
+            raise HTTPException(status_code=503, detail="the prompts could not be embedded")
+        sims = (X_targets @ vecs["preview"].T).mean(axis=1)
+        return {h: float(sims[i]) for i, h in enumerate(target_hashes)}
 
     @app.post("/similar")
     def similar(req: SimilarRequest):
