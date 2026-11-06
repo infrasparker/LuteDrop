@@ -31,9 +31,9 @@ setMoodVocabulary({
 });
 
 /// A library entry with only the fields these functions read.
-function entry(name, { energy = null, energyUser = null, heroic = null, grim = null, type = 'music', role = 'nonCombat' } = {}) {
+function entry(name, { energy = null, energyUser = null, heroic = null, heroicUser = null, grim = null, type = 'music', role = 'nonCombat' } = {}) {
   const moods = [];
-  if (heroic !== null) moods.push({ mood: 'heroic', auto: heroic, user: null });
+  if (heroic !== null || heroicUser !== null) moods.push({ mood: 'heroic', auto: heroic, user: heroicUser });
   if (grim !== null) moods.push({ mood: 'grim', auto: grim, user: null });
   if (energy !== null || energyUser !== null) moods.push({ mood: 'energy', auto: energy, user: energyUser });
   return { id: name, name, entryType: type, role: type === 'music' ? role : null, moods, duration: 60 };
@@ -148,4 +148,27 @@ test('tag chips keep three states: off, include, exclude', () => {
   sel = cycleChip(sel, 'boss');
   assert.equal(chipState(sel, 'boss'), 'off');
   assert.deepEqual(sel, { include: [], exclude: [] });
+});
+
+test('tracks set to the same level rank within it by the suggestion behind the level', () => {
+  const f = filters({ lenses: ['heroic'] });
+  const items = [
+    entry('setLow', { heroic: 0.95, heroicUser: 1 }),
+    entry('setHigh', { heroic: 0.6, heroicUser: 1 }),
+    entry('unset', { heroic: 0.9 }),
+    entry('setBelow', { heroic: 0.99, heroicUser: 0.75 }),
+  ];
+  // Level first (1 > 0.9 > 0.75), then the suggestion inside the level (0.95 before 0.6).
+  assert.deepEqual(sortByKey(items, 'lens', 'desc', f, (e) => e).map((e) => e.name), ['setLow', 'setHigh', 'unset', 'setBelow']);
+  assert.deepEqual(sortByKey(items, 'lens', 'asc', f, (e) => e).map((e) => e.name), ['setBelow', 'unset', 'setHigh', 'setLow']);
+});
+
+test('Energy ties between set levels break by the suggested Energy, then by name', () => {
+  const f = filters();
+  const items = [
+    entry('c', { energy: 0.3, energyUser: 0.5 }),
+    entry('a', { energy: 0.3, energyUser: 0.5 }),
+    entry('b', { energy: 0.55, energyUser: 0.5 }),
+  ];
+  assert.deepEqual(sortByKey(items, 'energy', 'desc', f, (e) => e).map((e) => e.name), ['b', 'a', 'c']);
 });

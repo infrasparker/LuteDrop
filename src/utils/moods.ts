@@ -289,11 +289,25 @@ function sortValue(
   }
 }
 
+/// The suggestion behind a lens or Energy value: the weakest suggested score
+/// over the lenses that are on, or the suggested Energy. Levels set by hand are
+/// coarse (five steps), so tracks set to the same level tie; this orders them
+/// within the level by what the analyzer thinks, without changing the value
+/// shown. For a track with no level set it equals the value itself.
+function suggestionBehind(e: LibraryEntry, key: SortKey, filters: Pick<MoodFilters, 'lenses'>): number | null {
+  const ids = key === 'lens' ? filters.lenses : key === 'energy' ? [ENERGY_ID] : [];
+  if (ids.length === 0) return null;
+  const autos = ids.map((id) => moodLayers(e, id).auto);
+  if (autos.some((a) => a === null)) return null;
+  return Math.min(...(autos as number[]));
+}
+
 /// A sorted copy of `items` (stable). `entryOf` picks the library entry from
 /// an item, so Scry's rows sort the same way as Library entries. `match`
-/// keeps the incoming order (reversed for ascending). Ties go by name.
-/// Energy is not a sort while a lens is on (`canSortBy`); asked for then, it
-/// ranks by the lens score instead.
+/// keeps the incoming order (reversed for ascending). Lens and Energy ties go
+/// by the suggestion behind the value (`suggestionBehind`), then every tie
+/// goes by name. Energy is not a sort while a lens is on (`canSortBy`); asked
+/// for then, it ranks by the lens score instead.
 export function sortByKey<T>(
   items: T[],
   key: SortKey,
@@ -309,7 +323,12 @@ export function sortByKey<T>(
     out.sort((x, y) => (dir === 'asc' ? 1 : -1) * byName(entryOf(x), entryOf(y)));
   } else {
     const score = (e: LibraryEntry): number | null => sortValue(e, key, filters, isMissing);
-    out.sort((x, y) => compareNullable(score(entryOf(x)), score(entryOf(y)), dir) || byName(entryOf(x), entryOf(y)));
+    const behind = (e: LibraryEntry): number | null => suggestionBehind(e, key, filters);
+    out.sort((x, y) => {
+      const a = entryOf(x);
+      const b = entryOf(y);
+      return compareNullable(score(a), score(b), dir) || compareNullable(behind(a), behind(b), dir) || byName(a, b);
+    });
   }
   return out;
 }
