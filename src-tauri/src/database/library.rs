@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::database::now_millis;
 use crate::database::DbError;
-use crate::models::{AutoTag, DarkKind, LibraryEntryUsage, MoodScale, MoodStep, MoodZ, Role};
+use crate::models::{AutoTag, LibraryEntryUsage, MoodScale, MoodStep, MoodZ, Pool, PoolSuggestion, Role};
 
 // ─── Library Entry CRUD ───────────────────────────────────────────────────────
 
@@ -129,12 +129,20 @@ pub fn update_library_entry_type(
             "UPDATE library_entries
              SET mood_bright = NULL, mood_bright_user = NULL,
                  mood_grand = NULL, mood_grand_user = NULL,
-                 mood_energy = NULL, mood_energy_user = NULL,
-                 mood_sad = NULL, mood_scary = NULL, dark_kind_user = NULL
+                 mood_energy = NULL, mood_energy_user = NULL
              WHERE id = ?1",
             params![id],
         )
         .map_err(|e| format!("Failed to clear mood: {e}"))?;
+        // Ambiance has no pool: every pool column goes, review included.
+        conn.execute(
+            "UPDATE library_entries
+             SET pool_auto = NULL, pool_auto_p = NULL, pool_auto_runner = NULL,
+                 pool_user = NULL, pool_reviewed_at = NULL
+             WHERE id = ?1",
+            params![id],
+        )
+        .map_err(|e| format!("Failed to clear pool: {e}"))?;
     }
 
     tx.commit()
@@ -970,40 +978,107 @@ pub fn set_user_mood_step(
     Ok(())
 }
 
-/// Sets the user's dark kind for each entry. `None` clears it, so the
-/// analyzer's kind shows again. Stored whatever the entry's Bright ↔ Dark
-/// step; it is only shown while that step is Dark.
-pub fn set_user_dark_kind(
-    conn: &Connection,
-    entry_ids: &[String],
-    kind: Option<DarkKind>,
-) -> Result<(), String> {
+/// Sets the user's pool on each music entry (`None` clears it, so the
+/// analyzer's suggestion shows again) and marks each one reviewed now.
+/// Ambiance entries have no pool and are skipped.
+pub fn set_user_pool(conn: &Connection, entry_ids: &[String], pool: Option<Pool>) -> Result<(), String> {
     let tx = conn
         .unchecked_transaction()
-        .map_err(|e| format!("Failed to begin dark kind transaction: {e}"))?;
-    let kind_str = kind.map(|k| k.as_db_str());
+        .map_err(|e| format!("Failed to begin pool transaction: {e}"))?;
+    let pool_str = pool.map(|p| p.as_db_str());
+    let now = now_millis();
     for entry_id in entry_ids {
         conn.execute(
-            "UPDATE library_entries SET dark_kind_user = ?2 WHERE id = ?1",
-            params![entry_id, kind_str],
+            "UPDATE library_entries SET pool_user = ?2, pool_reviewed_at = ?3
+             WHERE id = ?1 AND entry_type = 'music'",
+            params![entry_id, pool_str, now],
         )
-        .map_err(|e| format!("Failed to set dark kind: {e}"))?;
+        .map_err(|e| format!("Failed to set pool: {e}"))?;
     }
-    tx.commit().map_err(|e| format!("Failed to commit dark kind transaction: {e}"))?;
+    tx.commit().map_err(|e| format!("Failed to commit pool transaction: {e}"))?;
     Ok(())
 }
 
-/// Writes the analyzer's mood z-scores for an entry, the three scales and
-/// the two dark kinds (`None` clears all five), and returns whether the row
-/// changed. Only the auto columns are written; the user's steps and kind are
-/// never touched. Opens no transaction of its own.
-pub fn apply_auto_mood(conn: &Connection, entry_id: &str, mood: Option<MoodZ>) -> Result<bool, String> {
-    let current: Option<[Option<f64>; 5]> = conn
+/// Approves a music entry in Review, in one transaction: the pool shown
+/// (`pool_user`, else `pool_auto`) becomes the user's, so does the role shown
+/// (`role_user`, else `role_auto`), and the entry is marked reviewed now.
+/// A facet with nothing shown stays empty. Returns whether the user's role
+/// changed (a new training example); a missing or ambiance entry is left
+/// alone and returns false.
+pub fn approve_entry_review(conn: &Connection, entry_id: &str) -> Result<bool, String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin approve transaction: {e}"))?;
+    let roles: Option<(Option<String>, Option<String>)> = conn
         .query_row(
-            "SELECT mood_bright, mood_grand, mood_energy, mood_sad, mood_scary
-             FROM library_entries WHERE id = ?1",
+            "SELECT role_user, role_auto FROM library_entries WHERE id = ?1 AND entry_type = 'music'",
             params![entry_id],
-            |row| Ok([row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?]),
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to read entry: {e}"))?;
+    let Some((role_user, role_auto)) = roles else {
+        return Ok(false);
+    };
+    conn.execute(
+        "UPDATE library_entries
+         SET pool_user = COALESCE(pool_user, pool_auto),
+             role_user = COALESCE(role_user, role_auto),
+             pool_reviewed_at = ?2
+         WHERE id = ?1",
+        params![entry_id, now_millis()],
+    )
+    .map_err(|e| format!("Failed to approve entry: {e}"))?;
+    tx.commit().map_err(|e| format!("Failed to commit approve transaction: {e}"))?;
+    Ok(role_user.is_none() && role_auto.is_some())
+}
+
+/// Writes the analyzer's pool suggestion for an entry (`None` clears it) and
+/// returns whether the row changed. Only `pool_auto`, `pool_auto_p` and
+/// `pool_auto_runner` are written; the user's pool and review time are never
+/// touched. Opens no transaction of its own.
+pub fn apply_auto_pool(
+    conn: &Connection,
+    entry_id: &str,
+    suggestion: Option<PoolSuggestion>,
+) -> Result<bool, String> {
+    let current: Option<(Option<String>, Option<f64>, Option<String>)> = conn
+        .query_row(
+            "SELECT pool_auto, pool_auto_p, pool_auto_runner FROM library_entries WHERE id = ?1",
+            params![entry_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to read pool: {e}"))?;
+    let Some(current) = current else {
+        return Ok(false);
+    };
+    let new = (
+        suggestion.map(|s| s.pool.as_db_str().to_string()),
+        suggestion.map(|s| s.p),
+        suggestion.map(|s| s.runner.as_db_str().to_string()),
+    );
+    if current == new {
+        return Ok(false);
+    }
+    conn.execute(
+        "UPDATE library_entries SET pool_auto = ?2, pool_auto_p = ?3, pool_auto_runner = ?4 WHERE id = ?1",
+        params![entry_id, new.0, new.1, new.2],
+    )
+    .map_err(|e| format!("Failed to write auto pool: {e}"))?;
+    Ok(true)
+}
+
+/// Writes the analyzer's mood z-scores for an entry on the three scales
+/// (`None` clears all three) and returns whether the row changed. Only the
+/// auto columns are written; the user's steps are never touched. Opens no
+/// transaction of its own.
+pub fn apply_auto_mood(conn: &Connection, entry_id: &str, mood: Option<MoodZ>) -> Result<bool, String> {
+    let current: Option<[Option<f64>; 3]> = conn
+        .query_row(
+            "SELECT mood_bright, mood_grand, mood_energy FROM library_entries WHERE id = ?1",
+            params![entry_id],
+            |row| Ok([row.get(0)?, row.get(1)?, row.get(2)?]),
         )
         .optional()
         .map_err(|e| format!("Failed to read mood: {e}"))?;
@@ -1011,22 +1086,14 @@ pub fn apply_auto_mood(conn: &Connection, entry_id: &str, mood: Option<MoodZ>) -
     let Some(current) = current else {
         return Ok(false);
     };
-    let new = [
-        mood.map(|m| m.bright),
-        mood.map(|m| m.grand),
-        mood.map(|m| m.energy),
-        mood.map(|m| m.sad),
-        mood.map(|m| m.scary),
-    ];
+    let new = [mood.map(|m| m.bright), mood.map(|m| m.grand), mood.map(|m| m.energy)];
     if current == new {
         return Ok(false);
     }
 
     conn.execute(
-        "UPDATE library_entries
-         SET mood_bright = ?2, mood_grand = ?3, mood_energy = ?4, mood_sad = ?5, mood_scary = ?6
-         WHERE id = ?1",
-        params![entry_id, new[0], new[1], new[2], new[3], new[4]],
+        "UPDATE library_entries SET mood_bright = ?2, mood_grand = ?3, mood_energy = ?4 WHERE id = ?1",
+        params![entry_id, new[0], new[1], new[2]],
     )
     .map_err(|e| format!("Failed to write auto mood: {e}"))?;
     Ok(true)
@@ -1999,57 +2066,127 @@ mod tests {
         .unwrap()
     }
 
-    /// z-scores with both dark kinds at 0.0.
     fn z(bright: f64, grand: f64, energy: f64) -> MoodZ {
-        MoodZ { bright, grand, energy, sad: 0.0, scary: 0.0 }
+        MoodZ { bright, grand, energy }
     }
 
-    /// (sad z, scary z, user kind) as stored.
-    fn dark_kind_row(conn: &Connection, id: &str) -> (Option<f64>, Option<f64>, Option<String>) {
+    // ── Pools ─────────────────────────────────────────────────────────────────
+
+    /// (pool_auto, pool_auto_p, pool_auto_runner) as stored.
+    type PoolAuto = (Option<String>, Option<f64>, Option<String>);
+
+    fn pool_auto(conn: &Connection, id: &str) -> PoolAuto {
         conn.query_row(
-            "SELECT mood_sad, mood_scary, dark_kind_user FROM library_entries WHERE id = ?1",
+            "SELECT pool_auto, pool_auto_p, pool_auto_runner FROM library_entries WHERE id = ?1",
             params![id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap()
     }
 
-    #[test]
-    fn user_dark_kind_round_trips_and_clears() {
-        let conn = open_memory_db();
-        let a = music_entry(&conn, "/a.mp3");
-        let b = music_entry(&conn, "/b.mp3");
+    /// (pool_user, pool_reviewed_at) as stored.
+    fn pool_user(conn: &Connection, id: &str) -> (Option<String>, Option<String>) {
+        conn.query_row(
+            "SELECT pool_user, pool_reviewed_at FROM library_entries WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    }
 
-        set_user_dark_kind(&conn, &[a.clone(), b.clone()], Some(DarkKind::Scary)).unwrap();
-        assert_eq!(dark_kind_row(&conn, &a), (None, None, s("scary")));
-        set_user_dark_kind(&conn, std::slice::from_ref(&a), Some(DarkKind::Sad)).unwrap();
-        assert_eq!(dark_kind_row(&conn, &a).2, s("sad"));
-        assert_eq!(dark_kind_row(&conn, &b).2, s("scary"));
+    fn role_user_of(conn: &Connection, id: &str) -> Option<String> {
+        conn.query_row("SELECT role_user FROM library_entries WHERE id = ?1", params![id], |r| r.get(0))
+            .unwrap()
+    }
 
-        // Clearing is "use auto"; the other entry keeps its kind.
-        set_user_dark_kind(&conn, std::slice::from_ref(&a), None).unwrap();
-        assert_eq!(dark_kind_row(&conn, &a).2, None);
-        assert_eq!(dark_kind_row(&conn, &b).2, s("scary"));
-        // No mood step is touched.
-        assert_eq!(mood_user(&conn, &b), (None, None, None));
+    fn suggestion(pool: Pool, p: f64, runner: Pool) -> PoolSuggestion {
+        PoolSuggestion { pool, p, runner }
     }
 
     #[test]
-    fn apply_auto_mood_writes_dark_kind_scores_and_keeps_user_kind() {
+    fn user_pool_sets_review_time_and_clears_to_suggestion() {
         let conn = open_memory_db();
         let a = music_entry(&conn, "/a.mp3");
-        set_user_dark_kind(&conn, std::slice::from_ref(&a), Some(DarkKind::Sad)).unwrap();
+        let b = music_entry(&conn, "/b.mp3");
+        let amb = insert_library_entry(&conn, "/r.ogg", None, "R", None, None, None, "ambiance").unwrap();
+        apply_auto_pool(&conn, &a, Some(suggestion(Pool::Epic, 0.8, Pool::Awe))).unwrap();
 
-        let mood = MoodZ { sad: -0.3, scary: 1.4, ..z(-1.0, 0.0, 0.5) };
-        assert!(apply_auto_mood(&conn, &a, Some(mood)).unwrap());
-        assert_eq!(dark_kind_row(&conn, &a), (Some(-0.3), Some(1.4), s("sad")));
-        assert!(!apply_auto_mood(&conn, &a, Some(mood)).unwrap());
-        // A change in one kind alone is a change.
-        assert!(apply_auto_mood(&conn, &a, Some(MoodZ { scary: 1.5, ..mood })).unwrap());
-        assert_eq!(dark_kind_row(&conn, &a).1, Some(1.5));
+        let before = now_millis().parse::<u128>().unwrap();
+        set_user_pool(&conn, &[a.clone(), b.clone(), amb.clone()], Some(Pool::Tension)).unwrap();
+        let (pool, reviewed) = pool_user(&conn, &a);
+        assert_eq!(pool, s("tension"));
+        assert!(reviewed.unwrap().parse::<u128>().unwrap() >= before);
+        assert_eq!(pool_user(&conn, &b).0, s("tension"));
+        // Ambiance has no pool.
+        assert_eq!(pool_user(&conn, &amb), (None, None));
+        // The suggestion is untouched.
+        assert_eq!(pool_auto(&conn, &a), (s("epic"), Some(0.8), s("awe")));
 
-        assert!(apply_auto_mood(&conn, &a, None).unwrap());
-        assert_eq!(dark_kind_row(&conn, &a), (None, None, s("sad")));
+        // `None` goes back to the suggestion; the entry stays reviewed.
+        set_user_pool(&conn, std::slice::from_ref(&a), None).unwrap();
+        let (pool, reviewed) = pool_user(&conn, &a);
+        assert_eq!(pool, None);
+        assert!(reviewed.is_some());
+        assert_eq!(pool_user(&conn, &b).0, s("tension"));
+    }
+
+    #[test]
+    fn apply_auto_pool_writes_only_the_analyzer_layer() {
+        let conn = open_memory_db();
+        let a = music_entry(&conn, "/a.mp3");
+        set_user_pool(&conn, std::slice::from_ref(&a), Some(Pool::Somber)).unwrap();
+        let user_before = pool_user(&conn, &a);
+
+        let first = suggestion(Pool::Mysterious, 0.62, Pool::Epic);
+        assert!(apply_auto_pool(&conn, &a, Some(first)).unwrap());
+        assert_eq!(pool_auto(&conn, &a), (s("mysterious"), Some(0.62), s("epic")));
+        assert!(!apply_auto_pool(&conn, &a, Some(first)).unwrap());
+        // Any one field moving is a change.
+        assert!(apply_auto_pool(&conn, &a, Some(PoolSuggestion { p: 0.63, ..first })).unwrap());
+        assert!(apply_auto_pool(&conn, &a, Some(PoolSuggestion { runner: Pool::Awe, ..first })).unwrap());
+        assert_eq!(pool_auto(&conn, &a), (s("mysterious"), Some(0.62), s("awe")));
+
+        assert!(apply_auto_pool(&conn, &a, None).unwrap());
+        assert_eq!(pool_auto(&conn, &a), (None, None, None));
+        // The user's pool and review time are never touched.
+        assert_eq!(pool_user(&conn, &a), user_before);
+        assert!(!apply_auto_pool(&conn, "nope", Some(first)).unwrap());
+    }
+
+    #[test]
+    fn approve_keeps_the_shown_pool_and_role() {
+        let conn = open_memory_db();
+        // Suggested pool and role only.
+        let auto = music_entry(&conn, "/a.mp3");
+        apply_auto_pool(&conn, &auto, Some(suggestion(Pool::Epic, 0.9, Pool::Awe))).unwrap();
+        apply_auto_role(&conn, &auto, Some(Role::Combat), 0.8).unwrap();
+        assert!(approve_entry_review(&conn, &auto).unwrap());
+        assert_eq!(pool_user(&conn, &auto).0, s("epic"));
+        assert!(pool_user(&conn, &auto).1.is_some());
+        assert_eq!(role_user_of(&conn, &auto), s("combat"));
+
+        // The user's own pool and role win over the suggestion.
+        let user = music_entry(&conn, "/b.mp3");
+        apply_auto_pool(&conn, &user, Some(suggestion(Pool::Epic, 0.9, Pool::Awe))).unwrap();
+        apply_auto_role(&conn, &user, Some(Role::Combat), 0.8).unwrap();
+        set_user_role(&conn, std::slice::from_ref(&user), Some(Role::NonCombat)).unwrap();
+        conn.execute("UPDATE library_entries SET pool_user = 'tension' WHERE id = ?1", params![user]).unwrap();
+        assert!(!approve_entry_review(&conn, &user).unwrap());
+        assert_eq!(pool_user(&conn, &user).0, s("tension"));
+        assert_eq!(role_user_of(&conn, &user), s("non_combat"));
+
+        // Nothing shown: nothing set, but the entry is reviewed.
+        let bare = music_entry(&conn, "/c.mp3");
+        assert!(!approve_entry_review(&conn, &bare).unwrap());
+        assert_eq!(pool_user(&conn, &bare).0, None);
+        assert!(pool_user(&conn, &bare).1.is_some());
+        assert_eq!(role_user_of(&conn, &bare), None);
+
+        // Ambiance and missing entries are left alone.
+        let amb = insert_library_entry(&conn, "/r.ogg", None, "R", None, None, None, "ambiance").unwrap();
+        assert!(!approve_entry_review(&conn, &amb).unwrap());
+        assert_eq!(pool_user(&conn, &amb), (None, None));
+        assert!(!approve_entry_review(&conn, "nope").unwrap());
     }
 
     #[test]
@@ -2099,17 +2236,20 @@ mod tests {
     }
 
     #[test]
-    fn switching_to_ambiance_clears_mood() {
+    fn switching_to_ambiance_clears_mood_and_pool() {
         let conn = open_memory_db();
         let auto = music_entry(&conn, "/a.mp3");
         let user = music_entry(&conn, "/b.mp3");
-        let mood = MoodZ { sad: 0.4, scary: -0.4, ..z(1.0, -1.0, 0.5) };
+        let mood = z(1.0, -1.0, 0.5);
         apply_auto_mood(&conn, &auto, Some(mood)).unwrap();
         apply_auto_mood(&conn, &user, Some(mood)).unwrap();
         for scale in [MoodScale::Bright, MoodScale::Grand, MoodScale::Energy] {
             set_user_mood_step(&conn, std::slice::from_ref(&user), scale, Some(MoodStep::Mid)).unwrap();
         }
-        set_user_dark_kind(&conn, std::slice::from_ref(&user), Some(DarkKind::Scary)).unwrap();
+        for id in [&auto, &user] {
+            apply_auto_pool(&conn, id, Some(suggestion(Pool::Awe, 0.5, Pool::Peaceful))).unwrap();
+        }
+        set_user_pool(&conn, std::slice::from_ref(&user), Some(Pool::Somber)).unwrap();
 
         for id in [&auto, &user] {
             update_library_entry_type(&conn, id, "ambiance").unwrap();
@@ -2118,7 +2258,8 @@ mod tests {
         for id in [&auto, &user] {
             assert_eq!(mood_auto(&conn, id), (None, None, None));
             assert_eq!(mood_user(&conn, id), (None, None, None));
-            assert_eq!(dark_kind_row(&conn, id), (None, None, None));
+            assert_eq!(pool_auto(&conn, id), (None, None, None));
+            assert_eq!(pool_user(&conn, id), (None, None));
         }
     }
 

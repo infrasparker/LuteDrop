@@ -1,10 +1,12 @@
 //! Persisted app settings, stored as plain key/value rows in the `meta`
-//! table. This covers the Broadcast (live stream) settings and the folder
-//! the "Fix missing files" search starts in.
+//! table. This covers the Broadcast (live stream) settings, the folder
+//! the "Fix missing files" search starts in, the analyzer settings and the
+//! frozen mood pool calibration.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
+use crate::autotag::plan::PoolCalibration;
 use crate::models::{AutoTagSettings, SceneConfig};
 
 const KEY_ENABLED: &str = "broadcast_enabled";
@@ -18,6 +20,7 @@ const KEY_AUTOTAG_TOKEN: &str = "autotag_token";
 const KEY_AUTOTAG_LOCAL_PREFIX: &str = "autotag_local_prefix";
 const KEY_AUTOTAG_REMOTE_PREFIX: &str = "autotag_remote_prefix";
 const KEY_AUTOTAG_SCENE: &str = "autotag_scene_encounter";
+const KEY_POOL_CALIBRATION: &str = "pool_calibration";
 
 /// Where the analyzer host mounts the audio folder until the user says otherwise.
 pub const DEFAULT_REMOTE_PREFIX: &str = "/media/audio";
@@ -169,6 +172,32 @@ pub fn save_scene_config(conn: &Connection, c: &SceneConfig) -> Result<(), Strin
     write_meta(conn, KEY_AUTOTAG_SCENE, &text)
 }
 
+/// Loads the frozen mood pool calibration (JSON). `None` until the first
+/// analyzer run that covers enough music computed one. A stored value that
+/// does not parse is treated as missing (and logged), so the next qualifying
+/// run takes a new one.
+pub fn load_pool_calibration(conn: &Connection) -> Result<Option<PoolCalibration>, String> {
+    let Some(text) = read_meta(conn, KEY_POOL_CALIBRATION)? else {
+        return Ok(None);
+    };
+    match serde_json::from_str(&text) {
+        Ok(calibration) => Ok(Some(calibration)),
+        Err(e) => {
+            log::warn!("Invalid stored {KEY_POOL_CALIBRATION}: {e}; treating it as missing");
+            Ok(None)
+        }
+    }
+}
+
+/// Saves the mood pool calibration as JSON, replacing any stored one. Only
+/// the analyzer run calls this, and only while none is stored: the
+/// calibration is frozen once taken.
+pub fn save_pool_calibration(conn: &Connection, calibration: &PoolCalibration) -> Result<(), String> {
+    let text = serde_json::to_string(calibration)
+        .map_err(|e| format!("Failed to encode pool calibration: {e}"))?;
+    write_meta(conn, KEY_POOL_CALIBRATION, &text)
+}
+
 /// Replaces a saved scene configuration with `SceneConfig::default()`. A
 /// database that never saved one already loads the default and is left as is.
 /// Used by the v6→v7 migration, hence the rusqlite error type.
@@ -217,6 +246,24 @@ mod tests {
     use super::*;
     use crate::database::init_schema;
     use rusqlite::Connection;
+
+    #[test]
+    fn pool_calibration_is_none_until_saved_then_round_trips() {
+        use crate::autotag::plan::PoolStat;
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        assert_eq!(load_pool_calibration(&conn).unwrap(), None);
+
+        let cal = PoolCalibration {
+            tracks: 64,
+            pools: [("epic".to_string(), PoolStat { mean: 0.21, sd: 0.03 })].into(),
+        };
+        save_pool_calibration(&conn, &cal).unwrap();
+        assert_eq!(load_pool_calibration(&conn).unwrap(), Some(cal));
+
+        write_meta(&conn, KEY_POOL_CALIBRATION, "not json").unwrap();
+        assert_eq!(load_pool_calibration(&conn).unwrap(), None);
+    }
 
     #[test]
     fn load_defaults_and_persists_a_fresh_key() {
