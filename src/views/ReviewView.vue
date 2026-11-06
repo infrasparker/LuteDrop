@@ -44,7 +44,7 @@ const folder = computed(() => {
   return [parts[parts.length - 3], parts[parts.length - 2]].filter(Boolean).join(' / ');
 });
 
-/// A readout only: the two highest moods shown, e.g. "Mysterious 0.87 · Menacing 0.74".
+/// A readout only: the two highest moods shown, e.g. "Mysterious 0.87 · Grim 0.74".
 const readout = computed(() => (current.value ? topMoodText(current.value, 2) : ''));
 const isPlaying = computed(() => current.value !== undefined && playingId.value === current.value.id);
 

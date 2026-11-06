@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, watch } from 'vue';
+import { useAppStore } from '../stores/appStore';
 import type { MoodId } from '@generated/index';
 import AnyAllToggle from './AnyAllToggle.vue';
 import {
   DEFAULT_DIR,
-  MOODS,
+  moodList,
   SORT_LABELS,
   type MatchMode,
   type MoodFilters,
@@ -12,9 +13,11 @@ import {
   type SortKey,
 } from '../utils/moods';
 
-/// The filter bar shared by the Library and Scry: ten lens buttons (nine
-/// moods and Energy, any number at once), the any / all switch once two or
-/// more are on, the Role toggle, and the Sort menu with its direction.
+/// The filter bar shared by the Library and Scry: a lens button per mood of
+/// the vocabulary plus Energy (any number at once), the any / all switch once
+/// two or more are on, the Role toggle, and the Sort menu with its direction.
+/// While the vocabulary needs recalibrating, a marker after the lens buttons
+/// says so and opens the Moods settings.
 ///
 /// A lens ranks the list by that mood's score; picking the first lens
 /// switches the sort to "Lens score", and clearing the last one goes back to
@@ -29,6 +32,15 @@ const props = defineProps<{
   /// added in front while a lens is on).
   sortKeys: SortKey[];
 }>();
+
+const store = useAppStore();
+const moods = computed(() => moodList());
+
+// A lens whose mood was removed from the vocabulary is dropped.
+watch(moods, (list) => {
+  const kept = filters.value.lenses.filter((id) => list.some((m) => m.id === id));
+  if (kept.length !== filters.value.lenses.length) setLenses(kept);
+});
 
 const menuKeys = computed<SortKey[]>(() =>
   filters.value.lenses.length > 0 ? ['lens', ...props.sortKeys.filter((k) => k !== 'lens')] : props.sortKeys,
@@ -87,7 +99,7 @@ const dirHint = computed(() => {
       @update:model-value="setLenses"
     >
       <VBtn
-        v-for="m in MOODS"
+        v-for="m in moods"
         :key="m.id"
         :value="m.id"
         :size="size"
@@ -96,6 +108,20 @@ const dirHint = computed(() => {
         {{ m.name }}
       </VBtn>
     </VBtnToggle>
+    <VBtn
+      v-if="store.moodsNeedRecalibration"
+      :size="size"
+      variant="text"
+      color="warning"
+      prepend-icon="mdi-alert-circle-outline"
+      class="text-none"
+      @click="store.moodSettingsOpen = true"
+    >
+      Needs recalibration
+      <VTooltip activator="parent" location="top" open-delay="300">
+        Some mood prompts changed since the last calibration. Those moods are not scored until you recalibrate.
+      </VTooltip>
+    </VBtn>
     <AnyAllToggle
       v-if="filters.lenses.length >= 2"
       :model-value="filters.mode"
@@ -150,7 +176,7 @@ const dirHint = computed(() => {
 </template>
 
 <style scoped>
-/* Ten buttons on one line when there is room; in a narrow pane (Scry) they
+/* The lens buttons on one line when there is room; in a narrow pane (Scry) they
    wrap onto a second line rather than scroll. */
 .lens-buttons {
   max-width: 100%;

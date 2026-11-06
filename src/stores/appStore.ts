@@ -1,9 +1,22 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { Group, Comp, Track, AppState, TrackPlaybackState, CompStatus, LibraryEntry, Configuration, BulkImportProgress } from '@generated/index';
+import type {
+  Group,
+  Comp,
+  Track,
+  AppState,
+  TrackPlaybackState,
+  CompStatus,
+  LibraryEntry,
+  Configuration,
+  BulkImportProgress,
+  MoodCalibrationInfo,
+  MoodVocabulary,
+} from '@generated/index';
 import { useToast } from '../composables/useToast';
 import { compStatus, LIBRARY_PLAYBACK_ID } from '../shared/playback';
+import { setMoodVocabulary } from '../utils/moods';
 
 export const useAppStore = defineStore('app', () => {
   const groups = ref<Group[]>([]);
@@ -15,6 +28,16 @@ export const useAppStore = defineStore('app', () => {
   const editEntryId = ref<string | null>(null);
   const configurations = ref<Configuration[]>([]);
   const activeConfigurationId = ref<string>('');
+
+  // --- Moods: the vocabulary and its calibration (the Moods settings) ---
+  const moodVocabulary = ref<MoodVocabulary>({ moods: [], energy: { positive: [], negative: [] } });
+  const moodCalibration = ref<MoodCalibrationInfo | null>(null);
+  /// Some mood's prompts changed (or a mood was added) since the
+  /// calibration: lens buttons show a marker until Recalibrate runs.
+  const moodsNeedRecalibration = ref(false);
+  /// Whether the Moods settings dialog is open (opened from the nav rail and
+  /// from the lens buttons' marker).
+  const moodSettingsOpen = ref(false);
 
   /// Non-null while a background library import is active. Drives the
   /// bottom-bar progress indicator and disables the Import menu.
@@ -34,6 +57,10 @@ export const useAppStore = defineStore('app', () => {
     configurations.value = state.configurations;
     activeConfigurationId.value = state.activeConfigurationId;
     missingEntryIds.value = new Set(state.missingEntryIds);
+    moodVocabulary.value = state.moodVocabulary;
+    moodCalibration.value = state.moodCalibration;
+    moodsNeedRecalibration.value = state.moodsNeedRecalibration;
+    setMoodVocabulary(state.moodVocabulary);
 
     // Prune playback states for tracks that no longer exist (deleted
     // tracks/comps/configs previously leaked entries forever).
@@ -146,6 +173,10 @@ export const useAppStore = defineStore('app', () => {
     editEntryId,
     configurations,
     activeConfigurationId,
+    moodVocabulary,
+    moodCalibration,
+    moodsNeedRecalibration,
+    moodSettingsOpen,
     importProgress,
     masterMuted,
     mutedTracks,

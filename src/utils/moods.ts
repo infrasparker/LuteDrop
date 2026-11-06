@@ -1,4 +1,5 @@
-import type { LibraryEntry, MoodId, Role } from '@generated/index';
+import { shallowRef } from 'vue';
+import type { LibraryEntry, MoodId, MoodVocabulary, Role } from '@generated/index';
 
 /// One row of the mood profile: its id (as stored) and the name shown.
 export interface MoodInfo {
@@ -6,30 +7,29 @@ export interface MoodInfo {
   name: string;
 }
 
-/// The fixed vocabulary in its order: nine moods, then Energy. Lens buttons,
-/// profile rows and `LibraryEntry.moods` all follow this order.
-export const MOODS: readonly MoodInfo[] = [
-  { id: 'peaceful', name: 'Peaceful' },
-  { id: 'sorrowful', name: 'Sorrowful' },
-  { id: 'wondrous', name: 'Wondrous' },
-  { id: 'cheerful', name: 'Cheerful' },
-  { id: 'quirky', name: 'Quirky' },
-  { id: 'mysterious', name: 'Mysterious' },
-  { id: 'grim', name: 'Grim' },
-  { id: 'heroic', name: 'Heroic' },
-  { id: 'menacing', name: 'Menacing' },
-  { id: 'energy', name: 'Energy' },
-];
+export const ENERGY_ID = 'energy';
+const ENERGY: MoodInfo = { id: ENERGY_ID, name: 'Energy' };
 
-/// The nine moods without Energy (for "the two highest moods").
-export const MOODS_ONLY: readonly MoodInfo[] = MOODS.filter((m) => m.id !== 'energy');
+/// The app's mood vocabulary in its order: the user's moods, then Energy.
+/// It comes from the app state (`AppState.moodVocabulary`, set by the store
+/// on every hydrate); nothing here hard-codes a mood. Lens buttons, profile
+/// rows and `LibraryEntry.moods` all follow this order.
+const vocabulary = shallowRef<readonly MoodInfo[]>([ENERGY]);
+
+export function setMoodVocabulary(v: MoodVocabulary): void {
+  vocabulary.value = [...v.moods.map((m) => ({ id: m.id, name: m.name })), ENERGY];
+}
+
+/// Every row of the profile: the moods, then Energy. Reactive.
+export const moodList = (): readonly MoodInfo[] => vocabulary.value;
+
+/// The moods without Energy (for "the two highest moods").
+export const moodsOnly = (): readonly MoodInfo[] => vocabulary.value.filter((m) => m.id !== ENERGY_ID);
 
 /// The five levels a user can set (a 1–5 rating mapped onto 0..1).
 export const MOOD_LEVELS: readonly number[] = [0, 0.25, 0.5, 0.75, 1];
 
-const NAMES = new Map<MoodId, string>(MOODS.map((m) => [m.id, m.name]));
-
-export const moodName = (id: MoodId): string => NAMES.get(id) ?? id;
+export const moodName = (id: MoodId): string => vocabulary.value.find((m) => m.id === id)?.name ?? id;
 
 /// Both layers of one mood on one entry (null/null when the entry has no row).
 export function moodLayers(entry: LibraryEntry, id: MoodId): { auto: number | null; user: number | null } {
@@ -62,10 +62,10 @@ export function stepLevel(value: number | null, step: 1 | -1): number {
 }
 
 /// The entry's highest moods (Energy left out), best first, e.g. for the
-/// Review card's readout "Mysterious 0.87 · Menacing 0.74".
+/// Review card's readout "Mysterious 0.87 · Grim 0.74".
 export function topMoods(entry: LibraryEntry, n: number): { id: MoodId; name: string; value: number }[] {
   const out: { id: MoodId; name: string; value: number }[] = [];
-  for (const m of MOODS_ONLY) {
+  for (const m of moodsOnly()) {
     const value = moodValue(entry, m.id);
     if (value !== null) out.push({ id: m.id, name: m.name, value });
   }

@@ -2,10 +2,10 @@
 import { computed, reactive } from 'vue';
 import type { LibraryEntry, MoodId } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
-import { MOOD_LEVELS, MOODS, moodLayers, snapLevel, stepLevel } from '../utils/moods';
+import { MOOD_LEVELS, moodLayers, moodList, snapLevel, stepLevel } from '../utils/moods';
 
-/// The mood profile of one or more music entries: ten rows (nine moods, then
-/// Energy), each a bar from 0 to 1 with a tick at every level.
+/// The mood profile of one or more music entries: one row per mood of the
+/// vocabulary, then Energy, each a bar from 0 to 1 with a tick at every level.
 ///
 /// - The bar shows the value the user set, else the analyzer's suggestion.
 ///   A bar the user set is drawn in the accent colour; a suggested one is
@@ -55,7 +55,7 @@ function range(values: number[]): string {
 }
 
 const rows = computed<Row[]>(() =>
-  MOODS.map(({ id, name }) => {
+  moodList().map(({ id, name }) => {
     const p = pending.get(id);
     const layers = music.value.map((e) => {
       const { auto, user } = moodLayers(e, id);

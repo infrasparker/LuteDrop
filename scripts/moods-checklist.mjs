@@ -22,9 +22,9 @@
 // equal scores share a rank. Tracks with no score for the mood are not ranked.
 //
 // Defaults: the app's database at %APPDATA%/com.lutedrop/lutedrop.db, and
-// scripts/moods-checklist.json next to this script. Mood ids: peaceful,
-// sorrowful, wondrous, cheerful, quirky, mysterious, grim, heroic, menacing,
-// energy.
+// scripts/moods-checklist.json next to this script. The mood ids are the
+// app's own, read from the database's mood vocabulary (the `mood_vocabulary`
+// row of `meta`, edited in the app under Moods), plus `energy`.
 //
 // Needs Node 22.13 or newer for the built-in `node:sqlite` module (it prints
 // an "experimental" warning; that is expected). On an older Node, run the
@@ -36,11 +36,6 @@
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-
-const MOOD_IDS = [
-  'peaceful', 'sorrowful', 'wondrous', 'cheerful', 'quirky',
-  'mysterious', 'grim', 'heroic', 'menacing', 'energy',
-];
 
 /// The value after a flag, and the remaining arguments that are not flags.
 const argv = process.argv.slice(2);
@@ -59,10 +54,6 @@ const here = dirname(fileURLToPath(import.meta.url));
 const dbPath = flags.get('--db') ?? join(process.env.APPDATA ?? '', 'com.lutedrop', 'lutedrop.db');
 const adHocMood = flags.get('--mood');
 
-if (adHocMood !== undefined && !MOOD_IDS.includes(adHocMood)) {
-  console.error(`Unknown mood "${adHocMood}". Use one of: ${MOOD_IDS.join(', ')}`);
-  process.exit(2);
-}
 if (adHocMood !== undefined && names.length === 0) {
   console.error('Give at least one track name after --mood <id>.');
   process.exit(2);
@@ -77,6 +68,16 @@ try {
 }
 
 const db = new DatabaseSync(dbPath, { readOnly: true });
+const vocabularyRow = db.prepare("SELECT value FROM meta WHERE key = 'mood_vocabulary'").get();
+if (!vocabularyRow) {
+  console.error('This database has no mood vocabulary yet; open it in the app once (schema v12).');
+  process.exit(2);
+}
+const MOOD_IDS = [...JSON.parse(vocabularyRow.value).moods.map((m) => m.id), 'energy'];
+if (adHocMood !== undefined && !MOOD_IDS.includes(adHocMood)) {
+  console.error(`Unknown mood "${adHocMood}". Use one of: ${MOOD_IDS.join(', ')}`);
+  process.exit(2);
+}
 const music = db.prepare("SELECT id, name FROM library_entries WHERE entry_type = 'music'").all();
 const moodRows = db
   .prepare(
