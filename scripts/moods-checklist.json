@@ -1,0 +1,11 @@
+{
+  "Peril": { "mood": "quirky", "top": 10 },
+  "Dirtmouth": { "mood": "sorrowful", "top": 15 },
+  "Dank Bodies": { "mood": "mysterious", "top": 15 },
+  "Bloody Blades": { "mood": "heroic", "top": 5 },
+  "Titans of Infamy": { "mood": "menacing", "top": 10 },
+  "Steel on Steel": { "mood": "grim", "top": 30 },
+  "Far Horizons": { "mood": "wondrous", "top": 5 },
+  "Another Round": { "mood": "cheerful", "top": 10 },
+  "An Esoteric Ebb": { "mood": "peaceful", "top": 10 }
+}
