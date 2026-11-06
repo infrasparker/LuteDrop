@@ -5,9 +5,9 @@ import { useAppStore } from '../stores/appStore';
 import FacetStatus from './FacetStatus.vue';
 
 /// Combat / Non-combat toggle for one or more entries, plus its status column.
-/// The shown role is yours if set, else the analyzer's. Clicking an option
-/// makes it yours; the status column offers Confirm (yours = the analyzer's)
-/// or Use auto (clear yours).
+/// The shown role is the confirmed one if set, else the analyzer's suggestion.
+/// Clicking an option confirms it; the status column offers Confirm (keep the
+/// suggestion) or Use suggestion (clear the confirmed role).
 ///
 /// The root uses `display: contents`, so inside a grid the options and the
 /// status are two cells that line up with the other facet rows.
@@ -77,7 +77,7 @@ function choose(role: Role): void {
       :auto-hint="autoHint"
       :disabled="busy"
       @confirm="run('keep_auto_role', {})"
-      @use-auto="run('set_entry_role', { role: null })"
+      @use-suggestion="run('set_entry_role', { role: null })"
     />
   </div>
 </template>

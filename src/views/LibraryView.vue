@@ -14,10 +14,16 @@ import ImportDialog from '../components/ImportDialog.vue';
 import FixMissingDialog from '../components/FixMissingDialog.vue';
 import AutoTaggingDialog from '../components/AutoTaggingDialog.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
-import type { LibraryEntry, LibraryEntryUsage, Role } from '@generated/index';
-import SoundFilters from '../components/SoundFilters.vue';
-import MoodPadPicker from '../components/MoodPadPicker.vue';
-import { emptySoundFilters, matchesSoundFilters, type SoundFilters as SoundFilterState } from '../utils/mood';
+import type { LibraryEntry, LibraryEntryUsage, Pool, Role } from '@generated/index';
+import PoolFilters from '../components/PoolFilters.vue';
+import {
+  emptyPoolFilters,
+  matchesPoolFilters,
+  POOLS,
+  sortByKey,
+  type PoolFilters as PoolFilterState,
+  type SortKey,
+} from '../utils/pools';
 import { AUDIO_EXTENSIONS } from '../constants';
 import { formatDuration } from '../shared/format';
 import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
@@ -34,13 +40,15 @@ const selectedTags = ref<string[]>([]);
 const untagged = ref(false);
 const hasAuto = ref(false);
 const selectedType = ref<string>('all');
-const roleFilter = ref<'all' | Role | 'unset'>('all');
-const soundFilters = ref<SoundFilterState>(emptySoundFilters());
-// Role and mood apply to music only and are hidden for ambiance, so their filters must not keep applying there.
+const poolFilters = ref<PoolFilterState>(emptyPoolFilters());
+const sortKey = ref<SortKey>('name');
+const SORT_KEYS: SortKey[] = ['name', 'energy', 'bright', 'grand'];
+// Pool, role and the scales apply to music only and their bar is hidden for
+// ambiance, so its filters and sort must not keep applying there.
 watch(selectedType, (type) => {
   if (type === 'ambiance') {
-    roleFilter.value = 'all';
-    soundFilters.value = emptySoundFilters();
+    poolFilters.value = emptyPoolFilters();
+    sortKey.value = 'name';
   }
 });
 
@@ -66,13 +74,13 @@ watch(tags, (current) => {
   }
 });
 
-// Entries of the selected type: the population the mood pad counts.
+// Entries of the selected type: the population the pool chips count.
 const typeEntries = computed(() =>
   libraryEntries.value.filter((e) => selectedType.value === 'all' || e.entryType === selectedType.value),
 );
 
 const filteredEntries = computed(() => {
-  return libraryEntries.value.filter((entry) => {
+  const matching = libraryEntries.value.filter((entry) => {
     const query = (searchQuery.value ?? '').trim().toLowerCase();
     const matchesSearch =
       query === '' || searchFields(entry).some((f) => f.toLowerCase().includes(query));
@@ -84,14 +92,9 @@ const filteredEntries = computed(() => {
     const matchesType =
       selectedType.value === 'all' || entry.entryType === selectedType.value;
     const matchesAuto = !hasAuto.value || entry.autoTags.length > 0;
-    const matchesRole =
-      roleFilter.value === 'all' ||
-      (roleFilter.value === 'unset'
-        ? entry.entryType === 'music' && entry.role === null
-        : entry.role === roleFilter.value);
-    const matchesSound = matchesSoundFilters(entry, soundFilters.value);
-    return matchesSearch && matchesTags && matchesType && matchesAuto && matchesRole && matchesSound;
+    return matchesSearch && matchesTags && matchesType && matchesAuto && matchesPoolFilters(entry, poolFilters.value);
   });
+  return sortByKey(matching, sortKey.value, (e) => e);
 });
 
 const headers = [
@@ -188,9 +191,10 @@ async function applyBulkMusic(cmd: string, args: Record<string, unknown>): Promi
 }
 
 const applyBulkRole = (role: Role | null) => applyBulkMusic('set_entry_role', { role });
-// "Set mood…" acts on the selected music entries; mood does not apply to ambiance.
-const selectedMusic = computed(() =>
-  libraryEntries.value.filter((e) => selectedIds.value.includes(e.id) && e.entryType === 'music'),
+// "Set pool…" acts on the selected music entries; ambiance has no pool.
+const applyBulkPool = (pool: Pool | null) => applyBulkMusic('set_entry_pool', { pool });
+const selectedHaveMusic = computed(() =>
+  libraryEntries.value.some((e) => selectedIds.value.includes(e.id) && e.entryType === 'music'),
 );
 
 const selectedHaveAuto = computed(() =>
@@ -308,28 +312,6 @@ async function relocateEntry(entryId: string): Promise<void> {
         <VBtn value="music" size="small" prepend-icon="mdi-music-note">Music</VBtn>
         <VBtn value="ambiance" size="small" prepend-icon="mdi-weather-fog">Ambiance</VBtn>
       </VBtnToggle>
-      <!-- Role applies to music only, so it is hidden while browsing ambiance. -->
-      <VBtnToggle
-        v-if="selectedType !== 'ambiance'"
-        v-model="roleFilter"
-        mandatory
-        density="compact"
-        variant="outlined"
-        divided
-        class="ml-3"
-      >
-        <VBtn value="all" size="small">Any role</VBtn>
-        <VBtn value="combat" size="small" prepend-icon="mdi-sword-cross">Combat</VBtn>
-        <VBtn value="nonCombat" size="small" prepend-icon="mdi-music-note">Non-combat</VBtn>
-        <VBtn value="unset" size="small">Unset</VBtn>
-      </VBtnToggle>
-      <SoundFilters
-        v-if="selectedType !== 'ambiance'"
-        v-model="soundFilters"
-        size="small"
-        :entries="typeEntries"
-        class="ml-3"
-      />
       <VSpacer />
       <VBadge
         color="warning"
@@ -382,6 +364,17 @@ async function relocateEntry(entryId: string): Promise<void> {
         </VList>
       </VMenu>
     </Teleport>
+
+    <!-- Pool, role and sort apply to music only, so the bar is hidden while browsing ambiance. -->
+    <PoolFilters
+      v-if="selectedType !== 'ambiance'"
+      v-model="poolFilters"
+      v-model:sort="sortKey"
+      size="small"
+      :entries="typeEntries"
+      :sort-keys="SORT_KEYS"
+      class="mb-2"
+    />
 
     <div class="d-flex align-end mb-2 ga-2">
       <div class="d-flex flex-wrap ga-1 flex-grow-1" style="min-width: 0;">
@@ -456,7 +449,7 @@ async function relocateEntry(entryId: string): Promise<void> {
           </VIcon>
           <VIcon v-if="item.roleUser === null" size="x-small" class="role-auto">mdi-creation</VIcon>
           <VTooltip v-if="item.roleUser === null" activator="parent" location="top" open-delay="300">
-            {{ roleLabel(item.role) }} · Auto{{ item.roleAutoScore === null ? '' : ` · ${item.roleAutoScore.toFixed(2)}` }}
+            {{ roleLabel(item.role) }} · Suggested{{ item.roleAutoScore === null ? '' : ` · ${item.roleAutoScore.toFixed(2)}` }}
           </VTooltip>
         </span>
       </template>
@@ -559,22 +552,28 @@ async function relocateEntry(entryId: string): Promise<void> {
           <VList density="compact">
             <VListItem prepend-icon="mdi-sword-cross" title="Combat" @click="applyBulkRole('combat')" />
             <VListItem prepend-icon="mdi-music-note" title="Non-combat" @click="applyBulkRole('nonCombat')" />
-            <VListItem prepend-icon="mdi-restore" title="Use auto" subtitle="Remove your choice" @click="applyBulkRole(null)" />
+            <VListItem prepend-icon="mdi-restore" title="Use suggestion" subtitle="Clear the confirmed role" @click="applyBulkRole(null)" />
           </VList>
         </VMenu>
-        <MoodPadPicker :entries="selectedMusic">
+        <VMenu>
           <template #activator="{ props: menuProps }">
             <VBtn
               v-bind="menuProps"
-              prepend-icon="mdi-grid"
+              prepend-icon="mdi-shape-outline"
+              append-icon="mdi-menu-down"
               variant="tonal"
               size="small"
-              :disabled="bulkBusy || selectedMusic.length === 0"
+              :disabled="bulkBusy || !selectedHaveMusic"
             >
-              Set mood…
+              Set pool…
             </VBtn>
           </template>
-        </MoodPadPicker>
+          <VList density="compact">
+            <VListItem v-for="p in POOLS" :key="p.id" :title="p.name" @click="applyBulkPool(p.id)" />
+            <VDivider />
+            <VListItem prepend-icon="mdi-restore" title="Use suggestion" subtitle="Clear the confirmed pool" @click="applyBulkPool(null)" />
+          </VList>
+        </VMenu>
         <VBtn
           prepend-icon="mdi-check"
           variant="tonal"

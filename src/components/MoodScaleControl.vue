@@ -6,9 +6,10 @@ import { effectiveStep, STEP_LABELS, STEPS } from '../utils/mood';
 import FacetStatus from './FacetStatus.vue';
 
 /// Three-step toggle for one mood scale (Dark/Neutral/Bright,
-/// Intimate/Moderate/Grand or Calm/Steady/Energetic), plus its status column. The shown step is yours if
-/// set, else the step for the analyzer's z-score. Clicking a step makes it
-/// yours; Confirm stores the analyzer's step as yours; Use auto clears yours.
+/// Intimate/Moderate/Grand or Calm/Steady/Energetic), plus its status column.
+/// The shown step is the confirmed one if set, else the step for the analyzer's
+/// z-score. Clicking a step confirms it; Confirm keeps the suggested step; Use
+/// suggestion clears the confirmed step.
 ///
 /// The root uses `display: contents`, so inside a grid the options and the
 /// status are two cells that line up with the other facet rows.
@@ -81,7 +82,7 @@ function confirm(): void {
       :auto-hint="autoHint"
       :disabled="busy"
       @confirm="confirm"
-      @use-auto="setStep(null)"
+      @use-suggestion="setStep(null)"
     />
   </div>
 </template>

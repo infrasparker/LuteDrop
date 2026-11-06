@@ -1,12 +1,18 @@
 <script setup lang="ts">
-// Ranked Scry results with Role and mood filters. Each row has a checkbox,
+// Ranked Scry results with pool and Role filters and a sort menu. Each row has a checkbox,
 // a preview button, the track name, its game tags, Role, the score as a short
 // bar, and an "Add as seed" action. Clicking the row itself opens the entry's
 // details.
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import type { LibraryEntry, Role, VibeHit } from '@generated/index';
-import SoundFilters from './SoundFilters.vue';
-import { emptySoundFilters, matchesSoundFilters, type SoundFilters as SoundFilterState } from '../utils/mood';
+import PoolFilters from './PoolFilters.vue';
+import {
+  emptyPoolFilters,
+  matchesPoolFilters,
+  sortByKey,
+  type PoolFilters as PoolFilterState,
+  type SortKey,
+} from '../utils/pools';
 
 const props = defineProps<{
   hits: VibeHit[];
@@ -30,8 +36,10 @@ const emit = defineEmits<{
 
 let hoveredId: string | null = null;
 
-const roleFilter = ref<'all' | Role | 'unset'>('all');
-const soundFilters = ref<SoundFilterState>(emptySoundFilters());
+const filters = ref<PoolFilterState>(emptyPoolFilters());
+// "Best match" keeps the analyzer's ranking.
+const sortKey = ref<SortKey>('match');
+const SORT_KEYS: SortKey[] = ['match', 'name', 'energy', 'bright', 'grand'];
 
 interface Row { entry: LibraryEntry; score: number }
 
@@ -44,16 +52,15 @@ const rows = computed<Row[]>(() => {
   return out;
 });
 
-// The pad's counts are over every result, before the Role and mood filters.
+// The chip counts are over every result, before the pool and Role filters.
 const rowEntries = computed(() => rows.value.map((r) => r.entry));
 
 const visibleRows = computed(() =>
-  rows.value.filter(({ entry }) => {
-    const matchesRole =
-      roleFilter.value === 'all' ||
-      (roleFilter.value === 'unset' ? entry.role === null : entry.role === roleFilter.value);
-    return matchesRole && matchesSoundFilters(entry, soundFilters.value);
-  }),
+  sortByKey(
+    rows.value.filter(({ entry }) => matchesPoolFilters(entry, filters.value)),
+    sortKey.value,
+    (r) => r.entry,
+  ),
 );
 
 // A filter change can hide the hovered row without a mouseleave.
@@ -160,13 +167,15 @@ onBeforeUnmount(() => {
         aria-label="Select all shown results"
         @update:model-value="toggleAllVisible"
       />
-      <VBtnToggle v-model="roleFilter" mandatory density="compact" variant="outlined" divided>
-        <VBtn value="all" size="x-small">All roles</VBtn>
-        <VBtn value="combat" size="x-small" prepend-icon="mdi-sword-cross">Combat</VBtn>
-        <VBtn value="nonCombat" size="x-small" prepend-icon="mdi-music-note">Non-combat</VBtn>
-        <VBtn value="unset" size="x-small">Unset</VBtn>
-      </VBtnToggle>
-      <SoundFilters v-model="soundFilters" size="x-small" :entries="rowEntries" />
+      <PoolFilters
+        v-model="filters"
+        v-model:sort="sortKey"
+        size="x-small"
+        :entries="rowEntries"
+        :sort-keys="SORT_KEYS"
+        class="flex-grow-1"
+        style="min-width: 0;"
+      />
       <VSpacer />
       <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
         {{ visibleRows.length }} of {{ rows.length }}
@@ -214,7 +223,7 @@ onBeforeUnmount(() => {
           v-if="entry.role"
           size="small"
           :color="entry.roleUser === null ? undefined : 'primary'"
-          :title="roleLabel(entry.role) + (entry.roleUser === null ? ' · Auto' : '')"
+          :title="roleLabel(entry.role) + (entry.roleUser === null ? ' · Suggested' : '')"
         >
           {{ entry.role === 'combat' ? 'mdi-sword-cross' : 'mdi-music-note' }}
         </VIcon>
