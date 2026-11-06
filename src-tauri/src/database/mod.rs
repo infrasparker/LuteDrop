@@ -513,13 +513,13 @@ const V12_DEFAULT_MOOD_VOCABULARY_JSON: &str = r#"{"moods":[{"id":"peaceful","na
 /// transaction.
 ///
 /// Only a vocabulary still exactly as v12 seeded it is replaced: the stored
-/// row must equal `V12_DEFAULT_MOOD_VOCABULARY_JSON` byte for byte. Then the
-/// new defaults are written and what the analyzer said about moods is
+/// row must equal `V12_DEFAULT_MOOD_VOCABULARY_JSON` byte for byte, or be
+/// missing (a database without the row ran on the v12 defaults, which the
+/// loader falls back to). Then the new defaults are written and what the analyzer said about moods is
 /// cleared, since it came from the old prompts: the calibration, every
 /// `auto_score` (rows with no user level go) and every entry's stored
 /// scores, so the next run recalibrates. User-set levels and review times
-/// stay. A vocabulary the user edited (or a missing or unreadable row) is
-/// left alone. The pre-migration backup keeps the old row.
+/// stay. A vocabulary the user edited (or an unreadable row) is left alone. The pre-migration backup keeps the old row.
 fn migrate_v12_to_v13(conn: &Connection) -> SqlResult<()> {
     use rusqlite::OptionalExtension;
     let stored: Option<String> = conn
@@ -529,14 +529,14 @@ fn migrate_v12_to_v13(conn: &Connection) -> SqlResult<()> {
             |row| row.get(0),
         )
         .optional()?;
-    if stored.as_deref() != Some(V12_DEFAULT_MOOD_VOCABULARY_JSON) {
+    if stored.as_deref().is_some_and(|s| s != V12_DEFAULT_MOOD_VOCABULARY_JSON) {
         return Ok(());
     }
     let json = settings::mood_vocabulary_json(&MoodVocabulary::defaults())
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
     conn.execute(
-        "UPDATE meta SET value = ?1 WHERE key = ?2",
-        params![json, settings::KEY_MOOD_VOCABULARY],
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+        params![settings::KEY_MOOD_VOCABULARY, json],
     )?;
     conn.execute("DELETE FROM meta WHERE key = ?1", params![settings::KEY_MOOD_CALIBRATION])?;
     conn.execute_batch(
@@ -3251,6 +3251,28 @@ mod tests {
         assert_eq!(meta_value(&copy, "mood_vocabulary").as_deref(), Some(V12_DEFAULT_MOOD_VOCABULARY_JSON));
         assert!(meta_value(&copy, "mood_calibration").is_some());
         assert_eq!(mood_rows(&copy).len(), 4);
+    }
+
+    #[test]
+    fn v13_treats_a_missing_vocabulary_as_the_v12_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lutedrop.db");
+        create_v12_db(&path, V12_DEFAULT_MOOD_VOCABULARY_JSON);
+        Connection::open(&path)
+            .unwrap()
+            .execute("DELETE FROM meta WHERE key = 'mood_vocabulary'", [])
+            .unwrap();
+
+        let conn = open_db(&path).unwrap();
+        assert_eq!(read_schema_version(&conn), 13);
+        assert_eq!(
+            meta_value(&conn, "mood_vocabulary").unwrap(),
+            settings::mood_vocabulary_json(&MoodVocabulary::defaults()).unwrap()
+        );
+        assert_eq!(meta_value(&conn, "mood_calibration"), None);
+        assert_eq!(mood_rows(&conn), vec![("L".into(), "peaceful".into(), None, Some(0.25))]);
+        assert_eq!(stored_score_count(&conn), 0);
+        assert_eq!(pre_migration_backups(dir.path(), 12).len(), 1);
     }
 
     #[test]
