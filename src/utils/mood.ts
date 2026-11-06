@@ -94,7 +94,7 @@ const cell = (
 /// The six dark moods. Their names do not depend on size, so the words do not
 /// change when the size switch does; each one appears on all three floors.
 const DARK_MOODS: { energy: MoodStep; kind: DarkKind; name: string; feel: string; scene: string }[] = [
-  { energy: 'high', kind: 'sad', name: 'Desperate', feel: 'Frantic, aching, all is lost', scene: 'A last stand, the city falls' },
+  { energy: 'high', kind: 'sad', name: 'Desperate', feel: 'Racing, aching, all is lost', scene: 'A last stand, the city falls' },
   { energy: 'high', kind: 'scary', name: 'Harrowing', feel: 'Pounding, relentless, terror', scene: 'A chase in the dark, a boss fight' },
   { energy: 'mid', kind: 'sad', name: 'Mournful', feel: 'Grave, aching, weighed down', scene: 'The aftermath, a wake' },
   { energy: 'mid', kind: 'scary', name: 'Menacing', feel: 'Low pulse, a looming threat', scene: "The villain's lair, a cursed forest" },
