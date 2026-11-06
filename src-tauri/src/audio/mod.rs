@@ -308,10 +308,6 @@ impl AudioEngine {
         // `poll_loop(stop_at_end=StopAtEnd::Yes)` still detects the resulting
         // Stopped state to finish. For a looping preview `play_with_trim_stop`
         // no-ops the schedule (loop_region is Some).
-        log::info!(
-            "audio start: library preview {} at {} (paused {})",
-            params.file_path, params.start_position, paused
-        );
         self.library.play_with_trim_stop(&self.engine, params)?;
         if paused {
             self.library.pause();
