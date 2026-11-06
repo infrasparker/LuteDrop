@@ -858,25 +858,6 @@ fn set_user_facet(
     Ok(())
 }
 
-/// Copies the analyzer's value of a facet into the user layer on each entry
-/// that has one. Entries without an analyzer value are left alone.
-fn keep_auto_facet(conn: &Connection, facet: Facet, entry_ids: &[String]) -> Result<(), String> {
-    let name = facet.name();
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| format!("Failed to begin keep {name} transaction: {e}"))?;
-    let sql = format!(
-        "UPDATE library_entries SET {name}_user = {name}_auto
-         WHERE id = ?1 AND {name}_auto IS NOT NULL"
-    );
-    for entry_id in entry_ids {
-        conn.execute(&sql, params![entry_id])
-            .map_err(|e| format!("Failed to keep auto {name}: {e}"))?;
-    }
-    tx.commit().map_err(|e| format!("Failed to commit keep {name} transaction: {e}"))?;
-    Ok(())
-}
-
 /// Writes the analyzer layer of a facet and returns whether it changed.
 /// `Some` stores the value with `score`; `None` clears value and score. The
 /// user layer is never read or written. Opens no transaction of its own.
@@ -920,11 +901,6 @@ pub fn set_user_role(
     role: Option<Role>,
 ) -> Result<(), String> {
     set_user_facet(conn, Facet::Role, entry_ids, role.map(|r| r.as_db_str()))
-}
-
-/// Makes the analyzer's role the user's, on each entry that has one.
-pub fn keep_auto_role(conn: &Connection, entry_ids: &[String]) -> Result<(), String> {
-    keep_auto_facet(conn, Facet::Role, entry_ids)
 }
 
 /// Writes the analyzer's role for an entry and returns whether it changed.
@@ -2077,24 +2053,6 @@ mod tests {
         assert!(!apply_auto_role(&conn, &a, None, 0.5).unwrap());
         // A missing entry is no change.
         assert!(!apply_auto_role(&conn, "nope", Some(Role::Combat), 0.5).unwrap());
-    }
-
-    #[test]
-    fn keep_auto_role_copies_auto_into_user() {
-        let conn = open_memory_db();
-        let auto = music_entry(&conn, "/a.mp3");
-        let user = music_entry(&conn, "/b.mp3");
-        let unset = music_entry(&conn, "/c.mp3");
-        apply_auto_role(&conn, &auto, Some(Role::Combat), 0.8).unwrap();
-        apply_auto_role(&conn, &user, Some(Role::Combat), 0.8).unwrap();
-        set_user_role(&conn, std::slice::from_ref(&user), Some(Role::NonCombat)).unwrap();
-
-        keep_auto_role(&conn, &[auto.clone(), user.clone(), unset.clone()]).unwrap();
-
-        assert_eq!(role_row(&conn, &auto), (s("combat"), Some(0.8), s("combat")));
-        // Keep confirms the analyzer's value, overriding an older choice.
-        assert_eq!(role_row(&conn, &user), (s("combat"), Some(0.8), s("combat")));
-        assert_eq!(role_row(&conn, &unset), (None, None, None));
     }
 
     #[test]

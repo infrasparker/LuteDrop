@@ -219,7 +219,6 @@ pub fn run() {
             commands::reject_auto_tags,
             commands::reset_entry_tag_votes,
             commands::set_entry_role,
-            commands::keep_auto_role,
             commands::set_entry_mood_level,
             commands::set_mood_vocabulary,
             commands::recalibrate_moods,

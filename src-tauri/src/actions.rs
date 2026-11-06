@@ -479,18 +479,6 @@ pub fn approve_entry_review(container: &AppStateContainer, entry_id: &str) -> Re
     load_state(container)
 }
 
-/// Makes the analyzer's role the user's, on each entry that has one.
-pub fn keep_auto_role(
-    container: &AppStateContainer,
-    entry_ids: Vec<String>,
-) -> Result<AppState, String> {
-    let state = mutate_and_reload(container, |conn| {
-        library::keep_auto_role(conn, &entry_ids)
-    })?;
-    request_rescore_if_enabled(container);
-    Ok(state)
-}
-
 pub fn update_library_entry_type(
     container: &AppStateContainer,
     entry_id: &str,

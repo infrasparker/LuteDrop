@@ -299,14 +299,6 @@ pub fn set_entry_role(
 }
 
 #[tauri::command]
-pub fn keep_auto_role(
-    state: State<'_, Arc<AppStateContainer>>,
-    entry_ids: Vec<String>,
-) -> Result<AppState, String> {
-    actions::keep_auto_role(&state, entry_ids)
-}
-
-#[tauri::command]
 pub fn set_entry_mood_level(
     state: State<'_, Arc<AppStateContainer>>,
     entry_ids: Vec<String>,
