@@ -172,6 +172,10 @@ static ma_result ld_tap_init(ma_engine* engine, ld_tap* tap) {
 struct ld_engine {
     ma_engine engine;
     ma_resource_manager resource_manager;
+    // Set when the engine was created silent: a context restricted to the
+    // null backend, so nothing reaches a real output device (tests, CI).
+    ma_context context;
+    int has_context;
     // The "program bus": a sound group every track's group feeds into. Think of
     // it as a mixing-desk submaster: all tracks are summed here before reaching
     // the speakers. It is parented to the endpoint, so what it carries still
@@ -192,9 +196,20 @@ struct ld_sound {
     ld_engine* owner;   // for sample-rate conversions
 };
 
-ld_engine* ld_engine_create(void) {
+static ld_engine* ld_engine_create_impl(int silent) {
     ld_engine* e = (ld_engine*)calloc(1, sizeof(ld_engine));
     if (e == NULL) return NULL;
+
+    if (silent) {
+        // The null backend behaves like a device (it keeps a clock and pulls
+        // frames) but is wired to nothing, so a test run plays no sound.
+        ma_backend backends_null[] = { ma_backend_null };
+        if (ma_context_init(backends_null, 1, NULL, &e->context) != MA_SUCCESS) {
+            free(e);
+            return NULL;
+        }
+        e->has_context = 1;
+    }
 
     // Register the libopus backend on the resource manager so streamed .opus
     // decodes natively. `ma_decoding_backend_libopus` is ALREADY a
@@ -206,14 +221,17 @@ ld_engine* ld_engine_create(void) {
     rmcfg.ppCustomDecodingBackendVTables = backends;
     rmcfg.customDecodingBackendCount = 1;
     if (ma_resource_manager_init(&rmcfg, &e->resource_manager) != MA_SUCCESS) {
+        if (e->has_context) ma_context_uninit(&e->context);
         free(e);
         return NULL;
     }
 
     ma_engine_config ecfg = ma_engine_config_init();
     ecfg.pResourceManager = &e->resource_manager;
+    if (e->has_context) ecfg.pContext = &e->context;
     if (ma_engine_init(&ecfg, &e->engine) != MA_SUCCESS) {
         ma_resource_manager_uninit(&e->resource_manager);
+        if (e->has_context) ma_context_uninit(&e->context);
         free(e);
         return NULL;
     }
@@ -222,6 +240,7 @@ ld_engine* ld_engine_create(void) {
     if (ld_tap_init(&e->engine, &e->tap) != MA_SUCCESS) {
         ma_engine_uninit(&e->engine);
         ma_resource_manager_uninit(&e->resource_manager);
+        if (e->has_context) ma_context_uninit(&e->context);
         free(e);
         return NULL;
     }
@@ -237,6 +256,7 @@ ld_engine* ld_engine_create(void) {
         ma_pcm_rb_uninit(&e->tap.rb);
         ma_engine_uninit(&e->engine);
         ma_resource_manager_uninit(&e->resource_manager);
+        if (e->has_context) ma_context_uninit(&e->context);
         free(e);
         return NULL;
     }
@@ -253,11 +273,17 @@ ld_engine* ld_engine_create(void) {
         ma_pcm_rb_uninit(&e->tap.rb);
         ma_engine_uninit(&e->engine);
         ma_resource_manager_uninit(&e->resource_manager);
+        if (e->has_context) ma_context_uninit(&e->context);
         free(e);
         return NULL;
     }
     return e;
 }
+
+ld_engine* ld_engine_create(void) { return ld_engine_create_impl(0); }
+
+/// An engine on miniaudio's null backend: same behaviour, no audio output.
+ld_engine* ld_engine_create_silent(void) { return ld_engine_create_impl(1); }
 
 void ld_engine_destroy(ld_engine* e) {
     if (e == NULL) return;
@@ -269,6 +295,7 @@ void ld_engine_destroy(ld_engine* e) {
     ma_pcm_rb_uninit(&e->tap.rb);
     ma_engine_uninit(&e->engine);
     ma_resource_manager_uninit(&e->resource_manager);
+    if (e->has_context) ma_context_uninit(&e->context);
     free(e);
 }
 

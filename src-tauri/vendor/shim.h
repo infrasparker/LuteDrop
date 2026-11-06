@@ -39,6 +39,7 @@ typedef struct ld_sound  ld_sound;
 // Engine wraps ma_engine + a ma_resource_manager that registers the libopus
 // backend (so streamed .opus works). Returns NULL on failure.
 ld_engine* ld_engine_create(void);
+ld_engine* ld_engine_create_silent(void);  /* null backend: no audio output (tests) */
 void       ld_engine_destroy(ld_engine*);
 void       ld_engine_set_volume(ld_engine*, float linear);   // master volume
 uint64_t   ld_engine_time_frames(ld_engine*);                // global engine clock
