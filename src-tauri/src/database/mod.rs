@@ -20,7 +20,7 @@ use crate::models::{
 
 /// Current schema version. Bump when adding a migration below; fresh
 /// databases are stamped with this directly.
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 /// Spacing between sibling `sort_order` values, leaving room for insertions
 /// between neighbours without renumbering. Shared by hierarchy + configurations.
@@ -546,6 +546,22 @@ fn migrate_v12_to_v13(conn: &Connection) -> SqlResult<()> {
     )
 }
 
+/// v13 → v14: the mood bars changed meaning. A mood's bar now reads 0.5 one
+/// standard deviation above the library average instead of at the average
+/// (Energy keeps the average as its middle), so every stored suggestion is on
+/// the old scale. Clear the calibration, the suggested values and the cached
+/// scores; the next analysis run takes a calibration and fills every profile
+/// again on the new scale. Levels set by the user, the vocabulary, roles,
+/// tags and review timestamps stay.
+fn migrate_v13_to_v14(conn: &Connection) -> SqlResult<()> {
+    conn.execute("DELETE FROM meta WHERE key = ?1", params![settings::KEY_MOOD_CALIBRATION])?;
+    conn.execute_batch(
+        "UPDATE library_entry_moods SET auto_score = NULL;
+         DELETE FROM library_entry_moods WHERE user_level IS NULL;
+         UPDATE entry_analysis SET scores_json = NULL;",
+    )
+}
+
 // Ordered migrations: entry `(n, f)` upgrades version n → n+1.
 const MIGRATIONS: &[(i64, Migration)] = &[
     (3, migrate_v3_to_v4),
@@ -558,6 +574,7 @@ const MIGRATIONS: &[(i64, Migration)] = &[
     (10, migrate_v10_to_v11),
     (11, migrate_v11_to_v12),
     (12, migrate_v12_to_v13),
+    (13, migrate_v13_to_v14),
 ];
 
 fn read_schema_version(conn: &Connection) -> i64 {
@@ -2042,7 +2059,7 @@ mod tests {
     fn fresh_database_is_current() {
         let dir = tempfile::tempdir().unwrap();
         let conn = open_db(&dir.path().join("fresh.db")).unwrap();
-        assert_eq!(read_schema_version(&conn), 13);
+        assert_eq!(read_schema_version(&conn), 14);
         conn.prepare(
             "SELECT role_auto, role_auto_score, role_user, mood_reviewed_at FROM library_entries",
         )
@@ -2058,9 +2075,10 @@ mod tests {
         let seeded = serde_json::from_str::<MoodVocabulary>(&stored).unwrap();
         let prompts = |id: &str| seeded.moods.iter().find(|m| m.id == id).unwrap().prompts.clone();
         assert_eq!(prompts("peaceful"), ["relaxing, positive"]);
-        assert_eq!(prompts("grim"), ["horror, dark, heavy"]);
+        assert_eq!(prompts("grim"), ["ominous, dread, fearful, scary, horror, terror, sinister, eldritch, unnatural music"]);
+        assert_eq!(prompts("battle"), ["combat, battle, warlike, fierce, clash, war drums, fantasy battle music"]);
         assert!(seeded.moods.iter().all(|m| m.prompts.len() == 1));
-        assert_eq!(seeded.energy.positive, ["energetic, upbeat, powerful"]);
+        assert_eq!(seeded.energy.positive, ["energetic, exciting, intense, upbeat, powerful"]);
         for old in [
             "role", "role_source", "role_score", "pace", "pace_source", "pace_score",
             "pace_auto", "pace_auto_score", "pace_user", "mood_light", "mood_light_user",
@@ -3190,6 +3208,49 @@ mod tests {
             .unwrap();
     }
 
+
+    /// Opens `path` like `open_db` but migrates only up to v13, so the v13
+    /// tests check that step alone (v14 clears suggestions again).
+    fn open_db_to_v13(path: &Path) -> Connection {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        let version = read_schema_version(&conn);
+        if version < 13 {
+            backup::perform_pre_migration_backup(&conn, &backup::backup_dir_for(path), version).unwrap();
+        }
+        run_migrations_with(&conn, &[(12, migrate_v12_to_v13)], 13).unwrap();
+        conn
+    }
+
+    #[test]
+    fn v14_clears_suggestions_and_calibration_but_keeps_levels_and_vocabulary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lutedrop.db");
+        let mut edited = v12_default_vocabulary();
+        edited.moods[0].name = "Calm".into();
+        let edited_json = settings::mood_vocabulary_json(&edited).unwrap();
+        create_v12_db(&path, &edited_json);
+        drop(open_db_to_v13(&path));
+        {
+            let c = Connection::open(&path).unwrap();
+            assert_eq!(read_schema_version(&c), 13);
+            assert!(meta_value(&c, "mood_calibration").is_some());
+            assert_eq!(mood_rows(&c).len(), 4);
+        }
+
+        let conn = open_db(&path).unwrap();
+        assert_eq!(read_schema_version(&conn), 14);
+        assert_eq!(meta_value(&conn, "mood_vocabulary").as_deref(), Some(edited_json.as_str()));
+        assert_eq!(meta_value(&conn, "mood_calibration"), None);
+        assert_eq!(mood_rows(&conn), vec![("L".into(), "peaceful".into(), None, Some(0.25))]);
+        assert_eq!(stored_score_count(&conn), 0);
+        let reviewed: Option<String> = conn
+            .query_row("SELECT mood_reviewed_at FROM library_entries WHERE id = 'L'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(reviewed.as_deref(), Some("1700000000000"));
+        assert_eq!(pre_migration_backups(dir.path(), 13).len(), 1);
+    }
+
     type MoodRow = (String, String, Option<f64>, Option<f64>);
 
     fn mood_rows(conn: &Connection) -> Vec<MoodRow> {
@@ -3222,7 +3283,7 @@ mod tests {
         let path = dir.path().join("lutedrop.db");
         create_v12_db(&path, V12_DEFAULT_MOOD_VOCABULARY_JSON);
 
-        let conn = open_db(&path).unwrap();
+        let conn = open_db_to_v13(&path);
         assert_eq!(read_schema_version(&conn), 13);
         // The new defaults are stored, byte for byte as a fresh database's.
         assert_eq!(
@@ -3263,7 +3324,7 @@ mod tests {
             .execute("DELETE FROM meta WHERE key = 'mood_vocabulary'", [])
             .unwrap();
 
-        let conn = open_db(&path).unwrap();
+        let conn = open_db_to_v13(&path);
         assert_eq!(read_schema_version(&conn), 13);
         assert_eq!(
             meta_value(&conn, "mood_vocabulary").unwrap(),
@@ -3287,7 +3348,7 @@ mod tests {
             let path = dir.path().join("lutedrop.db");
             create_v12_db(&path, stored);
 
-            let conn = open_db(&path).unwrap();
+            let conn = open_db_to_v13(&path);
             assert_eq!(read_schema_version(&conn), 13);
             assert_eq!(meta_value(&conn, "mood_vocabulary").as_deref(), Some(stored));
             assert!(meta_value(&conn, "mood_calibration").is_some());
@@ -3327,13 +3388,14 @@ mod tests {
                 v("mysterious", None, None),
                 v("grim", Some(0.8), Some(0.25)),
                 v("heroic", None, None),
+                v("battle", None, None),
                 v("energy", Some(0.3), None),
             ]
         );
         assert_eq!(a.mood_reviewed_at.as_deref(), Some("1700000000000"));
 
         let b = entries.iter().find(|e| e.id == unset).unwrap();
-        assert_eq!(b.moods.len(), 9);
+        assert_eq!(b.moods.len(), 10);
         assert!(b.moods.iter().all(|m| m.auto.is_none() && m.user.is_none()));
         assert_eq!(b.mood_reviewed_at, None);
 

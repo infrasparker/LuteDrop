@@ -15,25 +15,28 @@ MOODS = {
         "relaxing, positive",
     ],
     "sorrowful": [
-        "sad, sorrowful, mournful, melancholic, somber, wistful, grieving, nostalgic, reflective music",
+        "sad, melancholic, somber, funeral, lament, tragic, heartbroken music",
     ],
     "wondrous": [
-        "hopeful, inspiring",
+        "angelic, divine, sacred, celestial, awe, wonder, inspiring",
     ],
     "joyful": [
-        "happy, upbeat",
+        "joyful, happy, cheerful, merry, bright, glad, festive, sunny, drinking song",
     ],
     "quirky": [
-        "quirky, weird, offbeat, groovy, funky, eccentric, strange, campy, oddball, mischievous music",
+        "quirky, offbeat, groovy, funky, oddball, mischievous, funny, silly, goofy, zany music",
     ],
     "mysterious": [
-        "mysterious, unsettling, eerie, strange, uncanny, otherworldly, suspenseful, looming, dread music",
+        "mysterious, enigmatic, puzzling, curious, intrigue, chimes, bells, celesta, music box, sparse isolated notes, high ringing",
     ],
     "grim": [
-        "horror, dark, heavy",
+        "ominous, dread, fearful, scary, horror, terror, sinister, eldritch, unnatural music",
     ],
     "heroic": [
         "heroic, triumphant, bold, rousing, victorious, adventurous, noble, uplifting, epic orchestral music",
+    ],
+    "battle": [
+        "combat, battle, warlike, fierce, clash, war drums, fantasy battle music",
     ],
 }
 
@@ -41,7 +44,7 @@ MOODS = {
 # One cluster of tag words per side: the model was trained on tag-like text.
 # Never the bare word "fast", which the model reads against energy.
 ENERGY_POS = [
-    "energetic, upbeat, powerful",
+    "energetic, exciting, intense, upbeat, powerful",
 ]
 ENERGY_NEG = [
     "slow, relaxing, calm",

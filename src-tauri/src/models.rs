@@ -184,7 +184,9 @@ fn check_prompts(what: &str, prompts: &[String]) -> Result<(), String> {
 
 impl MoodVocabulary {
     /// The defaults the database is seeded with (since schema v13, each mood
-    /// and each side of Energy is one prompt: a cluster of tag words),
+    /// and each side of Energy is one prompt: a cluster of tag words; the
+    /// set was settled track by track against a real library on 2026-11-06,
+    /// see docs/superpowers/research/2026-11-05-feel-lab/AUDIT-moods-2026-11-06.md),
     /// and what Reset to defaults writes. Once seeded, the app reads the
     /// vocabulary from the database, never from here. Keep these identical
     /// to `MOODS` / `ENERGY_POS` / `ENERGY_NEG` in `tagger/tagger/moods.py`.
@@ -197,18 +199,19 @@ impl MoodVocabulary {
         Self {
             moods: vec![
                 mood("peaceful", "Peaceful", &["relaxing, positive"]),
-                mood("sorrowful", "Sorrowful", &["sad, sorrowful, mournful, melancholic, somber, wistful, grieving, nostalgic, reflective music"]),
-                mood("wondrous", "Wondrous", &["hopeful, inspiring"]),
-                mood("joyful", "Joyful", &["happy, upbeat"]),
-                mood("quirky", "Quirky", &["quirky, weird, offbeat, groovy, funky, eccentric, strange, campy, oddball, mischievous music"]),
-                mood("mysterious", "Mysterious", &["mysterious, unsettling, eerie, strange, uncanny, otherworldly, suspenseful, looming, dread music"]),
-                mood("grim", "Grim", &["horror, dark, heavy"]),
+                mood("sorrowful", "Sorrowful", &["sad, melancholic, somber, funeral, lament, tragic, heartbroken music"]),
+                mood("wondrous", "Wondrous", &["angelic, divine, sacred, celestial, awe, wonder, inspiring"]),
+                mood("joyful", "Joyful", &["joyful, happy, cheerful, merry, bright, glad, festive, sunny, drinking song"]),
+                mood("quirky", "Quirky", &["quirky, offbeat, groovy, funky, oddball, mischievous, funny, silly, goofy, zany music"]),
+                mood("mysterious", "Mysterious", &["mysterious, enigmatic, puzzling, curious, intrigue, chimes, bells, celesta, music box, sparse isolated notes, high ringing"]),
+                mood("grim", "Grim", &["ominous, dread, fearful, scary, horror, terror, sinister, eldritch, unnatural music"]),
                 mood("heroic", "Heroic", &["heroic, triumphant, bold, rousing, victorious, adventurous, noble, uplifting, epic orchestral music"]),
+                mood("battle", "Battle", &["combat, battle, warlike, fierce, clash, war drums, fantasy battle music"]),
             ],
             energy: EnergyPrompts {
                 // One cluster of tag words per side; never the bare word
                 // "fast", which the model reads against energy.
-                positive: strings(&["energetic, upbeat, powerful"]),
+                positive: strings(&["energetic, exciting, intense, upbeat, powerful"]),
                 negative: strings(&["slow, relaxing, calm"]),
             },
         }
@@ -794,17 +797,17 @@ mod tests {
     }
 
     #[test]
-    fn default_vocabulary_is_eight_moods_then_energy_and_valid() {
+    fn default_vocabulary_is_nine_moods_then_energy_and_valid() {
         let v = MoodVocabulary::defaults();
         assert_eq!(
             v.ids(),
-            ["peaceful", "sorrowful", "wondrous", "joyful", "quirky", "mysterious", "grim", "heroic", "energy"]
+            ["peaceful", "sorrowful", "wondrous", "joyful", "quirky", "mysterious", "grim", "heroic", "battle", "energy"]
         );
         assert_eq!(v.normalized().unwrap(), v);
         assert!(v.contains("energy") && v.contains("grim") && !v.contains("menacing"));
-        assert_eq!(v.prompt_signature("joyful").unwrap(), ["happy, upbeat"]);
+        assert_eq!(v.prompt_signature("joyful").unwrap(), ["joyful, happy, cheerful, merry, bright, glad, festive, sunny, drinking song"]);
         let energy = v.prompt_signature("energy").unwrap();
-        assert_eq!(energy, ["+ energetic, upbeat, powerful", "- slow, relaxing, calm"]);
+        assert_eq!(energy, ["+ energetic, exciting, intense, upbeat, powerful", "- slow, relaxing, calm"]);
         assert_eq!(v.prompt_signature("menacing"), None);
     }
 

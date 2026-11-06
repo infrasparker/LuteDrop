@@ -1179,20 +1179,21 @@ pub(crate) mod tests {
         assert_eq!(report.error, None);
 
         let cal = settings::load_mood_calibration(&db.lock().unwrap()).unwrap().unwrap();
-        assert_eq!(cal.stats.len(), 9);
+        assert_eq!(cal.stats.len(), 10);
         assert_eq!(cal.tracks, plan::CALIBRATION_MIN_TRACKS);
         // heroic: 13 of 50 at 0.3, the rest at 0.2.
         let heroic = cal.stats["heroic"];
         assert!((heroic.mean - 0.226).abs() < 1e-12);
         assert!((heroic.sd - 0.1 * (0.26f64 * 0.74).sqrt()).abs() < 1e-12);
         // Every id gets an analyzer value and no user level.
-        assert_eq!(mood_row_count(&db, &ids[0]), 9);
+        assert_eq!(mood_row_count(&db, &ids[0]), 10);
         let (auto, user) = mood_of(&db, &ids[0], "heroic").unwrap();
-        assert!((auto.unwrap() - plan::mood_score(0.3, heroic)).abs() < 1e-12);
-        assert!(auto.unwrap() > 0.9);
+        assert!((auto.unwrap() - plan::mood_score("heroic", 0.3, heroic)).abs() < 1e-12);
+        // z 1.69 for heroic, centred one sd up: clearly in, not at the top.
+        assert!(auto.unwrap() > 0.7);
         assert_eq!(user, None);
         assert!(mood_of(&db, &ids[1], "heroic").unwrap().0.unwrap() < 0.5);
-        assert!(mood_of(&db, &ids[1], "wondrous").unwrap().0.unwrap() > 0.9);
+        assert!(mood_of(&db, &ids[1], "wondrous").unwrap().0.unwrap() > 0.7);
 
         // A later run with a different spread keeps the frozen calibration.
         let mood: HashMap<String, MoodRaw> = (0..plan::CALIBRATION_MIN_TRACKS)
@@ -1204,7 +1205,7 @@ pub(crate) mod tests {
         assert_eq!(settings::load_mood_calibration(&db.lock().unwrap()).unwrap().unwrap(), cal);
         // Scored against the frozen calibration, heroic is near the top.
         let (auto, _) = mood_of(&db, &ids[1], "heroic").unwrap();
-        assert!((auto.unwrap() - plan::mood_score(0.9, heroic)).abs() < 1e-12);
+        assert!((auto.unwrap() - plan::mood_score("heroic", 0.9, heroic)).abs() < 1e-12);
     }
 
     #[test]
@@ -1254,7 +1255,7 @@ pub(crate) mod tests {
         let report = run_once(&db, &bare, &[], &no_progress);
         assert_eq!(report.error, None);
         assert_eq!(mood_of(&db, &ids[0], "heroic"), before);
-        assert_eq!(mood_row_count(&db, &ids[0]), 9);
+        assert_eq!(mood_row_count(&db, &ids[0]), 10);
     }
 
     #[test]
@@ -1349,7 +1350,7 @@ pub(crate) mod tests {
         let cal = settings::load_mood_calibration(&db.lock().unwrap()).unwrap().unwrap();
         assert_eq!(cal.prompts["heroic"], ["fanfare"]);
         assert!(!plan::needs_recalibration(Some(&cal), &edited.normalized().unwrap()));
-        assert_eq!(mood_row_count(&db, &ids[0]), 9);
+        assert_eq!(mood_row_count(&db, &ids[0]), 10);
     }
 
     #[test]

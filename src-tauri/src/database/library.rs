@@ -2109,7 +2109,7 @@ mod tests {
     }
 
     /// How many ids the default vocabulary has (eight moods plus Energy).
-    const MOOD_COUNT: i64 = 9;
+    const MOOD_COUNT: i64 = 10;
 
     #[test]
     fn user_mood_level_sets_review_time_and_clears_to_suggestion() {

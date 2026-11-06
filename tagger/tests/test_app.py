@@ -545,10 +545,7 @@ def test_score_returns_raw_mood_for_targets(tmp_path, monkeypatch):
     assert set(data["mood"]["a"]) == {"moods", "energy"}
     # Moods are absolute similarities (mean cosine with the mood's prompts).
     scores = data["mood"]["a"]["moods"]
-    assert list(scores) == [
-        "peaceful", "sorrowful", "wondrous", "joyful", "quirky",
-        "mysterious", "grim", "heroic",
-    ]
+    assert list(scores) == list(moods.MOODS)
     for mood_id, prompts in moods.MOODS.items():
         assert scores[mood_id] == pytest.approx(pole(prompts))
     assert any(v != 0 for v in scores.values())
@@ -572,13 +569,15 @@ def test_score_mood_recovers_after_partial_embed_failure(tmp_path, monkeypatch):
     cache = EmbeddingCache(tmp_path)
     c = TestClient(create_app(FlakyEmbedder(), cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2)))
     embed(c, [("a", "x-1")])
+    from tagger import moods
+
     body = {"gate": {}, "targets": ["a"]}
     first = c.post("/score", json=body, headers=HEADERS)
     assert first.status_code == 200 and "mood" not in first.json()
     second = c.post("/score", json=body, headers=HEADERS)
     assert second.status_code == 200
     assert set(second.json()["mood"]["a"]) == {"moods", "energy"}
-    assert len(second.json()["mood"]["a"]["moods"]) == 8
+    assert len(second.json()["mood"]["a"]["moods"]) == len(moods.MOODS)
 
 
 def _text_embedder():
