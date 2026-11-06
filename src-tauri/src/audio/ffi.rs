@@ -68,6 +68,7 @@ extern "C" {
     fn ld_file_duration_secs(path: *const u16) -> f64;
 
     fn ld_engine_create() -> *mut LdEngine;
+    fn ld_engine_create_silent() -> *mut LdEngine;
     fn ld_engine_destroy(e: *mut LdEngine);
     fn ld_engine_set_volume(e: *mut LdEngine, linear: c_float);
     fn ld_engine_time_frames(e: *mut LdEngine) -> u64;
@@ -253,8 +254,14 @@ impl EngineRef {
 
 impl Engine {
     /// Create the audio engine. Fails if no usable audio backend can init.
+    ///
+    /// Under `cargo test`, or when `LUTEDROP_SILENT_AUDIO` is set, the engine
+    /// runs on miniaudio's null backend: it keeps its clock and behaviour but
+    /// is wired to no output device, so test runs play nothing through the
+    /// speakers (they used to play the fixture clip on every run).
     pub fn new() -> Result<Engine, String> {
-        let ptr = unsafe { ld_engine_create() };
+        let silent = cfg!(test) || std::env::var_os("LUTEDROP_SILENT_AUDIO").is_some();
+        let ptr = unsafe { if silent { ld_engine_create_silent() } else { ld_engine_create() } };
         if ptr.is_null() {
             return Err("failed to create audio engine".to_string());
         }
