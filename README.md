@@ -50,6 +50,23 @@ Every music entry can have a role, **Combat** or **Non-combat**. The analyzer sc
 - The Library has a Role column and a Role filter (All, Combat, Non-combat, Unset). The entry editor has a Combat / Non-combat control with a clear action, and the bulk bar can set or clear the role on several music entries at once.
 - Only entries whose role was set by hand count as examples. Auto roles never do.
 
+### Mood
+
+Every analyzed music entry is placed on three mood scales, each with three steps:
+
+- **Bright ↔ Dark** (Dark, Neutral, Bright)
+- **Intimate ↔ Grand** (Intimate, Moderate, Grand)
+- **Calm ↔ Energetic** (Calm, Steady, Energetic)
+
+The analyzer scores each scale as a z-score across the library's analyzed music, and a score more than 0.6 from the mean moves the entry off the middle step.
+
+A **Dark** entry also has a **dark kind**, **Sad** or **Scary**. The analyzer scores both and picks the higher. Scary covers dread and menace. The kind is shown only while the entry's Bright ↔ Dark step is Dark.
+
+- A step or kind set by hand always wins over the analyzer's. Auto-tagging never changes it. **Confirm** makes the analyzer's value your own, and **Use auto** removes yours.
+- The **mood pad** names each combination: a size switch picks Intimate, Moderate or Grand, and a pad crosses energy (rows) with Sad, Scary, Neutral and Bright (columns). Dark names do not change with size: Desperate, Mournful and Sorrowful are Sad; Harrowing, Menacing and Eerie are Scary.
+- The entry editor has the mood pad and a row per scale, plus a Dark kind row for Dark entries. The bulk bar's **Set mood…** sets the mood of several music entries at once.
+- The Library and Scry filter by mood with the same pad: pick any number of moods, per size or across all sizes.
+
 ### Auto tags
 
 Auto tags are learned from the tags the user applied by hand.
@@ -67,7 +84,7 @@ Auto tags are learned from the tags the user applied by hand.
 
 - **Text search.** A description such as "tense strings building to a battle" returns the closest tracks, ranked by score.
 - **More like this.** The action on a Library row opens Scry seeded with that track. Seeds are shown as removable chips, more can be added from the results, and the results are the tracks closest to the seeds together.
-- **Filters.** The results can be filtered by Role and by Pace (slow, driving, frantic).
+- **Filters.** The results can be filtered by Role and by mood, with the mood pad.
 - **Map.** A scatter plot of every analyzed music track, colored by role. Hovering shows the track name and clicking plays it. Dragging draws a lasso that adds the enclosed tracks to the selection. Seeds and results are highlighted.
 - **Playlists.** The selection can become a playlist with **Create playlist**, which adds a composition with one shuffle track holding the selected tracks to a chosen group of the active configuration, or be appended to a track with **Add to existing track**.
 
