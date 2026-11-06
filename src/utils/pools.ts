@@ -12,13 +12,13 @@ export interface PoolInfo {
 /// The fixed pool vocabulary. Tension is never suggested by the analyzer; it
 /// exists so tracks can be moved into it by hand.
 export const POOLS: readonly PoolInfo[] = [
-  { id: 'peaceful', name: 'Peaceful & Tranquil', order: 0 },
-  { id: 'lighthearted', name: 'Lighthearted & Fun', order: 1 },
-  { id: 'somber', name: 'Reflective & Somber', order: 2 },
-  { id: 'awe', name: 'Optimistic & Awe', order: 3 },
-  { id: 'mysterious', name: 'Mysterious & Looming', order: 4 },
-  { id: 'epic', name: 'Epic & Intense', order: 5 },
-  { id: 'tension', name: 'Tense & Suspenseful', order: 6 },
+  { id: 'peaceful', name: 'Peaceful', order: 0 },
+  { id: 'lighthearted', name: 'Lighthearted', order: 1 },
+  { id: 'somber', name: 'Somber', order: 2 },
+  { id: 'awe', name: 'Wonder', order: 3 },
+  { id: 'mysterious', name: 'Mysterious', order: 4 },
+  { id: 'epic', name: 'Epic', order: 5 },
+  { id: 'tension', name: 'Tense', order: 6 },
 ];
 
 const BY_ID = new Map<Pool, PoolInfo>(POOLS.map((p) => [p.id, p]));
@@ -29,7 +29,7 @@ export const poolName = (pool: Pool | null): string | null => (pool === null ? n
 /// The pool shown for an entry: the confirmed one, else the suggestion.
 export const effectivePool = (entry: LibraryEntry): Pool | null => entry.poolUser ?? entry.poolAuto;
 
-/// The analyzer's suggestion as one line, e.g. "Epic & Intense 0.84 · next: Optimistic & Awe".
+/// The analyzer's suggestion as one line, e.g. "Epic 0.84 · next: Wonder".
 export function suggestionText(entry: LibraryEntry): string | null {
   if (entry.poolAuto === null) return null;
   const p = entry.poolAutoP === null ? '' : ` ${entry.poolAutoP.toFixed(2)}`;

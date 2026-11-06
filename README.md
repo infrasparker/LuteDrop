@@ -54,17 +54,17 @@ Every music entry can have a role, **Combat** or **Non-combat**. The analyzer sc
 
 Every music entry sits in one **mood pool**, from a short fixed list:
 
-- **Peaceful & Tranquil**
-- **Lighthearted & Fun**
-- **Reflective & Somber**
-- **Optimistic & Awe**
-- **Mysterious & Looming**
-- **Epic & Intense**
-- **Tense & Suspenseful**
+- **Peaceful**
+- **Lighthearted**
+- **Somber**
+- **Wonder**
+- **Mysterious**
+- **Epic**
+- **Tense**
 
 Ambiance entries have no pool.
 
-The analyzer suggests a pool for each analyzed track by comparing its sound with a few descriptions of each pool. Its scores are put on a common footing with a calibration taken once, from the first analysis run that covers at least 50 music tracks; until then no pools are suggested. **Tense & Suspenseful** is never suggested: it is too close to combat music to tell apart by ear, so tracks are moved into it by hand.
+The analyzer suggests a pool for each analyzed track by comparing its sound with a few descriptions of each pool. Its scores are put on a common footing with a calibration taken once, from the first analysis run that covers at least 50 music tracks; until then no pools are suggested. **Tense** is never suggested: it is too close to combat music to tell apart by ear, so tracks are moved into it by hand.
 
 - A suggested value is marked **✨ Suggested**; **✓ Confirm** keeps it. Picking a pool by hand confirms it. A confirmed value always wins over the analyzer's, and **↺ Use suggestion** clears it. When the two differ, the status reads "Confirmed · suggested: …". The same wording is used for roles, scales and tags.
 - The entry editor has a **Role** row, a **Pool** row with the seven pools, and a collapsed **Scales** section.
