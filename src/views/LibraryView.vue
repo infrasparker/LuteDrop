@@ -18,10 +18,11 @@ import type { LibraryEntry, LibraryEntryUsage, Role } from '@generated/index';
 import MoodFilters from '../components/MoodFilters.vue';
 import MoodProfile from '../components/MoodProfile.vue';
 import {
+  LENS_COLUMN_TITLE,
+  canSortBy,
   clickSort,
   emptyChipSelection,
   emptyMoodFilters,
-  lensHeaderParts,
   lensLabel,
   lensOn as lensIsOn,
   lensScore,
@@ -105,8 +106,8 @@ const filteredEntries = computed(() => {
 });
 
 // Column headers are the only sort control: status (missing files first),
-// Type, Name, the lens score column while a lens is included, Role, Energy
-// and Duration. `filteredEntries` is already in that order (`sortByKey`,
+// Type, Name, the lens score ("Match") while a lens is on, Role, Energy (only
+// while no lens is on: the ranking never depends on it then) and Duration. `filteredEntries` is already in that order (`sortByKey`,
 // entries with no value last), so the table's own sort is a no-op that only
 // draws the header arrow.
 const keepOrder = (): number => 0;
@@ -115,10 +116,10 @@ const headers = computed(() => [
   { title: 'Type', key: 'entryType', sortable: true, sort: keepOrder, width: '60px' },
   { title: 'Name', key: 'name', sortable: true, sort: keepOrder, width: '32%' },
   ...(lensOn.value
-    ? [{ title: lensLabel(moodFilters.value), key: 'lens', sortable: true, sort: keepOrder, width: '160px' }]
+    ? [{ title: LENS_COLUMN_TITLE, key: 'lens', sortable: true, sort: keepOrder, width: '160px' }]
     : []),
   { title: 'Role', key: 'role', sortable: true, sort: keepOrder, width: '60px' },
-  { title: 'Energy', key: 'energy', sortable: true, sort: keepOrder, width: '80px', align: 'end' as const },
+  { title: 'Energy', key: 'energy', sortable: !lensOn.value, sort: keepOrder, width: '80px', align: 'end' as const },
   { title: 'Tags', key: 'tags', sortable: false },
   { title: 'Duration', key: 'duration', sortable: true, sort: keepOrder, width: '80px', align: 'end' as const },
   { title: '', key: 'actions', sortable: false, width: '112px', align: 'end' as const },
@@ -130,6 +131,7 @@ const tableSortBy = computed(() => [{ key: sortKey.value, order: sortDir.value }
 /// first one that differs from ours (or ours again, flipped).
 function onSortBy(next: { key: string; order?: unknown }[]): void {
   const key = (next.find((s) => s.key !== sortKey.value)?.key ?? sortKey.value) as SortKey;
+  if (!canSortBy(key, moodFilters.value)) return;
   const picked = clickSort({ key: sortKey.value, dir: sortDir.value }, key);
   sortKey.value = picked.key;
   sortDir.value = picked.dir;
@@ -496,11 +498,8 @@ async function relocateEntry(entryId: string): Promise<void> {
       </template>
 
       <template #header.lens="{ column, getSortIcon }">
-        <div class="v-data-table-header__content lens-header" :title="lensLabel(moodFilters)">
-          <span>{{ lensHeaderParts(moodFilters).ranked }}</span>
-          <span v-if="lensHeaderParts(moodFilters).excluded.length > 0">
-            · <s class="text-error">{{ lensHeaderParts(moodFilters).excluded.join(', ') }}</s>
-          </span>
+        <div class="v-data-table-header__content lens-header" :title="`${LENS_COLUMN_TITLE}: ${lensLabel(moodFilters)}`">
+          <span>{{ column.title }}</span>
           <VIcon class="v-data-table-header__sort-icon" :icon="getSortIcon(column)" />
         </div>
       </template>

@@ -79,14 +79,15 @@ export const topMoodText = (entry: LibraryEntry, n = 2): string =>
 
 // --- Lenses and filters ---
 
-/// A filter chip's state. Chips cycle off → include → exclude → off.
+/// A tag chip's state. Tag chips cycle off → include → exclude → off. (Mood
+/// and Energy chips are plain on/off toggles; see `MoodFilters`.)
 export type ChipState = 'off' | 'include' | 'exclude';
 
 export function nextChipState(state: ChipState): ChipState {
   return state === 'off' ? 'include' : state === 'include' ? 'exclude' : 'off';
 }
 
-/// Included and excluded chips of one kind (tags, or mood lenses).
+/// Included and excluded tag chips.
 export interface ChipSelection {
   include: string[];
   exclude: string[];
@@ -110,67 +111,94 @@ export function cycleChip(sel: ChipSelection, id: string): ChipSelection {
   return { include, exclude };
 }
 
+/// `list` with `id` added at the end (when absent) or removed (when present),
+/// for the on/off chips.
+export function toggleIn<T>(list: readonly T[], id: T): T[] {
+  return list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
+}
+
 export type RoleChoice = 'all' | Role;
 
+/// The three Energy bands of the lens row. Each is an on/off chip; a track
+/// passes when its Energy is in any band that is on.
+export type EnergyBand = 'low' | 'mid' | 'high';
+
+/// Low is below this; Mid runs from here to `ENERGY_HIGH_ABOVE`, both ends
+/// included; High is above that. The edges sit halfway between the five
+/// levels, so 0 and 0.25 are Low, 0.5 is Mid, 0.75 and 1 are High.
+export const ENERGY_LOW_BELOW = 0.375;
+export const ENERGY_HIGH_ABOVE = 0.625;
+
+export const ENERGY_BANDS: readonly { id: EnergyBand; name: string; hint: string }[] = [
+  { id: 'low', name: 'Low', hint: `Energy below ${ENERGY_LOW_BELOW}` },
+  { id: 'mid', name: 'Mid', hint: `Energy ${ENERGY_LOW_BELOW} to ${ENERGY_HIGH_ABOVE}` },
+  { id: 'high', name: 'High', hint: `Energy above ${ENERGY_HIGH_ABOVE}` },
+];
+
+/// The band an Energy value falls in.
+export function energyBand(value: number): EnergyBand {
+  if (value < ENERGY_LOW_BELOW) return 'low';
+  if (value > ENERGY_HIGH_ABOVE) return 'high';
+  return 'mid';
+}
+
 export interface MoodFilters {
-  /// Mood lenses, in the order they were picked. Included moods rank the
-  /// list by the weakest of their scores; an excluded mood keeps only
-  /// tracks scoring below `EXCLUDE_BELOW` in it.
-  lenses: ChipSelection;
+  /// Mood lenses that are on, in the order they were picked. They rank the
+  /// list by the weakest of their scores.
+  lenses: MoodId[];
+  /// Energy bands that are on. None on means no Energy filter.
+  bands: EnergyBand[];
   role: RoleChoice;
 }
 
 export function emptyMoodFilters(): MoodFilters {
-  return { lenses: emptyChipSelection(), role: 'all' };
+  return { lenses: [], bands: [], role: 'all' };
 }
 
-/// An excluded mood keeps a track only while its score there is below this.
-export const EXCLUDE_BELOW = 0.5;
+/// True while at least one mood lens is on (the list is ranked).
+export const lensOn = (f: Pick<MoodFilters, 'lenses'>): boolean => f.lenses.length > 0;
 
-/// True while at least one mood lens is included (the list is ranked).
-export const lensOn = (f: Pick<MoodFilters, 'lenses'>): boolean => f.lenses.include.length > 0;
-
-/// The entry's score under the included lenses: the weakest of them, so a
-/// track ranks high only when it is high in every included mood. Null when
-/// no lens is included, for ambiance, and for music missing a value for an
-/// included mood.
+/// The entry's score under the lenses that are on: the weakest of them, so a
+/// track ranks high only when it is high in every one. Null when no lens is
+/// on, for ambiance, and for music missing a value for one of the lenses.
+/// Energy plays no part.
 export function lensScore(entry: LibraryEntry, f: Pick<MoodFilters, 'lenses'>): number | null {
-  const ids = f.lenses.include;
+  const ids = f.lenses;
   if (ids.length === 0 || entry.entryType !== 'music') return null;
   const values = ids.map((id) => moodValue(entry, id));
   if (values.some((v) => v === null)) return null;
   return Math.min(...(values as number[]));
 }
 
-/// True when the entry passes the lens and role filters. With any lens on
-/// (included or excluded) only music shows (ambiance has no moods). Music
-/// not scored yet stays, ranked last; an excluded mood drops a track only
-/// when its score there is known and at least `EXCLUDE_BELOW`. A role
-/// choice shows music with that role (ambiance has none).
+/// True when the entry's Energy (set by you, else suggested) is in one of
+/// `bands`. With no band on, everything passes; with any band on, an entry
+/// with no Energy value does not.
+export function matchesEnergyBands(entry: LibraryEntry, bands: readonly EnergyBand[]): boolean {
+  if (bands.length === 0) return true;
+  const v = moodValue(entry, ENERGY_ID);
+  return v !== null && bands.includes(energyBand(v));
+}
+
+/// True when the entry passes the lens, Energy and role filters. With any
+/// lens or band on only music shows (ambiance has no moods). Music not scored
+/// in a lens's mood stays, ranked last. A role choice shows music with that
+/// role (ambiance has none).
 export function matchesMoodFilters(entry: LibraryEntry, f: MoodFilters): boolean {
-  const anyLens = f.lenses.include.length > 0 || f.lenses.exclude.length > 0;
-  if (anyLens && entry.entryType !== 'music') return false;
-  for (const id of f.lenses.exclude) {
-    const v = moodValue(entry, id);
-    if (v !== null && v >= EXCLUDE_BELOW) return false;
-  }
+  const anyOn = f.lenses.length > 0 || f.bands.length > 0;
+  if (anyOn && entry.entryType !== 'music') return false;
+  if (!matchesEnergyBands(entry, f.bands)) return false;
   if (f.role === 'all') return true;
   return entry.role === f.role;
 }
 
-/// The names in the lens column's header: what is ranked (included moods)
-/// and what is excluded (shown struck through after a middot).
-export function lensHeaderParts(f: Pick<MoodFilters, 'lenses'>): { ranked: string; excluded: string[] } {
-  return { ranked: f.lenses.include.map(moodName).join(' + '), excluded: f.lenses.exclude.map(moodName) };
-}
+/// The title of the column that shows the lens score, in the Library and Scry.
+export const LENS_COLUMN_TITLE = 'Match';
 
-/// Plain-text version of the lens header, for hover text: "Grim + Heroic",
-/// "Heroic · not Grim".
+/// Hover text for the lens column: what the score is, e.g. "Heroic" or
+/// "weakest of Heroic, Grim".
 export function lensLabel(f: Pick<MoodFilters, 'lenses'>): string {
-  const { ranked, excluded } = lensHeaderParts(f);
-  const not = excluded.length > 0 ? ` · not ${excluded.join(', ')}` : '';
-  const how = f.lenses.include.length > 1 ? ' (the weakest of them)' : '';
-  return `${ranked}${how}${not}`;
+  const names = f.lenses.map(moodName);
+  return names.length > 1 ? `weakest of ${names.join(', ')}` : (names[0] ?? '');
 }
 
 /// True when an entry with `tags` passes the tag chips: it has at least one
@@ -183,8 +211,8 @@ export function matchesTagSelection(tags: string[], sel: ChipSelection): boolean
 // --- Sorting ---
 
 /// Sort keys, picked from the list's column headers. `match` keeps the
-/// incoming order (Scry's ranking); `lens` ranks by the lens score and is
-/// there while a lens is included. `status`, `entryType`, `role` and
+/// incoming order (Scry's search ranking, its "Search" column); `lens` ranks
+/// by the lens score (the "Match" column) and is there while a lens is on. `status`, `entryType`, `role` and
 /// `duration` are the Library's other sortable columns.
 export type SortKey = 'match' | 'lens' | 'name' | 'energy' | 'status' | 'entryType' | 'role' | 'duration';
 export type SortDir = 'asc' | 'desc';
@@ -202,6 +230,12 @@ export const DEFAULT_DIR: Record<SortKey, SortDir> = {
   duration: 'asc',
 };
 
+/// False for a header that does not sort in the current state: Energy while
+/// a mood lens is on, so the ranking never depends on Energy then.
+export function canSortBy(key: SortKey, f: Pick<MoodFilters, 'lenses'>): boolean {
+  return !(key === 'energy' && lensOn(f));
+}
+
 /// The sort after a header click: a new key starts in its default
 /// direction, the current key flips.
 export function clickSort(current: { key: SortKey; dir: SortDir }, key: SortKey): { key: SortKey; dir: SortDir } {
@@ -209,7 +243,7 @@ export function clickSort(current: { key: SortKey; dir: SortDir }, key: SortKey)
   return { key, dir: current.dir === 'asc' ? 'desc' : 'asc' };
 }
 
-/// The sort after the lenses changed: including the first lens ranks by it
+/// The sort after the lenses changed: turning on the first lens ranks by it
 /// (highest first); dropping the last one while ranking by it goes back to
 /// the view's own default (`fallback`: Name in the Library, Match in Scry).
 export function sortForLens(
@@ -258,6 +292,8 @@ function sortValue(
 /// A sorted copy of `items` (stable). `entryOf` picks the library entry from
 /// an item, so Scry's rows sort the same way as Library entries. `match`
 /// keeps the incoming order (reversed for ascending). Ties go by name.
+/// Energy is not a sort while a lens is on (`canSortBy`); asked for then, it
+/// ranks by the lens score instead.
 export function sortByKey<T>(
   items: T[],
   key: SortKey,
@@ -266,6 +302,7 @@ export function sortByKey<T>(
   entryOf: (item: T) => LibraryEntry,
   isMissing: (e: LibraryEntry) => boolean = () => false,
 ): T[] {
+  if (!canSortBy(key, filters)) key = 'lens';
   if (key === 'match') return dir === 'desc' ? items : [...items].reverse();
   const out = [...items];
   if (key === 'name') {

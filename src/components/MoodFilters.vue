@@ -3,29 +3,29 @@ import { computed, watch } from 'vue';
 import { useAppStore } from '../stores/appStore';
 import FilterChip from './FilterChip.vue';
 import {
-  chipState,
-  cycleChip,
+  ENERGY_BANDS,
   lensOn,
   moodsOnly,
   sortForLens,
+  toggleIn,
+  type EnergyBand,
   type MoodFilters,
   type SortDir,
   type SortKey,
 } from '../utils/moods';
 
 /// The filter bar shared by the Library and Scry: a lens chip per mood of the
-/// vocabulary and the Role toggle. While the vocabulary needs recalibrating,
-/// a marker after the lens chips says so and opens the Moods settings.
+/// vocabulary, then the three Energy band chips (Low, Mid, High), then the
+/// Role toggle. While the vocabulary needs recalibrating, a marker after the
+/// chips says so and opens the Moods settings.
 ///
-/// A lens chip cycles off → include → exclude. Included moods rank the list
-/// by the weakest of their scores; an excluded mood keeps only tracks scoring
-/// below 0.5 in it. Including the first lens sorts by the lens score
-/// (highest first); dropping the last one while sorted by it goes back to
-/// the view's `defaultSort`. Sorting itself is done from the list's column headers. Lenses and
-/// role apply to music only, so callers hide the bar for ambiance.
-///
-/// Energy has no lens chip: it is a sort key (its column header), not a mood
-/// to rank by.
+/// Every chip here is on/off. Moods that are on rank the list by the weakest
+/// of their scores. Energy bands only filter: a track shows when its Energy
+/// is in any band that is on. Turning on the first mood sorts by the lens
+/// score (highest first); turning off the last one while sorted by it goes
+/// back to the view's `defaultSort`. Sorting itself is done from the list's
+/// column headers. Lenses, bands and role apply to music only, so callers
+/// hide the bar for ambiance.
 const filters = defineModel<MoodFilters>({ required: true });
 const sort = defineModel<SortKey>('sort', { required: true });
 const dir = defineModel<SortDir>('dir', { required: true });
@@ -42,9 +42,9 @@ const moods = computed(() => moodsOnly());
 // A lens that is not a mood of the vocabulary (removed, or Energy) is dropped.
 watch(moods, (list) => {
   const known = (id: string): boolean => list.some((m) => m.id === id);
-  const { include, exclude } = filters.value.lenses;
-  if (include.every(known) && exclude.every(known)) return;
-  filters.value = { ...filters.value, lenses: { include: include.filter(known), exclude: exclude.filter(known) } };
+  const lenses = filters.value.lenses;
+  if (lenses.every(known)) return;
+  filters.value = { ...filters.value, lenses: lenses.filter(known) };
 });
 
 watch(
@@ -56,8 +56,12 @@ watch(
   },
 );
 
-function cycleLens(id: string): void {
-  filters.value = { ...filters.value, lenses: cycleChip(filters.value.lenses, id) };
+function toggleLens(id: string): void {
+  filters.value = { ...filters.value, lenses: toggleIn(filters.value.lenses, id) };
+}
+
+function toggleBand(id: EnergyBand): void {
+  filters.value = { ...filters.value, bands: toggleIn(filters.value.bands, id) };
 }
 
 function setRole(role: MoodFilters['role']): void {
@@ -72,10 +76,25 @@ function setRole(role: MoodFilters['role']): void {
         v-for="m in moods"
         :key="m.id"
         :label="m.name"
-        :state="chipState(filters.lenses, m.id)"
+        :state="filters.lenses.includes(m.id) ? 'include' : 'off'"
         :size="size"
         off-variant="outlined"
-        @cycle="cycleLens(m.id)"
+        toggle
+        @cycle="toggleLens(m.id)"
+      />
+    </div>
+    <div class="d-flex align-center ga-1 energy-bands" role="group" aria-label="Energy bands">
+      <VIcon :size="size" class="text-medium-emphasis" title="Energy" aria-hidden="true">mdi-lightning-bolt</VIcon>
+      <FilterChip
+        v-for="b in ENERGY_BANDS"
+        :key="b.id"
+        :label="b.name"
+        :detail="b.hint"
+        :state="filters.bands.includes(b.id) ? 'include' : 'off'"
+        :size="size"
+        off-variant="outlined"
+        toggle
+        @cycle="toggleBand(b.id)"
       />
     </div>
     <VBtn
@@ -110,5 +129,11 @@ function setRole(role: MoodFilters['role']): void {
 <style scoped>
 .lens-chips {
   max-width: 100%;
+}
+
+/* Set apart from the mood chips: they filter, the moods rank. */
+.energy-bands {
+  padding-left: 8px;
+  border-left: 1px solid rgba(var(--v-theme-on-surface), 0.2);
 }
 </style>
