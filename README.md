@@ -66,11 +66,11 @@ Ambiance entries have no pool.
 
 The analyzer suggests a pool for each analyzed track by comparing its sound with a few descriptions of each pool. Its scores are put on a common footing with a calibration taken once, from the first analysis run that covers at least 50 music tracks; until then no pools are suggested. **Tense** is never suggested: it is too close to combat music to tell apart by ear, so tracks are moved into it by hand.
 
-- A suggested value is marked **✨ Suggested**; **✓ Confirm** keeps it. Picking a pool by hand confirms it. A confirmed value always wins over the analyzer's, and **↺ Use suggestion** clears it. When the two differ, the status reads "Confirmed · suggested: …". The same wording is used for roles, scales and tags.
-- The entry editor has a **Role** row, a **Pool** row with the seven pools, and a collapsed **Scales** section.
+- A suggested value is marked **✨ Suggested**; **✓ Confirm** keeps it. Picking a pool by hand confirms it. A confirmed value always wins over the analyzer's, and **↺ Use suggestion** clears it. When the two differ, the status reads "Confirmed · suggested: …". The same wording is used for roles and tags.
+- The entry editor has a **Role** row and a **Pool** row with the seven pools.
 - The Library and Scry have a filter bar: pool chips with counts (any number at once, plus **Unsorted** for music with no pool), the role filter, and a **Sort** menu (Name, Energy, Brightness, Size). The bulk bar's **Set pool…** sets the pool of several music entries at once.
 
-**Scales.** Every analyzed music entry also has three scales, each with three steps: **Bright ↔ Dark** (Dark, Neutral, Bright), **Intimate ↔ Grand** (Intimate, Moderate, Grand) and **Calm ↔ Energetic** (Calm, Steady, Energetic). The analyzer scores each scale as a z-score across the library's analyzed music, and a score more than 0.6 from the mean moves the entry off the middle step. The scales are used for sorting and shade the word on the Review card; they can be confirmed or changed in the Scales section.
+**Scales.** Every analyzed music entry also has three scales, each with three steps: **Bright ↔ Dark** (Dark, Neutral, Bright), **Intimate ↔ Grand** (Intimate, Moderate, Grand) and **Calm ↔ Energetic** (Calm, Steady, Energetic). The analyzer scores each scale as a z-score across the library's analyzed music, and a score more than 0.6 from the mean moves the entry off the middle step. The scales are not shown as controls; they drive the Sort menu and shade the word on the Review card.
 
 ### Review
 

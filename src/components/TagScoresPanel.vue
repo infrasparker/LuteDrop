@@ -5,7 +5,6 @@ import { useToast } from '../composables/useToast';
 import { useAutoTagEvents } from '../composables/useAutoTagEvents';
 import { useAppStore } from '../stores/appStore';
 import type { EntryTagScores, TagScore } from '@generated/index';
-import { MOOD_SCALES, SCALE_NAMES, scaleValues } from '../utils/mood';
 import { poolName } from '../utils/pools';
 
 // Expansion panel for the entry editor: how strongly the analyzer thinks each
@@ -117,18 +116,10 @@ function gateLabel(): string | null {
   return `${name} · ${e.roleUser !== null ? 'confirmed' : 'suggested'}`;
 }
 
-function signed(z: number): string {
-  return `${z >= 0 ? '+' : ''}${z.toFixed(2)}`;
-}
-
 const soundRows = computed<{ label: string; value: string }[]>(() => {
   const e = entry.value;
   if (!e) return [];
   const rows: { label: string; value: string }[] = [];
-  for (const scale of MOOD_SCALES) {
-    const { z } = scaleValues(e, scale);
-    if (z !== null) rows.push({ label: SCALE_NAMES[scale], value: `z = ${signed(z)}` });
-  }
   // The pool suggestion with its probability and the runner-up.
   if (e.poolAuto !== null) {
     const p = e.poolAutoP === null ? '' : ` · p = ${e.poolAutoP.toFixed(2)}`;

@@ -12,7 +12,6 @@ import { useReviewQueue } from '../composables/useReviewQueue';
 import { useLibraryPreview } from '../composables/useLibraryPreview';
 import RoleControl from '../components/RoleControl.vue';
 import PoolControl from '../components/PoolControl.vue';
-import ScalesPanel from '../components/ScalesPanel.vue';
 import { effectivePool, suggestionText } from '../utils/pools';
 import { entryReadout } from '../utils/readout';
 
@@ -212,7 +211,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
         <PoolControl :entry="current" />
       </div>
 
-      <ScalesPanel :entry="current" class="mb-3" />
 
       <div v-if="neighbours.length > 0" class="d-flex flex-wrap align-center ga-2 mb-3">
         <span class="text-caption text-medium-emphasis">Sounds like</span>

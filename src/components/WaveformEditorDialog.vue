@@ -7,7 +7,6 @@ import TagChip from './TagChip.vue';
 import TagScoresPanel from './TagScoresPanel.vue';
 import RoleControl from './RoleControl.vue';
 import PoolControl from './PoolControl.vue';
-import ScalesPanel from './ScalesPanel.vue';
 import { open } from '@tauri-apps/plugin-dialog';
 import { AUDIO_EXTENSIONS } from '../constants';
 import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
@@ -305,7 +304,7 @@ async function relocateFile(): Promise<void> {
           </template>
         </VCombobox>
 
-        <!-- Role and pool (music only): label | options | status grid, then the scales -->
+        <!-- Role and pool (music only): label | options | status grid -->
         <template v-if="editEntryType === 'music'">
           <div class="facet-grid mb-3">
             <span class="text-caption text-medium-emphasis">Role</span>
@@ -318,7 +317,6 @@ async function relocateFile(): Promise<void> {
             <span class="text-caption text-medium-emphasis">Pool</span>
             <PoolControl :entry="entry" />
           </div>
-          <ScalesPanel :entry="entry" class="mb-4" />
         </template>
 
         <!-- Volume -->
