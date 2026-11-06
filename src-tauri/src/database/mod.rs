@@ -508,8 +508,9 @@ fn seed_mood_vocabulary(conn: &Connection) -> SqlResult<()> {
 /// the stored row with it byte for byte.
 const V12_DEFAULT_MOOD_VOCABULARY_JSON: &str = r#"{"moods":[{"id":"peaceful","name":"Peaceful","prompts":["benign, pleasant, agreeable music with no threat","music that signals safety, whatever its tempo","friendly and harmless"]},{"id":"sorrowful","name":"Sorrowful","prompts":["reflective, somber, sorrowful music","sad, mournful, melancholic music","wistful, grieving, nostalgic music"]},{"id":"wondrous","name":"Wondrous","prompts":["music full of wonder and awe","sacred, divine, celestial music, a choir in a cathedral","a breathtaking vista, hopeful and vast, slow and soaring"]},{"id":"joyful","name":"Joyful","prompts":["joyful, glad music, any tempo","bright major-key happiness","contented and sunny"]},{"id":"quirky","name":"Quirky","prompts":["quirky, weird, offbeat music","groovy, funky, eccentric and strange","campy, oddball, mischievous tune"]},{"id":"mysterious","name":"Mysterious","prompts":["mysterious, unsettling, eerie music","strange, uncanny, otherworldly sounds","quiet suspense and looming dread, something is about to happen"]},{"id":"grim","name":"Grim","prompts":["horror","dark","heavy"]},{"id":"heroic","name":"Heroic","prompts":["heroic, triumphant, bold orchestral music","a rousing victory anthem, brass and choir soaring","adventurous, noble, uplifting epic music"]}],"energy":{"positive":["energetic","upbeat","powerful"],"negative":["slow","relaxing","calm"]}}"#;
 
-/// New default words for Peaceful, Wondrous and Joyful. Runs inside the
-/// migration runner's transaction.
+/// New default prompts: every mood, and each side of Energy, becomes one
+/// prompt, a cluster of tag words. Runs inside the migration runner's
+/// transaction.
 ///
 /// Only a vocabulary still exactly as v12 seeded it is replaced: the stored
 /// row must equal `V12_DEFAULT_MOOD_VOCABULARY_JSON` byte for byte. Then the
@@ -2056,9 +2057,10 @@ mod tests {
         assert_ne!(stored, V12_DEFAULT_MOOD_VOCABULARY_JSON);
         let seeded = serde_json::from_str::<MoodVocabulary>(&stored).unwrap();
         let prompts = |id: &str| seeded.moods.iter().find(|m| m.id == id).unwrap().prompts.clone();
-        assert_eq!(prompts("peaceful"), ["relaxing", "positive"]);
-        assert_eq!(prompts("wondrous"), ["hopeful", "inspiring"]);
-        assert_eq!(prompts("joyful"), ["happy", "upbeat"]);
+        assert_eq!(prompts("peaceful"), ["relaxing, positive"]);
+        assert_eq!(prompts("grim"), ["horror, dark, heavy"]);
+        assert!(seeded.moods.iter().all(|m| m.prompts.len() == 1));
+        assert_eq!(seeded.energy.positive, ["energetic, upbeat, powerful"]);
         for old in [
             "role", "role_source", "role_score", "pace", "pace_source", "pace_score",
             "pace_auto", "pace_auto_score", "pace_user", "mood_light", "mood_light_user",
@@ -3105,28 +3107,54 @@ mod tests {
         assert_eq!(mood_bright_user(&conn, "M").as_deref(), Some("high"));
     }
 
-    /// The defaults as schema v12 shipped them: today's defaults with the
-    /// old words for Peaceful, Wondrous and Joyful.
+    /// The defaults as schema v12 shipped them (three sentences per mood
+    /// for most, three tag words per side of Energy).
     fn v12_default_vocabulary() -> MoodVocabulary {
-        let mut v = MoodVocabulary::defaults();
-        for m in &mut v.moods {
-            let old: &[&str] = match m.id.as_str() {
-                "peaceful" => &[
+        let mood = |id: &str, name: &str, prompts: &[&str]| crate::models::MoodDef {
+            id: id.into(),
+            name: name.into(),
+            prompts: prompts.iter().map(|p| p.to_string()).collect(),
+        };
+        MoodVocabulary {
+            moods: vec![
+                mood("peaceful", "Peaceful", &[
                     "benign, pleasant, agreeable music with no threat",
                     "music that signals safety, whatever its tempo",
                     "friendly and harmless",
-                ],
-                "wondrous" => &[
+                ]),
+                mood("sorrowful", "Sorrowful", &[
+                    "reflective, somber, sorrowful music",
+                    "sad, mournful, melancholic music",
+                    "wistful, grieving, nostalgic music",
+                ]),
+                mood("wondrous", "Wondrous", &[
                     "music full of wonder and awe",
                     "sacred, divine, celestial music, a choir in a cathedral",
                     "a breathtaking vista, hopeful and vast, slow and soaring",
-                ],
-                "joyful" => &["joyful, glad music, any tempo", "bright major-key happiness", "contented and sunny"],
-                _ => continue,
-            };
-            m.prompts = old.iter().map(|p| p.to_string()).collect();
+                ]),
+                mood("joyful", "Joyful", &["joyful, glad music, any tempo", "bright major-key happiness", "contented and sunny"]),
+                mood("quirky", "Quirky", &[
+                    "quirky, weird, offbeat music",
+                    "groovy, funky, eccentric and strange",
+                    "campy, oddball, mischievous tune",
+                ]),
+                mood("mysterious", "Mysterious", &[
+                    "mysterious, unsettling, eerie music",
+                    "strange, uncanny, otherworldly sounds",
+                    "quiet suspense and looming dread, something is about to happen",
+                ]),
+                mood("grim", "Grim", &["horror", "dark", "heavy"]),
+                mood("heroic", "Heroic", &[
+                    "heroic, triumphant, bold orchestral music",
+                    "a rousing victory anthem, brass and choir soaring",
+                    "adventurous, noble, uplifting epic music",
+                ]),
+            ],
+            energy: crate::models::EnergyPrompts {
+                positive: vec!["energetic".into(), "upbeat".into(), "powerful".into()],
+                negative: vec!["slow".into(), "relaxing".into(), "calm".into()],
+            },
         }
-        v
     }
 
     #[test]
