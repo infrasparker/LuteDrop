@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, StringConstraints
 
 from . import heads, moods, rhythm, scry
 from .embed import Embedder, EmbeddingCache, MuqEmbedder, decode_track
+from .reference import ReferenceSet, load_reference, reference_stats
 
 MAX_EMBED_ITEMS = 32
 
@@ -115,6 +116,7 @@ def create_app(
     cache: EmbeddingCache,
     token: str,
     executor_factory: Callable[[], Executor] | None = None,
+    reference: ReferenceSet | None = None,
 ) -> FastAPI:
     # Load the model in the background so /health answers while the weights
     # download on first start. `loaded` is set once loading has finished,
@@ -168,6 +170,7 @@ def create_app(
             "cache_count": cache.count(),
             "ready": loaded.is_set() and not load_error,
             "error": load_error[0] if load_error else None,
+            "reference": {"set": reference.set_id, "tracks": reference.tracks} if reference else None,
         }
 
     @app.post("/embed")
@@ -274,9 +277,14 @@ def create_app(
                 text_vecs.update(zip(missing, vecs))
             return {name: np.vstack([text_vecs[t] for t in texts]) for name, texts in groups.items()}
 
-    def mood_scores(req: ScoreRequest, target_hashes: list[str], X_targets: np.ndarray) -> dict[str, dict] | None:
+    def mood_scores(
+        req: ScoreRequest, target_hashes: list[str], X_targets: np.ndarray
+    ) -> tuple[dict[str, dict], dict | None] | None:
+        """Raw mood scores per target, plus the reference set's stats for the
+        same prompts (None without a reference set). None overall while the
+        prompts cannot be embedded."""
         if not target_hashes:
-            return {}
+            return {}, None
         mood_groups = req.mood_prompts if req.mood_prompts is not None else moods.MOODS
         if req.energy_prompts is not None:
             energy_pos, energy_neg = req.energy_prompts.positive, req.energy_prompts.negative
@@ -290,13 +298,15 @@ def create_app(
         # with its prompts; energy is positive minus negative.
         sims = {name: (X_targets @ v.T).mean(axis=1) for name, v in vecs.items()}
         energy = sims["energy+"] - sims["energy-"]
-        return {
+        scores = {
             h: {
                 "moods": {name: float(sims[name][i]) for name in mood_groups},
                 "energy": float(energy[i]),
             }
             for i, h in enumerate(target_hashes)
         }
+        stats = reference_stats(reference, vecs, list(mood_groups)) if reference else None
+        return scores, stats
 
     @app.post("/score")
     def score(req: ScoreRequest):
@@ -314,7 +324,9 @@ def create_app(
             out["pace"] = score_head(req.pace, r_hashes, R_targets, rhythm_vectors, scale=True)
         mood = mood_scores(req, target_hashes, X_targets)
         if mood is not None:
-            out["mood"] = mood
+            out["mood"], mood_reference = mood
+            if mood_reference is not None:
+                out["mood_reference"] = mood_reference
         return out
 
     @app.post("/preview")
@@ -389,6 +401,7 @@ def factory() -> FastAPI:
         MuqEmbedder(),
         EmbeddingCache(Path(os.environ.get("TAGGER_CACHE_DIR", "/cache"))),
         os.environ.get("LUTEDROP_TAGGER_TOKEN", ""),
+        reference=load_reference(Path(__file__).parent / "reference", MuqEmbedder.name),
     )
 
 

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from tagger import app as app_module, rhythm
 from tagger.app import create_app
 from tagger.embed import EmbeddingCache
+from tagger.reference import ReferenceSet, reference_stats
 
 TOKEN = "secret"
 HEADERS = {"X-LuteDrop-Token": TOKEN}
@@ -87,7 +88,7 @@ def test_empty_server_token_rejects_empty_header(tmp_path):
 def test_health_reports_model_and_cache_count(client):
     embed(client, [("h1", "hi-1")])
     body = client.get("/health", headers=HEADERS).json()
-    assert body == {"model": "fake@test", "cache_count": 1, "ready": True, "error": None}
+    assert body == {"model": "fake@test", "cache_count": 1, "ready": True, "error": None, "reference": None}
 
 
 class SlowEmbedder(FakeEmbedder):
@@ -728,3 +729,63 @@ def test_score_with_failed_model_omits_mood(tmp_path):
         time.sleep(0.02)
     r = c.post("/score", json={"gate": {}, "targets": ["a"]}, headers=HEADERS)
     assert r.status_code == 200 and "mood" not in r.json()
+
+
+REF_VECTORS = np.random.default_rng(3).normal(size=(6, DIM))
+REF_VECTORS /= np.linalg.norm(REF_VECTORS, axis=1, keepdims=True)
+
+
+@pytest.fixture
+def ref_client(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), FEATS))
+    reference = ReferenceSet("test-set", "fake@test", REF_VECTORS)
+    app = create_app(
+        FakeEmbedder(),
+        EmbeddingCache(tmp_path),
+        TOKEN,
+        executor_factory=lambda: ThreadPoolExecutor(2),
+        reference=reference,
+    )
+    return TestClient(app)
+
+
+def test_score_returns_mood_reference_for_the_prompts_sent(ref_client):
+    embed(ref_client, [("h1", "hi-1")])
+    body = ref_client.post(
+        "/score",
+        json={
+            "gate": {"positives": [], "negatives": []},
+            "targets": ["h1"],
+            "mood_prompts": {"grim": ["a", "b"], "joyful": ["c"]},
+            "energy_prompts": {"positive": ["d"], "negative": ["e"]},
+        },
+        headers=HEADERS,
+    ).json()
+    vec = FakeEmbedder().embed_text(["x"])
+    prompts = {"grim": np.vstack([vec[0]] * 2), "joyful": vec, "energy+": vec, "energy-": vec}
+    expected = reference_stats(
+        ReferenceSet("test-set", "fake@test", REF_VECTORS), prompts, ["grim", "joyful"]
+    )
+    got = body["mood_reference"]
+    assert set(got["stats"]) == {"grim", "joyful", "energy"}
+    assert got["set"] == "test-set" and got["tracks"] == 6
+    for k, v in expected["stats"].items():
+        assert got["stats"][k]["mean"] == pytest.approx(v["mean"])
+        assert got["stats"][k]["sd"] == pytest.approx(v["sd"])
+
+
+def test_score_without_reference_has_no_mood_reference(client):
+    embed(client, [("h1", "hi-1")])
+    body = client.post(
+        "/score",
+        json={"gate": {"positives": [], "negatives": []}, "targets": ["h1"]},
+        headers=HEADERS,
+    ).json()
+    assert "mood" in body
+    assert "mood_reference" not in body
+
+
+def test_health_reports_reference(ref_client, client):
+    got = ref_client.get("/health", headers=HEADERS).json()
+    assert got["reference"] == {"set": "test-set", "tracks": 6}
+    assert client.get("/health", headers=HEADERS).json()["reference"] is None
