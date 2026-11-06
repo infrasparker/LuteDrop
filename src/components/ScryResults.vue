@@ -4,7 +4,7 @@
 // bar, and an "Add as seed" action. Clicking the row itself opens the entry's
 // details.
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
-import type { LibraryEntry, Role, VibeHit } from '@generated/index';
+import type { LibraryEntry, Role, ScryHit } from '@generated/index';
 import PoolFilters from './PoolFilters.vue';
 import {
   emptyPoolFilters,
@@ -15,7 +15,7 @@ import {
 } from '../utils/pools';
 
 const props = defineProps<{
-  hits: VibeHit[];
+  hits: ScryHit[];
   entriesById: Map<string, LibraryEntry>;
   selectedIds: string[];
   seedIds: string[];
@@ -155,7 +155,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="vibe-results d-flex flex-column">
+  <div class="scry-results d-flex flex-column">
     <div class="d-flex flex-wrap align-center ga-2 mb-2">
       <VCheckboxBtn
         :model-value="allVisibleSelected"
@@ -182,12 +182,12 @@ onBeforeUnmount(() => {
       </span>
     </div>
 
-    <div ref="listEl" class="vibe-results-list flex-grow-1" @mouseleave="setHovered(null)">
+    <div ref="listEl" class="scry-results-list flex-grow-1" @mouseleave="setHovered(null)">
       <div
         v-for="{ entry, score } in visibleRows"
         :key="entry.id"
         :data-entry-id="entry.id"
-        class="vibe-row d-flex align-center ga-1 px-1"
+        class="scry-row d-flex align-center ga-1 px-1"
         :class="{
           'is-playing': playingId === entry.id,
           'is-selected': selectedSet.has(entry.id),
@@ -251,40 +251,40 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.vibe-results {
+.scry-results {
   min-height: 0;
   height: 100%;
 }
 
-.vibe-results-list {
+.scry-results-list {
   min-height: 0;
   overflow-y: auto;
 }
 
-.vibe-row {
+.scry-row {
   min-height: 44px;
   cursor: pointer;
   border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.06);
   border-left: 3px solid transparent;
 }
 
-.vibe-row.is-selected {
+.scry-row.is-selected {
   background: rgba(var(--v-theme-primary), 0.06);
 }
 
-.vibe-row:hover {
+.scry-row:hover {
   background: rgba(var(--v-theme-on-surface), 0.04);
 }
 
-.vibe-row.is-selected:hover {
+.scry-row.is-selected:hover {
   background: rgba(var(--v-theme-primary), 0.06);
 }
 
-.vibe-row.is-playing {
+.scry-row.is-playing {
   border-left-color: rgb(var(--v-theme-primary));
 }
 
-.vibe-row.is-flash {
+.scry-row.is-flash {
   animation: row-flash 1.6s ease-out;
 }
 

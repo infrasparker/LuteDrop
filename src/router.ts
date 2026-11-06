@@ -1,7 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import SoundstageView from './views/SoundstageView.vue';
 import LibraryView from './views/LibraryView.vue';
-import VibeView from './views/VibeView.vue';
+import ScryView from './views/ScryView.vue';
 import ReviewView from './views/ReviewView.vue';
 
 const router = createRouter({
@@ -9,7 +9,7 @@ const router = createRouter({
   routes: [
     { path: '/', name: 'soundstage', component: SoundstageView },
     { path: '/library', name: 'library', component: LibraryView },
-    { path: '/scry', name: 'scry', component: VibeView },
+    { path: '/scry', name: 'scry', component: ScryView },
     { path: '/review', name: 'review', component: ReviewView },
   ],
 });

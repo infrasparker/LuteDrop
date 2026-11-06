@@ -6,7 +6,7 @@
 // once but does not move on by itself.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { VibeHit } from '@generated/index';
+import type { ScryHit } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useReviewQueue } from '../composables/useReviewQueue';
 import { useLibraryPreview } from '../composables/useLibraryPreview';
@@ -84,7 +84,7 @@ watch(
     if (id === null || pool === null) return;
     try {
       const hits = await withTimeout(
-        invoke<VibeHit[]>('similar_entries', { entryIds: [id], limit: SIMILAR_LIMIT }),
+        invoke<ScryHit[]>('similar_entries', { entryIds: [id], limit: SIMILAR_LIMIT }),
         SIMILAR_TIMEOUT_MS,
       );
       if (request !== neighbourRequest) return;
