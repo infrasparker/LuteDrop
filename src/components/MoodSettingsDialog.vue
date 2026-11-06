@@ -9,8 +9,10 @@ import ConfirmDialog from './ConfirmDialog.vue';
 /// Settings → Moods: the mood vocabulary the analyzer scores, and its
 /// calibration.
 ///
-/// - One row per mood: its id (lowercase letters, fixed once saved), its
-///   name, and its prompts, one per line. Rows can be added, removed and
+/// - One row per mood: its name and its prompts, one per line. Each mood
+///   also has an internal id (see `newMoodId`) that is never shown: stored
+///   values, calibration and the analyzer key moods by it, so renaming a
+///   mood keeps everything attached. Rows can be added, removed and
 ///   moved; Energy is always last, with its two sides of prompts.
 /// - Save stores the vocabulary. A removed mood loses every value, so Save
 ///   first asks when that drops levels set by you. When prompts changed, it
@@ -41,16 +43,23 @@ const WORD_BANK = [
   'upbeat', 'uplifting',
 ];
 
-const ID_PATTERN = /^[a-z]+$/;
+/// A fresh internal id for a new mood: "m" and 16 random lowercase letters
+/// (about 75 bits, so collisions are not a concern). It stays within the
+/// a-z, at most 32 characters rule that the backend and the analyzer check,
+/// so random ids need no change on either side; the shipped moods keep their
+/// readable ids (peaceful, sorrowful, ...).
+function newMoodId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return 'm' + Array.from(bytes, (b) => String.fromCharCode(97 + (b % 26))).join('');
+}
 
 interface DraftRow {
-  /// Stable key for the list while ids are being typed.
+  /// Stable key for the list rendering.
   key: number;
+  /// Internal, never shown or edited.
   id: string;
   name: string;
   prompts: string;
-  /// True for a row added in this session: its id can still be edited.
-  isNew: boolean;
 }
 
 let nextKey = 0;
@@ -67,7 +76,7 @@ const lines = (text: string): string[] =>
     .filter((l) => l.length > 0);
 
 function load(v: MoodVocabulary): void {
-  rows.value = v.moods.map((m) => ({ key: nextKey++, id: m.id, name: m.name, prompts: m.prompts.join('\n'), isNew: false }));
+  rows.value = v.moods.map((m) => ({ key: nextKey++, id: m.id, name: m.name, prompts: m.prompts.join('\n') }));
   energyPositive.value = v.energy.positive.join('\n');
   energyNegative.value = v.energy.negative.join('\n');
 }
@@ -77,16 +86,12 @@ watch(open, (isOpen) => {
 }, { immediate: true });
 
 const draft = computed<MoodVocabulary>(() => ({
-  moods: rows.value.map((r) => ({ id: r.id.trim(), name: r.name.trim(), prompts: lines(r.prompts) })),
+  moods: rows.value.map((r) => ({ id: r.id, name: r.name.trim(), prompts: lines(r.prompts) })),
   energy: { positive: lines(energyPositive.value), negative: lines(energyNegative.value) },
 }));
 
 /// What is wrong with one row, or null. The backend checks the same rules.
 function rowError(row: DraftRow, index: number): string | null {
-  const id = row.id.trim();
-  if (!ID_PATTERN.test(id)) return 'Id: lowercase letters a–z only';
-  if (id === 'energy') return 'The id "energy" is kept for Energy';
-  if (rows.value.some((r, i) => i !== index && r.id.trim() === id)) return 'This id is used twice';
   const name = row.name.trim();
   if (!name) return 'Give it a name';
   if (name.toLowerCase() === 'energy' || rows.value.some((r, i) => i !== index && r.name.trim().toLowerCase() === name.toLowerCase())) {
@@ -141,7 +146,10 @@ const removedLevels = computed(() => removed.value.reduce((n, m) => n + userLeve
 // --- Editing ---
 
 function addMood(): void {
-  rows.value.push({ key: nextKey++, id: '', name: '', prompts: '', isNew: true });
+  const taken = new Set(rows.value.map((r) => r.id));
+  let id = newMoodId();
+  while (taken.has(id)) id = newMoodId();
+  rows.value.push({ key: nextKey++, id, name: '', prompts: '' });
 }
 
 function removeRow(index: number): void {
@@ -153,13 +161,6 @@ function move(index: number, step: -1 | 1): void {
   if (to < 0 || to >= rows.value.length) return;
   const [row] = rows.value.splice(index, 1);
   rows.value.splice(to, 0, row);
-}
-
-/// A new row's id follows its name until the id is typed by hand.
-function onNameInput(row: DraftRow, name: string): void {
-  const derived = (n: string): string => n.toLowerCase().replace(/[^a-z]/g, '');
-  if (row.isNew && row.id === derived(row.name)) row.id = derived(name);
-  row.name = name;
 }
 
 // --- Word bank ---
@@ -432,7 +433,6 @@ const calibratedLabel = computed(() => {
         <div class="mood-table">
           <div class="mood-head text-caption text-medium-emphasis">
             <span />
-            <span>Id</span>
             <span>Name</span>
             <span>Prompts (one per line)</span>
             <span />
@@ -457,21 +457,11 @@ const calibratedLabel = computed(() => {
               />
             </div>
             <VTextField
-              v-model="row.id"
-              :readonly="!row.isNew"
-              :title="row.isNew ? undefined : 'An id cannot change once saved'"
-              variant="outlined"
-              density="compact"
-              hide-details
-              aria-label="Id"
-            />
-            <VTextField
-              :model-value="row.name"
+              v-model="row.name"
               variant="outlined"
               density="compact"
               hide-details
               aria-label="Name"
-              @update:model-value="(v: string) => onNameInput(row, v)"
             />
             <div>
               <VTextarea
@@ -683,7 +673,7 @@ const calibratedLabel = computed(() => {
 .mood-head,
 .mood-row {
   display: grid;
-  grid-template-columns: 32px 130px 150px 1fr 40px;
+  grid-template-columns: 32px 180px 1fr 40px;
   gap: 8px;
   align-items: start;
 }
