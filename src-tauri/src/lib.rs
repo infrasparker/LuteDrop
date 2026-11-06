@@ -221,6 +221,7 @@ pub fn run() {
             commands::set_entry_role,
             commands::keep_auto_role,
             commands::set_entry_mood_step,
+            commands::set_entry_dark_kind,
             commands::bulk_edit_library_entry_tags,
             commands::update_library_entry_type,
             commands::update_library_entry_markers,

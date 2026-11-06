@@ -1079,11 +1079,48 @@ pub(crate) mod tests {
             .unwrap()
     }
 
-    /// Raw (bright, grand, energy) mood scores per hash.
+    /// Raw (bright, grand, energy) mood scores per hash, both dark kinds 0.0.
     fn mood_scores(rows: &[(&str, f64, f64, f64)]) -> HashMap<String, MoodRaw> {
         rows.iter()
-            .map(|(h, bright, grand, energy)| (h.to_string(), MoodRaw { bright: *bright, grand: *grand, energy: *energy }))
+            .map(|&(h, bright, grand, energy)| {
+                (h.to_string(), MoodRaw { bright, grand, energy, sad: 0.0, scary: 0.0 })
+            })
             .collect()
+    }
+
+    /// The entry's stored (mood_sad, mood_scary).
+    fn dark_kinds_of(db: &Mutex<Connection>, entry: &str) -> (Option<f64>, Option<f64>) {
+        db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT mood_sad, mood_scary FROM library_entries WHERE id = ?1",
+                params![entry],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn run_applies_dark_kind_zscores() {
+        let db = setup();
+        let a = add(&db, "a", "music");
+        let b = add(&db, "b", "music");
+        let mut mood = mood_scores(&[("h-a", 0.0, 0.0, 0.0), ("h-b", 0.0, 0.0, 0.0)]);
+        mood.get_mut("h-a").unwrap().sad = 0.30;
+        mood.get_mut("h-a").unwrap().scary = 0.10;
+        mood.get_mut("h-b").unwrap().sad = 0.20;
+        mood.get_mut("h-b").unwrap().scary = 0.25;
+        let fake = FakeAnalyzer { gate: scores(&[("h-a", 0.9), ("h-b", 0.9)]), mood, ..Default::default() };
+
+        let report = run_once(&db, &fake, &[a.clone(), b.clone()], &no_progress);
+
+        assert_eq!(report.error, None);
+        // Each kind is standardized on its own: two entries give +1 and -1.
+        let close = |v: Option<f64>, want: f64| (v.unwrap() - want).abs() < 1e-9;
+        let (sad_a, scary_a) = dark_kinds_of(&db, &a);
+        let (sad_b, scary_b) = dark_kinds_of(&db, &b);
+        assert!(close(sad_a, 1.0) && close(scary_a, -1.0));
+        assert!(close(sad_b, -1.0) && close(scary_b, 1.0));
     }
 
     #[test]
@@ -1179,7 +1216,8 @@ pub(crate) mod tests {
     #[test]
     fn old_analyzer_without_three_axis_mood_still_works() {
         // An analyzer from before pace and mood sends neither key; one from
-        // v0.12 sends a pace head and mood with only `bright` and `light`.
+        // v0.12 sends a pace head and mood with only `bright` and `light`;
+        // one from v0.13 sends the three scales but no dark kinds.
         let gate = r#""gate":{"quality":{"auc":0.9,"pos":3,"neg":3},
             "trusted":true,"threshold":0.5,"neg_threshold":0.5,"scores":{"h-a":0.9}},"tags":{}"#;
         let bare = format!(r#"{{"model":"m",{gate}}}"#);
@@ -1187,6 +1225,10 @@ pub(crate) mod tests {
             r#"{{"model":"m",{gate},
                 "pace":{{"quality":{{"auc":null,"pos":0,"neg":0}},"trusted":false,"threshold":null,"scores":{{}}}},
                 "mood":{{"h-a":{{"bright":0.3,"light":0.1}}}}}}"#
+        );
+        let no_kinds = format!(
+            r#"{{"model":"m",{gate},
+                "mood":{{"h-a":{{"bright":0.3,"light":0.1,"grand":0.2,"energy":0.4}}}}}}"#
         );
 
         struct Canned(ScoreResponse, FakeAnalyzer);
@@ -1199,7 +1241,7 @@ pub(crate) mod tests {
             fn map(&self, h: &[String]) -> Result<Vec<HashPoint>, String> { self.1.map(h) }
         }
 
-        for json in [bare, two_axis] {
+        for json in [bare, two_axis, no_kinds] {
             let response: ScoreResponse = serde_json::from_str(&json).unwrap();
             let db = setup();
             let a = add(&db, "a", "music");
@@ -1210,6 +1252,7 @@ pub(crate) mod tests {
             assert_eq!(report.analyzed, 1);
             assert_eq!(role_of(&db, &a), auto_combat(0.9));
             assert_eq!(mood_of(&db, &a), (None, None, None));
+            assert_eq!(dark_kinds_of(&db, &a), (None, None));
         }
     }
 

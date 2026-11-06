@@ -74,24 +74,27 @@ pub struct ScoreResponse {
     pub tags: HashMap<String, ScoreSet>,
     /// Raw mood scores per entry hash. Empty when the analyzer sent none
     /// (its mood model is not loaded, or it predates mood). An entry missing
-    /// one of the three scales (an analyzer that predates three-axis mood)
-    /// is left out, as if the analyzer sent no mood for it.
+    /// one of the three scales or the two dark kinds (an analyzer that
+    /// predates them) is left out, as if the analyzer sent no mood for it.
     #[serde(default, deserialize_with = "complete_moods")]
     pub mood: HashMap<String, MoodRaw>,
 }
 
 /// The analyzer's raw score for one entry on each mood scale; higher is
-/// Bright / Grand / Energetic. Any other field the analyzer sends (the
-/// deprecated `light`) is ignored.
+/// Bright / Grand / Energetic. `sad` and `scary` are the dark kinds'
+/// absolute prompt similarities, not pole differences. Any other field the
+/// analyzer sends (the deprecated `light`) is ignored.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct MoodRaw {
     pub bright: f64,
     pub grand: f64,
     pub energy: f64,
+    pub sad: f64,
+    pub scary: f64,
 }
 
 /// Reads the `mood` map, keeping only the entries that carry all three
-/// scales.
+/// scales and both dark kinds.
 fn complete_moods<'de, D: Deserializer<'de>>(d: D) -> Result<HashMap<String, MoodRaw>, D::Error> {
     let raw: HashMap<String, serde_json::Value> = HashMap::deserialize(d)?;
     Ok(raw
@@ -100,8 +103,9 @@ fn complete_moods<'de, D: Deserializer<'de>>(d: D) -> Result<HashMap<String, Moo
         .collect())
 }
 
-/// Standardizes each mood scale over every hash in `raw` (population
-/// standard deviation), so the steps are relative to the scored library.
+/// Standardizes each mood scale, and each dark kind on its own, over every
+/// hash in `raw` (population standard deviation), so the steps are relative
+/// to the scored library.
 /// With fewer than two hashes, or no spread on a scale, that scale's z is 0.0.
 pub fn mood_zscores(raw: &HashMap<String, MoodRaw>) -> HashMap<String, MoodZ> {
     fn standardizer(values: &[f64]) -> impl Fn(f64) -> f64 {
@@ -119,9 +123,17 @@ pub fn mood_zscores(raw: &HashMap<String, MoodRaw>) -> HashMap<String, MoodZ> {
     let z_bright = scale(|m| m.bright);
     let z_grand = scale(|m| m.grand);
     let z_energy = scale(|m| m.energy);
+    let z_sad = scale(|m| m.sad);
+    let z_scary = scale(|m| m.scary);
     raw.iter()
         .map(|(hash, m)| {
-            let z = MoodZ { bright: z_bright(m.bright), grand: z_grand(m.grand), energy: z_energy(m.energy) };
+            let z = MoodZ {
+                bright: z_bright(m.bright),
+                grand: z_grand(m.grand),
+                energy: z_energy(m.energy),
+                sad: z_sad(m.sad),
+                scary: z_scary(m.scary),
+            };
             (hash.clone(), z)
         })
         .collect()
@@ -658,8 +670,32 @@ mod tests {
         assert!(serde_json::to_value(&req).unwrap().get("pace").is_none());
     }
 
+    /// Raw scores with both dark kinds at 0.0.
     fn raw(bright: f64, grand: f64, energy: f64) -> MoodRaw {
-        MoodRaw { bright, grand, energy }
+        MoodRaw { bright, grand, energy, sad: 0.0, scary: 0.0 }
+    }
+
+    /// z-scores with both dark kinds at 0.0.
+    fn mz(bright: f64, grand: f64, energy: f64) -> MoodZ {
+        MoodZ { bright, grand, energy, sad: 0.0, scary: 0.0 }
+    }
+
+    #[test]
+    fn mood_zscores_standardize_each_dark_kind_on_its_own() {
+        let kinds = |sad: f64, scary: f64| MoodRaw { sad, scary, ..raw(0.0, 0.0, 0.0) };
+        let scores: HashMap<String, MoodRaw> =
+            [("a", kinds(0.30, 0.10)), ("b", kinds(0.20, 0.20)), ("c", kinds(0.10, 0.30))]
+                .iter()
+                .map(|(h, m)| (h.to_string(), *m))
+                .collect();
+        let z = mood_zscores(&scores);
+        let sd = (2.0f64 / 3.0).sqrt() * 0.1;
+        assert!((z["a"].sad - 0.1 / sd).abs() < 1e-9);
+        assert!((z["a"].scary + 0.1 / sd).abs() < 1e-9);
+        assert!(z["b"].sad.abs() < 1e-9 && z["b"].scary.abs() < 1e-9);
+        assert!((z["c"].scary - 0.1 / sd).abs() < 1e-9);
+        // No spread on the other scales.
+        assert!(z.values().all(|v| v.bright == 0.0 && v.grand == 0.0 && v.energy == 0.0));
     }
 
     #[test]
@@ -688,7 +724,7 @@ mod tests {
         assert!(z.values().all(|v| v.grand == 0.0));
 
         let one: HashMap<String, MoodRaw> = [("a".to_string(), raw(4.0, -2.0, 1.0))].into();
-        assert_eq!(mood_zscores(&one)["a"], MoodZ { bright: 0.0, grand: 0.0, energy: 0.0 });
+        assert_eq!(mood_zscores(&one)["a"], mz(0.0, 0.0, 0.0));
         assert!(mood_zscores(&HashMap::new()).is_empty());
     }
 
@@ -697,8 +733,8 @@ mod tests {
         let mut resp = response(gate(true, Some(0.6), None, &[("h-a", 0.9), ("h-b", 0.9)]), &[]);
         resp.mood = [("h-a".to_string(), raw(0.0, 4.0, 1.0)), ("h-b".to_string(), raw(2.0, 0.0, 3.0))].into();
         let out = decide(&[entry("a", &[]), entry("b", &[])], &scene(), &resp);
-        assert_eq!(out["a"].mood, Some(MoodZ { bright: -1.0, grand: 1.0, energy: -1.0 }));
-        assert_eq!(out["b"].mood, Some(MoodZ { bright: 1.0, grand: -1.0, energy: 1.0 }));
+        assert_eq!(out["a"].mood, Some(mz(-1.0, 1.0, -1.0)));
+        assert_eq!(out["b"].mood, Some(mz(1.0, -1.0, 1.0)));
     }
 
     #[test]
@@ -714,13 +750,14 @@ mod tests {
         let json = r#"{"model":"m","gate":{"quality":{"auc":0.9,"pos":12,"neg":9},
             "trusted":true,"threshold":0.61,"scores":{}},"tags":{},
             "pace":{"quality":{"auc":null,"pos":0,"neg":0},"trusted":false,"threshold":null,"scores":{}},
-            "mood":{"h-new":{"bright":0.1,"light":0.2,"grand":0.3,"energy":0.4},
+            "mood":{"h-new":{"bright":0.1,"light":0.2,"grand":0.3,"energy":0.4,"sad":0.25,"scary":0.15},
+                    "h-v13":{"bright":0.1,"light":0.2,"grand":0.3,"energy":0.4},
                     "h-old":{"bright":0.1,"light":0.2}}}"#;
         let resp: ScoreResponse = serde_json::from_str(json).unwrap();
         // `light` is ignored; an entry from an analyzer that predates
-        // three-axis mood counts as no mood.
+        // three-axis mood, or the dark kinds, counts as no mood.
         assert_eq!(resp.mood.len(), 1);
-        assert_eq!(resp.mood["h-new"], raw(0.1, 0.3, 0.4));
+        assert_eq!(resp.mood["h-new"], MoodRaw { sad: 0.25, scary: 0.15, ..raw(0.1, 0.3, 0.4) });
     }
 
     #[test]

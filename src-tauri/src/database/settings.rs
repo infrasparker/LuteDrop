@@ -182,6 +182,36 @@ pub(crate) fn reset_saved_scene_config(conn: &Connection) -> rusqlite::Result<()
     Ok(())
 }
 
+/// Removes `word` from a saved scene configuration's vocabulary, matching
+/// names the way tags are stored (trimmed, lowercase). Every other field of
+/// the saved JSON is kept. A database that never saved one, or saved one that
+/// does not parse, is left as is: it loads the default anyway. Used by the
+/// v9→v10 migration, hence the rusqlite error type.
+pub(crate) fn remove_from_saved_vocabulary(conn: &Connection, word: &str) -> rusqlite::Result<()> {
+    let text: Option<String> = conn
+        .query_row("SELECT value FROM meta WHERE key = ?1", [KEY_AUTOTAG_SCENE], |r| r.get(0))
+        .optional()?;
+    let Some(text) = text else { return Ok(()) };
+    let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Ok(());
+    };
+    let Some(words) = config.get_mut("vocabulary").and_then(|v| v.as_array_mut()) else {
+        return Ok(());
+    };
+    let before = words.len();
+    words.retain(|w| !matches!(w.as_str(), Some(w) if w.trim().to_lowercase() == word));
+    if words.len() == before {
+        return Ok(());
+    }
+    let text = serde_json::to_string(&config)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    conn.execute(
+        "UPDATE meta SET value = ?1 WHERE key = ?2",
+        params![text, KEY_AUTOTAG_SCENE],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,8 +309,37 @@ mod tests {
     }
 
     #[test]
+    fn remove_from_saved_vocabulary_keeps_the_rest() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        // Nothing saved: nothing to do.
+        remove_from_saved_vocabulary(&conn, "driving").unwrap();
+        assert_eq!(read_meta(&conn, KEY_AUTOTAG_SCENE).unwrap(), None);
+
+        write_meta(
+            &conn,
+            KEY_AUTOTAG_SCENE,
+            r#"{"gateTag":"encounter","vocabulary":["folk"," Driving ","brass","driving"]}"#,
+        )
+        .unwrap();
+        remove_from_saved_vocabulary(&conn, "driving").unwrap();
+        assert_eq!(
+            load_scene_config(&conn).unwrap(),
+            SceneConfig { vocabulary: vec!["folk".into(), "brass".into()] }
+        );
+        let saved: serde_json::Value =
+            serde_json::from_str(&read_meta(&conn, KEY_AUTOTAG_SCENE).unwrap().unwrap()).unwrap();
+        assert_eq!(saved["gateTag"], "encounter");
+
+        // An unparseable value is left alone.
+        write_meta(&conn, KEY_AUTOTAG_SCENE, "not json").unwrap();
+        remove_from_saved_vocabulary(&conn, "driving").unwrap();
+        assert_eq!(read_meta(&conn, KEY_AUTOTAG_SCENE).unwrap().as_deref(), Some("not json"));
+    }
+
+    #[test]
     fn scene_config_default_vocabulary() {
-        let words: Vec<String> = ["folk", "electronic", "playful", "driving"]
+        let words: Vec<String> = ["folk", "electronic", "playful"]
         .iter()
         .map(|w| w.to_string())
         .collect();

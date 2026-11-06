@@ -10,7 +10,7 @@ use crate::database::autotag_db;
 use crate::database::settings::{self as broadcast_settings, BroadcastSettings};
 use crate::database::settings as autotag_settings;
 use crate::models::{
-    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
+    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, BulkImportProgress, DarkKind, EntryTagScores, EntryType,
     FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodScale, MoodStep, Role, SceneConfig, Track, TrackUpdates, VibeHit,
     VibePoint,
 };
@@ -433,6 +433,20 @@ pub fn set_entry_mood_step(
 ) -> Result<AppState, String> {
     let state = mutate_and_reload(container, |conn| {
         library::set_user_mood_step(conn, &entry_ids, scale, step)
+    })?;
+    request_rescore_if_enabled(container);
+    Ok(state)
+}
+
+/// Sets (or, with `None`, clears so the analyzer's kind shows) the user's
+/// dark kind for the given entries.
+pub fn set_entry_dark_kind(
+    container: &AppStateContainer,
+    entry_ids: Vec<String>,
+    kind: Option<DarkKind>,
+) -> Result<AppState, String> {
+    let state = mutate_and_reload(container, |conn| {
+        library::set_user_dark_kind(conn, &entry_ids, kind)
     })?;
     request_rescore_if_enabled(container);
     Ok(state)

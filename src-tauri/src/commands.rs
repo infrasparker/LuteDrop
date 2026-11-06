@@ -3,7 +3,7 @@ use tauri::State;
 use std::sync::Arc;
 use crate::actions;
 use crate::models::{
-    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodScale, MoodStep,
+    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, DarkKind, EntryTagScores, LibraryEntryUsage, MoodScale, MoodStep,
     Role, SceneConfig, TrackUpdates, VibeHit, VibePoint,
 };
 use crate::state::AppStateContainer;
@@ -314,6 +314,15 @@ pub fn set_entry_mood_step(
     step: Option<MoodStep>,
 ) -> Result<AppState, String> {
     actions::set_entry_mood_step(&state, entry_ids, scale, step)
+}
+
+#[tauri::command]
+pub fn set_entry_dark_kind(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_ids: Vec<String>,
+    kind: Option<DarkKind>,
+) -> Result<AppState, String> {
+    actions::set_entry_dark_kind(&state, entry_ids, kind)
 }
 
 #[tauri::command]
