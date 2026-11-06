@@ -640,6 +640,29 @@ def test_score_uses_mood_prompts_from_the_request(tmp_path, monkeypatch):
     assert list(data["mood"]["a"]["moods"]) == list(moods.MOODS)
 
 
+def test_prompt_cache_overflow_keeps_the_texts_in_use(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "MAX_CACHED_PROMPTS", 5)
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), FEATS))
+    embedder = _text_embedder()
+    c = TestClient(create_app(embedder, EmbeddingCache(tmp_path), TOKEN, executor_factory=lambda: ThreadPoolExecutor(2)))
+    embed(c, [("a", "x-1")])
+    vocab = {
+        "gate": {},
+        "targets": ["a"],
+        "mood_prompts": {"calm": ["still water"]},
+        "energy_prompts": {"positive": ["fast"], "negative": ["slow"]},
+    }
+    assert c.post("/score", json=vocab, headers=HEADERS).status_code == 200
+    # Three cached texts plus three new ones overflow the cache: it starts
+    # over and still has every text this request uses.
+    vocab["mood_prompts"]["calm"] = ["still water", "a quiet lake", "dusk", "fog"]
+    embedder.embedded.clear()
+    res = c.post("/score", json=vocab, headers=HEADERS)
+    assert res.status_code == 200
+    assert res.json()["mood"]["a"]["moods"]["calm"] is not None
+    assert sorted(embedder.embedded) == sorted(["still water", "a quiet lake", "dusk", "fog", "fast", "slow"])
+
+
 def test_preview_ranks_targets_by_raw_prompt_similarity(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), FEATS))
     cache = EmbeddingCache(tmp_path)

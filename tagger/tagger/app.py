@@ -256,7 +256,13 @@ def create_app(
         if not loaded.is_set() or load_error:
             return None
         with text_lock:
-            missing = list(dict.fromkeys(t for texts in groups.values() for t in texts if t not in text_vecs))
+            needed = list(dict.fromkeys(t for texts in groups.values() for t in texts))
+            missing = [t for t in needed if t not in text_vecs]
+            if len(text_vecs) + len(missing) > MAX_CACHED_PROMPTS:
+                # Start over, embedding every text this call needs, so the
+                # lookup below never misses a text cleared here.
+                text_vecs.clear()
+                missing = needed
             if missing:
                 try:
                     vecs = np.asarray(embedder.embed_text(missing), dtype=np.float64)
@@ -265,8 +271,6 @@ def create_app(
                     return None
                 norms = np.linalg.norm(vecs, axis=1, keepdims=True)
                 vecs = vecs / np.where(norms == 0, 1, norms)
-                if len(text_vecs) + len(missing) > MAX_CACHED_PROMPTS:
-                    text_vecs.clear()
                 text_vecs.update(zip(missing, vecs))
             return {name: np.vstack([text_vecs[t] for t in texts]) for name, texts in groups.items()}
 
