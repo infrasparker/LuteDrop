@@ -249,7 +249,7 @@ const askRecalibrate = ref(false);
 const confirmRecalibrate = ref(false);
 
 function onSave(): void {
-  if (!valid.value || !dirty.value) return;
+  if (!valid.value || !dirty.value || store.moodVocabularyUnreadable) return;
   if (removedLevels.value > 0) confirmRemove.value = true;
   else void save();
 }
@@ -302,6 +302,10 @@ const calibratedLabel = computed(() => {
             Recalibrate
           </VBtn>
         </div>
+        <VAlert v-if="store.moodVocabularyUnreadable" type="error" variant="tonal" density="compact" class="mb-3">
+          The stored mood list is unreadable, so the default moods are shown. Saving is blocked until the stored list
+          is fixed or reset, so your own levels for other moods are not deleted.
+        </VAlert>
         <VAlert v-if="store.moodsNeedRecalibration" type="warning" variant="tonal" density="compact" class="mb-3">
           Some prompts changed since the last calibration. Those moods are not suggested again until you recalibrate.
         </VAlert>
@@ -481,7 +485,7 @@ const calibratedLabel = computed(() => {
           text="Save"
           color="primary"
           variant="tonal"
-          :disabled="!valid || !dirty"
+          :disabled="!valid || !dirty || store.moodVocabularyUnreadable"
           :loading="saving"
           @click="onSave"
         />

@@ -622,6 +622,9 @@ pub struct AppState {
     /// mood was added) since it was taken: those moods are not scored until
     /// Recalibrate runs.
     pub moods_need_recalibration: bool,
+    /// True when the stored mood vocabulary is unreadable: `mood_vocabulary`
+    /// then holds the defaults, and saving a new one is refused.
+    pub mood_vocabulary_unreadable: bool,
 }
 
 impl Default for AppState {
@@ -636,6 +639,7 @@ impl Default for AppState {
             mood_vocabulary: MoodVocabulary::defaults(),
             mood_calibration: None,
             moods_need_recalibration: false,
+            mood_vocabulary_unreadable: false,
         }
     }
 }

@@ -1062,13 +1062,22 @@ fn user_level_count(conn: &Connection, mood: &str) -> i64 {
     .unwrap()
 }
 
+/// The error `save_mood_vocabulary` gives while the stored one is unreadable.
+pub const MOOD_VOCABULARY_UNREADABLE: &str = "Stored mood list is unreadable; fix or reset it first";
+
 /// Saves a new mood vocabulary (Settings → Moods), in one transaction. It is
 /// normalized and checked first (see `MoodVocabulary::normalized`); a mood
 /// left out of it is removed, so its `library_entry_moods` rows go, user
 /// levels included (the UI confirms that first). Renaming a mood or editing
 /// its prompts keeps its rows; the calibration is not touched, so changed
-/// moods wait for Recalibrate. Returns the saved vocabulary.
+/// moods wait for Recalibrate. Returns the saved vocabulary. Refused while
+/// the stored vocabulary is unreadable: the app then shows the defaults, and
+/// saving a list built from them would delete the rows of the real moods.
 pub fn save_mood_vocabulary(conn: &Connection, vocabulary: &MoodVocabulary) -> Result<MoodVocabulary, String> {
+    if let Some(problem) = settings::mood_vocabulary_problem(conn)? {
+        log::warn!("Refusing to save the mood vocabulary over an unreadable one: {problem}");
+        return Err(MOOD_VOCABULARY_UNREADABLE.to_string());
+    }
     let vocabulary = vocabulary.normalized()?;
     let tx = conn
         .unchecked_transaction()
@@ -2269,6 +2278,24 @@ mod tests {
         assert!(save_mood_vocabulary(&conn, &bad).is_err());
         assert_eq!(settings::load_mood_vocabulary(&conn).unwrap(), saved);
         assert_eq!(mood_rows(&conn, &a), MOOD_COUNT);
+    }
+
+    #[test]
+    fn saving_over_an_unreadable_mood_vocabulary_is_refused() {
+        let conn = open_memory_db();
+        let a = music_entry(&conn, "/a.mp3");
+        let mut v = MoodVocabulary::defaults();
+        v.moods.push(crate::models::MoodDef { id: "spooky".into(), name: "Spooky".into(), prompts: vec!["ghosts".into()] });
+        save_mood_vocabulary(&conn, &v).unwrap();
+        set_user_mood_level(&conn, std::slice::from_ref(&a), "spooky", Some(0.75)).unwrap();
+
+        // A corrupt row reads as the defaults, which lack Spooky; saving them
+        // back would delete the user's level, so it is refused.
+        conn.execute("UPDATE meta SET value = '{oops' WHERE key = 'mood_vocabulary'", []).unwrap();
+        assert_eq!(settings::load_mood_vocabulary(&conn).unwrap(), MoodVocabulary::defaults());
+        let err = save_mood_vocabulary(&conn, &MoodVocabulary::defaults()).unwrap_err();
+        assert_eq!(err, MOOD_VOCABULARY_UNREADABLE);
+        assert_eq!(mood_row(&conn, &a, "spooky"), Some((None, Some(0.75))));
     }
 
     #[test]

@@ -35,6 +35,9 @@ export const useAppStore = defineStore('app', () => {
   /// Some mood's prompts changed (or a mood was added) since the
   /// calibration: lens buttons show a marker until Recalibrate runs.
   const moodsNeedRecalibration = ref(false);
+  /// The stored vocabulary is unreadable: the defaults are shown and Save is
+  /// refused, so it cannot delete the real moods' levels.
+  const moodVocabularyUnreadable = ref(false);
   /// Whether the Moods settings dialog is open (opened from the nav rail and
   /// from the lens buttons' marker).
   const moodSettingsOpen = ref(false);
@@ -60,6 +63,7 @@ export const useAppStore = defineStore('app', () => {
     moodVocabulary.value = state.moodVocabulary;
     moodCalibration.value = state.moodCalibration;
     moodsNeedRecalibration.value = state.moodsNeedRecalibration;
+    moodVocabularyUnreadable.value = state.moodVocabularyUnreadable;
     setMoodVocabulary(state.moodVocabulary);
 
     // Prune playback states for tracks that no longer exist (deleted
@@ -176,6 +180,7 @@ export const useAppStore = defineStore('app', () => {
     moodVocabulary,
     moodCalibration,
     moodsNeedRecalibration,
+    moodVocabularyUnreadable,
     moodSettingsOpen,
     importProgress,
     masterMuted,

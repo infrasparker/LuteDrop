@@ -20,4 +20,9 @@ moodCalibration: MoodCalibrationInfo | null,
  * mood was added) since it was taken: those moods are not scored until
  * Recalibrate runs.
  */
-moodsNeedRecalibration: boolean, };
+moodsNeedRecalibration: boolean, 
+/**
+ * True when the stored mood vocabulary is unreadable: `mood_vocabulary`
+ * then holds the defaults, and saving a new one is refused.
+ */
+moodVocabularyUnreadable: boolean, };

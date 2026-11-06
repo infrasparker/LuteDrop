@@ -197,21 +197,37 @@ pub fn clear_mood_calibration(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-/// Loads the mood vocabulary. A missing row (a database opened before it
-/// was seeded) gives the defaults; a stored value that does not parse or
-/// breaks the rules is logged and replaced by the defaults too, so moods
-/// keep working.
-pub fn load_mood_vocabulary(conn: &Connection) -> Result<MoodVocabulary, String> {
+/// The stored mood vocabulary row: `None` when there is none, otherwise the
+/// parsed and checked vocabulary, or why it is unreadable.
+fn read_mood_vocabulary(conn: &Connection) -> Result<Option<Result<MoodVocabulary, String>>, String> {
     let Some(text) = read_meta(conn, KEY_MOOD_VOCABULARY)? else {
-        return Ok(MoodVocabulary::defaults());
+        return Ok(None);
     };
-    match serde_json::from_str::<MoodVocabulary>(&text).map_err(|e| e.to_string()).and_then(|v| v.normalized()) {
-        Ok(vocabulary) => Ok(vocabulary),
-        Err(e) => {
+    Ok(Some(
+        serde_json::from_str::<MoodVocabulary>(&text).map_err(|e| e.to_string()).and_then(|v| v.normalized()),
+    ))
+}
+
+/// Loads the mood vocabulary for reading. A missing row (a database opened
+/// before it was seeded) gives the defaults; a stored value that does not
+/// parse or breaks the rules is logged and replaced by the defaults too, so
+/// moods keep working. Writers check `mood_vocabulary_problem` first, so the
+/// defaults never replace an unreadable row silently.
+pub fn load_mood_vocabulary(conn: &Connection) -> Result<MoodVocabulary, String> {
+    match read_mood_vocabulary(conn)? {
+        None => Ok(MoodVocabulary::defaults()),
+        Some(Ok(vocabulary)) => Ok(vocabulary),
+        Some(Err(e)) => {
             log::warn!("Invalid stored {KEY_MOOD_VOCABULARY}: {e}; using the defaults");
             Ok(MoodVocabulary::defaults())
         }
     }
+}
+
+/// Why the stored mood vocabulary is unreadable, or `None` when it reads
+/// fine (or there is none, which loads the defaults).
+pub fn mood_vocabulary_problem(conn: &Connection) -> Result<Option<String>, String> {
+    Ok(read_mood_vocabulary(conn)?.and_then(Result::err))
 }
 
 /// Saves the mood vocabulary as JSON. The caller has normalized it.
@@ -325,12 +341,16 @@ mod tests {
         save_mood_vocabulary(&conn, &v).unwrap();
         assert_eq!(load_mood_vocabulary(&conn).unwrap(), v);
 
+        assert_eq!(mood_vocabulary_problem(&conn).unwrap(), None);
+
         write_meta(&conn, KEY_MOOD_VOCABULARY, "{oops").unwrap();
         assert_eq!(load_mood_vocabulary(&conn).unwrap(), MoodVocabulary::defaults());
+        assert!(mood_vocabulary_problem(&conn).unwrap().is_some());
         // Parses, but breaks the rules (no moods).
         write_meta(&conn, KEY_MOOD_VOCABULARY, r#"{"moods":[],"energy":{"positive":["a"],"negative":["b"]}}"#)
             .unwrap();
         assert_eq!(load_mood_vocabulary(&conn).unwrap(), MoodVocabulary::defaults());
+        assert!(mood_vocabulary_problem(&conn).unwrap().is_some());
     }
 
     #[test]

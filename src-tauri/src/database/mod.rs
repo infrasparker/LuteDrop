@@ -827,6 +827,7 @@ pub fn load_full_state(conn: &Connection) -> Result<AppState, String> {
             tracks: c.tracks as u32,
         }),
         mood_vocabulary,
+        mood_vocabulary_unreadable: settings::mood_vocabulary_problem(conn)?.is_some(),
     })
 }
 
@@ -2978,6 +2979,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<MoodVocabulary>(&stored).unwrap(), MoodVocabulary::defaults());
         assert_eq!(state.mood_vocabulary, MoodVocabulary::defaults());
         assert_eq!((state.mood_calibration.clone(), state.moods_need_recalibration), (None, false));
+        assert!(!state.mood_vocabulary_unreadable);
         let scores: i64 = conn
             .query_row("SELECT COUNT(*) FROM entry_analysis WHERE scores_json IS NOT NULL", [], |r| r.get(0))
             .unwrap();
