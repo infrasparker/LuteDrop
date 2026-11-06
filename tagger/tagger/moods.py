@@ -2,7 +2,11 @@
 mean similarity to one pole's prompts and the other's.
 
 The three axes follow the PAD mood model: Bright - Dark (pleasure),
-Calm - Energetic (arousal) and Intimate - Grand (dominance)."""
+Calm - Energetic (arousal) and Intimate - Grand (dominance).
+
+The dark kinds (SAD, SCARY) are not an axis: each is scored on its own as
+the absolute mean similarity, and the app picks the higher of the two
+(after z-scoring) as the kind of a Dark track."""
 
 BRIGHT = [
     "bright, warm, hopeful music",
@@ -35,6 +39,18 @@ CALM = [
     "soothing, gentle, peaceful music",
 ]
 
+# Dark kinds. Scary means threatening: dread or menace.
+SAD = [
+    "sad, sorrowful, mournful music",
+    "grieving, melancholic lament",
+    "tearful, heartbroken music",
+]
+SCARY = [
+    "scary, eerie, frightening music",
+    "creepy, unsettling horror music",
+    "dread-filled, uncanny music",
+]
+
 # Deprecated: the old Airy - Heavy axis. Kept only so app versions up to
 # v0.12, which read `light` from /score, keep working while the analyzer is
 # deployed ahead of the app. Remove once those versions are retired.
@@ -56,6 +72,8 @@ POLES = {
     "intimate": INTIMATE,
     "energetic": ENERGETIC,
     "calm": CALM,
+    "sad": SAD,
+    "scary": SCARY,
     "light": LIGHT,
     "heavy": HEAVY,
 }

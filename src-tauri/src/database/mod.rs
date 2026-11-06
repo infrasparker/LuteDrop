@@ -15,12 +15,12 @@ use uuid::Uuid;
 
 use crate::models::{
     AnalysisStatus, AppState, AutoTag, Clip, Comp, Configuration, EntryAnalysis, EntryType, Group,
-    LibraryEntry, MoodStep, Role, Track, TrackMode, TrackTransition,
+    DarkKind, LibraryEntry, MoodStep, Role, Track, TrackMode, TrackTransition,
 };
 
 /// Current schema version. Bump when adding a migration below; fresh
 /// databases are stamped with this directly.
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// Spacing between sibling `sort_order` values, leaving room for insertions
 /// between neighbours without renumbering. Shared by hierarchy + configurations.
@@ -360,6 +360,39 @@ fn migrate_v8_to_v9(conn: &Connection) -> SqlResult<()> {
     )
 }
 
+/// Adds the dark kind (spec "Dark kind") and folds the `driving` tag into
+/// Calm ↔ Energetic. Runs inside the migration runner's transaction.
+///
+/// - New columns: the analyzer's Sad and Scary z-scores and the user's kind.
+///   The analyzer's kind is derived from the z-scores when loading.
+/// - A `driving` yes vote on a music entry becomes the user's Energetic step,
+///   unless the user already set a Calm ↔ Energetic step. Every other
+///   `driving` row (analyzer-only, or a no vote) just goes, then the tag
+///   itself, and it leaves the saved vocabulary.
+/// - Stored scores are cleared, so the next run scores the kinds.
+fn migrate_v9_to_v10(conn: &Connection) -> SqlResult<()> {
+    conn.execute_batch(
+        "ALTER TABLE library_entries ADD COLUMN mood_sad REAL;
+         ALTER TABLE library_entries ADD COLUMN mood_scary REAL;
+         ALTER TABLE library_entries ADD COLUMN dark_kind_user TEXT;
+
+         UPDATE library_entries SET mood_energy_user = 'high'
+         WHERE mood_energy_user IS NULL
+           AND entry_type = 'music'
+           AND id IN (
+               SELECT let.library_entry_id
+               FROM library_entry_tags let JOIN tags t ON t.id = let.tag_id
+               WHERE t.name = 'driving' AND let.user_vote = 1);
+
+         DELETE FROM library_entry_tags
+         WHERE tag_id IN (SELECT id FROM tags WHERE name = 'driving');
+         DELETE FROM tags WHERE name = 'driving';
+
+         UPDATE entry_analysis SET scores_json = NULL;",
+    )?;
+    settings::remove_from_saved_vocabulary(conn, "driving")
+}
+
 /// Ordered migrations: entry `(n, f)` upgrades version n → n+1.
 const MIGRATIONS: &[(i64, Migration)] = &[
     (3, migrate_v3_to_v4),
@@ -368,6 +401,7 @@ const MIGRATIONS: &[(i64, Migration)] = &[
     (6, migrate_v6_to_v7),
     (7, migrate_v7_to_v8),
     (8, migrate_v8_to_v9),
+    (9, migrate_v9_to_v10),
 ];
 
 fn read_schema_version(conn: &Connection) -> i64 {
@@ -442,7 +476,8 @@ pub fn open_db(path: &Path) -> Result<Connection, String> {
 
     // Migrations rewrite the user's library (v7 cleans up their tags, v8
     // splits every facet and tag into auto and user layers, v9 drops the old
-    // Light/Heavy and pace values), so an existing database behind the
+    // Light/Heavy and pace values, v10 folds the `driving` tag into
+    // Calm ↔ Energetic), so an existing database behind the
     // current schema is copied first, before anything changes it. No copy,
     // no migration.
     if !fresh {
@@ -509,7 +544,10 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
             mood_grand       REAL,
             mood_grand_user  TEXT,
             mood_energy      REAL,
-            mood_energy_user TEXT
+            mood_energy_user TEXT,
+            mood_sad         REAL,
+            mood_scary       REAL,
+            dark_kind_user   TEXT
         );
 
         CREATE TABLE IF NOT EXISTS tags (
@@ -685,7 +723,8 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
                     volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type,
                     role_auto, role_auto_score, role_user,
                     mood_bright, mood_bright_user, mood_grand, mood_grand_user,
-                    mood_energy, mood_energy_user
+                    mood_energy, mood_energy_user,
+                    mood_sad, mood_scary, dark_kind_user
              FROM library_entries
              ORDER BY name ASC",
         )
@@ -720,6 +759,11 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
                     row.get::<_, Option<String>>(20)?, // mood_grand_user
                     row.get::<_, Option<f64>>(21)?,    // mood_energy
                     row.get::<_, Option<String>>(22)?, // mood_energy_user
+                ),
+                (
+                    row.get::<_, Option<f64>>(23)?,    // mood_sad
+                    row.get::<_, Option<f64>>(24)?,    // mood_scary
+                    row.get::<_, Option<String>>(25)?, // dark_kind_user
                 ),
             ))
         })
@@ -800,7 +844,8 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
     for (id, file_path, content_hash, name, duration, sample_rate, file_size,
          volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type,
          (role_auto, role_auto_score, role_user),
-         (mood_bright, mood_bright_user, mood_grand, mood_grand_user, mood_energy, mood_energy_user))
+         (mood_bright, mood_bright_user, mood_grand, mood_grand_user, mood_energy, mood_energy_user),
+         (mood_sad, mood_scary, dark_kind_user))
         in rows
     {
         let tags = tag_map.remove(&id).unwrap_or_default();
@@ -838,6 +883,10 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
             mood_grand_user: step(mood_grand_user),
             mood_energy,
             mood_energy_user: step(mood_energy_user),
+            mood_sad,
+            mood_scary,
+            dark_kind_auto: DarkKind::from_scores(mood_sad, mood_scary),
+            dark_kind_user: dark_kind_user.as_deref().and_then(DarkKind::from_db_str),
         });
     }
 
@@ -1583,10 +1632,22 @@ mod tests {
         conn.prepare(&format!("SELECT {column} FROM {table}")).is_ok()
     }
 
+    /// Turns a database `init_schema` just built into the v9 shape of
+    /// `library_entries`: no dark kind columns.
+    fn make_v9_shape(conn: &Connection) {
+        conn.execute_batch(
+            "ALTER TABLE library_entries DROP COLUMN mood_sad;
+             ALTER TABLE library_entries DROP COLUMN mood_scary;
+             ALTER TABLE library_entries DROP COLUMN dark_kind_user;",
+        )
+        .unwrap();
+    }
+
     /// Turns a database `init_schema` just built into the v8 shape of
     /// `library_entries`: Light ↔ Heavy and pace layers, no Intimate ↔ Grand
     /// or Calm ↔ Energetic columns.
     fn make_v8_shape(conn: &Connection) {
+        make_v9_shape(conn);
         conn.execute_batch(
             "ALTER TABLE library_entries DROP COLUMN mood_grand;
              ALTER TABLE library_entries DROP COLUMN mood_grand_user;
@@ -1759,14 +1820,15 @@ mod tests {
     }
 
     #[test]
-    fn fresh_database_is_v9() {
+    fn fresh_database_is_v10() {
         let dir = tempfile::tempdir().unwrap();
         let conn = open_db(&dir.path().join("fresh.db")).unwrap();
-        assert_eq!(read_schema_version(&conn), 9);
+        assert_eq!(read_schema_version(&conn), 10);
         conn.prepare(
             "SELECT role_auto, role_auto_score, role_user,
                     mood_bright, mood_bright_user, mood_grand, mood_grand_user,
-                    mood_energy, mood_energy_user
+                    mood_energy, mood_energy_user,
+                    mood_sad, mood_scary, dark_kind_user
              FROM library_entries",
         )
         .unwrap();
@@ -1828,6 +1890,13 @@ mod tests {
     }
 
     /// Writes a file-backed database in the v8 shape, stamped version 8.
+    fn create_v9_db(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        init_schema(&conn).unwrap();
+        make_v9_shape(&conn);
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '9')", []).unwrap();
+    }
+
     fn create_v8_db(path: &Path) {
         let conn = Connection::open(path).unwrap();
         init_schema(&conn).unwrap();
@@ -1876,6 +1945,15 @@ mod tests {
     fn mood_bright_user(conn: &Connection, entry_id: &str) -> Option<String> {
         conn.query_row(
             "SELECT mood_bright_user FROM library_entries WHERE id = ?1",
+            [entry_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn mood_energy_user(conn: &Connection, entry_id: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT mood_energy_user FROM library_entries WHERE id = ?1",
             [entry_id],
             |r| r.get(0),
         )
@@ -1946,22 +2024,16 @@ mod tests {
         // B: user `bright` and user `dark` tags are gone too (step: mid).
         assert!(entry_tags(&conn, "B").is_empty());
         assert_eq!(mood_bright_user(&conn, "B").as_deref(), Some("mid"));
-        // C: the rename collision keeps one user row; an auto `dark` leaves no
-        // step. The `mischievous` rejection moved onto `playful` in v7, where
-        // the user's own `playful` tag wins in v8.
-        assert_eq!(entry_tags(&conn, "C"), pairs(&[("driving", "auto"), ("playful", "user")]));
+        // C: an auto `dark` leaves no step. The `mischievous` rejection moved
+        // onto `playful` in v7, where the user's own `playful` tag wins in v8.
+        // `frantic` became an auto `driving` in v7, which v10 just removes.
+        assert_eq!(entry_tags(&conn, "C"), pairs(&[("playful", "user")]));
         assert_eq!(mood_bright_user(&conn, "C"), None);
-        // D: a user `frantic` colliding with an auto `driving` keeps it as user.
-        assert_eq!(entry_tags(&conn, "D"), pairs(&[("driving", "user")]));
-        let d_score: Option<f64> = conn
-            .query_row(
-                "SELECT let.auto_score FROM library_entry_tags let JOIN tags t ON t.id = let.tag_id
-                 WHERE let.library_entry_id = 'D' AND t.name = 'driving'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(d_score, None);
+        assert_eq!(mood_energy_user(&conn, "C"), None);
+        // D: a user `frantic` colliding with an auto `driving` kept it as a
+        // user tag in v7, so v10 turns it into an Energetic step.
+        assert!(entry_tags(&conn, "D").is_empty());
+        assert_eq!(mood_energy_user(&conn, "D").as_deref(), Some("high"));
         // E: an auto tag renamed onto a tag the user rejected is dropped; the
         // rejection is now a no vote.
         assert_eq!(entry_tags(&conn, "E"), pairs(&[("playful", "no")]));
@@ -1974,7 +2046,7 @@ mod tests {
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
-        assert_eq!(names, ["driving", "electronic", "playful", "skyrim"]);
+        assert_eq!(names, ["electronic", "playful", "skyrim"]);
 
         // The saved vocabulary is replaced with the new default.
         assert_eq!(
@@ -2297,7 +2369,7 @@ mod tests {
         }
 
         let conn = open_db(&path).unwrap();
-        assert_eq!(read_schema_version(&conn), 9);
+        assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
 
         // Light ↔ Heavy and pace are gone; the new scales exist.
         for old in ["mood_light", "mood_light_user", "pace_auto", "pace_auto_score", "pace_user"] {
@@ -2360,6 +2432,84 @@ mod tests {
         assert_eq!(old, (Some("high".into()), Some("low".into()), Some("still".into())));
     }
 
+    /// Every data case of the v9 → v10 dark kind and `driving` fold.
+    #[test]
+    fn v9_database_migrates_driving_into_energetic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lutedrop.db");
+        create_v9_db(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                r#"INSERT INTO library_entries (id, file_path, name, created_at, entry_type, mood_energy_user) VALUES
+                     ('YES', '/y.mp3', 'Y', '0', 'music', NULL),
+                     ('KEEP', '/k.mp3', 'K', '0', 'music', 'low'),
+                     ('AUTO', '/a.mp3', 'A', '0', 'music', NULL),
+                     ('NO', '/n.mp3', 'N', '0', 'music', NULL),
+                     ('AMB', '/r.ogg', 'R', '0', 'ambiance', NULL);
+                   INSERT INTO tags (id, name) VALUES ('t-driving', 'driving'), ('t-folk', 'folk');
+                   INSERT INTO library_entry_tags (library_entry_id, tag_id, auto_score, user_vote) VALUES
+                     ('YES', 't-driving', 0.8, 1), ('YES', 't-folk', NULL, 1),
+                     ('KEEP', 't-driving', NULL, 1),
+                     ('AUTO', 't-driving', 0.7, NULL), ('AUTO', 't-folk', 0.6, NULL),
+                     ('NO', 't-driving', 0.9, 0),
+                     ('AMB', 't-driving', NULL, 1);
+                   INSERT INTO entry_analysis (library_entry_id, content_hash, status, analyzed_at, scores_json) VALUES
+                     ('YES', 'h-y', 'embedded', '1', '{"gate":1}');
+                   INSERT INTO meta (key, value) VALUES ('autotag_scene_encounter',
+                     '{"vocabulary":["folk","driving","electronic"]}');"#,
+            )
+            .unwrap();
+        }
+
+        let conn = open_db(&path).unwrap();
+        assert_eq!(read_schema_version(&conn), 10);
+
+        // A user yes vote becomes Energetic; an existing user step is kept.
+        assert_eq!(mood_energy_user(&conn, "YES").as_deref(), Some("high"));
+        assert_eq!(mood_energy_user(&conn, "KEEP").as_deref(), Some("low"));
+        // An auto-only tag and a no vote are just removed.
+        assert_eq!(mood_energy_user(&conn, "AUTO"), None);
+        assert_eq!(mood_energy_user(&conn, "NO"), None);
+        // Ambiance carries no mood.
+        assert_eq!(mood_energy_user(&conn, "AMB"), None);
+
+        // Every `driving` row and the tag itself are gone; other tags stay.
+        assert_eq!(entry_tags(&conn, "YES"), pairs(&[("folk", "user")]));
+        assert!(entry_tags(&conn, "KEEP").is_empty());
+        assert_eq!(entry_tags(&conn, "AUTO"), pairs(&[("folk", "auto")]));
+        assert!(entry_tags(&conn, "NO").is_empty());
+        assert!(entry_tags(&conn, "AMB").is_empty());
+        let driving: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tags WHERE name = 'driving'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(driving, 0);
+
+        // `driving` leaves the saved vocabulary.
+        assert_eq!(
+            settings::load_scene_config(&conn).unwrap().vocabulary,
+            ["folk", "electronic"]
+        );
+
+        // The new columns start empty; stored scores are cleared.
+        ensure_test_config(&conn);
+        let state = load_full_state(&conn).unwrap();
+        let yes = state.library_entries.iter().find(|e| e.id == "YES").unwrap();
+        assert_eq!((yes.mood_sad, yes.mood_scary, yes.dark_kind_auto, yes.dark_kind_user), (None, None, None, None));
+        assert_eq!(yes.mood_energy_user, Some(MoodStep::High));
+        let scores: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entry_analysis WHERE scores_json IS NOT NULL", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(scores, 0);
+
+        // A pre-migration copy of the v9 database keeps the tag.
+        let backups = pre_migration_backups(dir.path(), 9);
+        assert_eq!(backups.len(), 1);
+        let copy = Connection::open(&backups[0]).unwrap();
+        assert_eq!(read_schema_version(&copy), 9);
+        assert_eq!(entry_tags(&copy, "AUTO"), pairs(&[("driving", "auto"), ("folk", "auto")]));
+    }
+
     #[test]
     fn v9_migration_rolls_back_as_a_whole_on_failure() {
         let conn = Connection::open_in_memory().unwrap();
@@ -2395,7 +2545,8 @@ mod tests {
         conn.execute(
             "UPDATE library_entries
              SET mood_bright = 1.2, mood_grand = -0.4, mood_energy = 0.7,
-                 mood_bright_user = 'low', mood_grand_user = 'high', mood_energy_user = 'mid'
+                 mood_bright_user = 'low', mood_grand_user = 'high', mood_energy_user = 'mid',
+                 mood_sad = -0.2, mood_scary = 0.9, dark_kind_user = 'sad'
              WHERE id = ?1",
             [&set],
         )
@@ -2408,10 +2559,16 @@ mod tests {
             (a.mood_bright_user, a.mood_grand_user, a.mood_energy_user),
             (Some(MoodStep::Low), Some(MoodStep::High), Some(MoodStep::Mid))
         );
+        // The analyzer's kind is the higher z-score; the user's overrides it.
+        assert_eq!(
+            (a.mood_sad, a.mood_scary, a.dark_kind_auto, a.dark_kind_user),
+            (Some(-0.2), Some(0.9), Some(DarkKind::Scary), Some(DarkKind::Sad))
+        );
 
         let b = entries.iter().find(|e| e.id == unset).unwrap();
         assert_eq!((b.mood_bright, b.mood_grand, b.mood_energy), (None, None, None));
         assert_eq!((b.mood_bright_user, b.mood_grand_user, b.mood_energy_user), (None, None, None));
+        assert_eq!((b.mood_sad, b.mood_scary, b.dark_kind_auto, b.dark_kind_user), (None, None, None, None));
     }
 
 }

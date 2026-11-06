@@ -543,7 +543,10 @@ def test_score_returns_raw_mood_for_targets(tmp_path, monkeypatch):
     assert data["mood"]["a"]["light"] == pytest.approx(pole(moods.LIGHT) - pole(moods.HEAVY))
     assert data["mood"]["a"]["grand"] == pytest.approx(pole(moods.GRAND) - pole(moods.INTIMATE))
     assert data["mood"]["a"]["energy"] == pytest.approx(pole(moods.ENERGETIC) - pole(moods.CALM))
-    assert set(data["mood"]["a"]) == {"bright", "light", "grand", "energy"}
+    # The dark kinds are absolute similarities, not pole differences.
+    assert data["mood"]["a"]["sad"] == pytest.approx(pole(moods.SAD))
+    assert data["mood"]["a"]["scary"] == pytest.approx(pole(moods.SCARY))
+    assert set(data["mood"]["a"]) == {"bright", "light", "grand", "energy", "sad", "scary"}
     assert data["mood"]["a"]["bright"] != 0
     assert data["mood"]["a"]["grand"] != 0
     assert data["mood"]["a"]["energy"] != 0
@@ -568,7 +571,7 @@ def test_score_mood_recovers_after_partial_embed_failure(tmp_path, monkeypatch):
     assert first.status_code == 200 and "mood" not in first.json()
     second = c.post("/score", json=body, headers=HEADERS)
     assert second.status_code == 200
-    assert set(second.json()["mood"]["a"]) == {"bright", "light", "grand", "energy"}
+    assert set(second.json()["mood"]["a"]) == {"bright", "light", "grand", "energy", "sad", "scary"}
 
 
 def test_score_without_loaded_model_omits_mood(tmp_path, monkeypatch):

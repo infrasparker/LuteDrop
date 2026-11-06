@@ -9,26 +9,32 @@ import {
   PAD_SIZES,
   stepLabel,
   type MoodCell,
+  type MoodPlace,
+  type PadColumn,
 } from '../utils/mood';
 
 /// The mood pad, built like a colour picker: a size switch picks the floor
-/// (Intimate / Moderate / Grand), and a 3×3 pad below it crosses energy
-/// (rows, Energetic on top) with brightness (columns, Dark → Bright). Each
-/// cell names its mood with a few words of feel and a scene.
+/// (Intimate / Moderate / Grand), and a pad below it crosses energy (rows,
+/// Energetic on top) with brightness (columns). Dark is split into two
+/// sub-columns, Sad and Scary, under a shared Dark header, so the pad is
+/// 4 columns: Sad, Scary, Neutral, Bright. Each cell names its mood with a
+/// few words of feel and a scene. Dark names do not change with size.
 ///
 /// Two modes:
 /// - `pick`: `current` is pinned and `auto` gets a sparkle when it differs;
 ///   each shows only on its own floor, and the size buttons mark which floor
-///   holds them. Clicking a cell emits `pick`.
+///   holds them. A Dark place with no kind yet is marked on the Dark header.
+///   Clicking a cell emits `pick`.
 /// - `filter`: multi-select into `selected`. The switch adds "All sizes",
 ///   where a click acts on all three floors at once. Row and column headers
-///   toggle their whole line; each cell shows how many entries sit in it.
+///   toggle their whole line (the Dark header toggles both of its
+///   sub-columns); each cell shows how many entries sit in it.
 export type PadSize = MoodStep | 'all';
 
 const props = withDefaults(defineProps<{
   mode: 'pick' | 'filter';
-  current?: string | null;
-  auto?: string | null;
+  current?: MoodPlace | null;
+  auto?: MoodPlace | null;
   selected?: string[];
   counts?: Map<string, number>;
 }>(), { current: null, auto: null, selected: () => [], counts: () => new Map() });
@@ -39,21 +45,29 @@ const size = defineModel<PadSize>('size', { required: true });
 
 const isFilter = computed(() => props.mode === 'filter');
 const floors = computed<MoodStep[]>(() => (size.value === 'all' ? PAD_SIZES : [size.value]));
-const currentCell = computed(() => (props.current ? cellByKey(props.current) : null));
-const autoCell = computed(() => {
-  const c = props.auto ? cellByKey(props.auto) : null;
-  return c && c.key !== props.current ? c : null;
-});
+const autoPlace = computed(() => (props.auto && props.auto.key !== props.current?.key ? props.auto : null));
 const selectedSet = computed(() => new Set(props.selected));
 
+const darkColumns = PAD_COLUMNS.filter((c) => c.kind !== null);
+const otherColumns = PAD_COLUMNS.filter((c) => c.kind === null);
+
+/// True when the place is Dark with no kind and sits on the floor in view:
+/// it is marked on the Dark header instead of a cell.
+const onDarkHeader = (p: MoodPlace | null): boolean => p !== null && p.cell === null && floors.value.includes(p.grand);
+
 /// The cells one pad position stands for on the floor(s) in view.
-function cellsAt(energy: MoodStep, bright: MoodStep): MoodCell[] {
-  return floors.value.map((g) => cellFor(g, energy, bright)).filter((c): c is MoodCell => c !== null);
+function cellsAt(energy: MoodStep, col: PadColumn): MoodCell[] {
+  return floors.value.map((g) => cellFor(g, energy, col.bright, col.kind)).filter((c): c is MoodCell => c !== null);
 }
 
 const keysOf = (cells: MoodCell[]): string[] => cells.map((c) => c.key);
-const rowKeys = (energy: MoodStep): string[] => PAD_COLUMNS.flatMap((b) => keysOf(cellsAt(energy, b)));
-const columnKeys = (bright: MoodStep): string[] => PAD_ROWS.flatMap((e) => keysOf(cellsAt(e, bright)));
+const rowKeys = (energy: MoodStep): string[] => PAD_COLUMNS.flatMap((col) => keysOf(cellsAt(energy, col)));
+const columnKeys = (cols: PadColumn[]): string[] =>
+  cols.flatMap((col) => PAD_ROWS.flatMap((e) => keysOf(cellsAt(e, col))));
+
+/// The cell's name; the dark names are the same on every floor, so All sizes shows them once.
+const namesOf = (cells: MoodCell[]): string => [...new Set(cells.map((c) => c.name))].join(' · ');
+const oneName = (cells: MoodCell[]): boolean => new Set(cells.map((c) => c.name)).size === 1;
 
 /// Selects every key when any is unselected, else clears them all.
 function toggleKeys(keys: string[]): void {
@@ -79,13 +93,26 @@ function entryCount(cells: MoodCell[]): number {
 }
 
 function isOn(cells: MoodCell[]): boolean {
-  return isFilter.value ? selection(keysOf(cells)) === 'on' : cells.some((c) => c.key === props.current);
+  return isFilter.value ? selection(keysOf(cells)) === 'on' : cells.some((c) => c.key === props.current?.key);
 }
 
 function click(cells: MoodCell[]): void {
   if (isFilter.value) toggleKeys(keysOf(cells));
   else if (cells.length === 1) emit('pick', cells[0]);
 }
+
+/// Classes for a header; in filter mode it shows whether its whole line is selected.
+function headerClass(keys: string[]): Record<string, boolean> {
+  return isFilter.value ? { clickable: true, [selection(keys)]: true } : {};
+}
+
+/// A header click toggles its whole line (filter mode only).
+function headerClick(keys: string[]): void {
+  if (isFilter.value) toggleKeys(keys);
+}
+
+const headerTag = computed(() => (isFilter.value ? 'button' : 'span'));
+const headerType = computed(() => (isFilter.value ? 'button' : undefined));
 </script>
 
 <template>
@@ -94,10 +121,10 @@ function click(cells: MoodCell[]): void {
       <VBtn v-for="floor in PAD_SIZES" :key="floor" :value="floor" size="small">
         {{ stepLabel('grand', floor) }}
         <template v-if="!isFilter">
-          <VIcon v-if="autoCell?.grand === floor" size="x-small" class="ml-1" title="The analyzer's mood is on this size">
+          <VIcon v-if="autoPlace?.grand === floor" size="x-small" class="ml-1" title="The analyzer's mood is on this size">
             mdi-creation
           </VIcon>
-          <VIcon v-if="currentCell?.grand === floor" size="x-small" class="ml-1" title="The track's mood is on this size">
+          <VIcon v-if="current?.grand === floor" size="x-small" class="ml-1" title="The track's mood is on this size">
             mdi-map-marker
           </VIcon>
         </template>
@@ -107,62 +134,93 @@ function click(cells: MoodCell[]): void {
     </VBtnToggle>
 
     <div class="pad-grid">
-      <span />
+      <!-- Two header rows: Dark spans its Sad and Scary sub-columns; Neutral and Bright span both rows. -->
+      <span class="corner" />
       <component
-        :is="isFilter ? 'button' : 'span'"
-        v-for="bright in PAD_COLUMNS"
-        :key="`col-${bright}`"
-        :type="isFilter ? 'button' : undefined"
-        class="axis"
-        :class="{ clickable: isFilter, [selection(columnKeys(bright))]: isFilter }"
-        :title="isFilter ? `Toggle every ${stepLabel('bright', bright)} mood` : undefined"
-        @click="isFilter && toggleKeys(columnKeys(bright))"
+        :is="headerTag"
+        :type="headerType"
+        class="axis dark-header"
+        :class="headerClass(columnKeys(darkColumns))"
+        :title="isFilter ? 'Toggle every Dark mood' : undefined"
+        @click="headerClick(columnKeys(darkColumns))"
       >
-        {{ stepLabel('bright', bright) }}
+        Dark
+        <template v-if="!isFilter">
+          <VIcon v-if="onDarkHeader(autoPlace)" size="x-small" title="The analyzer says Dark, with no Sad or Scary yet">
+            mdi-creation
+          </VIcon>
+          <VIcon v-if="onDarkHeader(current)" size="x-small" title="This track is Dark, with no Sad or Scary yet">
+            mdi-map-marker
+          </VIcon>
+        </template>
+      </component>
+      <component
+        :is="headerTag"
+        v-for="col in otherColumns"
+        :key="`col-${col.label}`"
+        :type="headerType"
+        class="axis tall-header"
+        :class="headerClass(columnKeys([col]))"
+        :title="isFilter ? `Toggle every ${col.label} mood` : undefined"
+        @click="headerClick(columnKeys([col]))"
+      >
+        {{ col.label }}
+      </component>
+      <component
+        :is="headerTag"
+        v-for="col in darkColumns"
+        :key="`col-${col.label}`"
+        :type="headerType"
+        class="axis"
+        :class="headerClass(columnKeys([col]))"
+        :title="isFilter ? `Toggle every ${col.label} mood` : undefined"
+        @click="headerClick(columnKeys([col]))"
+      >
+        {{ col.label }}
       </component>
 
       <template v-for="energy in PAD_ROWS" :key="`row-${energy}`">
         <component
-          :is="isFilter ? 'button' : 'span'"
-          :type="isFilter ? 'button' : undefined"
+          :is="headerTag"
+          :type="headerType"
           class="axis axis-row"
-          :class="{ clickable: isFilter, [selection(rowKeys(energy))]: isFilter }"
+          :class="headerClass(rowKeys(energy))"
           :title="isFilter ? `Toggle every ${stepLabel('energy', energy)} mood` : undefined"
-          @click="isFilter && toggleKeys(rowKeys(energy))"
+          @click="headerClick(rowKeys(energy))"
         >
           {{ stepLabel('energy', energy) }}
         </component>
         <button
-          v-for="bright in PAD_COLUMNS"
-          :key="`${energy}-${bright}`"
+          v-for="col in PAD_COLUMNS"
+          :key="`${energy}-${col.label}`"
           type="button"
           class="cell"
           :class="{
-            on: isOn(cellsAt(energy, bright)),
-            partial: isFilter && selection(keysOf(cellsAt(energy, bright))) === 'partial',
+            on: isOn(cellsAt(energy, col)),
+            partial: isFilter && selection(keysOf(cellsAt(energy, col))) === 'partial',
           }"
-          :aria-pressed="isFilter ? isOn(cellsAt(energy, bright)) : undefined"
-          @click="click(cellsAt(energy, bright))"
+          :aria-pressed="isFilter ? isOn(cellsAt(energy, col)) : undefined"
+          @click="click(cellsAt(energy, col))"
         >
           <span class="name">
-            <span class="name-text">{{ cellsAt(energy, bright).map((c) => c.name).join(' · ') }}</span>
+            <span class="name-text">{{ namesOf(cellsAt(energy, col)) }}</span>
             <template v-if="!isFilter">
               <VIcon
-                v-if="cellsAt(energy, bright).some((c) => c.key === autoCell?.key)"
+                v-if="cellsAt(energy, col).some((c) => c.key === autoPlace?.key)"
                 size="x-small"
                 title="The analyzer would put this track here"
               >mdi-creation</VIcon>
-              <VIcon v-if="cellsAt(energy, bright).some((c) => c.key === current)" size="x-small">mdi-map-marker</VIcon>
+              <VIcon v-if="cellsAt(energy, col).some((c) => c.key === current?.key)" size="x-small">mdi-map-marker</VIcon>
             </template>
-            <span v-else class="count" :title="`${entryCount(cellsAt(energy, bright))} entries here`">
-              {{ entryCount(cellsAt(energy, bright)) }}
+            <span v-else class="count" :title="`${entryCount(cellsAt(energy, col))} entries here`">
+              {{ entryCount(cellsAt(energy, col)) }}
             </span>
           </span>
-          <template v-if="size !== 'all'">
-            <span class="feel">{{ cellsAt(energy, bright)[0]?.feel }}</span>
-            <span class="scene">{{ cellsAt(energy, bright)[0]?.scene }}</span>
+          <template v-if="oneName(cellsAt(energy, col))">
+            <span class="feel">{{ cellsAt(energy, col)[0]?.feel }}</span>
+            <span class="scene">{{ cellsAt(energy, col)[0]?.scene }}</span>
           </template>
-          <span v-else class="feel">{{ stepLabel('energy', energy) }}, {{ stepLabel('bright', bright).toLowerCase() }}</span>
+          <span v-else class="feel">{{ stepLabel('energy', energy) }}, {{ col.label.toLowerCase() }}</span>
         </button>
       </template>
     </div>
@@ -172,9 +230,24 @@ function click(cells: MoodCell[]): void {
 <style scoped>
 .pad-grid {
   display: grid;
-  grid-template-columns: auto repeat(3, minmax(0, 150px));
+  grid-template-columns: auto repeat(4, minmax(0, 140px));
   gap: 4px;
   align-items: stretch;
+}
+.corner {
+  grid-row: span 2;
+}
+.dark-header {
+  grid-column: span 2;
+  border-bottom: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 4px 4px 0 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+.tall-header {
+  grid-row: span 2;
 }
 .axis {
   font: inherit;

@@ -19,10 +19,12 @@ function setMoods(moods: string[]): void {
 }
 
 const moodLabel = computed(() => {
-  const names = MOOD_CELLS.filter((c) => filters.value.moods.includes(c.key)).map((c) => c.name);
+  const picked = MOOD_CELLS.filter((c) => filters.value.moods.includes(c.key));
+  // Dark names are the same on every size, so a name can stand for several cells.
+  const names = [...new Set(picked.map((c) => c.name))];
   if (names.length === 0) return 'Mood: any';
   if (names.length <= 2) return `Mood: ${names.join(', ')}`;
-  return `Mood: ${names.length} picked`;
+  return `Mood: ${picked.length} picked`;
 });
 </script>
 
@@ -39,7 +41,7 @@ const moodLabel = computed(() => {
         {{ moodLabel }}
       </VBtn>
     </template>
-    <VCard class="pa-3" max-width="560">
+    <VCard class="pa-3" max-width="660">
       <div class="d-flex align-center mb-2">
         <span class="text-subtitle-2">Pick moods</span>
         <span class="text-caption text-medium-emphasis ml-2">tracks in any picked mood</span>

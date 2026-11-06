@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::database::now_millis;
 use crate::database::DbError;
-use crate::models::{AutoTag, LibraryEntryUsage, MoodScale, MoodStep, MoodZ, Role};
+use crate::models::{AutoTag, DarkKind, LibraryEntryUsage, MoodScale, MoodStep, MoodZ, Role};
 
 // ─── Library Entry CRUD ───────────────────────────────────────────────────────
 
@@ -129,7 +129,8 @@ pub fn update_library_entry_type(
             "UPDATE library_entries
              SET mood_bright = NULL, mood_bright_user = NULL,
                  mood_grand = NULL, mood_grand_user = NULL,
-                 mood_energy = NULL, mood_energy_user = NULL
+                 mood_energy = NULL, mood_energy_user = NULL,
+                 mood_sad = NULL, mood_scary = NULL, dark_kind_user = NULL
              WHERE id = ?1",
             params![id],
         )
@@ -969,16 +970,40 @@ pub fn set_user_mood_step(
     Ok(())
 }
 
-/// Writes the analyzer's mood z-scores for an entry (`None` clears all
-/// three) and returns whether the row changed. Only the auto columns are
-/// written; the user's steps are never touched. Opens no transaction of its
-/// own.
+/// Sets the user's dark kind for each entry. `None` clears it, so the
+/// analyzer's kind shows again. Stored whatever the entry's Bright ↔ Dark
+/// step; it is only shown while that step is Dark.
+pub fn set_user_dark_kind(
+    conn: &Connection,
+    entry_ids: &[String],
+    kind: Option<DarkKind>,
+) -> Result<(), String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin dark kind transaction: {e}"))?;
+    let kind_str = kind.map(|k| k.as_db_str());
+    for entry_id in entry_ids {
+        conn.execute(
+            "UPDATE library_entries SET dark_kind_user = ?2 WHERE id = ?1",
+            params![entry_id, kind_str],
+        )
+        .map_err(|e| format!("Failed to set dark kind: {e}"))?;
+    }
+    tx.commit().map_err(|e| format!("Failed to commit dark kind transaction: {e}"))?;
+    Ok(())
+}
+
+/// Writes the analyzer's mood z-scores for an entry, the three scales and
+/// the two dark kinds (`None` clears all five), and returns whether the row
+/// changed. Only the auto columns are written; the user's steps and kind are
+/// never touched. Opens no transaction of its own.
 pub fn apply_auto_mood(conn: &Connection, entry_id: &str, mood: Option<MoodZ>) -> Result<bool, String> {
-    let current: Option<[Option<f64>; 3]> = conn
+    let current: Option<[Option<f64>; 5]> = conn
         .query_row(
-            "SELECT mood_bright, mood_grand, mood_energy FROM library_entries WHERE id = ?1",
+            "SELECT mood_bright, mood_grand, mood_energy, mood_sad, mood_scary
+             FROM library_entries WHERE id = ?1",
             params![entry_id],
-            |row| Ok([row.get(0)?, row.get(1)?, row.get(2)?]),
+            |row| Ok([row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?]),
         )
         .optional()
         .map_err(|e| format!("Failed to read mood: {e}"))?;
@@ -986,14 +1011,22 @@ pub fn apply_auto_mood(conn: &Connection, entry_id: &str, mood: Option<MoodZ>) -
     let Some(current) = current else {
         return Ok(false);
     };
-    let new = [mood.map(|m| m.bright), mood.map(|m| m.grand), mood.map(|m| m.energy)];
+    let new = [
+        mood.map(|m| m.bright),
+        mood.map(|m| m.grand),
+        mood.map(|m| m.energy),
+        mood.map(|m| m.sad),
+        mood.map(|m| m.scary),
+    ];
     if current == new {
         return Ok(false);
     }
 
     conn.execute(
-        "UPDATE library_entries SET mood_bright = ?2, mood_grand = ?3, mood_energy = ?4 WHERE id = ?1",
-        params![entry_id, new[0], new[1], new[2]],
+        "UPDATE library_entries
+         SET mood_bright = ?2, mood_grand = ?3, mood_energy = ?4, mood_sad = ?5, mood_scary = ?6
+         WHERE id = ?1",
+        params![entry_id, new[0], new[1], new[2], new[3], new[4]],
     )
     .map_err(|e| format!("Failed to write auto mood: {e}"))?;
     Ok(true)
@@ -1966,8 +1999,57 @@ mod tests {
         .unwrap()
     }
 
+    /// z-scores with both dark kinds at 0.0.
     fn z(bright: f64, grand: f64, energy: f64) -> MoodZ {
-        MoodZ { bright, grand, energy }
+        MoodZ { bright, grand, energy, sad: 0.0, scary: 0.0 }
+    }
+
+    /// (sad z, scary z, user kind) as stored.
+    fn dark_kind_row(conn: &Connection, id: &str) -> (Option<f64>, Option<f64>, Option<String>) {
+        conn.query_row(
+            "SELECT mood_sad, mood_scary, dark_kind_user FROM library_entries WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn user_dark_kind_round_trips_and_clears() {
+        let conn = open_memory_db();
+        let a = music_entry(&conn, "/a.mp3");
+        let b = music_entry(&conn, "/b.mp3");
+
+        set_user_dark_kind(&conn, &[a.clone(), b.clone()], Some(DarkKind::Scary)).unwrap();
+        assert_eq!(dark_kind_row(&conn, &a), (None, None, s("scary")));
+        set_user_dark_kind(&conn, std::slice::from_ref(&a), Some(DarkKind::Sad)).unwrap();
+        assert_eq!(dark_kind_row(&conn, &a).2, s("sad"));
+        assert_eq!(dark_kind_row(&conn, &b).2, s("scary"));
+
+        // Clearing is "use auto"; the other entry keeps its kind.
+        set_user_dark_kind(&conn, std::slice::from_ref(&a), None).unwrap();
+        assert_eq!(dark_kind_row(&conn, &a).2, None);
+        assert_eq!(dark_kind_row(&conn, &b).2, s("scary"));
+        // No mood step is touched.
+        assert_eq!(mood_user(&conn, &b), (None, None, None));
+    }
+
+    #[test]
+    fn apply_auto_mood_writes_dark_kind_scores_and_keeps_user_kind() {
+        let conn = open_memory_db();
+        let a = music_entry(&conn, "/a.mp3");
+        set_user_dark_kind(&conn, std::slice::from_ref(&a), Some(DarkKind::Sad)).unwrap();
+
+        let mood = MoodZ { sad: -0.3, scary: 1.4, ..z(-1.0, 0.0, 0.5) };
+        assert!(apply_auto_mood(&conn, &a, Some(mood)).unwrap());
+        assert_eq!(dark_kind_row(&conn, &a), (Some(-0.3), Some(1.4), s("sad")));
+        assert!(!apply_auto_mood(&conn, &a, Some(mood)).unwrap());
+        // A change in one kind alone is a change.
+        assert!(apply_auto_mood(&conn, &a, Some(MoodZ { scary: 1.5, ..mood })).unwrap());
+        assert_eq!(dark_kind_row(&conn, &a).1, Some(1.5));
+
+        assert!(apply_auto_mood(&conn, &a, None).unwrap());
+        assert_eq!(dark_kind_row(&conn, &a), (None, None, s("sad")));
     }
 
     #[test]
@@ -2021,11 +2103,13 @@ mod tests {
         let conn = open_memory_db();
         let auto = music_entry(&conn, "/a.mp3");
         let user = music_entry(&conn, "/b.mp3");
-        apply_auto_mood(&conn, &auto, Some(z(1.0, -1.0, 0.5))).unwrap();
-        apply_auto_mood(&conn, &user, Some(z(1.0, -1.0, 0.5))).unwrap();
+        let mood = MoodZ { sad: 0.4, scary: -0.4, ..z(1.0, -1.0, 0.5) };
+        apply_auto_mood(&conn, &auto, Some(mood)).unwrap();
+        apply_auto_mood(&conn, &user, Some(mood)).unwrap();
         for scale in [MoodScale::Bright, MoodScale::Grand, MoodScale::Energy] {
             set_user_mood_step(&conn, std::slice::from_ref(&user), scale, Some(MoodStep::Mid)).unwrap();
         }
+        set_user_dark_kind(&conn, std::slice::from_ref(&user), Some(DarkKind::Scary)).unwrap();
 
         for id in [&auto, &user] {
             update_library_entry_type(&conn, id, "ambiance").unwrap();
@@ -2034,6 +2118,7 @@ mod tests {
         for id in [&auto, &user] {
             assert_eq!(mood_auto(&conn, id), (None, None, None));
             assert_eq!(mood_user(&conn, id), (None, None, None));
+            assert_eq!(dark_kind_row(&conn, id), (None, None, None));
         }
     }
 

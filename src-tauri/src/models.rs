@@ -70,6 +70,18 @@ pub struct LibraryEntry {
     pub mood_energy: Option<f64>,
     /// The user's Calm ↔ Energetic step; when set it overrides `mood_energy`.
     pub mood_energy_user: Option<MoodStep>,
+    /// The analyzer's Sad score as a z-score across the library's analyzed
+    /// music. Only meaningful on a track whose shown Bright ↔ Dark step is
+    /// Dark.
+    pub mood_sad: Option<f64>,
+    /// The analyzer's Scary score as a z-score, like `mood_sad`.
+    pub mood_scary: Option<f64>,
+    /// The analyzer's dark kind: whichever of `mood_sad` and `mood_scary` is
+    /// higher (Sad on a tie). `None` until both are scored. Derived when
+    /// loading, not stored.
+    pub dark_kind_auto: Option<DarkKind>,
+    /// The user's dark kind; when set it overrides `dark_kind_auto`.
+    pub dark_kind_user: Option<DarkKind>,
 }
 
 /// Whether a music entry is meant for combat scenes.
@@ -129,14 +141,55 @@ pub enum MoodScale {
     Energy,
 }
 
+/// What kind of dark a Dark track is. Shown and filtered on only when the
+/// track's shown Bright ↔ Dark step is Dark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub enum DarkKind {
+    /// Sorrow, grief, loss.
+    Sad,
+    /// Threat: dread or menace.
+    Scary,
+}
+
+impl DarkKind {
+    /// The value stored in `library_entries.dark_kind_user`.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            DarkKind::Sad => "sad",
+            DarkKind::Scary => "scary",
+        }
+    }
+
+    /// Parses a stored value; anything unrecognised is `None`.
+    pub fn from_db_str(s: &str) -> Option<Self> {
+        match s {
+            "sad" => Some(DarkKind::Sad),
+            "scary" => Some(DarkKind::Scary),
+            _ => None,
+        }
+    }
+
+    /// The analyzer's kind from the two z-scores: the higher one, Sad on a
+    /// tie. `None` unless both are present.
+    pub fn from_scores(sad: Option<f64>, scary: Option<f64>) -> Option<Self> {
+        let (sad, scary) = (sad?, scary?);
+        Some(if scary > sad { DarkKind::Scary } else { DarkKind::Sad })
+    }
+}
+
 /// The analyzer's position on each mood scale for one entry, as z-scores
 /// across the library's analyzed music. Positive is Bright, Grand and
-/// Energetic. Backend-only: the frontend reads these from `LibraryEntry`.
+/// Energetic; `sad` and `scary` are the two dark kinds' own z-scores.
+/// Backend-only: the frontend reads these from `LibraryEntry`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MoodZ {
     pub bright: f64,
     pub grand: f64,
     pub energy: f64,
+    pub sad: f64,
+    pub scary: f64,
 }
 
 impl MoodStep {
@@ -252,7 +305,7 @@ pub struct SceneConfig {
 impl Default for SceneConfig {
     fn default() -> Self {
         Self {
-            vocabulary: ["folk", "electronic", "playful", "driving"]
+            vocabulary: ["folk", "electronic", "playful"]
             .iter()
             .map(|w| w.to_string())
             .collect(),
@@ -584,6 +637,24 @@ pub struct ClipRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dark_kind_db_strings_round_trip() {
+        for kind in [DarkKind::Sad, DarkKind::Scary] {
+            assert_eq!(DarkKind::from_db_str(kind.as_db_str()), Some(kind));
+        }
+        assert_eq!([DarkKind::Sad.as_db_str(), DarkKind::Scary.as_db_str()], ["sad", "scary"]);
+        assert_eq!(DarkKind::from_db_str("angry"), None);
+    }
+
+    #[test]
+    fn dark_kind_auto_is_the_higher_score() {
+        assert_eq!(DarkKind::from_scores(Some(0.4), Some(1.1)), Some(DarkKind::Scary));
+        assert_eq!(DarkKind::from_scores(Some(-0.2), Some(-0.9)), Some(DarkKind::Sad));
+        assert_eq!(DarkKind::from_scores(Some(0.5), Some(0.5)), Some(DarkKind::Sad));
+        assert_eq!(DarkKind::from_scores(None, Some(1.0)), None);
+        assert_eq!(DarkKind::from_scores(Some(1.0), None), None);
+    }
 
     #[test]
     fn mood_step_db_strings_round_trip() {

@@ -4,8 +4,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { useToast } from '../composables/useToast';
 import { useAutoTagEvents } from '../composables/useAutoTagEvents';
 import { useAppStore } from '../stores/appStore';
-import type { EntryTagScores, TagScore } from '@generated/index';
-import { MOOD_SCALES, SCALE_NAMES, scaleValues } from '../utils/mood';
+import type { DarkKind, EntryTagScores, TagScore } from '@generated/index';
+import { DARK_KIND_LABELS, entryDarkKind, isShownDark, MOOD_SCALES, SCALE_NAMES, scaleValues } from '../utils/mood';
 
 // Expansion panel for the entry editor: how strongly the analyzer thinks each
 // vocabulary tag fits this entry. It starts open and loads on mount, and
@@ -127,6 +127,13 @@ const soundRows = computed<{ label: string; value: string }[]>(() => {
   for (const scale of MOOD_SCALES) {
     const { z } = scaleValues(e, scale);
     if (z !== null) rows.push({ label: SCALE_NAMES[scale], value: `z = ${signed(z)}` });
+  }
+  // The dark kind's two scores matter only on a track shown as Dark.
+  if (isShownDark(e)) {
+    const kind = entryDarkKind(e);
+    const mark = (k: DarkKind): string => (kind === k ? ` · ${e.darkKindUser !== null ? 'yours' : 'auto'}` : '');
+    if (e.moodSad !== null) rows.push({ label: `Dark: ${DARK_KIND_LABELS.sad}`, value: `z = ${signed(e.moodSad)}${mark('sad')}` });
+    if (e.moodScary !== null) rows.push({ label: `Dark: ${DARK_KIND_LABELS.scary}`, value: `z = ${signed(e.moodScary)}${mark('scary')}` });
   }
   return rows;
 });
