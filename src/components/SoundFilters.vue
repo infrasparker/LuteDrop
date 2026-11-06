@@ -41,7 +41,7 @@ const moodLabel = computed(() => {
         {{ moodLabel }}
       </VBtn>
     </template>
-    <VCard class="pa-3" max-width="560">
+    <VCard class="pa-3" max-width="660">
       <div class="d-flex align-center mb-2">
         <span class="text-subtitle-2">Pick moods</span>
         <span class="text-caption text-medium-emphasis ml-2">tracks in any picked mood</span>

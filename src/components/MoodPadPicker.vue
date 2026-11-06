@@ -86,7 +86,7 @@ async function pick(cell: MoodCell): Promise<void> {
         </VBtn>
       </slot>
     </template>
-    <VCard class="pa-3" max-width="560">
+    <VCard class="pa-3" max-width="660">
       <div class="text-subtitle-2">
         <template v-if="isBulk">
           Mood · {{ entries.length }} tracks<template v-if="current">: <strong>{{ placeName(current) }}</strong></template>
