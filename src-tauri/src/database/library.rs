@@ -977,45 +977,6 @@ pub fn set_user_mood_level(
     Ok(())
 }
 
-/// Approves a music entry in Review, in one transaction: the role shown
-/// (`role_user`, else `role_auto`) becomes the user's, and the entry is
-/// marked reviewed now.
-///
-/// - With neither layer the shown role is the Non-combat default, which is
-///   deliberately not copied: approving is about the moods too, and a
-///   default must never become a training example.
-/// - Mood suggestions are not copied into user levels: a bar the user did
-///   not touch stays the analyzer's.
-///
-/// Returns whether the user's role changed (a new training example); a
-/// missing or ambiance entry is left alone and returns false.
-pub fn approve_entry_review(conn: &Connection, entry_id: &str) -> Result<bool, String> {
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| format!("Failed to begin approve transaction: {e}"))?;
-    let roles: Option<(Option<String>, Option<String>)> = conn
-        .query_row(
-            "SELECT role_user, role_auto FROM library_entries WHERE id = ?1 AND entry_type = 'music'",
-            params![entry_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(|e| format!("Failed to read entry: {e}"))?;
-    let Some((role_user, role_auto)) = roles else {
-        return Ok(false);
-    };
-    conn.execute(
-        "UPDATE library_entries
-         SET role_user = COALESCE(role_user, role_auto),
-             mood_reviewed_at = ?2
-         WHERE id = ?1",
-        params![entry_id, now_millis()],
-    )
-    .map_err(|e| format!("Failed to approve entry: {e}"))?;
-    tx.commit().map_err(|e| format!("Failed to commit approve transaction: {e}"))?;
-    Ok(role_user.is_none() && role_auto.is_some())
-}
-
 /// Writes the analyzer's 0..1 value of each given mood for an entry. Only
 /// `auto_score` is written; the user's levels and review time are never
 /// touched. The caller checks the entry is music. Opens no transaction of
@@ -2098,11 +2059,6 @@ mod tests {
             .unwrap()
     }
 
-    fn role_user_of(conn: &Connection, id: &str) -> Option<String> {
-        conn.query_row("SELECT role_user FROM library_entries WHERE id = ?1", params![id], |r| r.get(0))
-            .unwrap()
-    }
-
     /// Every id of the default vocabulary at `v`.
     fn all_moods(v: f64) -> Vec<(String, f64)> {
         MoodVocabulary::defaults().ids().into_iter().map(|m| (m, v)).collect()
@@ -2184,42 +2140,6 @@ mod tests {
         assert_eq!(mood_row(&conn, &a, "grim"), Some((Some(0.4), None)));
         // The user's levels and review time are never touched.
         assert_eq!(reviewed_at(&conn, &a), reviewed);
-    }
-
-    #[test]
-    fn approve_keeps_the_shown_role_and_leaves_moods_alone() {
-        let conn = open_memory_db();
-        // Suggested role and moods only.
-        let auto = music_entry(&conn, "/a.mp3");
-        apply_auto_moods(&conn, &auto, &all_moods(0.7)).unwrap();
-        apply_auto_role(&conn, &auto, Some(Role::Combat), 0.8).unwrap();
-        assert!(approve_entry_review(&conn, &auto).unwrap());
-        assert!(reviewed_at(&conn, &auto).is_some());
-        assert_eq!(role_user_of(&conn, &auto), s("combat"));
-        // An untouched bar stays the analyzer's.
-        for mood in MoodVocabulary::defaults().ids() {
-            assert_eq!(mood_row(&conn, &auto, &mood), Some((Some(0.7), None)));
-        }
-
-        // The user's own role wins over the suggestion.
-        let user = music_entry(&conn, "/b.mp3");
-        apply_auto_role(&conn, &user, Some(Role::Combat), 0.8).unwrap();
-        set_user_role(&conn, std::slice::from_ref(&user), Some(Role::NonCombat)).unwrap();
-        assert!(!approve_entry_review(&conn, &user).unwrap());
-        assert_eq!(role_user_of(&conn, &user), s("non_combat"));
-
-        // Nothing shown: nothing set, but the entry is reviewed.
-        let bare = music_entry(&conn, "/c.mp3");
-        assert!(!approve_entry_review(&conn, &bare).unwrap());
-        assert!(reviewed_at(&conn, &bare).is_some());
-        assert_eq!(role_user_of(&conn, &bare), None);
-        assert_eq!(mood_rows(&conn, &bare), 0);
-
-        // Ambiance and missing entries are left alone.
-        let amb = insert_library_entry(&conn, "/r.ogg", None, "R", None, None, None, "ambiance").unwrap();
-        assert!(!approve_entry_review(&conn, &amb).unwrap());
-        assert_eq!(reviewed_at(&conn, &amb), None);
-        assert!(!approve_entry_review(&conn, "nope").unwrap());
     }
 
     #[test]

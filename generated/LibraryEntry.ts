@@ -50,7 +50,7 @@ roleUser: Role | null,
  */
 moods: Array<MoodValue>, 
 /**
- * When the user last set a mood level or approved the entry in Review
+ * When the user last set a mood level on the entry
  * (Unix milliseconds as a string, like `created_at`); `None` until then.
  */
 moodReviewedAt: string | null, };

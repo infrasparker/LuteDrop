@@ -467,17 +467,6 @@ pub fn recalibrate_moods(container: &AppStateContainer) -> Result<AppState, Stri
     Ok(state)
 }
 
-/// Approves one entry in Review: its shown role becomes the user's and it is
-/// marked reviewed, atomically. Mood suggestions stay suggestions. Re-scores when that gave the entry
-/// a user role, since user roles train the Combat gate.
-pub fn approve_entry_review(container: &AppStateContainer, entry_id: &str) -> Result<AppState, String> {
-    let role_changed = with_db(container, |conn| library::approve_entry_review(conn, entry_id))?;
-    if role_changed {
-        request_rescore_if_enabled(container);
-    }
-    load_state(container)
-}
-
 pub fn update_library_entry_type(
     container: &AppStateContainer,
     entry_id: &str,

@@ -5,7 +5,6 @@ import { useAppStore } from './stores/appStore';
 import { useAudio } from './composables/useAudio';
 import { useToast } from './composables/useToast';
 import { useAutoTagEvents } from './composables/useAutoTagEvents';
-import { useReviewQueue } from './composables/useReviewQueue';
 import { useRouter } from 'vue-router';
 import type { AppState } from '@generated/index';
 import TransportBar from './components/TransportBar.vue';
@@ -24,7 +23,6 @@ const audio = useAudio();
 useAutoTagEvents();
 
 const router = useRouter();
-const { count: reviewCount } = useReviewQueue();
 
 const showEditorDialog = computed({
   get: () => store.editEntryId !== null,
@@ -40,7 +38,7 @@ const showEditorDialog = computed({
 });
 
 // Views that preview library sounds; leaving one stops the preview.
-const PREVIEW_ROUTES = ['/library', '/scry', '/review'];
+const PREVIEW_ROUTES = ['/library', '/scry'];
 
 watch(() => router.currentRoute.value.path, (newPath, oldPath) => {
   if (PREVIEW_ROUTES.includes(oldPath) && newPath !== oldPath) {
@@ -83,20 +81,6 @@ onMounted(async () => {
           title="Scry"
           aria-label="Scry"
         />
-        <!-- Badge: music waiting for review. -->
-        <VListItem
-          to="/review"
-          :active="$route.path === '/review'"
-          color="primary"
-          title="Review"
-          aria-label="Review"
-        >
-          <template #prepend>
-            <VBadge :content="reviewCount" :model-value="reviewCount > 0" color="primary" max="99">
-              <VIcon>mdi-cards-outline</VIcon>
-            </VBadge>
-          </template>
-        </VListItem>
       </VList>
 
       <template #append>

@@ -62,7 +62,7 @@ export function stepLevel(value: number | null, step: 1 | -1): number {
 }
 
 /// The entry's highest moods (Energy left out), best first, e.g. for the
-/// Review card's readout "Mysterious 0.87 · Grim 0.74".
+/// readout "Mysterious 0.87 · Grim 0.74".
 export function topMoods(entry: LibraryEntry, n: number): { id: MoodId; name: string; value: number }[] {
   const out: { id: MoodId; name: string; value: number }[] = [];
   for (const m of moodsOnly()) {
@@ -333,26 +333,3 @@ export function sortByKey<T>(
   return out;
 }
 
-// --- Review queue ---
-
-/// Music not reviewed yet (no mood level set and not approved). This is what
-/// the Review tab's badge counts.
-export const needsReview = (entry: LibraryEntry): boolean =>
-  entry.entryType === 'music' && entry.moodReviewedAt === null;
-
-const DAY_MS = 24 * 60 * 60 * 1000;
-const createdMs = (e: LibraryEntry): number => Number(e.createdAt) || 0;
-const topScore = (e: LibraryEntry): number => topMoods(e, 1)[0]?.value ?? Infinity;
-
-/// Review order: newest import day first; within a day, the lowest top mood
-/// score first (the track the analyzer is least sure fits anywhere), entries
-/// with no scores after those; then newest, then name.
-export function compareReview(a: LibraryEntry, b: LibraryEntry): number {
-  const dayA = Math.floor(createdMs(a) / DAY_MS);
-  const dayB = Math.floor(createdMs(b) / DAY_MS);
-  if (dayA !== dayB) return dayB - dayA;
-  const ta = topScore(a);
-  const tb = topScore(b);
-  if (ta !== tb) return ta - tb;
-  return createdMs(b) - createdMs(a) || byName(a, b);
-}

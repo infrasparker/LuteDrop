@@ -15,7 +15,7 @@ import { MOOD_LEVELS, moodLayers, moodList, snapLevel, stepLevel } from '../util
 ///   suggestion, as does the ↺ button.
 /// - With several entries (bulk), a click sets the level on every one, and a
 ///   row whose entries differ shows "mixed".
-/// Every change saves at once and marks the entries as reviewed (backend).
+/// Every change saves at once.
 const props = defineProps<{ entries: LibraryEntry[] }>();
 
 const store = useAppStore();
@@ -127,7 +127,7 @@ function onBarKey(row: Row, e: KeyboardEvent): void {
   else if (e.key === 'Delete' || e.key === 'Backspace') level = null;
   if (level === undefined) return;
   e.preventDefault();
-  // Keys that change nothing do not save (and do not mark the entry reviewed).
+  // Keys that change nothing do not save.
   if (level === null ? row.setState === 'suggested' : row.setState === 'set' && row.value === level) return;
   save(row.id, level);
 }
