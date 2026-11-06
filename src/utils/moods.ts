@@ -135,6 +135,13 @@ export function matchesTagSelection(tags: string[], selected: string[], mode: Ma
   return mode === 'all' ? selected.every((t) => tags.includes(t)) : selected.some((t) => tags.includes(t));
 }
 
+/// The lens column's header: the mood's name, or "Best of 2" / "Weakest of 2"
+/// (the full names are in `lensLabel`, shown on hover).
+export function lensHeader(f: Pick<MoodFilters, 'lenses' | 'mode'>): string {
+  if (f.lenses.length <= 1) return lensLabel(f);
+  return `${f.mode === 'any' ? 'Best' : 'Weakest'} of ${f.lenses.length}`;
+}
+
 // --- Sorting ---
 
 /// Sort keys for the filter bar. `match` keeps the incoming order (Scry's

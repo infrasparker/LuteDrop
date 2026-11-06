@@ -150,9 +150,11 @@ const dirHint = computed(() => {
 </template>
 
 <style scoped>
-/* Ten buttons on one line when there is room; the group wraps as a whole. */
+/* Ten buttons on one line when there is room; in a narrow pane (Scry) they
+   wrap onto a second line rather than scroll. */
 .lens-buttons {
   max-width: 100%;
-  overflow-x: auto;
+  flex-wrap: wrap;
+  height: auto;
 }
 </style>

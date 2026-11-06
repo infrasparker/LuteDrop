@@ -19,6 +19,7 @@ import MoodFilters from '../components/MoodFilters.vue';
 import MoodProfile from '../components/MoodProfile.vue';
 import {
   emptyMoodFilters,
+  lensHeader,
   lensLabel,
   lensScore,
   matchesMoodFilters,
@@ -110,7 +111,7 @@ const headers = computed(() => [
   { title: 'Type', key: 'entryType', sortable: true, width: '60px' },
   { title: 'Name', key: 'name', sortable: true, width: '32%' },
   ...(lensOn.value
-    ? [{ title: lensLabel(moodFilters.value), key: 'lens', sortable: true, width: '140px',
+    ? [{ title: lensHeader(moodFilters.value), key: 'lens', sortable: true, width: '140px',
         value: (item: LibraryEntry) => lensScore(item, moodFilters.value) ?? -1 }]
     : []),
   { title: 'Role', key: 'role', sortable: true, width: '60px' },
