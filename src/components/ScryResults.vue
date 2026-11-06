@@ -334,7 +334,10 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* Caption size set here: Vuetify 4 has no `text-caption` class, and at body
+   size "Search ↓" and "Energy" overflow their columns into each other. */
 .scry-head {
+  font-size: 0.75rem;
   min-height: 28px;
   border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.12);
   border-left: 3px solid transparent;
