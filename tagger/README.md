@@ -87,7 +87,8 @@ To rebuild it (needs the model installed; checks each file against the
 manifest's sha256):
 
 ```
-python scripts/build_reference.py --manifest tagger/reference/manifest.json \n    --audio-dir <dir> --out tagger/reference/reference.npz [--download] [--cache-dir <dir>]
+python scripts/build_reference.py --manifest tagger/reference/manifest.json \
+    --audio-dir <dir> --out tagger/reference/reference.npz [--download] [--cache-dir <dir>]
 ```
 
 Hashes with no cached embedding are ignored as examples and receive no score
