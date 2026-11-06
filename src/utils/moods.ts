@@ -83,7 +83,7 @@ export const topMoodText = (entry: LibraryEntry, n = 2): string =>
 /// track's best score among them, `all` by its weakest.
 export type MatchMode = 'any' | 'all';
 
-export type RoleChoice = 'all' | Role | 'unset';
+export type RoleChoice = 'all' | Role;
 
 export interface MoodFilters {
   /// Selected lenses, in the order they were picked; empty means no lens.
@@ -112,11 +112,10 @@ export function lensScore(entry: LibraryEntry, f: Pick<MoodFilters, 'lenses' | '
 
 /// True when the entry passes the lens and role filters. Under a lens only
 /// music shows (ambiance has no moods); music not scored yet stays, ranked
-/// last. "Unset" role means music with no role shown.
+/// last. A role choice shows music with that role (ambiance has none).
 export function matchesMoodFilters(entry: LibraryEntry, f: MoodFilters): boolean {
   if (f.lenses.length > 0 && entry.entryType !== 'music') return false;
   if (f.role === 'all') return true;
-  if (f.role === 'unset') return entry.entryType === 'music' && entry.role === null;
   return entry.role === f.role;
 }
 

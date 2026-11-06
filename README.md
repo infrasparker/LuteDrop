@@ -42,13 +42,12 @@ Auto-tagging suggests a role and tags for music entries by comparing how they so
 
 ### Role
 
-Every music entry can have a role, **Combat** or **Non-combat**. The analyzer scores the Combat probability of each entry. The role is Combat when the probability reaches the Combat threshold, Non-combat when one minus the probability reaches the Non-combat threshold, and otherwise unset. An auto role is set only once the role classifier is trusted.
+Every music entry has a role, **Combat** or **Non-combat**; there is no "no role" state. The role shown is the one you set, else the analyzer's suggestion, else **Non-combat** by default. Ambiance entries have no role. The analyzer scores the Combat probability of each entry. Its suggestion is Combat when the probability reaches the Combat threshold, Non-combat when one minus the probability reaches the Non-combat threshold, and otherwise there is none (the default shows). An auto role is suggested only once the role classifier is trusted.
 
 - A role set by hand always wins. Auto-tagging never changes it.
-- Clearing a role is a decision too: the entry stays without a role and auto-tagging does not fill it again.
-- An auto role is shown as **✨ Suggested** with its score. **Confirm** keeps it as a confirmed role.
-- The Library has a Role column and a Role filter (All, Combat, Non-combat, Unset). The entry editor has a Combat / Non-combat control with a clear action, and the bulk bar can set or clear the role on several music entries at once.
-- Only entries whose role was set by hand count as examples. Auto roles never do.
+- A suggested role (the analyzer's, or the default) is shown as **✨ Suggested**, with the analyzer's score when there is one. **Confirm** makes it yours; a role you set reads **Set by you**, and **↺** goes back to the suggestion.
+- The Library has a Role column and a Role filter (Any role, Combat, Non-combat). The entry editor and the Review card have a Combat / Non-combat control, and the bulk bar can set the role on several music entries at once or send them back to the suggestion.
+- Only entries whose role was set by hand count as examples. Auto roles never do, and neither does the Non-combat default.
 
 ### Moods
 
@@ -85,7 +84,7 @@ The **Review** tab goes through music one track at a time. Its badge counts the 
 
 - The card shows the track's name and folder, a play button, and its two highest moods as a readout, for example "Mysterious 0.87 · Grim 0.74".
 - The **Role** row and the mood profile work as in the editor; changing them does not move on. **Sounds like** names the two closest reviewed tracks by sound, when the analyzer is available.
-- **Approve** (key **A**) confirms the role shown, marks the track reviewed and moves on. Mood bars you did not touch stay suggestions. **Skip** (key **S**) moves the track to the end of the queue for this session without saving anything. **Space** plays or stops the track.
+- **Approve** (key **A**) confirms the analyzer's role (a default Non-combat stays a suggestion, so it never trains the analyzer), marks the track reviewed and moves on. Mood bars you did not touch stay suggestions. **Skip** (key **S**) moves the track to the end of the queue for this session without saving anything. **Space** plays or stops the track.
 - Newest imports come first, and within a day the tracks with the lowest top mood score first.
 
 ### Auto tags

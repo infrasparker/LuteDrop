@@ -1024,6 +1024,7 @@ fn load_library_entries(conn: &Connection, vocabulary: &MoodVocabulary) -> Resul
         let analysis = analysis_map.remove(&id);
         let role_auto = role_auto.as_deref().and_then(Role::from_db_str);
         let role_user = role_user.as_deref().and_then(Role::from_db_str);
+        let entry_type = EntryType::from_str(&entry_type);
         let stored = mood_map.remove(&id).unwrap_or_default();
         let moods = mood_ids
             .iter()
@@ -1047,11 +1048,11 @@ fn load_library_entries(conn: &Connection, vocabulary: &MoodVocabulary) -> Resul
             loop_end,
             created_at,
             tags: tags.shown,
-            entry_type: EntryType::from_str(&entry_type),
+            role: crate::models::effective_role(&entry_type, role_user, role_auto),
+            entry_type,
             auto_tags: tags.auto,
             rejected_tags: tags.rejected,
             analysis,
-            role: role_user.or(role_auto),
             role_auto,
             // A score without a role says nothing the UI can show.
             role_auto_score: role_auto.and(role_auto_score),
@@ -2099,7 +2100,12 @@ mod tests {
             (Some(Role::NonCombat), Some(Role::Combat), Some(0.8), Some(Role::NonCombat))
         );
         assert_eq!(layers(&user), (Some(Role::NonCombat), None, None, Some(Role::NonCombat)));
-        assert_eq!(layers(&unset), (None, None, None, None));
+        // Neither layer: Non-combat by default, with no layer behind it.
+        assert_eq!(layers(&unset), (Some(Role::NonCombat), None, None, None));
+        // Ambiance has no role.
+        let amb = library::insert_library_entry(&conn, "/e.ogg", None, "E", None, None, None, "ambiance").unwrap();
+        let entries = load_library_entries(&conn, &MoodVocabulary::defaults()).unwrap();
+        assert_eq!(entries.iter().find(|e| e.id == amb).unwrap().role, None);
     }
 
     /// The columns schema v7 adds to `library_entries`.

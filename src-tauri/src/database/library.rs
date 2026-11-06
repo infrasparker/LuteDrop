@@ -1003,7 +1003,9 @@ pub fn set_user_mood_level(
 
 /// Approves a music entry in Review, in one transaction: the role shown
 /// (`role_user`, else `role_auto`) becomes the user's, and the entry is
-/// marked reviewed now. Mood suggestions are not copied into user levels: a
+/// marked reviewed now. With neither layer the shown role is the Non-combat
+/// default, which is deliberately not copied: approving is about the moods
+/// too, and a default must never become a training example. Mood suggestions are not copied into user levels: a
 /// bar the user did not touch stays the analyzer's. Returns whether the
 /// user's role changed (a new training example); a missing or ambiance entry
 /// is left alone and returns false.

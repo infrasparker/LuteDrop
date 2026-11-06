@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // The Review tab: one music track at a time, with its Role and mood profile.
-// Approve confirms the role shown, marks the track reviewed and moves on
+// Approve confirms the analyzer's role (a default Non-combat stays a
+// suggestion), marks the track reviewed and moves on
 // (mood bars the user did not touch stay the analyzer's suggestions); Skip
 // moves on without saving anything (the track goes to the end of the queue
 // for this session). Changing Role or a mood level on the card saves at once

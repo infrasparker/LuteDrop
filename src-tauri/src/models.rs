@@ -47,7 +47,8 @@ pub struct LibraryEntry {
     pub rejected_tags: Vec<String>,
     /// Analyzer state for this entry; `None` if it was never submitted.
     pub analysis: Option<EntryAnalysis>,
-    /// The role shown: `role_user` if set, otherwise `role_auto`.
+    /// The role shown (see `effective_role`): for music `role_user`, else
+    /// `role_auto`, else Non-combat, so never `None`; for ambiance `None`.
     pub role: Option<Role>,
     /// The analyzer's role, written by every analysis run.
     pub role_auto: Option<Role>,
@@ -94,6 +95,18 @@ impl Role {
             "non_combat" => Some(Role::NonCombat),
             _ => None,
         }
+    }
+}
+
+/// The role a music entry shows: the user's, else the analyzer's, else
+/// Non-combat (the default; there is no "no role" state). Ambiance has no
+/// role. Only `role_user` ever trains the Combat gate: a role that is shown
+/// because of this default is not a training example (see
+/// `EntryFacts::user_role`).
+pub fn effective_role(entry_type: &EntryType, role_user: Option<Role>, role_auto: Option<Role>) -> Option<Role> {
+    match entry_type {
+        EntryType::Music => Some(role_user.or(role_auto).unwrap_or(Role::NonCombat)),
+        EntryType::Ambiance => None,
     }
 }
 
@@ -775,6 +788,19 @@ pub struct ClipRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effective_role_is_user_then_auto_then_non_combat() {
+        use Role::{Combat, NonCombat};
+        let music = EntryType::Music;
+        assert_eq!(effective_role(&music, Some(Combat), Some(NonCombat)), Some(Combat));
+        assert_eq!(effective_role(&music, Some(NonCombat), Some(Combat)), Some(NonCombat));
+        assert_eq!(effective_role(&music, None, Some(Combat)), Some(Combat));
+        assert_eq!(effective_role(&music, None, None), Some(NonCombat));
+        // Ambiance has no role, whatever is stored.
+        assert_eq!(effective_role(&EntryType::Ambiance, Some(Combat), Some(Combat)), None);
+        assert_eq!(effective_role(&EntryType::Ambiance, None, None), None);
+    }
 
     #[test]
     fn default_vocabulary_is_eight_moods_then_energy_and_valid() {

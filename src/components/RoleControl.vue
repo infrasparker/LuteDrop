@@ -5,9 +5,10 @@ import { useAppStore } from '../stores/appStore';
 import FacetStatus from './FacetStatus.vue';
 
 /// Combat / Non-combat toggle for one or more entries, plus its status column.
-/// The shown role is the confirmed one if set, else the analyzer's suggestion.
-/// Clicking an option confirms it; the status column offers Confirm (keep the
-/// suggestion) or Use suggestion (clear the confirmed role).
+/// Exactly one option is always selected: the role the user set, else the
+/// analyzer's suggestion, else Non-combat by default (both read "Suggested").
+/// Clicking an option sets it; the status column offers Confirm (make the
+/// suggestion yours) or ↺ (clear the role you set).
 ///
 /// The root uses `display: contents`, so inside a grid the options and the
 /// status are two cells that line up with the other facet rows.
@@ -29,10 +30,11 @@ const options: { value: Role; label: string; icon: string }[] = [
 const labelOf = (role: Role | null): string | null =>
   options.find((o) => o.value === role)?.label ?? null;
 
-const shown = computed(() => props.roleUser ?? props.roleAuto);
-const autoHint = computed(() =>
-  props.roleAutoScore === null ? null : `Combat probability ${props.roleAutoScore.toFixed(2)}`,
-);
+const shown = computed<Role>(() => props.roleUser ?? props.roleAuto ?? 'nonCombat');
+const autoHint = computed(() => {
+  if (props.roleAuto === null) return 'Non-combat by default: the analyzer has not suggested a role';
+  return props.roleAutoScore === null ? null : `Combat probability ${props.roleAutoScore.toFixed(2)}`;
+});
 
 async function run(cmd: string, args: Record<string, unknown>): Promise<void> {
   if (busy.value || props.entryIds.length === 0) return;
@@ -76,7 +78,7 @@ function choose(role: Role): void {
       :user-label="labelOf(roleUser)"
       :auto-hint="autoHint"
       :disabled="busy"
-      @confirm="run('keep_auto_role', {})"
+      @confirm="run('set_entry_role', { role: shown })"
       @use-suggestion="run('set_entry_role', { role: null })"
     />
   </div>

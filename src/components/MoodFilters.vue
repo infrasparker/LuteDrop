@@ -137,7 +137,6 @@ const dirHint = computed(() => {
       <VBtn value="all" :size="size">Any role</VBtn>
       <VBtn value="combat" :size="size" prepend-icon="mdi-sword-cross">Combat</VBtn>
       <VBtn value="nonCombat" :size="size" prepend-icon="mdi-music-note">Non-combat</VBtn>
-      <VBtn value="unset" :size="size">Unset</VBtn>
     </VBtnToggle>
     <div class="d-flex align-center">
       <VMenu location="bottom start">

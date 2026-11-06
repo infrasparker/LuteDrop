@@ -474,7 +474,7 @@ async function relocateEntry(entryId: string): Promise<void> {
           </VIcon>
           <VIcon v-if="item.roleUser === null" size="x-small" class="role-auto">mdi-creation</VIcon>
           <VTooltip v-if="item.roleUser === null" activator="parent" location="top" open-delay="300">
-            {{ roleLabel(item.role) }} · Suggested{{ item.roleAutoScore === null ? '' : ` · ${item.roleAutoScore.toFixed(2)}` }}
+            {{ roleLabel(item.role) }} · Suggested{{ item.roleAuto === null ? ' (default)' : item.roleAutoScore === null ? '' : ` · ${item.roleAutoScore.toFixed(2)}` }}
           </VTooltip>
         </span>
       </template>
@@ -594,7 +594,7 @@ async function relocateEntry(entryId: string): Promise<void> {
           <VList density="compact">
             <VListItem prepend-icon="mdi-sword-cross" title="Combat" @click="applyBulkRole('combat')" />
             <VListItem prepend-icon="mdi-music-note" title="Non-combat" @click="applyBulkRole('nonCombat')" />
-            <VListItem prepend-icon="mdi-restore" title="Use suggestion" subtitle="Clear the confirmed role" @click="applyBulkRole(null)" />
+            <VListItem prepend-icon="mdi-restore" title="Back to suggestion" subtitle="Clear the role you set" @click="applyBulkRole(null)" />
           </VList>
         </VMenu>
         <VBtn
