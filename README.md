@@ -55,19 +55,22 @@ Every music entry can have a role, **Combat** or **Non-combat**. The analyzer sc
 Every music entry sits in one **mood pool**, from a short fixed list:
 
 - **Peaceful**
-- **Lighthearted**
+- **Cheerful** (jaunty, merry, tavern music)
+- **Quirky** (weird, offbeat, groovy, eccentric)
 - **Somber**
 - **Wonder**
 - **Mysterious**
-- **Epic**
-- **Tense**
+- **Heroic** (triumphant, bold, rousing)
+- **Menacing** (brutal, threatening, boss fights)
 
 Ambiance entries have no pool.
 
-The analyzer suggests a pool for each analyzed track by comparing its sound with a few descriptions of each pool. Its scores are put on a common footing with a calibration taken once, from the first analysis run that covers at least 50 music tracks; until then no pools are suggested. **Tense** is never suggested: it is too close to combat music to tell apart by ear, so tracks are moved into it by hand.
+The analyzer suggests a pool for each analyzed track by comparing its sound with a few descriptions of each pool. Its scores are put on a common footing with a calibration taken once, from the first analysis run that covers at least 50 music tracks; until then no pools are suggested. Every pool can be suggested, and the suggestion depends on the sound alone, never on the role.
+
+Upgrading from v0.15 (seven pools) maps confirmed pools onto the new list: Lighthearted becomes Cheerful, Epic becomes Heroic and Tense becomes Menacing. Every suggestion and the calibration are cleared and taken again by the next analysis run.
 
 - A suggested value is marked **✨ Suggested**; **✓ Confirm** keeps it. Picking a pool by hand confirms it. A confirmed value always wins over the analyzer's, and **↺ Use suggestion** clears it. When the two differ, the status reads "Confirmed · suggested: …". The same wording is used for roles and tags.
-- The entry editor has a **Role** row and a **Pool** row with the seven pools.
+- The entry editor has a **Role** row and a **Pool** row with the eight pools.
 - The Library and Scry have a filter bar: pool chips with counts (any number at once, plus **Unsorted** for music with no pool), the role filter, and a **Sort** menu (Name, Suggestion confidence). The bulk bar's **Set pool…** sets the pool of several music entries at once.
 
 ### Review

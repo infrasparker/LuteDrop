@@ -256,7 +256,7 @@ mod tests {
 
         let cal = PoolCalibration {
             tracks: 64,
-            pools: [("epic".to_string(), PoolStat { mean: 0.21, sd: 0.03 })].into(),
+            pools: [("heroic".to_string(), PoolStat { mean: 0.21, sd: 0.03 })].into(),
         };
         save_pool_calibration(&conn, &cal).unwrap();
         assert_eq!(load_pool_calibration(&conn).unwrap(), Some(cal));

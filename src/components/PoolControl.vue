@@ -5,7 +5,7 @@ import { useAppStore } from '../stores/appStore';
 import { effectivePool, poolName, POOLS, suggestionText } from '../utils/pools';
 import FacetStatus from './FacetStatus.vue';
 
-/// The seven pool buttons for one music entry, plus its status column. The
+/// The eight pool buttons for one music entry, plus its status column. The
 /// shown pool is the confirmed one if set, else the analyzer's suggestion
 /// (marked with a sparkle). Clicking a pool confirms it; Confirm keeps the
 /// suggestion; Use suggestion clears the confirmed pool. Every one of these

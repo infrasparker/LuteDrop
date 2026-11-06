@@ -49,10 +49,10 @@ need rhythm features, so hashes without them are ignored and receive no pace
 score. `pace` is deprecated: apps after v0.12 no longer send it, and the head
 and rhythm features can be removed once older apps are retired. `mood` scores
 are raw, not z-scored: `pools` has one absolute score per mood pool
-(`peaceful`, `lighthearted`, `somber`, `awe`, `mysterious`, `epic`): the mean
-cosine of the track's mean embedding with that pool's prompts. The app z-scores them against a frozen calibration and
-suggests the best pool. The prompt embeddings are
-computed once, the first time `/score` finds the model loaded. While the model
+(`peaceful`, `cheerful`, `quirky`, `somber`, `awe`, `mysterious`, `heroic`,
+`menacing`): the mean cosine of the track's mean embedding with that pool's
+prompts. The app z-scores them against a frozen calibration and suggests the
+best pool. The prompt embeddings are computed once, the first time `/score` finds the model loaded. While the model
 is still loading or has failed, `mood` is omitted from the response; `/score`
 never waits for it, and `gate`, `tags` and `pace` are unaffected.
 

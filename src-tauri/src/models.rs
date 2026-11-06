@@ -57,7 +57,7 @@ pub struct LibraryEntry {
     pub role_user: Option<Role>,
     /// The analyzer's suggested mood pool, from the frozen pool calibration.
     /// `None` until a run with a calibration scored the entry (and always on
-    /// ambiance). Never `Tension`: that pool is taught only.
+    /// ambiance).
     pub pool_auto: Option<Pool>,
     /// The suggestion's softmax probability (0..1); low means unsure.
     pub pool_auto_p: Option<f64>,
@@ -105,8 +105,8 @@ impl Role {
 
 /// A music track's mood pool: a short, flat list of hedged mood words. A
 /// music track is in exactly one pool; ambiance has none. The vocabulary is
-/// fixed. The analyzer suggests the first six (zero-shot); `Tension` is
-/// taught only and never suggested.
+/// fixed, and the analyzer scores and suggests every pool (there is no
+/// taught-only pool).
 ///
 /// The database, serde and the generated TypeScript all use the same
 /// lowercase ids (`"peaceful"`, ...).
@@ -114,52 +114,56 @@ impl Role {
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
 pub enum Pool {
-    /// Peaceful & Tranquil.
     Peaceful,
-    /// Lighthearted & Fun.
-    Lighthearted,
-    /// Reflective & Somber.
+    /// Jaunty, merry, tavern music.
+    Cheerful,
+    /// Weird, offbeat, groovy, eccentric music.
+    Quirky,
     Somber,
-    /// Optimistic & Awe.
+    /// Shown as "Wonder".
     Awe,
-    /// Mysterious & Looming.
     Mysterious,
-    /// Epic & Intense.
-    Epic,
-    /// Tense & Suspenseful. Taught only: never suggested.
-    Tension,
+    /// Triumphant, bold, rousing.
+    Heroic,
+    /// Brutal, threatening, boss-fight music.
+    Menacing,
 }
 
 impl Pool {
-    /// The six pools the analyzer scores and suggests, in vocabulary order.
-    pub const ZERO_SHOT: [Pool; 6] =
-        [Pool::Peaceful, Pool::Lighthearted, Pool::Somber, Pool::Awe, Pool::Mysterious, Pool::Epic];
+    /// How many pools there are.
+    pub const COUNT: usize = 8;
+
+    /// Every pool, in vocabulary order. The analyzer scores and suggests all
+    /// of them.
+    pub const ALL: [Pool; Pool::COUNT] = [
+        Pool::Peaceful,
+        Pool::Cheerful,
+        Pool::Quirky,
+        Pool::Somber,
+        Pool::Awe,
+        Pool::Mysterious,
+        Pool::Heroic,
+        Pool::Menacing,
+    ];
 
     /// The id stored in the `pool_*` columns and sent by the analyzer.
     pub fn as_db_str(&self) -> &'static str {
         match self {
             Pool::Peaceful => "peaceful",
-            Pool::Lighthearted => "lighthearted",
+            Pool::Cheerful => "cheerful",
+            Pool::Quirky => "quirky",
             Pool::Somber => "somber",
             Pool::Awe => "awe",
             Pool::Mysterious => "mysterious",
-            Pool::Epic => "epic",
-            Pool::Tension => "tension",
+            Pool::Heroic => "heroic",
+            Pool::Menacing => "menacing",
         }
     }
 
-    /// Parses a stored id; anything unrecognised is `None`.
+    /// Parses a stored id; anything unrecognised (including the retired
+    /// `lighthearted`, `epic` and `tension`) is `None`.
     pub fn from_db_str(s: &str) -> Option<Self> {
-        match s {
-            "peaceful" => Some(Pool::Peaceful),
-            "lighthearted" => Some(Pool::Lighthearted),
-            "somber" => Some(Pool::Somber),
-            "awe" => Some(Pool::Awe),
-            "mysterious" => Some(Pool::Mysterious),
-            "epic" => Some(Pool::Epic),
-            "tension" => Some(Pool::Tension),
-            _ => None,
-        }
+        Pool::ALL.into_iter().find(|p| p.as_db_str() == s)
     }
 }
 
@@ -603,16 +607,17 @@ mod tests {
 
     #[test]
     fn pool_db_strings_round_trip_and_match_serde() {
-        let all = [Pool::Tension, Pool::Peaceful, Pool::Lighthearted, Pool::Somber, Pool::Awe, Pool::Mysterious, Pool::Epic];
-        for pool in all {
+        for pool in Pool::ALL {
             assert_eq!(Pool::from_db_str(pool.as_db_str()), Some(pool));
             assert_eq!(serde_json::to_value(pool).unwrap(), pool.as_db_str());
         }
         assert_eq!(
-            Pool::ZERO_SHOT.map(|p| p.as_db_str()),
-            ["peaceful", "lighthearted", "somber", "awe", "mysterious", "epic"]
+            Pool::ALL.map(|p| p.as_db_str()),
+            ["peaceful", "cheerful", "quirky", "somber", "awe", "mysterious", "heroic", "menacing"]
         );
-        assert_eq!(Pool::from_db_str("sad"), None);
+        for retired in ["sad", "lighthearted", "epic", "tension"] {
+            assert_eq!(Pool::from_db_str(retired), None);
+        }
     }
 
     #[test]

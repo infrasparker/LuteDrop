@@ -44,7 +44,7 @@ roleUser: Role | null,
 /**
  * The analyzer's suggested mood pool, from the frozen pool calibration.
  * `None` until a run with a calibration scored the entry (and always on
- * ambiance). Never `Tension`: that pool is taught only.
+ * ambiance).
  */
 poolAuto: Pool | null, 
 /**

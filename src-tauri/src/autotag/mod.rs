@@ -1084,12 +1084,12 @@ pub(crate) mod tests {
         assert_eq!(role_of(&db, &a), (s("combat"), Some(0.9), s("non_combat")));
     }
 
-    /// Raw mood with pool scores: `epic` and `awe` as given, every other
+    /// Raw mood with pool scores: `heroic` and `awe` as given, every other
     /// pool at `other`.
-    fn pool_mood(epic: f64, awe: f64, other: f64) -> MoodRaw {
+    fn pool_mood(heroic: f64, awe: f64, other: f64) -> MoodRaw {
         let mut pools: HashMap<String, f64> =
-            Pool::ZERO_SHOT.iter().map(|p| (p.as_db_str().to_string(), other)).collect();
-        pools.insert("epic".into(), epic);
+            Pool::ALL.iter().map(|p| (p.as_db_str().to_string(), other)).collect();
+        pools.insert("heroic".into(), heroic);
         pools.insert("awe".into(), awe);
         MoodRaw { pools }
     }
@@ -1106,10 +1106,10 @@ pub(crate) mod tests {
             .unwrap()
     }
 
-    /// `n` music entries "e0".. with hashes "h-e0"..; every fourth has epic
+    /// `n` music entries "e0".. with hashes "h-e0"..; every fourth has heroic
     /// raised and the one after it awe (a z of about 1.7), while the other
     /// pools alternate between two values (a z of 1), so every pool has
-    /// spread and e0 is clearly Epic, e1 clearly Awe.
+    /// spread and e0 is clearly Heroic, e1 clearly Awe.
     fn pool_library(db: &Mutex<Connection>, n: usize) -> (Vec<String>, HashMap<String, f64>, HashMap<String, MoodRaw>) {
         let mut ids = Vec::new();
         let (mut gate, mut mood) = (HashMap::new(), HashMap::new());
@@ -1117,9 +1117,9 @@ pub(crate) mod tests {
             ids.push(add(db, &format!("e{k}"), "music"));
             let hash = format!("h-e{k}");
             gate.insert(hash.clone(), 0.9);
-            let epic = if k % 4 == 0 { 0.3 } else { 0.2 };
+            let heroic = if k % 4 == 0 { 0.3 } else { 0.2 };
             let awe = if k % 4 == 1 { 0.3 } else { 0.2 };
-            let m = pool_mood(epic, awe, 0.2 + (k % 2) as f64 * 0.01);
+            let m = pool_mood(heroic, awe, 0.2 + (k % 2) as f64 * 0.01);
             mood.insert(hash, m);
         }
         (ids, gate, mood)
@@ -1136,11 +1136,11 @@ pub(crate) mod tests {
 
         let cal = settings::load_pool_calibration(&db.lock().unwrap()).unwrap().unwrap();
         assert_eq!(cal.tracks, plan::CALIBRATION_MIN_TRACKS);
-        // epic: 13 of 50 at 0.3, the rest at 0.2.
-        assert!((cal.pools["epic"].mean - 0.226).abs() < 1e-12);
-        assert!((cal.pools["epic"].sd - 0.1 * (0.26f64 * 0.74).sqrt()).abs() < 1e-12);
+        // heroic: 13 of 50 at 0.3, the rest at 0.2.
+        assert!((cal.pools["heroic"].mean - 0.226).abs() < 1e-12);
+        assert!((cal.pools["heroic"].sd - 0.1 * (0.26f64 * 0.74).sqrt()).abs() < 1e-12);
         let (pool, p, runner) = pool_of(&db, &ids[0]);
-        assert_eq!((pool.as_deref(), runner.as_deref()), (Some("epic"), Some("awe")));
+        assert_eq!((pool.as_deref(), runner.as_deref()), (Some("heroic"), Some("awe")));
         assert!(p.unwrap() > 0.5);
         assert_eq!(pool_of(&db, &ids[1]).0.as_deref(), Some("awe"));
 
@@ -1152,8 +1152,8 @@ pub(crate) mod tests {
         let fake = FakeAnalyzer { gate, mood, ..Default::default() };
         run_once(&db, &fake, &[], &no_progress);
         assert_eq!(settings::load_pool_calibration(&db.lock().unwrap()).unwrap().unwrap(), cal);
-        // Scored against the frozen calibration, epic wins everywhere.
-        assert_eq!(pool_of(&db, &ids[1]).0.as_deref(), Some("epic"));
+        // Scored against the frozen calibration, heroic wins everywhere.
+        assert_eq!(pool_of(&db, &ids[1]).0.as_deref(), Some("heroic"));
     }
 
     #[test]
@@ -1172,7 +1172,7 @@ pub(crate) mod tests {
     fn run_never_touches_the_users_pool() {
         let db = setup();
         let (ids, gate, mood) = pool_library(&db, plan::CALIBRATION_MIN_TRACKS);
-        library::set_user_pool(&db.lock().unwrap(), &ids[..1], Some(Pool::Tension)).unwrap();
+        library::set_user_pool(&db.lock().unwrap(), &ids[..1], Some(Pool::Menacing)).unwrap();
         let before: (Option<String>, Option<String>) = db
             .lock()
             .unwrap()
@@ -1190,7 +1190,7 @@ pub(crate) mod tests {
             })
             .unwrap();
         assert_eq!(after, before);
-        assert_eq!(pool_of(&db, &ids[0]).0.as_deref(), Some("epic"));
+        assert_eq!(pool_of(&db, &ids[0]).0.as_deref(), Some("heroic"));
     }
 
     #[test]
@@ -1200,7 +1200,7 @@ pub(crate) mod tests {
         let fake = FakeAnalyzer { gate: gate.clone(), mood, ..Default::default() };
         run_once(&db, &fake, &ids, &no_progress);
         let before = pool_of(&db, &ids[0]);
-        assert_eq!(before.0.as_deref(), Some("epic"));
+        assert_eq!(before.0.as_deref(), Some("heroic"));
 
         // No mood in the response (model not loaded): the suggestion stays.
         let bare = FakeAnalyzer { gate, ..Default::default() };

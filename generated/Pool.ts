@@ -3,10 +3,10 @@
 /**
  * A music track's mood pool: a short, flat list of hedged mood words. A
  * music track is in exactly one pool; ambiance has none. The vocabulary is
- * fixed. The analyzer suggests the first six (zero-shot); `Tension` is
- * taught only and never suggested.
+ * fixed, and the analyzer scores and suggests every pool (there is no
+ * taught-only pool).
  *
  * The database, serde and the generated TypeScript all use the same
  * lowercase ids (`"peaceful"`, ...).
  */
-export type Pool = "peaceful" | "lighthearted" | "somber" | "awe" | "mysterious" | "epic" | "tension";
+export type Pool = "peaceful" | "cheerful" | "quirky" | "somber" | "awe" | "mysterious" | "heroic" | "menacing";

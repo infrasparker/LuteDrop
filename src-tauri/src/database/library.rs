@@ -2013,25 +2013,25 @@ mod tests {
         let a = music_entry(&conn, "/a.mp3");
         let b = music_entry(&conn, "/b.mp3");
         let amb = insert_library_entry(&conn, "/r.ogg", None, "R", None, None, None, "ambiance").unwrap();
-        apply_auto_pool(&conn, &a, Some(suggestion(Pool::Epic, 0.8, Pool::Awe))).unwrap();
+        apply_auto_pool(&conn, &a, Some(suggestion(Pool::Heroic, 0.8, Pool::Awe))).unwrap();
 
         let before = now_millis().parse::<u128>().unwrap();
-        set_user_pool(&conn, &[a.clone(), b.clone(), amb.clone()], Some(Pool::Tension)).unwrap();
+        set_user_pool(&conn, &[a.clone(), b.clone(), amb.clone()], Some(Pool::Menacing)).unwrap();
         let (pool, reviewed) = pool_user(&conn, &a);
-        assert_eq!(pool, s("tension"));
+        assert_eq!(pool, s("menacing"));
         assert!(reviewed.unwrap().parse::<u128>().unwrap() >= before);
-        assert_eq!(pool_user(&conn, &b).0, s("tension"));
+        assert_eq!(pool_user(&conn, &b).0, s("menacing"));
         // Ambiance has no pool.
         assert_eq!(pool_user(&conn, &amb), (None, None));
         // The suggestion is untouched.
-        assert_eq!(pool_auto(&conn, &a), (s("epic"), Some(0.8), s("awe")));
+        assert_eq!(pool_auto(&conn, &a), (s("heroic"), Some(0.8), s("awe")));
 
         // `None` goes back to the suggestion; the entry stays reviewed.
         set_user_pool(&conn, std::slice::from_ref(&a), None).unwrap();
         let (pool, reviewed) = pool_user(&conn, &a);
         assert_eq!(pool, None);
         assert!(reviewed.is_some());
-        assert_eq!(pool_user(&conn, &b).0, s("tension"));
+        assert_eq!(pool_user(&conn, &b).0, s("menacing"));
     }
 
     #[test]
@@ -2041,9 +2041,9 @@ mod tests {
         set_user_pool(&conn, std::slice::from_ref(&a), Some(Pool::Somber)).unwrap();
         let user_before = pool_user(&conn, &a);
 
-        let first = suggestion(Pool::Mysterious, 0.62, Pool::Epic);
+        let first = suggestion(Pool::Mysterious, 0.62, Pool::Heroic);
         assert!(apply_auto_pool(&conn, &a, Some(first)).unwrap());
-        assert_eq!(pool_auto(&conn, &a), (s("mysterious"), Some(0.62), s("epic")));
+        assert_eq!(pool_auto(&conn, &a), (s("mysterious"), Some(0.62), s("heroic")));
         assert!(!apply_auto_pool(&conn, &a, Some(first)).unwrap());
         // Any one field moving is a change.
         assert!(apply_auto_pool(&conn, &a, Some(PoolSuggestion { p: 0.63, ..first })).unwrap());
@@ -2062,21 +2062,21 @@ mod tests {
         let conn = open_memory_db();
         // Suggested pool and role only.
         let auto = music_entry(&conn, "/a.mp3");
-        apply_auto_pool(&conn, &auto, Some(suggestion(Pool::Epic, 0.9, Pool::Awe))).unwrap();
+        apply_auto_pool(&conn, &auto, Some(suggestion(Pool::Heroic, 0.9, Pool::Awe))).unwrap();
         apply_auto_role(&conn, &auto, Some(Role::Combat), 0.8).unwrap();
         assert!(approve_entry_review(&conn, &auto).unwrap());
-        assert_eq!(pool_user(&conn, &auto).0, s("epic"));
+        assert_eq!(pool_user(&conn, &auto).0, s("heroic"));
         assert!(pool_user(&conn, &auto).1.is_some());
         assert_eq!(role_user_of(&conn, &auto), s("combat"));
 
         // The user's own pool and role win over the suggestion.
         let user = music_entry(&conn, "/b.mp3");
-        apply_auto_pool(&conn, &user, Some(suggestion(Pool::Epic, 0.9, Pool::Awe))).unwrap();
+        apply_auto_pool(&conn, &user, Some(suggestion(Pool::Heroic, 0.9, Pool::Awe))).unwrap();
         apply_auto_role(&conn, &user, Some(Role::Combat), 0.8).unwrap();
         set_user_role(&conn, std::slice::from_ref(&user), Some(Role::NonCombat)).unwrap();
-        conn.execute("UPDATE library_entries SET pool_user = 'tension' WHERE id = ?1", params![user]).unwrap();
+        conn.execute("UPDATE library_entries SET pool_user = 'menacing' WHERE id = ?1", params![user]).unwrap();
         assert!(!approve_entry_review(&conn, &user).unwrap());
-        assert_eq!(pool_user(&conn, &user).0, s("tension"));
+        assert_eq!(pool_user(&conn, &user).0, s("menacing"));
         assert_eq!(role_user_of(&conn, &user), s("non_combat"));
 
         // Nothing shown: nothing set, but the entry is reviewed.

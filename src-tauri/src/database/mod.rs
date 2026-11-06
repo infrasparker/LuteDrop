@@ -420,15 +420,22 @@ fn migrate_v10_to_v11(conn: &Connection) -> SqlResult<()> {
     )
 }
 
-/// Drops the three mood scales (Bright ↔ Dark, Intimate ↔ Grand,
-/// Calm ↔ Energetic): the analyzer no longer scores them and the app no
-/// longer shows or sorts by them. Runs inside the migration runner's
-/// transaction.
+/// Drops the three mood scales and moves to the eight-pool vocabulary (spec
+/// "Mood pools and the Review board", Revision 2026-11-05). Runs inside the
+/// migration runner's transaction.
 ///
-/// - The analyzer's z-scores and the user's steps go, all six columns. The
-///   pre-migration backup keeps them.
-/// - Pools, role, tags and the pool calibration are untouched, and stored
-///   scores are kept: the pool scores in them are still valid.
+/// - The scales (Bright ↔ Dark, Intimate ↔ Grand, Calm ↔ Energetic) go: the
+///   analyzer's z-scores and the user's steps, all six columns.
+/// - The user's retired pools map onto the new ones: Lighthearted becomes
+///   Cheerful, Epic becomes Heroic and Tense becomes Menacing. Every other
+///   user pool, and every review time, is kept.
+/// - The analyzer's suggestions (pool, probability, runner-up) are cleared
+///   for every entry: with a new set of pools the softmax behind them no
+///   longer holds. So is the pool calibration, which the next run that
+///   covers enough music takes again with all eight pools, and so are the
+///   stored scores, so the next run re-scores every entry.
+/// - Role and tags are untouched. The pre-migration backup keeps everything
+///   dropped here.
 fn migrate_v11_to_v12(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(
         "ALTER TABLE library_entries DROP COLUMN mood_bright;
@@ -436,7 +443,21 @@ fn migrate_v11_to_v12(conn: &Connection) -> SqlResult<()> {
          ALTER TABLE library_entries DROP COLUMN mood_grand;
          ALTER TABLE library_entries DROP COLUMN mood_grand_user;
          ALTER TABLE library_entries DROP COLUMN mood_energy;
-         ALTER TABLE library_entries DROP COLUMN mood_energy_user;",
+         ALTER TABLE library_entries DROP COLUMN mood_energy_user;
+
+         UPDATE library_entries SET pool_user = CASE pool_user
+                 WHEN 'lighthearted' THEN 'cheerful'
+                 WHEN 'epic'         THEN 'heroic'
+                 WHEN 'tension'      THEN 'menacing'
+             END
+         WHERE pool_user IN ('lighthearted', 'epic', 'tension');
+
+         UPDATE library_entries
+         SET pool_auto = NULL, pool_auto_p = NULL, pool_auto_runner = NULL;
+
+         DELETE FROM meta WHERE key = 'pool_calibration';
+
+         UPDATE entry_analysis SET scores_json = NULL;",
     )
 }
 
@@ -526,8 +547,8 @@ pub fn open_db(path: &Path) -> Result<Connection, String> {
     // Migrations rewrite the user's library (v7 cleans up their tags, v8
     // splits every facet and tag into auto and user layers, v9 drops the old
     // Light/Heavy and pace values, v10 folds the `driving` tag into
-    // Calm ↔ Energetic, v11 drops the dark kind, v12 drops the mood scales), so an
-    // existing database behind the current schema is copied first, before anything changes it. No copy,
+    // Calm ↔ Energetic, v11 drops the dark kind, v12 drops the mood scales and
+    // remaps pools), so an existing database behind the current schema is copied first, before anything changes it. No copy,
     // no migration.
     if !fresh {
         let on_disk = match read_schema_version(&conn) {
@@ -2756,9 +2777,10 @@ mod tests {
         assert_eq!(kind.as_deref(), Some("scary"));
     }
 
-    /// Every data case of the v11 → v12 removal of the mood scales.
+    /// Every data case of the v11 → v12 upgrade: the mood scales go and the
+    /// pools move to the eight-pool vocabulary.
     #[test]
-    fn v11_database_drops_mood_scales() {
+    fn v11_database_drops_mood_scales_and_remaps_pools() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("lutedrop.db");
         create_v11_db(&path);
@@ -2770,15 +2792,21 @@ mod tests {
                        role_auto, role_auto_score, role_user,
                        mood_bright, mood_bright_user, mood_grand, mood_grand_user, mood_energy, mood_energy_user,
                        pool_auto, pool_auto_p, pool_auto_runner, pool_user, pool_reviewed_at) VALUES
-                     ('M', '/m.mp3', 'M', '5', 'music', 'combat', 0.9, 'non_combat',
-                       -1.1, 'low', 0.4, 'high', 0.2, 'mid', 'epic', 0.84, 'awe', 'tension', '1700000000000'),
-                     ('N', '/n.mp3', 'N', '6', 'music', NULL, NULL, NULL,
-                       0.5, NULL, -0.2, NULL, 1.3, NULL, 'peaceful', 0.4, 'somber', NULL, NULL);
+                     ('T', '/t.mp3', 'T', '5', 'music', 'combat', 0.9, 'non_combat',
+                       -1.1, 'low', 0.4, 'high', 0.2, 'mid', 'epic', 0.84, 'awe', 'tension', '1700000000001'),
+                     ('L', '/l.mp3', 'L', '6', 'music', NULL, NULL, NULL,
+                       0.5, NULL, -0.2, NULL, 1.3, NULL, 'peaceful', 0.4, 'somber', 'lighthearted', '1700000000002'),
+                     ('E', '/e.mp3', 'E', '7', 'music', NULL, NULL, NULL,
+                       NULL, NULL, NULL, NULL, NULL, NULL, 'lighthearted', 0.5, 'epic', 'epic', '1700000000003'),
+                     ('K', '/k.mp3', 'K', '8', 'music', NULL, NULL, NULL,
+                       NULL, NULL, NULL, NULL, NULL, NULL, 'somber', 0.7, 'awe', 'somber', '1700000000004'),
+                     ('U', '/u.mp3', 'U', '9', 'music', NULL, NULL, NULL,
+                       NULL, NULL, NULL, NULL, NULL, NULL, 'epic', 0.3, 'mysterious', NULL, NULL);
                    INSERT INTO tags (id, name) VALUES ('t-folk', 'folk'), ('t-brass', 'brass');
                    INSERT INTO library_entry_tags (library_entry_id, tag_id, auto_score, user_vote) VALUES
-                     ('M', 't-folk', NULL, 1), ('M', 't-brass', 0.7, NULL);
+                     ('T', 't-folk', NULL, 1), ('T', 't-brass', 0.7, NULL);
                    INSERT INTO entry_analysis (library_entry_id, content_hash, status, analyzed_at, scores_json) VALUES
-                     ('M', 'h-m', 'embedded', '1', '{"pools":1}');"#,
+                     ('T', 'h-t', 'embedded', '1', '{"pools":1}');"#,
             )
             .unwrap();
             conn.execute(
@@ -2800,45 +2828,80 @@ mod tests {
         }
         assert_eq!(index_names(&conn), EXPECTED_INDEXES);
 
-        // Pools, role and tags are untouched.
+        // The user's pools: (pool_user, pool_reviewed_at) as stored.
+        let user_pool = |id: &str| -> (Option<String>, Option<String>) {
+            conn.query_row(
+                "SELECT pool_user, pool_reviewed_at FROM library_entries WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        let s = |v: &str| Some(v.to_string());
+        // Tense → Menacing, Lighthearted → Cheerful, Epic → Heroic.
+        assert_eq!(user_pool("T"), (s("menacing"), s("1700000000001")));
+        assert_eq!(user_pool("L"), (s("cheerful"), s("1700000000002")));
+        assert_eq!(user_pool("E"), (s("heroic"), s("1700000000003")));
+        // A pool that still exists is kept, and so is "not reviewed".
+        assert_eq!(user_pool("K"), (s("somber"), s("1700000000004")));
+        assert_eq!(user_pool("U"), (None, None));
+
+        // Every suggestion is cleared, whatever its pool.
+        let suggestions: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM library_entries
+                 WHERE pool_auto IS NOT NULL OR pool_auto_p IS NOT NULL OR pool_auto_runner IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(suggestions, 0);
+
+        // What the app sees: the mapped pools, and role and tags untouched.
         ensure_test_config(&conn);
         let state = load_full_state(&conn).unwrap();
         let entry = |id: &str| state.library_entries.iter().find(|e| e.id == id).unwrap();
-        let m = entry("M");
+        let t = entry("T");
+        assert_eq!((t.pool_user, t.pool_auto, t.pool_auto_p, t.pool_auto_runner), (Some(Pool::Menacing), None, None, None));
         assert_eq!(
-            (m.pool_auto, m.pool_auto_p, m.pool_auto_runner, m.pool_user, m.pool_reviewed_at.as_deref()),
-            (Some(Pool::Epic), Some(0.84), Some(Pool::Awe), Some(Pool::Tension), Some("1700000000000"))
-        );
-        assert_eq!(
-            (m.role, m.role_auto, m.role_auto_score, m.role_user),
+            (t.role, t.role_auto, t.role_auto_score, t.role_user),
             (Some(Role::NonCombat), Some(Role::Combat), Some(0.9), Some(Role::NonCombat))
         );
-        assert_eq!(m.tags, vec!["brass", "folk"]);
-        let n = entry("N");
-        assert_eq!(
-            (n.pool_auto, n.pool_auto_p, n.pool_auto_runner, n.pool_user),
-            (Some(Pool::Peaceful), Some(0.4), Some(Pool::Somber), None)
-        );
+        assert_eq!(t.tags, vec!["brass", "folk"]);
+        assert_eq!(t.auto_tags, vec![crate::models::AutoTag { tag: "brass".into(), score: 0.7 }]);
+        assert_eq!(entry("L").pool_user, Some(Pool::Cheerful));
+        assert_eq!(entry("E").pool_user, Some(Pool::Heroic));
 
-        // The calibration and the stored scores are kept: pools are scored
-        // as before.
-        let calibration: String = conn
-            .query_row("SELECT value FROM meta WHERE key = 'pool_calibration'", [], |r| r.get(0))
+        // The calibration and the stored scores are cleared, so the next run
+        // re-scores every entry and takes a new eight-pool calibration.
+        assert_eq!(settings::load_pool_calibration(&conn).unwrap(), None);
+        let scores: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entry_analysis WHERE scores_json IS NOT NULL", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(calibration, CALIBRATION);
-        assert!(settings::load_pool_calibration(&conn).unwrap().is_some());
-        let scores: Option<String> = conn
-            .query_row("SELECT scores_json FROM entry_analysis WHERE library_entry_id = 'M'", [], |r| r.get(0))
+        assert_eq!(scores, 0);
+        let status: String = conn
+            .query_row("SELECT status FROM entry_analysis WHERE library_entry_id = 'T'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(scores.as_deref(), Some(r#"{"pools":1}"#));
+        assert_eq!(status, "embedded", "the embedding is still good; only scores are redone");
 
-        // A pre-migration copy of the v11 database keeps the scales.
+        // A pre-migration copy of the v11 database keeps the scales, the old
+        // pools and the calibration.
         let backups = pre_migration_backups(dir.path(), 11);
         assert_eq!(backups.len(), 1);
         let copy = Connection::open(&backups[0]).unwrap();
         assert_eq!(read_schema_version(&copy), 11);
-        assert_eq!(mood_bright_user(&copy, "M").as_deref(), Some("low"));
-        assert_eq!(mood_energy_user(&copy, "M").as_deref(), Some("mid"));
+        assert_eq!(mood_bright_user(&copy, "T").as_deref(), Some("low"));
+        assert_eq!(mood_energy_user(&copy, "T").as_deref(), Some("mid"));
+        let old: (Option<String>, Option<String>) = copy
+            .query_row("SELECT pool_user, pool_auto FROM library_entries WHERE id = 'T'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(old, (s("tension"), s("epic")));
+        let calibration: String = copy
+            .query_row("SELECT value FROM meta WHERE key = 'pool_calibration'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(calibration, CALIBRATION);
     }
 
     #[test]
@@ -2871,8 +2934,8 @@ mod tests {
         let unset = library::insert_library_entry(&conn, "/b.mp3", None, "B", None, None, None, "music").unwrap();
         conn.execute(
             "UPDATE library_entries
-             SET pool_auto = 'epic', pool_auto_p = 0.84, pool_auto_runner = 'awe',
-                 pool_user = 'tension', pool_reviewed_at = '1700000000000'
+             SET pool_auto = 'heroic', pool_auto_p = 0.84, pool_auto_runner = 'awe',
+                 pool_user = 'menacing', pool_reviewed_at = '1700000000000'
              WHERE id = ?1",
             [&set],
         )
@@ -2882,7 +2945,7 @@ mod tests {
         let a = entries.iter().find(|e| e.id == set).unwrap();
         assert_eq!(
             (a.pool_auto, a.pool_auto_p, a.pool_auto_runner, a.pool_user, a.pool_reviewed_at.as_deref()),
-            (Some(Pool::Epic), Some(0.84), Some(Pool::Awe), Some(Pool::Tension), Some("1700000000000"))
+            (Some(Pool::Heroic), Some(0.84), Some(Pool::Awe), Some(Pool::Menacing), Some("1700000000000"))
         );
 
         let b = entries.iter().find(|e| e.id == unset).unwrap();

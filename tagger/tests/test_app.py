@@ -544,7 +544,7 @@ def test_score_returns_raw_mood_for_targets(tmp_path, monkeypatch):
     assert set(data["mood"]["a"]) == {"pools"}
     # Pools are absolute similarities (mean cosine with the pool's prompts).
     pools = data["mood"]["a"]["pools"]
-    assert set(pools) == {"peaceful", "lighthearted", "somber", "awe", "mysterious", "epic"}
+    assert list(pools) == ["peaceful", "cheerful", "quirky", "somber", "awe", "mysterious", "heroic", "menacing"]
     for pool_id, prompts in moods.POOLS.items():
         assert pools[pool_id] == pytest.approx(pole(prompts))
     assert any(v != 0 for v in pools.values())
@@ -570,7 +570,7 @@ def test_score_mood_recovers_after_partial_embed_failure(tmp_path, monkeypatch):
     second = c.post("/score", json=body, headers=HEADERS)
     assert second.status_code == 200
     assert set(second.json()["mood"]["a"]) == {"pools"}
-    assert len(second.json()["mood"]["a"]["pools"]) == 6
+    assert len(second.json()["mood"]["a"]["pools"]) == 8
 
 
 def test_score_without_loaded_model_omits_mood(tmp_path, monkeypatch):
