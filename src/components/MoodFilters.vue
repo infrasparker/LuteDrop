@@ -5,7 +5,7 @@ import type { MoodId } from '@generated/index';
 import AnyAllToggle from './AnyAllToggle.vue';
 import {
   DEFAULT_DIR,
-  moodList,
+  moodsOnly,
   SORT_LABELS,
   type MatchMode,
   type MoodFilters,
@@ -14,7 +14,7 @@ import {
 } from '../utils/moods';
 
 /// The filter bar shared by the Library and Scry: a lens button per mood of
-/// the vocabulary plus Energy (any number at once), the any / all switch once
+/// the vocabulary (any number at once), the any / all switch once
 /// two or more are on, the Role toggle, and the Sort menu with its direction.
 /// While the vocabulary needs recalibrating, a marker after the lens buttons
 /// says so and opens the Moods settings.
@@ -23,6 +23,9 @@ import {
 /// switches the sort to "Lens score", and clearing the last one goes back to
 /// the first of `sortKeys`. Lenses and role apply to music only, so callers
 /// hide the bar for ambiance.
+///
+/// Energy has no lens button: it is a sort key (the Sort menu and the
+/// Library's Energy column), not a mood to rank by.
 const filters = defineModel<MoodFilters>({ required: true });
 const sort = defineModel<SortKey>('sort', { required: true });
 const dir = defineModel<SortDir>('dir', { required: true });
@@ -34,9 +37,9 @@ const props = defineProps<{
 }>();
 
 const store = useAppStore();
-const moods = computed(() => moodList());
+const moods = computed(() => moodsOnly());
 
-// A lens whose mood was removed from the vocabulary is dropped.
+// A lens that is not a mood of the vocabulary (removed, or Energy) is dropped.
 watch(moods, (list) => {
   const kept = filters.value.lenses.filter((id) => list.some((m) => m.id === id));
   if (kept.length !== filters.value.lenses.length) setLenses(kept);
@@ -98,13 +101,7 @@ const dirHint = computed(() => {
       class="lens-buttons"
       @update:model-value="setLenses"
     >
-      <VBtn
-        v-for="m in moods"
-        :key="m.id"
-        :value="m.id"
-        :size="size"
-        :prepend-icon="m.id === 'energy' ? 'mdi-lightning-bolt' : undefined"
-      >
+      <VBtn v-for="m in moods" :key="m.id" :value="m.id" :size="size">
         {{ m.name }}
       </VBtn>
     </VBtnToggle>
