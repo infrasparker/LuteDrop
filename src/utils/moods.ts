@@ -317,7 +317,6 @@ export function sortByKey<T>(
   return out;
 }
 
-
 /** The line under "Calibration" in Settings → Moods: which statistics the
  * bars are measured against. */
 export function calibrationLabel(info: MoodCalibrationInfo | null): string {

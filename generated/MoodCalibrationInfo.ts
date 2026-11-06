@@ -2,7 +2,8 @@
 
 /**
  * When the frozen mood calibration was taken and from how many tracks, for
- * "Last calibrated: <date>, N tracks" in Settings → Moods.
+ * "Calibrated against the reference set: ..." or "Calibrated against your
+ * library: <date>, N tracks" in Settings → Moods.
  */
 export type MoodCalibrationInfo = { 
 /**

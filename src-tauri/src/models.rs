@@ -289,7 +289,8 @@ impl MoodVocabulary {
 }
 
 /// When the frozen mood calibration was taken and from how many tracks, for
-/// "Last calibrated: <date>, N tracks" in Settings → Moods.
+/// "Calibrated against the reference set: ..." or "Calibrated against your
+/// library: <date>, N tracks" in Settings → Moods.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
