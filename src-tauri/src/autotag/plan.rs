@@ -153,10 +153,12 @@ pub const MOOD_SLOPE: f64 = 1.5;
 
 /// Where a mood's bar reads 0.5, in standard deviations above the library
 /// average. A mood is rare in most libraries, so "above average" is cheap;
-/// with the midpoint one sd up, 0.5 means "clearly in this mood" and the top
-/// band is the real top. Energy keeps its midpoint at the average (0): it is
-/// two-sided, and average energy is a meaningful middle.
-pub const MOOD_MIDPOINT_Z: f64 = 1.0;
+/// with the midpoint half an sd up, about one track in ten per mood reaches
+/// the top band (0.75 and above) in a library of a few hundred, which is the
+/// head count the user settled on (one sd up left only the top 5%). Energy
+/// keeps its midpoint at the average (0): it is two-sided, and average energy
+/// is a meaningful middle.
+pub const MOOD_MIDPOINT_Z: f64 = 0.5;
 
 /// Where a mood's bar reads 0.5 against the reference set: the 75th
 /// percentile of a normal distribution (z = 0.674).
@@ -989,11 +991,11 @@ mod tests {
     #[test]
     fn library_mood_score_is_unchanged() {
         let stat = MoodStat { mean: 0.2, sd: 0.04 };
-        // A mood reads 0.5 one sd above the mean (z = 1), and the old z = 0
-        // point now reads what z = -1 used to.
-        assert!((mood_score("heroic", 0.24, stat, CalibrationSource::Library) - 0.5).abs() < 1e-12);
-        assert!((mood_score("heroic", 0.20, stat, CalibrationSource::Library) - 0.182_425_523_806_356_3).abs() < 1e-12);
-        assert!((mood_score("heroic", 0.28, stat, CalibrationSource::Library) - 0.817_574_476_193_643_7).abs() < 1e-12);
+        // A mood reads 0.5 half an sd above the mean (z = 0.5); z = 1 reads
+        // what z = 0.5 used to, and the mean reads below half.
+        assert!((mood_score("heroic", 0.22, stat, CalibrationSource::Library) - 0.5).abs() < 1e-12);
+        assert!((mood_score("heroic", 0.20, stat, CalibrationSource::Library) - 0.320821300824607025).abs() < 1e-12);
+        assert!((mood_score("heroic", 0.24, stat, CalibrationSource::Library) - 0.679178699175392975).abs() < 1e-12);
         // Energy keeps its midpoint at the mean.
         assert_eq!(mood_score(ENERGY_ID, 0.2, stat, CalibrationSource::Library), 0.5);
         assert!((mood_score(ENERGY_ID, 0.24, stat, CalibrationSource::Library) - 0.817_574_476_193_643_7).abs() < 1e-12);
@@ -1124,10 +1126,10 @@ mod tests {
         let m = with_moods([0.3, 0.15, 0.1, 0.1, 0.1, 0.1, 0.1, 0.0, 0.1, -0.04]);
         let out = auto_moods(&m, &cal, &ids()).unwrap();
         assert_eq!(out.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(), ids());
-        // A mood's bar is centred one sd up: z 0 reads what z -1 used to.
-        assert!((out[0].1 - 0.182_425_523_806_356_3).abs() < 1e-12); // peaceful: z 0
-        assert!((out[1].1 - 0.5).abs() < 1e-12); // sorrowful: z 1
-        assert!((out[7].1 - 0.010_986_942_630_593_18).abs() < 1e-12); // heroic: z -2, centred -3
+        // A mood's bar is centred half an sd up.
+        assert!((out[0].1 - 0.320821300824607025).abs() < 1e-12); // peaceful: z 0
+        assert!((out[1].1 - 0.679178699175392975).abs() < 1e-12); // sorrowful: z 1
+        assert!((out[7].1 - 0.022977369910025615).abs() < 1e-12); // heroic: z -2, centred -2.5
         // Energy keeps its centre at the mean.
         assert!((out[9].1 - 0.047_425_873_177_566_78).abs() < 1e-12); // energy: z -2
     }
@@ -1260,9 +1262,9 @@ mod tests {
         let cal = flat_calibration(0.2, 0.01);
         let out = decide(&entries, &scene(), &resp, Some(&cal), &ids());
         assert_eq!(out["a"].moods, auto_moods(&resp.mood["h-a"], &cal, &ids()));
-        // At the mean, Energy reads 0.5 and every mood reads the centred-one-sd-up value.
+        // At the mean, Energy reads 0.5 and every mood reads the centred-half-sd-up value.
         for (id, v) in out["a"].moods.as_ref().unwrap() {
-            let want = if id == ENERGY_ID { 0.5 } else { 0.182_425_523_806_356_3 };
+            let want = if id == ENERGY_ID { 0.5 } else { 0.320821300824607025 };
             assert!((v - want).abs() < 1e-12, "{id}: {v}");
         }
         // No mood for the entry: no moods.
@@ -1272,7 +1274,7 @@ mod tests {
         let grim = out["a"].moods.as_ref().unwrap();
         assert_eq!(grim.len(), 1);
         assert_eq!(grim[0].0, "grim");
-        assert!((grim[0].1 - 0.182_425_523_806_356_3).abs() < 1e-12);
+        assert!((grim[0].1 - 0.320821300824607025).abs() < 1e-12);
     }
 
     #[test]

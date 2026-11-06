@@ -1218,8 +1218,8 @@ pub(crate) mod tests {
         assert_eq!(mood_row_count(&db, &ids[0]), 10);
         let (auto, user) = mood_of(&db, &ids[0], "heroic").unwrap();
         assert!((auto.unwrap() - plan::mood_score("heroic", 0.3, heroic, plan::CalibrationSource::Library)).abs() < 1e-12);
-        // z 1.69 for heroic, centred one sd up: clearly in, not at the top.
-        assert!(auto.unwrap() > 0.7);
+        // z 1.69 for heroic, centred half an sd up: clearly in.
+        assert!(auto.unwrap() > 0.8);
         assert_eq!(user, None);
         assert!(mood_of(&db, &ids[1], "heroic").unwrap().0.unwrap() < 0.5);
         assert!(mood_of(&db, &ids[1], "wondrous").unwrap().0.unwrap() > 0.7);
