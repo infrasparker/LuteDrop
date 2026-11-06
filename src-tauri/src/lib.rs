@@ -224,7 +224,6 @@ pub fn run() {
             commands::recalibrate_moods,
             commands::mood_reset_impact,
             commands::reset_mood_vocabulary,
-            commands::approve_entry_review,
             commands::bulk_edit_library_entry_tags,
             commands::update_library_entry_type,
             commands::update_library_entry_markers,

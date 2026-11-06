@@ -331,14 +331,6 @@ pub fn recalibrate_moods(state: State<'_, Arc<AppStateContainer>>) -> Result<App
 }
 
 #[tauri::command]
-pub fn approve_entry_review(
-    state: State<'_, Arc<AppStateContainer>>,
-    entry_id: String,
-) -> Result<AppState, String> {
-    actions::approve_entry_review(&state, &entry_id)
-}
-
-#[tauri::command]
 pub fn reject_auto_tags(
     state: State<'_, Arc<AppStateContainer>>,
     entry_ids: Vec<String>,

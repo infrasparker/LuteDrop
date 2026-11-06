@@ -46,7 +46,7 @@ Every music entry has a role, **Combat** or **Non-combat**; there is no "no role
 
 - A role set by hand always wins. Auto-tagging never changes it.
 - A suggested role (the analyzer's, or the default) is shown as **✨ Suggested**, with the analyzer's score when there is one. **Confirm** makes it yours; a role you set reads **Set by you**, and **↺** goes back to the suggestion.
-- The Library has a Role column and a Role filter (Any role, Combat, Non-combat). The entry editor and the Review card have a Combat / Non-combat control, and the bulk bar can set the role on several music entries at once or send them back to the suggestion.
+- The Library has a Role column and a Role filter (Any role, Combat, Non-combat). The entry editor has a Combat / Non-combat control, and the bulk bar can set the role on several music entries at once or send them back to the suggestion.
 - Only entries whose role was set by hand count as examples. Auto roles never do, and neither does the Non-combat default.
 
 ### Moods
@@ -79,15 +79,6 @@ The analyzer suggests every value by comparing the track's sound with a few desc
 - **Recalibrate** clears the calibration and every suggested mood value (levels set by you stay) and starts an analysis run, which suggests every mood again from the current prompts. The panel shows when the calibration was taken and from how many tracks.
 - **Reset to defaults** puts back the shipped mood list and prompts. Levels set by you stay for moods still in the list; moods not in the defaults lose their values, and the confirm dialog says how many. It also works when the stored list is unreadable (when Save is blocked). If prompts changed, it then offers to recalibrate.
 - After you change a mood's prompts (or add a mood), Save offers to recalibrate. Until you do, the lens row shows **Needs recalibration**, and the changed moods keep their old suggestions; the others are still suggested as before.
-
-### Review
-
-The **Review** tab goes through music one track at a time. Its badge counts the music entries that have not been reviewed yet (no mood level set and not approved).
-
-- The card shows the track's name and folder, a play button, and its two highest moods as a readout, for example "Mysterious 0.87 · Grim 0.74".
-- The **Role** row and the mood profile work as in the editor; changing them does not move on. **Sounds like** names the two closest reviewed tracks by sound, when the analyzer is available.
-- **Approve** (key **A**) confirms the analyzer's role (a default Non-combat stays a suggestion, so it never trains the analyzer), marks the track reviewed and moves on. Mood bars you did not touch stay suggestions. **Skip** (key **S**) moves the track to the end of the queue for this session without saving anything. **Space** plays or stops the track.
-- Newest imports come first, and within a day the tracks with the lowest top mood score first.
 
 ### Auto tags
 
