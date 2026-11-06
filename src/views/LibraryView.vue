@@ -74,10 +74,9 @@ function searchFields(entry: LibraryEntry): string[] {
   return [entry.name, parts[parts.length - 2] ?? '', parts[parts.length - 3] ?? ''];
 }
 
-function roleLabel(role: Role | null): string {
-  if (role === 'combat') return 'Combat';
-  if (role === 'nonCombat') return 'Non-combat';
-  return 'No role';
+/// Music always has a role (ambiance has none and shows no role cell).
+function roleLabel(role: Role): string {
+  return role === 'combat' ? 'Combat' : 'Non-combat';
 }
 
 watch(tags, (current) => {
@@ -404,7 +403,7 @@ async function relocateEntry(entryId: string): Promise<void> {
       </VMenu>
     </Teleport>
 
-    <!-- Lenses, role and sort apply to music only, so the bar is hidden while browsing ambiance. -->
+    <!-- Lenses and role apply to music only, so the bar is hidden while browsing ambiance. -->
     <MoodFilters
       v-if="selectedType !== 'ambiance'"
       v-model="moodFilters"

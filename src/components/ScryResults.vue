@@ -147,10 +147,9 @@ function toggleAllVisible(): void {
   }
 }
 
-function roleLabel(role: Role | null): string {
-  if (role === 'combat') return 'Combat';
-  if (role === 'nonCombat') return 'Non-combat';
-  return 'No role';
+/// Music always has a role (ambiance has none and shows no role cell).
+function roleLabel(role: Role): string {
+  return role === 'combat' ? 'Combat' : 'Non-combat';
 }
 
 // --- Reveal a row (e.g. after a map click) ---

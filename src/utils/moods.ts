@@ -12,7 +12,7 @@ const ENERGY: MoodInfo = { id: ENERGY_ID, name: 'Energy' };
 
 /// The app's mood vocabulary in its order: the user's moods, then Energy.
 /// It comes from the app state (`AppState.moodVocabulary`, set by the store
-/// on every hydrate); nothing here hard-codes a mood. Lens buttons, profile
+/// on every hydrate); nothing here hard-codes a mood. Lens chips, profile
 /// rows and `LibraryEntry.moods` all follow this order.
 const vocabulary = shallowRef<readonly MoodInfo[]>([ENERGY]);
 
