@@ -55,21 +55,6 @@ pub struct LibraryEntry {
     pub role_auto_score: Option<f64>,
     /// The user's role. When set it is shown instead of `role_auto`.
     pub role_user: Option<Role>,
-    /// The analyzer's Bright ↔ Dark position as a z-score across the
-    /// library's analyzed music; positive is Bright.
-    pub mood_bright: Option<f64>,
-    /// The user's Bright ↔ Dark step; when set it overrides `mood_bright`.
-    pub mood_bright_user: Option<MoodStep>,
-    /// The analyzer's Intimate ↔ Grand position as a z-score; positive is
-    /// Grand.
-    pub mood_grand: Option<f64>,
-    /// The user's Intimate ↔ Grand step; when set it overrides `mood_grand`.
-    pub mood_grand_user: Option<MoodStep>,
-    /// The analyzer's Calm ↔ Energetic position as a z-score; positive is
-    /// Energetic.
-    pub mood_energy: Option<f64>,
-    /// The user's Calm ↔ Energetic step; when set it overrides `mood_energy`.
-    pub mood_energy_user: Option<MoodStep>,
     /// The analyzer's suggested mood pool, from the frozen pool calibration.
     /// `None` until a run with a calibration scored the entry (and always on
     /// ambiance). Never `Tension`: that pool is taught only.
@@ -116,31 +101,6 @@ impl Role {
             _ => None,
         }
     }
-}
-
-/// One of the three steps on a mood scale. `High` is the positive pole
-/// (Bright on Bright ↔ Dark, Grand on Intimate ↔ Grand, Energetic on
-/// Calm ↔ Energetic).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../generated/")]
-#[serde(rename_all = "camelCase")]
-pub enum MoodStep {
-    Low,
-    Mid,
-    High,
-}
-
-/// Which of the three mood scales a user step applies to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../generated/")]
-#[serde(rename_all = "camelCase")]
-pub enum MoodScale {
-    /// Bright <-> Dark.
-    Bright,
-    /// Intimate <-> Grand.
-    Grand,
-    /// Calm <-> Energetic.
-    Energy,
 }
 
 /// A music track's mood pool: a short, flat list of hedged mood words. A
@@ -214,37 +174,6 @@ pub struct PoolSuggestion {
     pub p: f64,
     /// The second most likely pool.
     pub runner: Pool,
-}
-
-/// The analyzer's position on each mood scale for one entry, as z-scores
-/// across the library's analyzed music. Positive is Bright, Grand and
-/// Energetic. Backend-only: the frontend reads these from `LibraryEntry`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MoodZ {
-    pub bright: f64,
-    pub grand: f64,
-    pub energy: f64,
-}
-
-impl MoodStep {
-    /// The value stored in the `mood_*_user` columns.
-    pub fn as_db_str(&self) -> &'static str {
-        match self {
-            MoodStep::Low => "low",
-            MoodStep::Mid => "mid",
-            MoodStep::High => "high",
-        }
-    }
-
-    /// Parses a stored value; anything unrecognised is `None`.
-    pub fn from_db_str(s: &str) -> Option<Self> {
-        match s {
-            "low" => Some(MoodStep::Low),
-            "mid" => Some(MoodStep::Mid),
-            "high" => Some(MoodStep::High),
-            _ => None,
-        }
-    }
 }
 
 /// Which layer a shown value comes from: the user's, or the analyzer's.
@@ -684,18 +613,6 @@ mod tests {
             ["peaceful", "lighthearted", "somber", "awe", "mysterious", "epic"]
         );
         assert_eq!(Pool::from_db_str("sad"), None);
-    }
-
-    #[test]
-    fn mood_step_db_strings_round_trip() {
-        for step in [MoodStep::Low, MoodStep::Mid, MoodStep::High] {
-            assert_eq!(MoodStep::from_db_str(step.as_db_str()), Some(step));
-        }
-        assert_eq!(
-            [MoodStep::Low.as_db_str(), MoodStep::Mid.as_db_str(), MoodStep::High.as_db_str()],
-            ["low", "mid", "high"]
-        );
-        assert_eq!(MoodStep::from_db_str(""), None);
     }
 
     #[test]

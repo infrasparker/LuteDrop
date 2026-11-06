@@ -15,8 +15,6 @@ export type { Group } from "./Group";
 export type { LibraryEntry } from "./LibraryEntry";
 export type { LibraryEntryUsage } from "./LibraryEntryUsage";
 export type { MatchKind } from "./MatchKind";
-export type { MoodScale } from "./MoodScale";
-export type { MoodStep } from "./MoodStep";
 export type { MissingEntryCandidates } from "./MissingEntryCandidates";
 export type { Pool } from "./Pool";
 export type { RelinkCandidate } from "./RelinkCandidate";

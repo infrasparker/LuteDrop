@@ -532,14 +532,9 @@ fn run_steps(
                 None => (None, 0.0),
             };
             library::apply_auto_role(&conn, id, role, role_score)?;
-            // Mood: only entries with fresh raw scores change. A response
-            // without mood (model not loaded) leaves stored values alone.
-            if let Some(mood) = decision.mood {
-                library::apply_auto_mood(&conn, id, Some(mood))?;
-            }
-            // Pool: likewise, only entries with a fresh suggestion change.
-            // A run without a calibration, or without pool scores, leaves a
-            // stored suggestion alone.
+            // Pool: only entries with a fresh suggestion change. A run
+            // without mood (model not loaded), a calibration or pool scores
+            // leaves a stored suggestion alone.
             if let Some(pool) = decision.pool {
                 library::apply_auto_pool(&conn, id, Some(pool))?;
             }
@@ -1089,27 +1084,6 @@ pub(crate) mod tests {
         assert_eq!(role_of(&db, &a), (s("combat"), Some(0.9), s("non_combat")));
     }
 
-    /// The entry's stored (mood_bright, mood_grand, mood_energy).
-    fn mood_of(db: &Mutex<Connection>, entry: &str) -> (Option<f64>, Option<f64>, Option<f64>) {
-        db.lock()
-            .unwrap()
-            .query_row(
-                "SELECT mood_bright, mood_grand, mood_energy FROM library_entries WHERE id = ?1",
-                params![entry],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .unwrap()
-    }
-
-    /// Raw (bright, grand, energy) mood scores per hash, without pool scores.
-    fn mood_scores(rows: &[(&str, f64, f64, f64)]) -> HashMap<String, MoodRaw> {
-        rows.iter()
-            .map(|&(h, bright, grand, energy)| {
-                (h.to_string(), MoodRaw { bright, grand, energy, pools: HashMap::new() })
-            })
-            .collect()
-    }
-
     /// Raw mood with pool scores: `epic` and `awe` as given, every other
     /// pool at `other`.
     fn pool_mood(epic: f64, awe: f64, other: f64) -> MoodRaw {
@@ -1117,7 +1091,7 @@ pub(crate) mod tests {
             Pool::ZERO_SHOT.iter().map(|p| (p.as_db_str().to_string(), other)).collect();
         pools.insert("epic".into(), epic);
         pools.insert("awe".into(), awe);
-        MoodRaw { bright: 0.0, grand: 0.0, energy: 0.0, pools }
+        MoodRaw { pools }
     }
 
     /// The entry's stored (pool_auto, pool_auto_p, pool_auto_runner).
@@ -1192,8 +1166,6 @@ pub(crate) mod tests {
         assert_eq!(report.error, None);
         assert_eq!(settings::load_pool_calibration(&db.lock().unwrap()).unwrap(), None);
         assert!(ids.iter().all(|id| pool_of(&db, id) == (None, None, None)));
-        // The scales are still written.
-        assert!(mood_of(&db, &ids[0]).0.is_some());
     }
 
     #[test]
@@ -1222,81 +1194,19 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn run_applies_mood_on_all_three_scales() {
+    fn run_keeps_pool_suggestion_without_mood() {
         let db = setup();
-        let a = add(&db, "a", "music");
-        let b = add(&db, "b", "music");
-        let c = add(&db, "c", "music");
-        let fake = FakeAnalyzer {
-            gate: scores(&[("h-a", 0.9), ("h-b", 0.9), ("h-c", 0.9)]),
-            mood: mood_scores(&[("h-a", 0.0, 2.0, 6.0), ("h-b", 1.0, 2.0, 4.0), ("h-c", 2.0, 2.0, 5.0)]),
-            ..Default::default()
-        };
+        let (ids, gate, mood) = pool_library(&db, plan::CALIBRATION_MIN_TRACKS);
+        let fake = FakeAnalyzer { gate: gate.clone(), mood, ..Default::default() };
+        run_once(&db, &fake, &ids, &no_progress);
+        let before = pool_of(&db, &ids[0]);
+        assert_eq!(before.0.as_deref(), Some("epic"));
 
-        let report = run_once(&db, &fake, &[a.clone(), b.clone(), c.clone()], &no_progress);
-
-        assert_eq!(report.error, None);
-        let z = (3.0_f64 / 2.0).sqrt();
-        let close = |v: Option<f64>, want: f64| (v.unwrap() - want).abs() < 1e-9;
-        let (bright_a, grand_a, energy_a) = mood_of(&db, &a);
-        assert!(close(bright_a, -z));
-        // No spread on the grand scale.
-        assert_eq!(grand_a, Some(0.0));
-        assert!(close(energy_a, z));
-        assert_eq!(mood_of(&db, &b).0, Some(0.0));
-        assert!(close(mood_of(&db, &b).2, -z));
-        assert!(close(mood_of(&db, &c).0, z));
-        assert_eq!(mood_of(&db, &c).2, Some(0.0));
-    }
-
-    #[test]
-    fn run_keeps_mood_without_scores() {
-        let db = setup();
-        let a = add(&db, "a", "music");
-        let first = FakeAnalyzer {
-            gate: scores(&[("h-a", 0.9)]),
-            mood: mood_scores(&[("h-a", 1.0, 1.0, 1.0)]),
-            ..Default::default()
-        };
-        run_once(&db, &first, std::slice::from_ref(&a), &no_progress);
-        assert_eq!(mood_of(&db, &a), (Some(0.0), Some(0.0), Some(0.0)));
-
-        // No mood in the response (model not loaded): stored values stay.
-        let bare = FakeAnalyzer { gate: scores(&[("h-a", 0.9)]), ..Default::default() };
+        // No mood in the response (model not loaded): the suggestion stays.
+        let bare = FakeAnalyzer { gate, ..Default::default() };
         let report = run_once(&db, &bare, &[], &no_progress);
         assert_eq!(report.error, None);
-        assert_eq!(mood_of(&db, &a), (Some(0.0), Some(0.0), Some(0.0)));
-    }
-
-    #[test]
-    fn run_does_not_overwrite_mood_step_set_during_scoring() {
-        use crate::models::{MoodScale, MoodStep};
-
-        let db = setup();
-        let a = add(&db, "a", "music");
-        let hook_db = db.clone();
-        let hook_a = a.clone();
-        let fake = FakeAnalyzer {
-            gate: scores(&[("h-a", 0.9)]),
-            mood: mood_scores(&[("h-a", 1.0, 1.0, 1.0)]),
-            on_score: Some(Box::new(move || {
-                let conn = hook_db.try_lock().expect("database is free during /score");
-                let ids = std::slice::from_ref(&hook_a);
-                library::set_user_mood_step(&conn, ids, MoodScale::Energy, Some(MoodStep::Low)).unwrap();
-            })),
-            ..Default::default()
-        };
-
-        let report = run_once(&db, &fake, std::slice::from_ref(&a), &no_progress);
-
-        assert_eq!(report.error, None);
-        let step: Option<String> = db
-            .lock()
-            .unwrap()
-            .query_row("SELECT mood_energy_user FROM library_entries WHERE id = ?1", params![a], |r| r.get(0))
-            .unwrap();
-        assert_eq!(step.as_deref(), Some("low"));
-        assert_eq!(mood_of(&db, &a).2, Some(0.0));
+        assert_eq!(pool_of(&db, &ids[0]), before);
     }
 
     #[test]
@@ -1312,9 +1222,10 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn old_analyzer_without_three_axis_mood_still_works() {
+    fn old_analyzer_without_pool_scores_still_works() {
         // An analyzer from before pace and mood sends neither key; one from
-        // v0.12 sends a pace head and mood with only `bright` and `light`.
+        // v0.12 sends a pace head and mood with only `bright` and `light`;
+        // one from before pools sends only the three scales.
         let gate = r#""gate":{"quality":{"auc":0.9,"pos":3,"neg":3},
             "trusted":true,"threshold":0.5,"neg_threshold":0.5,"scores":{"h-a":0.9}},"tags":{}"#;
         let bare = format!(r#"{{"model":"m",{gate}}}"#);
@@ -1322,6 +1233,9 @@ pub(crate) mod tests {
             r#"{{"model":"m",{gate},
                 "pace":{{"quality":{{"auc":null,"pos":0,"neg":0}},"trusted":false,"threshold":null,"scores":{{}}}},
                 "mood":{{"h-a":{{"bright":0.3,"light":0.1}}}}}}"#
+        );
+        let scales_only = format!(
+            r#"{{"model":"m",{gate},"mood":{{"h-a":{{"bright":0.3,"grand":0.1,"energy":-0.2}}}}}}"#
         );
 
         struct Canned(ScoreResponse, FakeAnalyzer);
@@ -1334,7 +1248,7 @@ pub(crate) mod tests {
             fn map(&self, h: &[String]) -> Result<Vec<HashPoint>, String> { self.1.map(h) }
         }
 
-        for json in [bare, two_axis] {
+        for json in [bare, two_axis, scales_only] {
             let response: ScoreResponse = serde_json::from_str(&json).unwrap();
             let db = setup();
             let a = add(&db, "a", "music");
@@ -1344,7 +1258,6 @@ pub(crate) mod tests {
             assert_eq!(report.error, None);
             assert_eq!(report.analyzed, 1);
             assert_eq!(role_of(&db, &a), auto_combat(0.9));
-            assert_eq!(mood_of(&db, &a), (None, None, None));
             assert_eq!(pool_of(&db, &a), (None, None, None));
         }
     }

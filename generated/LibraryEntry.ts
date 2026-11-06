@@ -2,7 +2,6 @@
 import type { AutoTag } from "./AutoTag";
 import type { EntryAnalysis } from "./EntryAnalysis";
 import type { EntryType } from "./EntryType";
-import type { MoodStep } from "./MoodStep";
 import type { Pool } from "./Pool";
 import type { Role } from "./Role";
 
@@ -42,33 +41,6 @@ roleAutoScore: number | null,
  * The user's role. When set it is shown instead of `role_auto`.
  */
 roleUser: Role | null, 
-/**
- * The analyzer's Bright ↔ Dark position as a z-score across the
- * library's analyzed music; positive is Bright.
- */
-moodBright: number | null, 
-/**
- * The user's Bright ↔ Dark step; when set it overrides `mood_bright`.
- */
-moodBrightUser: MoodStep | null, 
-/**
- * The analyzer's Intimate ↔ Grand position as a z-score; positive is
- * Grand.
- */
-moodGrand: number | null, 
-/**
- * The user's Intimate ↔ Grand step; when set it overrides `mood_grand`.
- */
-moodGrandUser: MoodStep | null, 
-/**
- * The analyzer's Calm ↔ Energetic position as a z-score; positive is
- * Energetic.
- */
-moodEnergy: number | null, 
-/**
- * The user's Calm ↔ Energetic step; when set it overrides `mood_energy`.
- */
-moodEnergyUser: MoodStep | null, 
 /**
  * The analyzer's suggested mood pool, from the frozen pool calibration.
  * `None` until a run with a calibration scored the entry (and always on

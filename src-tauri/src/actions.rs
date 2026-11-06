@@ -11,7 +11,7 @@ use crate::database::settings::{self as broadcast_settings, BroadcastSettings};
 use crate::database::settings as autotag_settings;
 use crate::models::{
     AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
-    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodScale, MoodStep, Pool, Role, SceneConfig, Track, TrackUpdates, VibeHit,
+    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, Pool, Role, SceneConfig, Track, TrackUpdates, VibeHit,
     VibePoint,
 };
 use crate::relink;
@@ -418,21 +418,6 @@ pub fn set_entry_role(
 ) -> Result<AppState, String> {
     let state = mutate_and_reload(container, |conn| {
         library::set_user_role(conn, &entry_ids, role)
-    })?;
-    request_rescore_if_enabled(container);
-    Ok(state)
-}
-
-/// Sets (or, with `None`, clears) the user's step on one mood scale for the
-/// given entries.
-pub fn set_entry_mood_step(
-    container: &AppStateContainer,
-    entry_ids: Vec<String>,
-    scale: MoodScale,
-    step: Option<MoodStep>,
-) -> Result<AppState, String> {
-    let state = mutate_and_reload(container, |conn| {
-        library::set_user_mood_step(conn, &entry_ids, scale, step)
     })?;
     request_rescore_if_enabled(container);
     Ok(state)

@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::database::now_millis;
 use crate::database::DbError;
-use crate::models::{AutoTag, LibraryEntryUsage, MoodScale, MoodStep, MoodZ, Pool, PoolSuggestion, Role};
+use crate::models::{AutoTag, LibraryEntryUsage, Pool, PoolSuggestion, Role};
 
 // ─── Library Entry CRUD ───────────────────────────────────────────────────────
 
@@ -125,15 +125,6 @@ pub fn update_library_entry_type(
             params![id],
         )
         .map_err(|e| format!("Failed to clear role: {e}"))?;
-        conn.execute(
-            "UPDATE library_entries
-             SET mood_bright = NULL, mood_bright_user = NULL,
-                 mood_grand = NULL, mood_grand_user = NULL,
-                 mood_energy = NULL, mood_energy_user = NULL
-             WHERE id = ?1",
-            params![id],
-        )
-        .map_err(|e| format!("Failed to clear mood: {e}"))?;
         // Ambiance has no pool: every pool column goes, review included.
         conn.execute(
             "UPDATE library_entries
@@ -950,34 +941,6 @@ pub fn apply_auto_role(
     apply_auto_facet(conn, Facet::Role, entry_id, role.map(|r| r.as_db_str()), score)
 }
 
-/// Sets the user's step on one mood scale for each entry. `None` clears the
-/// user step, so the auto value shows again.
-pub fn set_user_mood_step(
-    conn: &Connection,
-    entry_ids: &[String],
-    scale: MoodScale,
-    step: Option<MoodStep>,
-) -> Result<(), String> {
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| format!("Failed to begin mood transaction: {e}"))?;
-
-    // The column comes from a closed enum, never from caller-supplied text.
-    let sql = match scale {
-        MoodScale::Bright => "UPDATE library_entries SET mood_bright_user = ?2 WHERE id = ?1",
-        MoodScale::Grand => "UPDATE library_entries SET mood_grand_user = ?2 WHERE id = ?1",
-        MoodScale::Energy => "UPDATE library_entries SET mood_energy_user = ?2 WHERE id = ?1",
-    };
-    let step_str = step.map(|s| s.as_db_str());
-    for entry_id in entry_ids {
-        conn.execute(sql, params![entry_id, step_str])
-            .map_err(|e| format!("Failed to set mood step: {e}"))?;
-    }
-
-    tx.commit().map_err(|e| format!("Failed to commit mood transaction: {e}"))?;
-    Ok(())
-}
-
 /// Sets the user's pool on each music entry (`None` clears it, so the
 /// analyzer's suggestion shows again) and marks each one reviewed now.
 /// Ambiance entries have no pool and are skipped.
@@ -1066,36 +1029,6 @@ pub fn apply_auto_pool(
         params![entry_id, new.0, new.1, new.2],
     )
     .map_err(|e| format!("Failed to write auto pool: {e}"))?;
-    Ok(true)
-}
-
-/// Writes the analyzer's mood z-scores for an entry on the three scales
-/// (`None` clears all three) and returns whether the row changed. Only the
-/// auto columns are written; the user's steps are never touched. Opens no
-/// transaction of its own.
-pub fn apply_auto_mood(conn: &Connection, entry_id: &str, mood: Option<MoodZ>) -> Result<bool, String> {
-    let current: Option<[Option<f64>; 3]> = conn
-        .query_row(
-            "SELECT mood_bright, mood_grand, mood_energy FROM library_entries WHERE id = ?1",
-            params![entry_id],
-            |row| Ok([row.get(0)?, row.get(1)?, row.get(2)?]),
-        )
-        .optional()
-        .map_err(|e| format!("Failed to read mood: {e}"))?;
-
-    let Some(current) = current else {
-        return Ok(false);
-    };
-    let new = [mood.map(|m| m.bright), mood.map(|m| m.grand), mood.map(|m| m.energy)];
-    if current == new {
-        return Ok(false);
-    }
-
-    conn.execute(
-        "UPDATE library_entries SET mood_bright = ?2, mood_grand = ?3, mood_energy = ?4 WHERE id = ?1",
-        params![entry_id, new[0], new[1], new[2]],
-    )
-    .map_err(|e| format!("Failed to write auto mood: {e}"))?;
     Ok(true)
 }
 
@@ -2041,35 +1974,6 @@ mod tests {
         assert_eq!(role_row(&conn, &a), (None, None, None));
     }
 
-    // ── Mood scales ───────────────────────────────────────────────────────────
-
-    /// (bright z, grand z, energy z) as stored.
-    type MoodAuto = (Option<f64>, Option<f64>, Option<f64>);
-    /// (bright step, grand step, energy step) as stored.
-    type MoodUser = (Option<String>, Option<String>, Option<String>);
-
-    fn mood_auto(conn: &Connection, id: &str) -> MoodAuto {
-        conn.query_row(
-            "SELECT mood_bright, mood_grand, mood_energy FROM library_entries WHERE id = ?1",
-            params![id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .unwrap()
-    }
-
-    fn mood_user(conn: &Connection, id: &str) -> MoodUser {
-        conn.query_row(
-            "SELECT mood_bright_user, mood_grand_user, mood_energy_user FROM library_entries WHERE id = ?1",
-            params![id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .unwrap()
-    }
-
-    fn z(bright: f64, grand: f64, energy: f64) -> MoodZ {
-        MoodZ { bright, grand, energy }
-    }
-
     // ── Pools ─────────────────────────────────────────────────────────────────
 
     /// (pool_auto, pool_auto_p, pool_auto_runner) as stored.
@@ -2190,62 +2094,10 @@ mod tests {
     }
 
     #[test]
-    fn user_mood_step_round_trips_and_clears() {
-        let conn = open_memory_db();
-        let a = music_entry(&conn, "/a.mp3");
-        let b = music_entry(&conn, "/b.mp3");
-
-        set_user_mood_step(&conn, &[a.clone(), b.clone()], MoodScale::Bright, Some(MoodStep::High))
-            .unwrap();
-        set_user_mood_step(&conn, std::slice::from_ref(&a), MoodScale::Grand, Some(MoodStep::Low)).unwrap();
-        set_user_mood_step(&conn, std::slice::from_ref(&a), MoodScale::Energy, Some(MoodStep::Mid)).unwrap();
-        assert_eq!(mood_user(&conn, &a), (s("high"), s("low"), s("mid")));
-        assert_eq!(mood_user(&conn, &b), (s("high"), None, None));
-        // The analyzer's values are untouched.
-        assert_eq!(mood_auto(&conn, &a), (None, None, None));
-
-        // Clearing one scale is "use auto" for that scale alone.
-        set_user_mood_step(&conn, std::slice::from_ref(&a), MoodScale::Bright, None).unwrap();
-        assert_eq!(mood_user(&conn, &a), (None, s("low"), s("mid")));
-        set_user_mood_step(&conn, std::slice::from_ref(&a), MoodScale::Energy, None).unwrap();
-        assert_eq!(mood_user(&conn, &a), (None, s("low"), None));
-        assert_eq!(mood_user(&conn, &b).0, s("high"));
-    }
-
-    #[test]
-    fn apply_auto_mood_leaves_user_steps() {
-        let conn = open_memory_db();
-        let a = music_entry(&conn, "/a.mp3");
-        set_user_mood_step(&conn, std::slice::from_ref(&a), MoodScale::Bright, Some(MoodStep::Low)).unwrap();
-        set_user_mood_step(&conn, std::slice::from_ref(&a), MoodScale::Grand, Some(MoodStep::High)).unwrap();
-
-        assert!(apply_auto_mood(&conn, &a, Some(z(1.2, -0.4, 0.7))).unwrap());
-        assert_eq!(mood_auto(&conn, &a), (Some(1.2), Some(-0.4), Some(0.7)));
-        assert_eq!(mood_user(&conn, &a), (s("low"), s("high"), None));
-        // Same values again change nothing; any one scale moving does.
-        assert!(!apply_auto_mood(&conn, &a, Some(z(1.2, -0.4, 0.7))).unwrap());
-        assert!(apply_auto_mood(&conn, &a, Some(z(1.2, -0.4, 0.8))).unwrap());
-        assert_eq!(mood_auto(&conn, &a).2, Some(0.8));
-
-        assert!(apply_auto_mood(&conn, &a, None).unwrap());
-        assert_eq!(mood_auto(&conn, &a), (None, None, None));
-        assert_eq!(mood_user(&conn, &a), (s("low"), s("high"), None));
-        assert!(!apply_auto_mood(&conn, &a, None).unwrap());
-        // A missing entry is no change.
-        assert!(!apply_auto_mood(&conn, "nope", Some(z(1.0, 1.0, 1.0))).unwrap());
-    }
-
-    #[test]
-    fn switching_to_ambiance_clears_mood_and_pool() {
+    fn switching_to_ambiance_clears_pool() {
         let conn = open_memory_db();
         let auto = music_entry(&conn, "/a.mp3");
         let user = music_entry(&conn, "/b.mp3");
-        let mood = z(1.0, -1.0, 0.5);
-        apply_auto_mood(&conn, &auto, Some(mood)).unwrap();
-        apply_auto_mood(&conn, &user, Some(mood)).unwrap();
-        for scale in [MoodScale::Bright, MoodScale::Grand, MoodScale::Energy] {
-            set_user_mood_step(&conn, std::slice::from_ref(&user), scale, Some(MoodStep::Mid)).unwrap();
-        }
         for id in [&auto, &user] {
             apply_auto_pool(&conn, id, Some(suggestion(Pool::Awe, 0.5, Pool::Peaceful))).unwrap();
         }
@@ -2256,8 +2108,6 @@ mod tests {
         }
 
         for id in [&auto, &user] {
-            assert_eq!(mood_auto(&conn, id), (None, None, None));
-            assert_eq!(mood_user(&conn, id), (None, None, None));
             assert_eq!(pool_auto(&conn, id), (None, None, None));
             assert_eq!(pool_user(&conn, id), (None, None));
         }
