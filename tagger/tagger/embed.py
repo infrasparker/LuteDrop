@@ -66,13 +66,19 @@ class MuqEmbedder:
                 return self._model(wavs=x).cpu().numpy()
 
     def embed_text(self, texts: list[str]) -> np.ndarray:
+        """One L2-normalized row per text. Each text goes through the model on
+        its own: a batch is padded to its longest text, and that padding shifts
+        the vectors of the shorter ones, so a text's vector would depend on
+        which other texts were embedded with it."""
         import torch
 
         with self._lock:
             if self._model is None:
                 self._load()
             with torch.no_grad():
-                out = self._model(texts=texts).cpu().numpy()
+                out = np.concatenate(
+                    [self._model(texts=[t]).cpu().numpy() for t in texts]
+                )
         norms = np.linalg.norm(out, axis=1, keepdims=True)
         return out / np.where(norms == 0, 1, norms)
 
