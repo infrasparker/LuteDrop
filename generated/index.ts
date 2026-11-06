@@ -18,6 +18,7 @@ export type { LibraryEntryUsage } from "./LibraryEntryUsage";
 export type { MatchKind } from "./MatchKind";
 export type { MissingEntryCandidates } from "./MissingEntryCandidates";
 export type { MoodCalibrationInfo } from "./MoodCalibrationInfo";
+export type { MoodResetImpact } from "./MoodResetImpact";
 export type { MoodDef } from "./MoodDef";
 export type { MoodValue } from "./MoodValue";
 export type { MoodVocabulary } from "./MoodVocabulary";

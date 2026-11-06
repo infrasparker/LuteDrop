@@ -302,6 +302,20 @@ pub struct MoodCalibrationInfo {
     pub tracks: u32,
 }
 
+/// What Reset to defaults (Settings → Moods) would delete: the stored mood
+/// rows whose id is not a default mood, and how many of them hold a level
+/// set by the user. Read from the rows themselves, so it is right even while
+/// the stored vocabulary is unreadable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct MoodResetImpact {
+    /// The ids that would go, sorted.
+    pub moods: Vec<String>,
+    pub rows: u32,
+    pub user_levels: u32,
+}
+
 /// The levels a user can set a mood to (a 1-5 rating).
 pub const MOOD_LEVELS: [f64; 5] = [0.0, 0.25, 0.5, 0.75, 1.0];
 

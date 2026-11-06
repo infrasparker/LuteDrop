@@ -11,7 +11,7 @@ use crate::database::settings::{self as broadcast_settings, BroadcastSettings};
 use crate::database::settings as autotag_settings;
 use crate::models::{
     AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
-    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodVocabulary, Role, SceneConfig, Track, TrackUpdates, ScryHit,
+    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodResetImpact, MoodVocabulary, Role, SceneConfig, Track, TrackUpdates, ScryHit,
     ScryPoint,
 };
 use crate::relink;
@@ -441,6 +441,18 @@ pub fn set_entry_mood_level(
 /// prompts wait for Recalibrate.
 pub fn set_mood_vocabulary(container: &AppStateContainer, vocabulary: MoodVocabulary) -> Result<AppState, String> {
     mutate_and_reload(container, |conn| library::save_mood_vocabulary(conn, &vocabulary).map(|_| ()))
+}
+
+/// What Reset to defaults would delete, for its confirm dialog.
+pub fn mood_reset_impact(container: &AppStateContainer) -> Result<MoodResetImpact, String> {
+    with_db(container, library::mood_reset_impact)
+}
+
+/// Reset to defaults (see `library::reset_mood_vocabulary`): writes the
+/// shipped vocabulary even over an unreadable one. Moods whose prompts
+/// differ from the calibration then need a recalibration.
+pub fn reset_mood_vocabulary(container: &AppStateContainer) -> Result<AppState, String> {
+    mutate_and_reload(container, library::reset_mood_vocabulary)
 }
 
 /// Recalibrate: clears the mood calibration, every analyzer mood value and

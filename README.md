@@ -76,6 +76,7 @@ The analyzer suggests every value by comparing the track's sound with a few desc
 - **Preview** on a mood lists the 15 tracks its current prompts rank highest, with their album folder and raw similarity, without saving or recalibrating anything. It needs the analyzer.
 - **Save** stores the vocabulary. Removing a mood deletes its values on every track; when that includes levels set by you, Save asks first and says how many.
 - **Recalibrate** clears the calibration and every suggested mood value (levels set by you stay) and starts an analysis run, which suggests every mood again from the current prompts. The panel shows when the calibration was taken and from how many tracks.
+- **Reset to defaults** puts back the shipped mood list and prompts. Levels set by you stay for moods still in the list; moods not in the defaults lose their values, and the confirm dialog says how many. It also works when the stored list is unreadable (when Save is blocked). If prompts changed, it then offers to recalibrate.
 - After you change a mood's prompts (or add a mood), Save offers to recalibrate. Until you do, the lens buttons show **Needs recalibration**, and the changed moods keep their old suggestions; the others are still suggested as before.
 
 ### Review

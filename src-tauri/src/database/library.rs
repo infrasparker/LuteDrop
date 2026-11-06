@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::database::now_millis;
 use crate::database::DbError;
 use crate::database::settings;
-use crate::models::{AutoTag, LibraryEntryUsage, MoodVocabulary, Role, MOOD_LEVELS};
+use crate::models::{AutoTag, LibraryEntryUsage, MoodResetImpact, MoodVocabulary, Role, MOOD_LEVELS};
 
 // ─── Library Entry CRUD ───────────────────────────────────────────────────────
 
@@ -1091,6 +1091,58 @@ pub fn save_mood_vocabulary(conn: &Connection, vocabulary: &MoodVocabulary) -> R
     settings::save_mood_vocabulary(conn, &vocabulary)?;
     tx.commit().map_err(|e| format!("Failed to commit vocabulary transaction: {e}"))?;
     Ok(vocabulary)
+}
+
+/// The default mood ids (Energy included) as a JSON array, for `json_each`.
+fn default_mood_ids_json() -> Result<String, String> {
+    serde_json::to_string(&MoodVocabulary::defaults().ids()).map_err(|e| format!("Failed to encode mood ids: {e}"))
+}
+
+/// What `reset_mood_vocabulary` would delete (see `MoodResetImpact`).
+pub fn mood_reset_impact(conn: &Connection) -> Result<MoodResetImpact, String> {
+    let ids = default_mood_ids_json()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT mood, COUNT(*), COUNT(user_level) FROM library_entry_moods
+             WHERE mood NOT IN (SELECT value FROM json_each(?1))
+             GROUP BY mood ORDER BY mood",
+        )
+        .map_err(|e| format!("Failed to count mood rows: {e}"))?;
+    let groups = stmt
+        .query_map(params![ids], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?, r.get::<_, u32>(2)?)))
+        .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+        .map_err(|e| format!("Failed to count mood rows: {e}"))?;
+    Ok(MoodResetImpact {
+        moods: groups.iter().map(|(m, _, _)| m.clone()).collect(),
+        rows: groups.iter().map(|(_, n, _)| n).sum(),
+        user_levels: groups.iter().map(|(_, _, n)| n).sum(),
+    })
+}
+
+/// Reset to defaults (Settings → Moods), in one transaction: the shipped
+/// default vocabulary replaces the stored one, and mood rows whose id is not
+/// a default mood go (user levels included; the UI shows how many first).
+/// Rows of the default ids keep their user levels and suggestions; moods
+/// whose prompts differ from the calibration then show "needs
+/// recalibration". Unlike `save_mood_vocabulary`, this writes even while the
+/// stored vocabulary is unreadable: it is the way out of that state, and it
+/// deletes only what the confirm dialog counted from the rows themselves.
+pub fn reset_mood_vocabulary(conn: &Connection) -> Result<(), String> {
+    if let Some(problem) = settings::mood_vocabulary_problem(conn)? {
+        log::warn!("Resetting an unreadable mood vocabulary to the defaults: {problem}");
+    }
+    let ids = default_mood_ids_json()?;
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin reset transaction: {e}"))?;
+    conn.execute(
+        "DELETE FROM library_entry_moods WHERE mood NOT IN (SELECT value FROM json_each(?1))",
+        params![ids],
+    )
+    .map_err(|e| format!("Failed to delete moods outside the defaults: {e}"))?;
+    settings::save_mood_vocabulary(conn, &MoodVocabulary::defaults())?;
+    tx.commit().map_err(|e| format!("Failed to commit reset transaction: {e}"))?;
+    Ok(())
 }
 
 /// Clears what the analyzer said about moods, for Recalibrate, in one
@@ -2296,6 +2348,38 @@ mod tests {
         let err = save_mood_vocabulary(&conn, &MoodVocabulary::defaults()).unwrap_err();
         assert_eq!(err, MOOD_VOCABULARY_UNREADABLE);
         assert_eq!(mood_row(&conn, &a, "spooky"), Some((None, Some(0.75))));
+    }
+
+    #[test]
+    fn reset_mood_vocabulary_works_over_an_unreadable_row() {
+        let conn = open_memory_db();
+        let a = music_entry(&conn, "/a.mp3");
+        let b = music_entry(&conn, "/b.mp3");
+        let mut v = MoodVocabulary::defaults();
+        v.moods.retain(|m| m.id != "quirky");
+        v.moods[0].prompts = vec!["calm".into()];
+        v.moods.push(crate::models::MoodDef { id: "spooky".into(), name: "Spooky".into(), prompts: vec!["ghosts".into()] });
+        save_mood_vocabulary(&conn, &v).unwrap();
+        apply_auto_moods(&conn, &a, &[("spooky".into(), 0.4), ("peaceful".into(), 0.6)]).unwrap();
+        set_user_mood_level(&conn, std::slice::from_ref(&a), "spooky", Some(0.75)).unwrap();
+        set_user_mood_level(&conn, std::slice::from_ref(&b), "spooky", Some(0.25)).unwrap();
+        set_user_mood_level(&conn, std::slice::from_ref(&a), "peaceful", Some(1.0)).unwrap();
+        conn.execute("UPDATE meta SET value = '{oops' WHERE key = 'mood_vocabulary'", []).unwrap();
+        assert!(settings::mood_vocabulary_problem(&conn).unwrap().is_some());
+
+        let impact = mood_reset_impact(&conn).unwrap();
+        assert_eq!(impact, MoodResetImpact { moods: vec!["spooky".into()], rows: 2, user_levels: 2 });
+
+        reset_mood_vocabulary(&conn).unwrap();
+        assert_eq!(settings::mood_vocabulary_problem(&conn).unwrap(), None);
+        assert_eq!(settings::load_mood_vocabulary(&conn).unwrap(), MoodVocabulary::defaults());
+        // Spooky's rows are gone; Peaceful keeps both layers.
+        assert_eq!(mood_row(&conn, &a, "spooky"), None);
+        assert_eq!(mood_row(&conn, &b, "spooky"), None);
+        assert_eq!(mood_row(&conn, &a, "peaceful"), Some((Some(0.6), Some(1.0))));
+        assert_eq!(mood_reset_impact(&conn).unwrap(), MoodResetImpact { moods: vec![], rows: 0, user_levels: 0 });
+        // Saving works again.
+        save_mood_vocabulary(&conn, &MoodVocabulary::defaults()).unwrap();
     }
 
     #[test]

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { MoodVocabulary, ScryHit } from '@generated/index';
+import type { MoodResetImpact, MoodVocabulary, ScryHit } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
+import { useToast } from '../composables/useToast';
 import ConfirmDialog from './ConfirmDialog.vue';
 
 /// Settings → Moods: the mood vocabulary the analyzer scores, and its
@@ -19,6 +20,10 @@ import ConfirmDialog from './ConfirmDialog.vue';
 ///   again from the current prompts.
 /// - The word bank above the editor inserts a tag word into the prompt field
 ///   that last had focus, as a line of its own.
+/// - Reset to defaults puts back the shipped mood list (after a confirm that
+///   counts what it deletes). It works even while the stored list is
+///   unreadable, which Save refuses; afterwards it offers "Recalibrate now?"
+///   when moods need it.
 /// - Preview on a row lists the 15 tracks its current prompts (saved or not)
 ///   rank highest, by raw similarity, without saving or recalibrating, so a
 ///   prompt set can be checked before committing to it.
@@ -270,6 +275,52 @@ async function recalibrate(): Promise<void> {
   recalibrating.value = false;
 }
 
+// --- Reset to defaults ---
+
+const resetImpact = ref<MoodResetImpact | null>(null);
+const confirmReset = ref(false);
+const resetting = ref(false);
+
+/// Asks the backend what a reset would delete (counted from the stored rows,
+/// so it is right even when the stored list is unreadable), then confirms.
+async function onReset(): Promise<void> {
+  try {
+    resetImpact.value = await invoke<MoodResetImpact>('mood_reset_impact');
+    confirmReset.value = true;
+  } catch (e) {
+    resetImpact.value = null;
+    useToast().showError(String(e));
+  }
+}
+
+async function reset(): Promise<void> {
+  resetting.value = true;
+  const ok = await store.command('reset_mood_vocabulary');
+  resetting.value = false;
+  if (!ok) return;
+  previews.clear();
+  load(store.moodVocabulary);
+  if (store.moodsNeedRecalibration) askRecalibrate.value = true;
+}
+
+const resetMessage = computed(() => {
+  const i = resetImpact.value;
+  const parts = [
+    'This replaces the mood list with the shipped defaults, including their prompts and the Energy prompts.',
+    'Levels set by you are kept for moods that are still in the list.',
+  ];
+  if (i && i.rows > 0) {
+    const levels = i.userLevels === 1 ? '1 level set by you' : `${i.userLevels} levels set by you`;
+    const values = i.rows === 1 ? '1 stored value' : `${i.rows} stored values`;
+    parts.push(`Moods not in the defaults (${i.moods.join(', ')}) are deleted: ${values}, including ${levels}.`);
+  } else {
+    parts.push('No stored values are deleted.');
+  }
+  parts.push('Moods whose prompts change will need a recalibration.');
+  if (dirty.value) parts.push('Unsaved edits in this panel are discarded.');
+  return parts.join(' ');
+});
+
 const removeMessage = computed(() => {
   const names = removed.value.map((m) => m.name).join(', ');
   const n = removedLevels.value;
@@ -304,7 +355,8 @@ const calibratedLabel = computed(() => {
         </div>
         <VAlert v-if="store.moodVocabularyUnreadable" type="error" variant="tonal" density="compact" class="mb-3">
           The stored mood list is unreadable, so the default moods are shown. Saving is blocked until the stored list
-          is fixed or reset, so your own levels for other moods are not deleted.
+          is fixed or reset, so your own levels for other moods are not deleted. Reset to defaults below writes the
+          shipped list.
         </VAlert>
         <VAlert v-if="store.moodsNeedRecalibration" type="warning" variant="tonal" density="compact" class="mb-3">
           Some prompts changed since the last calibration. Those moods are not suggested again until you recalibrate.
@@ -479,6 +531,14 @@ const calibratedLabel = computed(() => {
       <VDivider />
       <VCardActions>
         <VBtn text="Discard changes" variant="plain" :disabled="!dirty" @click="load(store.moodVocabulary)" />
+        <VBtn
+          text="Reset to defaults"
+          variant="plain"
+          prepend-icon="mdi-restore"
+          :color="store.moodVocabularyUnreadable ? 'error' : undefined"
+          :loading="resetting"
+          @click="onReset"
+        />
         <VSpacer />
         <VBtn text="Close" variant="plain" @click="open = false" />
         <VBtn
@@ -499,6 +559,15 @@ const calibratedLabel = computed(() => {
       confirm-label="Remove and save"
       confirm-color="error"
       @confirm="save"
+    />
+    <ConfirmDialog
+      v-model="confirmReset"
+      title="Reset moods to defaults?"
+      :message="resetMessage"
+      confirm-label="Reset"
+      confirm-color="error"
+      max-width="520"
+      @confirm="reset"
     />
     <ConfirmDialog
       v-model="askRecalibrate"
