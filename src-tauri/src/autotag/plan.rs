@@ -2,7 +2,7 @@
 //! role and tags its scores earn. Nothing here touches the database or the
 //! network.
 
-use crate::models::{AutoTag, EntryTagScores, Pool, PoolSuggestion, Role, SceneConfig, TagScore};
+use crate::models::{AutoTag, EntryTagScores, MoodId, Role, SceneConfig, TagScore};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -74,22 +74,24 @@ pub struct ScoreResponse {
     pub tags: HashMap<String, ScoreSet>,
     /// Raw mood scores per entry hash. Empty when the analyzer sent none
     /// (its mood model is not loaded, or it predates mood). An entry without
-    /// pool scores (an analyzer that predates pools) is left out, as if the
-    /// analyzer sent no mood for it.
+    /// the `{moods, energy}` shape (an analyzer that predates the mood
+    /// profile) is left out, as if the analyzer sent no mood for it.
     #[serde(default, deserialize_with = "complete_moods")]
     pub mood: HashMap<String, MoodRaw>,
 }
 
-/// The analyzer's raw mood scores for one entry: each pool's absolute
-/// prompt similarity (not a difference), keyed by pool id. Any other field
-/// the analyzer sends (the scales `bright`, `grand` and `energy`, or `sad`,
-/// `scary` and `light`, from older analyzers) is ignored.
+/// The analyzer's raw mood scores for one entry: each mood's absolute prompt
+/// similarity keyed by mood id, and Energy (energetic minus calm prompt
+/// similarity). Any other field the analyzer sends (`pools`, or the scales
+/// `bright`, `grand`, `sad`, `scary` and `light`, from older analyzers) is
+/// ignored.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MoodRaw {
-    pub pools: HashMap<String, f64>,
+    pub moods: HashMap<String, f64>,
+    pub energy: f64,
 }
 
-/// Reads the `mood` map, keeping only the entries that carry pool scores.
+/// Reads the `mood` map, keeping only the entries in the current shape.
 fn complete_moods<'de, D: Deserializer<'de>>(d: D) -> Result<HashMap<String, MoodRaw>, D::Error> {
     let raw: HashMap<String, serde_json::Value> = HashMap::deserialize(d)?;
     Ok(raw
@@ -98,104 +100,92 @@ fn complete_moods<'de, D: Deserializer<'de>>(d: D) -> Result<HashMap<String, Moo
         .collect())
 }
 
-/// A calibration needs raw pool scores from at least this many music tracks.
+/// A calibration needs raw mood scores from at least this many music tracks.
 pub const CALIBRATION_MIN_TRACKS: usize = 50;
 
-/// The pool probabilities are a softmax over `POOL_SHARPNESS * z` across
-/// every pool.
-pub const POOL_SHARPNESS: f64 = 3.0;
+/// The slope of the logistic that turns a z-score into 0..1:
+/// `score = 1 / (1 + exp(-MOOD_SLOPE * z))`.
+pub const MOOD_SLOPE: f64 = 1.5;
 
-/// Mean and standard deviation of one pool's raw score.
+/// Mean and standard deviation of one mood's raw score.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct PoolStat {
+pub struct MoodStat {
     pub mean: f64,
     pub sd: f64,
 }
 
-/// The frozen pool calibration: per pool, the mean and standard
-/// deviation of its raw score across the library's music when it was taken.
-/// Taken once, from the first `/score` response that covers at least
-/// `CALIBRATION_MIN_TRACKS` music tracks, and never recomputed automatically,
-/// so suggestions do not drift as the library grows. Stored as JSON in the
-/// `pool_calibration` setting.
+/// The frozen mood calibration: per mood id (Energy included), the mean and
+/// population standard deviation of its raw score across the library's music
+/// when it was taken. Taken once, from the first `/score` response that
+/// covers at least `CALIBRATION_MIN_TRACKS` music tracks, and never
+/// recomputed automatically, so values do not drift as the library grows.
+/// Stored as JSON `{ id: {mean, sd}, ... }` in the `mood_calibration`
+/// setting.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PoolCalibration {
-    /// How many tracks it was computed from.
-    pub tracks: usize,
-    /// Keyed by pool id; one entry per pool.
-    pub pools: BTreeMap<String, PoolStat>,
-}
+#[serde(transparent)]
+pub struct MoodCalibration(pub BTreeMap<String, MoodStat>);
 
-/// The raw pool scores of one entry, in `Pool::ALL` order, or `None` if any
-/// is missing (an analyzer that predates pools, or this vocabulary).
-fn pool_raws(mood: &MoodRaw) -> Option<[f64; Pool::COUNT]> {
-    let mut out = [0.0; Pool::COUNT];
-    for (slot, pool) in out.iter_mut().zip(Pool::ALL) {
-        *slot = *mood.pools.get(pool.as_db_str())?;
+/// The raw scores of one entry, in `MoodId::ALL` order, or `None` if any mood
+/// is missing (an analyzer with another vocabulary).
+fn mood_raws(mood: &MoodRaw) -> Option<[f64; MoodId::COUNT]> {
+    let mut out = [0.0; MoodId::COUNT];
+    for (slot, id) in out.iter_mut().zip(MoodId::ALL) {
+        *slot = match id {
+            MoodId::Energy => mood.energy,
+            _ => *mood.moods.get(id.as_db_str())?,
+        };
     }
     Some(out)
 }
 
-/// Computes a pool calibration from one `/score` response's raw mood scores
+/// Computes a mood calibration from one `/score` response's raw mood scores
 /// (population standard deviation). `None` when fewer than
-/// `CALIBRATION_MIN_TRACKS` entries carry every pool score, or when a pool
-/// has no spread (its z-scores would be meaningless).
-pub fn calibrate(mood: &HashMap<String, MoodRaw>) -> Option<PoolCalibration> {
-    let rows: Vec<[f64; Pool::COUNT]> = mood.values().filter_map(pool_raws).collect();
+/// `CALIBRATION_MIN_TRACKS` entries carry every score, or when an id has no
+/// spread (its z-scores would be meaningless). The response only holds music
+/// targets, so every row is a music track.
+pub fn calibrate(mood: &HashMap<String, MoodRaw>) -> Option<(MoodCalibration, usize)> {
+    let rows: Vec<[f64; MoodId::COUNT]> = mood.values().filter_map(mood_raws).collect();
     if rows.len() < CALIBRATION_MIN_TRACKS {
         return None;
     }
     let n = rows.len() as f64;
-    let mut pools = BTreeMap::new();
-    for (i, pool) in Pool::ALL.iter().enumerate() {
+    let mut stats = BTreeMap::new();
+    for (i, id) in MoodId::ALL.iter().enumerate() {
         let mean = rows.iter().map(|r| r[i]).sum::<f64>() / n;
         let sd = (rows.iter().map(|r| (r[i] - mean).powi(2)).sum::<f64>() / n).sqrt();
         if !sd.is_finite() || sd <= 1e-12 {
             return None;
         }
-        pools.insert(pool.as_db_str().to_string(), PoolStat { mean, sd });
+        stats.insert(id.as_db_str().to_string(), MoodStat { mean, sd });
     }
-    Some(PoolCalibration { tracks: rows.len(), pools })
+    Some((MoodCalibration(stats), rows.len()))
 }
 
-/// The probability of each pool for one entry, in `Pool::ALL` order: `z = (raw - mean) / sd` against the frozen
-/// calibration, then a softmax over `POOL_SHARPNESS * z`. `None` when the
-/// entry lacks a pool score or the calibration lacks a pool.
-pub fn pool_probabilities(mood: &MoodRaw, calibration: &PoolCalibration) -> Option<[(Pool, f64); Pool::COUNT]> {
-    let raws = pool_raws(mood)?;
-    let mut logits = [0.0; Pool::COUNT];
-    for ((logit, raw), pool) in logits.iter_mut().zip(raws).zip(Pool::ALL) {
-        let stat = calibration.pools.get(pool.as_db_str())?;
-        *logit = POOL_SHARPNESS * (raw - stat.mean) / stat.sd;
-    }
-    // Subtract the largest logit first so `exp` cannot overflow.
-    let max = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let exps = logits.map(|l| (l - max).exp());
-    let sum: f64 = exps.iter().sum();
-    let mut out = [(Pool::Peaceful, 0.0); Pool::COUNT];
-    for ((slot, pool), e) in out.iter_mut().zip(Pool::ALL).zip(exps) {
-        *slot = (pool, e / sum);
+/// Turns one raw score into 0..1: `z = (raw - mean) / sd`, then
+/// `1 / (1 + exp(-MOOD_SLOPE * z))`, clamped to [0, 1].
+pub fn mood_score(raw: f64, stat: MoodStat) -> f64 {
+    let z = (raw - stat.mean) / stat.sd;
+    (1.0 / (1.0 + (-MOOD_SLOPE * z).exp())).clamp(0.0, 1.0)
+}
+
+/// The analyzer's 0..1 value for every mood id of one entry, in
+/// `MoodId::ALL` order. `None` when the entry lacks a raw score or the
+/// calibration lacks an id.
+///
+/// Rule: moods never depend on Role. Only the entry's raw scores and the
+/// frozen calibration go in; a combat track can be Peaceful.
+///
+/// Learned mood heads are out of scope for this release: the user's levels
+/// are recorded in `library_entry_moods.user_level` for a later release to
+/// regress heads on, and the values here are zero-shot only.
+pub fn auto_moods(mood: &MoodRaw, calibration: &MoodCalibration) -> Option<[(MoodId, f64); MoodId::COUNT]> {
+    let raws = mood_raws(mood)?;
+    let mut out = [(MoodId::Peaceful, 0.0); MoodId::COUNT];
+    for ((slot, id), raw) in out.iter_mut().zip(MoodId::ALL).zip(raws) {
+        let stat = *calibration.0.get(id.as_db_str())?;
+        *slot = (id, mood_score(raw, stat));
     }
     Some(out)
-}
-
-/// The suggested pool for one entry: the most likely pool, its probability
-/// and the runner-up. Every pool can be suggested. `None` without every raw
-/// pool score.
-///
-/// Rule: pool suggestions never depend on Role. Only the entry's raw pool
-/// scores and the frozen calibration go in; a combat track can be Peaceful
-/// and a non-combat one Menacing.
-///
-/// Learned pool heads (trained on the user's confirmed pools, behind a trust
-/// gate) are out of scope for this release: the user's pools are recorded in
-/// `pool_user` for a later release to train on, and the suggestion here is
-/// zero-shot only.
-pub fn suggest_pool(mood: &MoodRaw, calibration: &PoolCalibration) -> Option<PoolSuggestion> {
-    let mut probs = pool_probabilities(mood, calibration)?;
-    // A stable sort, so ties keep vocabulary order.
-    probs.sort_by(|a, b| b.1.total_cmp(&a.1));
-    Some(PoolSuggestion { pool: probs[0].0, p: probs[0].1, runner: probs[1].0 })
 }
 
 /// The analyzer layer one scored entry should carry after a run. It is
@@ -205,9 +195,9 @@ pub struct Decision {
     /// The auto role and the Combat probability it is stored with. `None`
     /// clears the auto role.
     pub role: Option<(Role, f64)>,
-    /// The suggested pool, when there is a pool calibration and the analyzer
-    /// sent the entry's raw pool scores.
-    pub pool: Option<PoolSuggestion>,
+    /// The analyzer's value for every mood id, when there is a mood
+    /// calibration and the analyzer sent the entry's raw mood scores.
+    pub moods: Option<[(MoodId, f64); MoodId::COUNT]>,
     /// The tags the analyzer gives the entry; its other auto scores go.
     pub tags: Vec<AutoTag>,
 }
@@ -331,7 +321,7 @@ fn role_for(gate: &ScoreSet, p: f64) -> Option<(Role, f64)> {
     }
 }
 
-/// Decides the analyzer layer (role, pool and tags) of each scored
+/// Decides the analyzer layer (role, moods and tags) of each scored
 /// entry.
 ///
 /// Only entries the analyzer scored (music with a hash found in the gate's
@@ -339,13 +329,13 @@ fn role_for(gate: &ScoreSet, p: f64) -> Option<(Role, f64)> {
 /// that were not scored. The decision depends on the scores alone: entries
 /// the user has set get an analyzer layer too, shown beside the user's. A tag
 /// is earned when its classifier is trusted and the score reaches its
-/// threshold. A pool is suggested only with a `calibration` (see
-/// `suggest_pool`).
+/// threshold. Moods are scored only with a `calibration` (see
+/// `auto_moods`).
 pub fn decide(
     entries: &[EntryFacts],
     scene: &SceneConfig,
     resp: &ScoreResponse,
-    calibration: Option<&PoolCalibration>,
+    calibration: Option<&MoodCalibration>,
 ) -> HashMap<String, Decision> {
     let vocabulary = vocabulary(scene);
 
@@ -378,7 +368,7 @@ pub fn decide(
             entry.id.clone(),
             Decision {
                 role,
-                pool: calibration.and_then(|cal| suggest_pool(resp.mood.get(hash)?, cal)),
+                moods: calibration.and_then(|cal| auto_moods(resp.mood.get(hash)?, cal)),
                 tags,
             },
         );
@@ -731,165 +721,138 @@ mod tests {
         assert!(serde_json::to_value(&req).unwrap().get("pace").is_none());
     }
 
-    /// Raw mood scores without any pool score.
-    fn no_pools() -> MoodRaw {
-        MoodRaw { pools: HashMap::new() }
-    }
-
-    /// Raw scores with every pool score, in vocabulary order (peaceful,
-    /// cheerful, quirky, somber, awe, mysterious, heroic, menacing).
-    fn with_pools(pools: [f64; Pool::COUNT]) -> MoodRaw {
+    /// Raw scores in `MoodId::ALL` order (nine moods, then energy).
+    fn with_moods(raws: [f64; MoodId::COUNT]) -> MoodRaw {
         MoodRaw {
-            pools: Pool::ALL.iter().zip(pools).map(|(p, v)| (p.as_db_str().to_string(), v)).collect(),
+            moods: MoodId::ALL[..9].iter().zip(raws).map(|(m, v)| (m.as_db_str().to_string(), v)).collect(),
+            energy: raws[9],
         }
     }
 
-    /// A calibration with the same mean and sd for every pool.
-    fn flat_calibration(mean: f64, sd: f64) -> PoolCalibration {
-        PoolCalibration {
-            tracks: 50,
-            pools: Pool::ALL.iter().map(|p| (p.as_db_str().to_string(), PoolStat { mean, sd })).collect(),
-        }
+    /// A calibration with the same mean and sd for every id.
+    fn flat_calibration(mean: f64, sd: f64) -> MoodCalibration {
+        MoodCalibration(MoodId::ALL.iter().map(|m| (m.as_db_str().to_string(), MoodStat { mean, sd })).collect())
     }
 
     #[test]
-    fn suggest_pool_softmaxes_three_times_z() {
-        let cal = flat_calibration(0.2, 0.01);
-        // z: heroic 3, awe 2, the rest 0. Softmax over 3z:
-        // e^9 / (e^9 + e^6 + 6) and e^6 / (e^9 + e^6 + 6).
-        let m = with_pools([0.2, 0.2, 0.2, 0.2, 0.22, 0.2, 0.23, 0.2]);
-        let s = suggest_pool(&m, &cal).unwrap();
-        assert_eq!((s.pool, s.runner), (Pool::Heroic, Pool::Awe));
-        assert!((s.p - 0.951_902_709_939_050_7).abs() < 1e-12);
-        let probs = pool_probabilities(&m, &cal).unwrap();
-        assert!((probs[4].1 - 0.047_392_445_299_290_47).abs() < 1e-12);
-        assert!((probs.iter().map(|(_, p)| p).sum::<f64>() - 1.0).abs() < 1e-12);
-        // A clear margin over the runner-up (0.95 - 0.05).
-        assert!(s.p - probs[4].1 >= 0.15);
+    fn mood_score_is_a_logistic_of_one_and_a_half_z() {
+        let stat = MoodStat { mean: 0.2, sd: 0.04 };
+        // z = 0, 1, -2, 2.5.
+        assert_eq!(mood_score(0.2, stat), 0.5);
+        assert!((mood_score(0.24, stat) - 0.817_574_476_193_643_7).abs() < 1e-12);
+        assert!((mood_score(0.12, stat) - 0.047_425_873_177_566_78).abs() < 1e-12);
+        assert!((mood_score(0.30, stat) - 0.977_022_630_089_974_4).abs() < 1e-12);
+        // Extremes stay inside [0, 1].
+        assert_eq!(mood_score(10.0, stat), 1.0);
+        assert!((0.0..1e-20).contains(&mood_score(-10.0, stat)));
+        assert!(mood_score(f64::MAX, stat) <= 1.0 && mood_score(f64::MIN, stat) >= 0.0);
     }
 
     #[test]
-    fn suggest_pool_uses_each_pools_own_calibration() {
-        // Peaceful has the highest raw score but also the highest mean: its
-        // z is 0, while somber's is 1.
+    fn auto_moods_scores_every_id_against_its_own_calibration() {
         let mut cal = flat_calibration(0.1, 0.05);
-        cal.pools.insert("peaceful".into(), PoolStat { mean: 0.3, sd: 0.05 });
-        let m = with_pools([0.3, 0.1, 0.1, 0.15, 0.1, 0.1, 0.1, 0.1]);
-        let s = suggest_pool(&m, &cal).unwrap();
-        assert_eq!((s.pool, s.runner), (Pool::Somber, Pool::Peaceful));
+        // Peaceful has the highest raw score but also the highest mean.
+        cal.0.insert("peaceful".into(), MoodStat { mean: 0.3, sd: 0.05 });
+        // Energy is a difference, so it has its own centre and spread.
+        cal.0.insert("energy".into(), MoodStat { mean: -0.02, sd: 0.01 });
+        let m = with_moods([0.3, 0.15, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.0, -0.04]);
+        let out = auto_moods(&m, &cal).unwrap();
+        assert_eq!(out.map(|(id, _)| id), MoodId::ALL);
+        assert_eq!(out[0].1, 0.5); // peaceful: z 0
+        assert!((out[1].1 - 0.817_574_476_193_643_7).abs() < 1e-12); // sorrowful: z 1
+        assert!((out[8].1 - 0.047_425_873_177_566_78).abs() < 1e-12); // menacing: z -2
+        assert!((out[9].1 - 0.047_425_873_177_566_78).abs() < 1e-12); // energy: z -2
     }
 
     #[test]
-    fn close_pools_are_still_suggested() {
-        // z: peaceful 0.1, cheerful 0.05, rest 0. Probabilities
-        // 0.1586 and 0.1365: an "unsure" margin of 0.022, under 0.15, but
-        // still a suggestion.
+    fn no_auto_moods_without_every_score() {
         let cal = flat_calibration(0.0, 1.0);
-        let m = with_pools([0.1, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
-        let s = suggest_pool(&m, &cal).unwrap();
-        assert_eq!((s.pool, s.runner), (Pool::Peaceful, Pool::Cheerful));
-        assert!((s.p - 0.158_588_755_444_810_94).abs() < 1e-12);
-        let probs = pool_probabilities(&m, &cal).unwrap();
-        assert!((probs[1].1 - 0.136_498_606_782_671_56).abs() < 1e-12);
-        // A tie keeps vocabulary order.
-        let tie = suggest_pool(&with_pools([0.0; Pool::COUNT]), &cal).unwrap();
-        assert_eq!((tie.pool, tie.runner), (Pool::Peaceful, Pool::Cheerful));
-        assert!((tie.p - 1.0 / 8.0).abs() < 1e-12);
-    }
-
-    #[test]
-    fn no_suggestion_without_every_pool_score() {
-        let cal = flat_calibration(0.0, 1.0);
-        assert_eq!(suggest_pool(&no_pools(), &cal), None);
-        let mut m = with_pools([0.1; Pool::COUNT]);
-        m.pools.remove("awe");
-        assert_eq!(suggest_pool(&m, &cal), None);
-        // A calibration missing a pool gives none either.
+        let mut m = with_moods([0.1; MoodId::COUNT]);
+        m.moods.remove("wondrous");
+        assert_eq!(auto_moods(&m, &cal), None);
+        // A calibration missing an id gives none either.
         let mut partial = flat_calibration(0.0, 1.0);
-        partial.pools.remove("menacing");
-        assert_eq!(suggest_pool(&with_pools([0.1; Pool::COUNT]), &partial), None);
+        partial.0.remove("energy");
+        assert_eq!(auto_moods(&with_moods([0.1; MoodId::COUNT]), &partial), None);
     }
 
-    /// `n` entries whose pool `i` scores `base + i * 0.01 + (k % 2) * step`.
+    /// `n` entries whose id `i` scores `0.1 + i * 0.01 + (k % 2) * step`.
     fn library(n: usize, step: f64) -> HashMap<String, MoodRaw> {
         (0..n)
             .map(|k| {
                 let bump = if k % 2 == 0 { 0.0 } else { step };
-                let pools: [f64; Pool::COUNT] = std::array::from_fn(|i| 0.1 + i as f64 * 0.01 + bump);
-                (format!("h-{k}"), with_pools(pools))
+                let raws: [f64; MoodId::COUNT] = std::array::from_fn(|i| 0.1 + i as f64 * 0.01 + bump);
+                (format!("h-{k}"), with_moods(raws))
             })
             .collect()
     }
 
     #[test]
-    fn calibrate_needs_fifty_tracks_with_pool_scores() {
+    fn calibrate_needs_fifty_tracks_with_every_score() {
         assert_eq!(calibrate(&library(49, 0.02)), None);
-        // Entries without pool scores do not count.
+        // Entries missing a mood do not count.
         let mut short = library(49, 0.02);
-        short.insert("h-old".into(), no_pools());
+        let mut partial = with_moods([0.1; MoodId::COUNT]);
+        partial.moods.remove("grim");
+        short.insert("h-old".into(), partial);
         assert_eq!(calibrate(&short), None);
 
-        let cal = calibrate(&library(50, 0.02)).unwrap();
-        assert_eq!(cal.tracks, 50);
-        assert_eq!(cal.pools.len(), Pool::COUNT);
+        let (cal, tracks) = calibrate(&library(50, 0.02)).unwrap();
+        assert_eq!(tracks, 50);
+        assert_eq!(cal.0.len(), MoodId::COUNT);
         // Half at base, half at base + 0.02: mean base + 0.01, population sd 0.01.
-        for (i, pool) in Pool::ALL.iter().enumerate() {
-            let stat = cal.pools[pool.as_db_str()];
+        for (i, id) in MoodId::ALL.iter().enumerate() {
+            let stat = cal.0[id.as_db_str()];
             assert!((stat.mean - (0.11 + i as f64 * 0.01)).abs() < 1e-12);
             assert!((stat.sd - 0.01).abs() < 1e-12);
         }
     }
 
     #[test]
-    fn calibrate_refuses_a_pool_without_spread() {
+    fn calibrate_refuses_an_id_without_spread() {
         assert_eq!(calibrate(&library(60, 0.0)), None);
     }
 
     #[test]
-    fn calibration_round_trips_as_json() {
-        let cal = calibrate(&library(50, 0.02)).unwrap();
+    fn calibration_round_trips_as_flat_json() {
+        let (cal, _) = calibrate(&library(50, 0.02)).unwrap();
         let text = serde_json::to_string(&cal).unwrap();
-        assert!(text.contains(r#""peaceful":{"mean":"#));
-        // JSON keeps every value to within a rounding step.
-        let back: PoolCalibration = serde_json::from_str(&text).unwrap();
-        assert_eq!(back.tracks, cal.tracks);
-        assert_eq!(back.pools.keys().collect::<Vec<_>>(), cal.pools.keys().collect::<Vec<_>>());
-        for (id, stat) in &cal.pools {
-            assert!((back.pools[id].mean - stat.mean).abs() < 1e-15 && (back.pools[id].sd - stat.sd).abs() < 1e-15);
+        // `{ id: {mean, sd}, ... }`, nothing else.
+        assert!(text.starts_with(r#"{"cheerful":{"mean":"#));
+        assert!(text.contains(r#""energy":{"mean":"#));
+        let back: MoodCalibration = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.0.keys().collect::<Vec<_>>(), cal.0.keys().collect::<Vec<_>>());
+        for (id, stat) in &cal.0 {
+            assert!((back.0[id].mean - stat.mean).abs() < 1e-15 && (back.0[id].sd - stat.sd).abs() < 1e-15);
         }
     }
 
     #[test]
-    fn decide_suggests_pools_only_with_a_calibration() {
+    fn decide_scores_moods_only_with_a_calibration() {
         let mut resp = response(gate(true, Some(0.6), None, &[("h-a", 0.9), ("h-b", 0.9)]), &[]);
-        resp.mood = [
-            ("h-a".to_string(), with_pools([0.2, 0.2, 0.2, 0.2, 0.22, 0.2, 0.23, 0.2])),
-            ("h-b".to_string(), no_pools()),
-        ]
-        .into();
+        resp.mood = [("h-a".to_string(), with_moods([0.2; MoodId::COUNT]))].into();
         let entries = [entry("a", &[]), entry("b", &[])];
         let out = decide(&entries, &scene(), &resp, None);
-        assert_eq!((out["a"].pool, out["b"].pool), (None, None));
+        assert_eq!((out["a"].moods, out["b"].moods), (None, None));
 
         let cal = flat_calibration(0.2, 0.01);
         let out = decide(&entries, &scene(), &resp, Some(&cal));
-        assert_eq!(out["a"].pool, suggest_pool(&resp.mood["h-a"], &cal));
-        assert_eq!(out["a"].pool.unwrap().pool, Pool::Heroic);
-        // Mood without pool scores gives no pool.
-        assert_eq!(out["b"].pool, None);
+        assert_eq!(out["a"].moods, auto_moods(&resp.mood["h-a"], &cal));
+        assert!(out["a"].moods.unwrap().iter().all(|(_, v)| *v == 0.5));
+        // No mood for the entry: no moods.
+        assert_eq!(out["b"].moods, None);
     }
 
     #[test]
-    fn pool_suggestion_does_not_depend_on_role() {
-        // Same pool scores, opposite gate scores (Combat vs Non-combat).
+    fn moods_do_not_depend_on_role() {
+        // Same mood scores, opposite gate scores (Combat vs Non-combat).
         let mut resp = response(gate(true, Some(0.6), Some(0.6), &[("h-a", 0.95), ("h-b", 0.05)]), &[]);
-        let pools = with_pools([0.25, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2]);
-        resp.mood = [("h-a".to_string(), pools.clone()), ("h-b".to_string(), pools)].into();
+        let m = with_moods([0.25, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2]);
+        resp.mood = [("h-a".to_string(), m.clone()), ("h-b".to_string(), m)].into();
         let cal = flat_calibration(0.2, 0.01);
         let out = decide(&[entry("a", &[]), entry("b", &[])], &scene(), &resp, Some(&cal));
         assert_ne!(out["a"].role.map(|r| r.0), out["b"].role.map(|r| r.0));
-        assert_eq!(out["a"].pool, out["b"].pool);
-        assert_eq!(out["a"].pool.unwrap().pool, Pool::Peaceful);
+        assert_eq!(out["a"].moods, out["b"].moods);
     }
 
     #[test]
@@ -901,25 +864,22 @@ mod tests {
     }
 
     #[test]
-    fn mood_response_ignores_scales_and_drops_entries_without_pools() {
+    fn mood_response_drops_entries_without_the_moods_shape() {
         let json = r#"{"model":"m","gate":{"quality":{"auc":0.9,"pos":12,"neg":9},
             "trusted":true,"threshold":0.61,"scores":{}},"tags":{},
             "pace":{"quality":{"auc":null,"pos":0,"neg":0},"trusted":false,"threshold":null,"scores":{}},
-            "mood":{"h-new":{"bright":0.1,"grand":0.3,"energy":0.4,
-                        "pools":{"peaceful":0.1,"cheerful":0.2,"quirky":0.3,"somber":0.4,"awe":0.5,
-                                 "mysterious":0.6,"heroic":0.7,"menacing":0.8}},
-                    "h-v15":{"pools":{"peaceful":0.1,"lighthearted":0.2,"somber":0.3,"awe":0.4,"mysterious":0.5,"epic":0.6}},
+            "mood":{"h-new":{"moods":{"peaceful":0.1,"sorrowful":0.2,"wondrous":0.3,"cheerful":0.4,
+                                      "quirky":0.5,"mysterious":0.6,"grim":0.7,"heroic":0.8,"menacing":0.9},
+                             "energy":-0.05},
+                    "h-pools":{"pools":{"peaceful":0.1,"cheerful":0.2,"quirky":0.3,"somber":0.4,"awe":0.5,
+                                        "mysterious":0.6,"heroic":0.7,"menacing":0.8}},
                     "h-v14":{"bright":0.1,"light":0.2,"grand":0.3,"energy":0.4,"sad":0.25,"scary":0.15},
                     "h-old":{"bright":0.1,"light":0.2}}}"#;
         let resp: ScoreResponse = serde_json::from_str(json).unwrap();
-        // The scales an older analyzer still sends are ignored. Entries
-        // without pool scores (from analyzers that predate pools) count as no
-        // mood.
-        assert_eq!(resp.mood.len(), 2);
-        assert_eq!(resp.mood["h-new"], with_pools([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]));
-        // An analyzer with the old six-pool vocabulary parses, but its scores
-        // give no suggestion: the new pools are missing.
-        assert_eq!(suggest_pool(&resp.mood["h-v15"], &flat_calibration(0.0, 1.0)), None);
+        // Entries from analyzers that predate the mood profile (pools, the
+        // scales) count as no mood.
+        assert_eq!(resp.mood.len(), 1);
+        assert_eq!(resp.mood["h-new"], with_moods([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, -0.05]));
     }
 
     #[test]

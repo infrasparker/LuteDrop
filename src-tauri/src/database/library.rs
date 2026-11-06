@@ -3,7 +3,7 @@ use uuid::Uuid;
 
 use crate::database::now_millis;
 use crate::database::DbError;
-use crate::models::{AutoTag, LibraryEntryUsage, Pool, PoolSuggestion, Role};
+use crate::models::{AutoTag, LibraryEntryUsage, MoodId, Role, MOOD_LEVELS};
 
 // ─── Library Entry CRUD ───────────────────────────────────────────────────────
 
@@ -125,15 +125,12 @@ pub fn update_library_entry_type(
             params![id],
         )
         .map_err(|e| format!("Failed to clear role: {e}"))?;
-        // Ambiance has no pool: every pool column goes, review included.
-        conn.execute(
-            "UPDATE library_entries
-             SET pool_auto = NULL, pool_auto_p = NULL, pool_auto_runner = NULL,
-                 pool_user = NULL, pool_reviewed_at = NULL
-             WHERE id = ?1",
-            params![id],
-        )
-        .map_err(|e| format!("Failed to clear pool: {e}"))?;
+        // Ambiance has no moods: both layers go, and so does the review
+        // time (ambiance is never reviewed).
+        conn.execute("DELETE FROM library_entry_moods WHERE library_entry_id = ?1", params![id])
+            .map_err(|e| format!("Failed to clear moods: {e}"))?;
+        conn.execute("UPDATE library_entries SET mood_reviewed_at = NULL WHERE id = ?1", params![id])
+            .map_err(|e| format!("Failed to clear review time: {e}"))?;
     }
 
     tx.commit()
@@ -941,33 +938,70 @@ pub fn apply_auto_role(
     apply_auto_facet(conn, Facet::Role, entry_id, role.map(|r| r.as_db_str()), score)
 }
 
-/// Sets the user's pool on each music entry (`None` clears it, so the
-/// analyzer's suggestion shows again) and marks each one reviewed now.
-/// Ambiance entries have no pool and are skipped.
-pub fn set_user_pool(conn: &Connection, entry_ids: &[String], pool: Option<Pool>) -> Result<(), String> {
+/// The level a user may set, snapped exactly onto `MOOD_LEVELS` (a value
+/// within 1e-9 of one counts, so float noise from the UI is harmless), or an
+/// error naming the allowed levels.
+fn checked_level(level: f64) -> Result<f64, String> {
+    MOOD_LEVELS
+        .into_iter()
+        .find(|l| (l - level).abs() < 1e-9)
+        .ok_or_else(|| format!("Mood level {level} is not one of 0, 0.25, 0.5, 0.75, 1"))
+}
+
+/// Sets the user's level of one mood on each music entry (`None` clears it,
+/// so the analyzer's suggestion shows again) and marks each one reviewed now.
+/// Ambiance entries have no moods and are skipped; so are missing ones. A
+/// level outside `MOOD_LEVELS` is refused before anything is written.
+///
+/// Levels do not train anything yet: learned mood heads are a later release,
+/// which regresses them on `user_level`.
+pub fn set_user_mood_level(
+    conn: &Connection,
+    entry_ids: &[String],
+    mood: MoodId,
+    level: Option<f64>,
+) -> Result<(), String> {
+    let level = level.map(checked_level).transpose()?;
     let tx = conn
         .unchecked_transaction()
-        .map_err(|e| format!("Failed to begin pool transaction: {e}"))?;
-    let pool_str = pool.map(|p| p.as_db_str());
+        .map_err(|e| format!("Failed to begin mood transaction: {e}"))?;
     let now = now_millis();
     for entry_id in entry_ids {
-        conn.execute(
-            "UPDATE library_entries SET pool_user = ?2, pool_reviewed_at = ?3
-             WHERE id = ?1 AND entry_type = 'music'",
-            params![entry_id, pool_str, now],
-        )
-        .map_err(|e| format!("Failed to set pool: {e}"))?;
+        let is_music = conn
+            .execute(
+                "UPDATE library_entries SET mood_reviewed_at = ?2 WHERE id = ?1 AND entry_type = 'music'",
+                params![entry_id, now],
+            )
+            .map_err(|e| format!("Failed to mark entry reviewed: {e}"))?
+            > 0;
+        if !is_music {
+            continue;
+        }
+        match level {
+            Some(level) => conn.execute(
+                "INSERT INTO library_entry_moods (library_entry_id, mood, user_level)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT (library_entry_id, mood) DO UPDATE SET user_level = excluded.user_level",
+                params![entry_id, mood.as_db_str(), level],
+            ),
+            // No row means no user level already; never insert an empty one.
+            None => conn.execute(
+                "UPDATE library_entry_moods SET user_level = NULL WHERE library_entry_id = ?1 AND mood = ?2",
+                params![entry_id, mood.as_db_str()],
+            ),
+        }
+        .map_err(|e| format!("Failed to set mood level: {e}"))?;
     }
-    tx.commit().map_err(|e| format!("Failed to commit pool transaction: {e}"))?;
+    tx.commit().map_err(|e| format!("Failed to commit mood transaction: {e}"))?;
     Ok(())
 }
 
-/// Approves a music entry in Review, in one transaction: the pool shown
-/// (`pool_user`, else `pool_auto`) becomes the user's, so does the role shown
-/// (`role_user`, else `role_auto`), and the entry is marked reviewed now.
-/// A facet with nothing shown stays empty. Returns whether the user's role
-/// changed (a new training example); a missing or ambiance entry is left
-/// alone and returns false.
+/// Approves a music entry in Review, in one transaction: the role shown
+/// (`role_user`, else `role_auto`) becomes the user's, and the entry is
+/// marked reviewed now. Mood suggestions are not copied into user levels: a
+/// bar the user did not touch stays the analyzer's. Returns whether the
+/// user's role changed (a new training example); a missing or ambiance entry
+/// is left alone and returns false.
 pub fn approve_entry_review(conn: &Connection, entry_id: &str) -> Result<bool, String> {
     let tx = conn
         .unchecked_transaction()
@@ -985,9 +1019,8 @@ pub fn approve_entry_review(conn: &Connection, entry_id: &str) -> Result<bool, S
     };
     conn.execute(
         "UPDATE library_entries
-         SET pool_user = COALESCE(pool_user, pool_auto),
-             role_user = COALESCE(role_user, role_auto),
-             pool_reviewed_at = ?2
+         SET role_user = COALESCE(role_user, role_auto),
+             mood_reviewed_at = ?2
          WHERE id = ?1",
         params![entry_id, now_millis()],
     )
@@ -996,43 +1029,24 @@ pub fn approve_entry_review(conn: &Connection, entry_id: &str) -> Result<bool, S
     Ok(role_user.is_none() && role_auto.is_some())
 }
 
-/// Writes the analyzer's pool suggestion for an entry (`None` clears it) and
-/// returns whether the row changed. Only `pool_auto`, `pool_auto_p` and
-/// `pool_auto_runner` are written; the user's pool and review time are never
-/// touched. Opens no transaction of its own.
-pub fn apply_auto_pool(
-    conn: &Connection,
-    entry_id: &str,
-    suggestion: Option<PoolSuggestion>,
-) -> Result<bool, String> {
-    let current: Option<(Option<String>, Option<f64>, Option<String>)> = conn
-        .query_row(
-            "SELECT pool_auto, pool_auto_p, pool_auto_runner FROM library_entries WHERE id = ?1",
-            params![entry_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+/// Writes the analyzer's 0..1 value of each given mood for an entry. Only
+/// `auto_score` is written; the user's levels and review time are never
+/// touched. The caller checks the entry is music. Opens no transaction of
+/// its own.
+pub fn apply_auto_moods(conn: &Connection, entry_id: &str, scores: &[(MoodId, f64)]) -> Result<(), String> {
+    for (mood, score) in scores {
+        conn.execute(
+            "INSERT INTO library_entry_moods (library_entry_id, mood, auto_score)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT (library_entry_id, mood) DO UPDATE SET auto_score = excluded.auto_score",
+            params![entry_id, mood.as_db_str(), score],
         )
-        .optional()
-        .map_err(|e| format!("Failed to read pool: {e}"))?;
-    let Some(current) = current else {
-        return Ok(false);
-    };
-    let new = (
-        suggestion.map(|s| s.pool.as_db_str().to_string()),
-        suggestion.map(|s| s.p),
-        suggestion.map(|s| s.runner.as_db_str().to_string()),
-    );
-    if current == new {
-        return Ok(false);
+        .map_err(|e| format!("Failed to write auto mood: {e}"))?;
     }
-    conn.execute(
-        "UPDATE library_entries SET pool_auto = ?2, pool_auto_p = ?3, pool_auto_runner = ?4 WHERE id = ?1",
-        params![entry_id, new.0, new.1, new.2],
-    )
-    .map_err(|e| format!("Failed to write auto pool: {e}"))?;
-    Ok(true)
+    Ok(())
 }
 
-/// Returns the names of the tags the given library entry shows, sorted.
+// Returns the names of the tags the given library entry shows, sorted.
 #[cfg(test)]
 pub fn get_tags_for_entry(
     conn: &Connection,
@@ -1974,28 +1988,31 @@ mod tests {
         assert_eq!(role_row(&conn, &a), (None, None, None));
     }
 
-    // ── Pools ─────────────────────────────────────────────────────────────────
+    // ── Moods ─────────────────────────────────────────────────────────────────
 
-    /// (pool_auto, pool_auto_p, pool_auto_runner) as stored.
-    type PoolAuto = (Option<String>, Option<f64>, Option<String>);
-
-    fn pool_auto(conn: &Connection, id: &str) -> PoolAuto {
+    /// (auto_score, user_level) of one mood as stored; `None` without a row.
+    fn mood_row(conn: &Connection, id: &str, mood: MoodId) -> Option<(Option<f64>, Option<f64>)> {
         conn.query_row(
-            "SELECT pool_auto, pool_auto_p, pool_auto_runner FROM library_entries WHERE id = ?1",
+            "SELECT auto_score, user_level FROM library_entry_moods WHERE library_entry_id = ?1 AND mood = ?2",
+            params![id, mood.as_db_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .unwrap()
+    }
+
+    fn mood_rows(conn: &Connection, id: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM library_entry_moods WHERE library_entry_id = ?1",
             params![id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| r.get(0),
         )
         .unwrap()
     }
 
-    /// (pool_user, pool_reviewed_at) as stored.
-    fn pool_user(conn: &Connection, id: &str) -> (Option<String>, Option<String>) {
-        conn.query_row(
-            "SELECT pool_user, pool_reviewed_at FROM library_entries WHERE id = ?1",
-            params![id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap()
+    fn reviewed_at(conn: &Connection, id: &str) -> Option<String> {
+        conn.query_row("SELECT mood_reviewed_at FROM library_entries WHERE id = ?1", params![id], |r| r.get(0))
+            .unwrap()
     }
 
     fn role_user_of(conn: &Connection, id: &str) -> Option<String> {
@@ -2003,114 +2020,147 @@ mod tests {
             .unwrap()
     }
 
-    fn suggestion(pool: Pool, p: f64, runner: Pool) -> PoolSuggestion {
-        PoolSuggestion { pool, p, runner }
+    /// Every id at `v`.
+    fn all_moods(v: f64) -> Vec<(MoodId, f64)> {
+        MoodId::ALL.iter().map(|m| (*m, v)).collect()
     }
 
     #[test]
-    fn user_pool_sets_review_time_and_clears_to_suggestion() {
+    fn user_mood_level_sets_review_time_and_clears_to_suggestion() {
         let conn = open_memory_db();
         let a = music_entry(&conn, "/a.mp3");
         let b = music_entry(&conn, "/b.mp3");
         let amb = insert_library_entry(&conn, "/r.ogg", None, "R", None, None, None, "ambiance").unwrap();
-        apply_auto_pool(&conn, &a, Some(suggestion(Pool::Heroic, 0.8, Pool::Awe))).unwrap();
+        apply_auto_moods(&conn, &a, &all_moods(0.6)).unwrap();
 
         let before = now_millis().parse::<u128>().unwrap();
-        set_user_pool(&conn, &[a.clone(), b.clone(), amb.clone()], Some(Pool::Menacing)).unwrap();
-        let (pool, reviewed) = pool_user(&conn, &a);
-        assert_eq!(pool, s("menacing"));
-        assert!(reviewed.unwrap().parse::<u128>().unwrap() >= before);
-        assert_eq!(pool_user(&conn, &b).0, s("menacing"));
-        // Ambiance has no pool.
-        assert_eq!(pool_user(&conn, &amb), (None, None));
-        // The suggestion is untouched.
-        assert_eq!(pool_auto(&conn, &a), (s("heroic"), Some(0.8), s("awe")));
+        set_user_mood_level(&conn, &[a.clone(), b.clone(), amb.clone(), "nope".into()], MoodId::Grim, Some(0.75))
+            .unwrap();
+        assert_eq!(mood_row(&conn, &a, MoodId::Grim), Some((Some(0.6), Some(0.75))));
+        assert!(reviewed_at(&conn, &a).unwrap().parse::<u128>().unwrap() >= before);
+        // An entry without analyzer values gets a row with the level only.
+        assert_eq!(mood_row(&conn, &b, MoodId::Grim), Some((None, Some(0.75))));
+        assert_eq!(mood_rows(&conn, &b), 1);
+        assert!(reviewed_at(&conn, &b).is_some());
+        // Ambiance has no moods.
+        assert_eq!(mood_rows(&conn, &amb), 0);
+        assert_eq!(reviewed_at(&conn, &amb), None);
+        // Other moods are untouched.
+        assert_eq!(mood_row(&conn, &a, MoodId::Heroic), Some((Some(0.6), None)));
 
         // `None` goes back to the suggestion; the entry stays reviewed.
-        set_user_pool(&conn, std::slice::from_ref(&a), None).unwrap();
-        let (pool, reviewed) = pool_user(&conn, &a);
-        assert_eq!(pool, None);
-        assert!(reviewed.is_some());
-        assert_eq!(pool_user(&conn, &b).0, s("menacing"));
+        set_user_mood_level(&conn, std::slice::from_ref(&a), MoodId::Grim, None).unwrap();
+        assert_eq!(mood_row(&conn, &a, MoodId::Grim), Some((Some(0.6), None)));
+        assert!(reviewed_at(&conn, &a).is_some());
+        assert_eq!(mood_row(&conn, &b, MoodId::Grim), Some((None, Some(0.75))));
+        // Clearing a mood with no row adds none.
+        set_user_mood_level(&conn, std::slice::from_ref(&b), MoodId::Quirky, None).unwrap();
+        assert_eq!(mood_row(&conn, &b, MoodId::Quirky), None);
     }
 
     #[test]
-    fn apply_auto_pool_writes_only_the_analyzer_layer() {
+    fn user_mood_level_takes_only_the_five_levels() {
         let conn = open_memory_db();
         let a = music_entry(&conn, "/a.mp3");
-        set_user_pool(&conn, std::slice::from_ref(&a), Some(Pool::Somber)).unwrap();
-        let user_before = pool_user(&conn, &a);
-
-        let first = suggestion(Pool::Mysterious, 0.62, Pool::Heroic);
-        assert!(apply_auto_pool(&conn, &a, Some(first)).unwrap());
-        assert_eq!(pool_auto(&conn, &a), (s("mysterious"), Some(0.62), s("heroic")));
-        assert!(!apply_auto_pool(&conn, &a, Some(first)).unwrap());
-        // Any one field moving is a change.
-        assert!(apply_auto_pool(&conn, &a, Some(PoolSuggestion { p: 0.63, ..first })).unwrap());
-        assert!(apply_auto_pool(&conn, &a, Some(PoolSuggestion { runner: Pool::Awe, ..first })).unwrap());
-        assert_eq!(pool_auto(&conn, &a), (s("mysterious"), Some(0.62), s("awe")));
-
-        assert!(apply_auto_pool(&conn, &a, None).unwrap());
-        assert_eq!(pool_auto(&conn, &a), (None, None, None));
-        // The user's pool and review time are never touched.
-        assert_eq!(pool_user(&conn, &a), user_before);
-        assert!(!apply_auto_pool(&conn, "nope", Some(first)).unwrap());
+        for level in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            set_user_mood_level(&conn, std::slice::from_ref(&a), MoodId::Energy, Some(level)).unwrap();
+            assert_eq!(mood_row(&conn, &a, MoodId::Energy), Some((None, Some(level))));
+        }
+        // Float noise snaps onto the level.
+        set_user_mood_level(&conn, std::slice::from_ref(&a), MoodId::Energy, Some(0.1 + 0.15)).unwrap();
+        assert_eq!(mood_row(&conn, &a, MoodId::Energy), Some((None, Some(0.25))));
+        for bad in [0.3, -0.25, 1.25, f64::NAN] {
+            assert!(set_user_mood_level(&conn, std::slice::from_ref(&a), MoodId::Energy, Some(bad)).is_err());
+        }
+        assert_eq!(mood_row(&conn, &a, MoodId::Energy), Some((None, Some(0.25))));
+        // The table refuses anything else too.
+        assert!(conn
+            .execute(
+                "UPDATE library_entry_moods SET user_level = 0.3 WHERE library_entry_id = ?1",
+                params![a],
+            )
+            .is_err());
     }
 
     #[test]
-    fn approve_keeps_the_shown_pool_and_role() {
+    fn apply_auto_moods_writes_only_the_analyzer_layer() {
         let conn = open_memory_db();
-        // Suggested pool and role only.
+        let a = music_entry(&conn, "/a.mp3");
+        set_user_mood_level(&conn, std::slice::from_ref(&a), MoodId::Peaceful, Some(1.0)).unwrap();
+        let reviewed = reviewed_at(&conn, &a);
+
+        apply_auto_moods(&conn, &a, &all_moods(0.4)).unwrap();
+        assert_eq!(mood_rows(&conn, &a), MoodId::COUNT as i64);
+        assert_eq!(mood_row(&conn, &a, MoodId::Peaceful), Some((Some(0.4), Some(1.0))));
+        apply_auto_moods(&conn, &a, &[(MoodId::Peaceful, 0.9), (MoodId::Energy, 0.1)]).unwrap();
+        assert_eq!(mood_row(&conn, &a, MoodId::Peaceful), Some((Some(0.9), Some(1.0))));
+        assert_eq!(mood_row(&conn, &a, MoodId::Energy), Some((Some(0.1), None)));
+        assert_eq!(mood_row(&conn, &a, MoodId::Grim), Some((Some(0.4), None)));
+        // The user's levels and review time are never touched.
+        assert_eq!(reviewed_at(&conn, &a), reviewed);
+    }
+
+    #[test]
+    fn approve_keeps_the_shown_role_and_leaves_moods_alone() {
+        let conn = open_memory_db();
+        // Suggested role and moods only.
         let auto = music_entry(&conn, "/a.mp3");
-        apply_auto_pool(&conn, &auto, Some(suggestion(Pool::Heroic, 0.9, Pool::Awe))).unwrap();
+        apply_auto_moods(&conn, &auto, &all_moods(0.7)).unwrap();
         apply_auto_role(&conn, &auto, Some(Role::Combat), 0.8).unwrap();
         assert!(approve_entry_review(&conn, &auto).unwrap());
-        assert_eq!(pool_user(&conn, &auto).0, s("heroic"));
-        assert!(pool_user(&conn, &auto).1.is_some());
+        assert!(reviewed_at(&conn, &auto).is_some());
         assert_eq!(role_user_of(&conn, &auto), s("combat"));
+        // An untouched bar stays the analyzer's.
+        for mood in MoodId::ALL {
+            assert_eq!(mood_row(&conn, &auto, mood), Some((Some(0.7), None)));
+        }
 
-        // The user's own pool and role win over the suggestion.
+        // The user's own role wins over the suggestion.
         let user = music_entry(&conn, "/b.mp3");
-        apply_auto_pool(&conn, &user, Some(suggestion(Pool::Heroic, 0.9, Pool::Awe))).unwrap();
         apply_auto_role(&conn, &user, Some(Role::Combat), 0.8).unwrap();
         set_user_role(&conn, std::slice::from_ref(&user), Some(Role::NonCombat)).unwrap();
-        conn.execute("UPDATE library_entries SET pool_user = 'menacing' WHERE id = ?1", params![user]).unwrap();
         assert!(!approve_entry_review(&conn, &user).unwrap());
-        assert_eq!(pool_user(&conn, &user).0, s("menacing"));
         assert_eq!(role_user_of(&conn, &user), s("non_combat"));
 
         // Nothing shown: nothing set, but the entry is reviewed.
         let bare = music_entry(&conn, "/c.mp3");
         assert!(!approve_entry_review(&conn, &bare).unwrap());
-        assert_eq!(pool_user(&conn, &bare).0, None);
-        assert!(pool_user(&conn, &bare).1.is_some());
+        assert!(reviewed_at(&conn, &bare).is_some());
         assert_eq!(role_user_of(&conn, &bare), None);
+        assert_eq!(mood_rows(&conn, &bare), 0);
 
         // Ambiance and missing entries are left alone.
         let amb = insert_library_entry(&conn, "/r.ogg", None, "R", None, None, None, "ambiance").unwrap();
         assert!(!approve_entry_review(&conn, &amb).unwrap());
-        assert_eq!(pool_user(&conn, &amb), (None, None));
+        assert_eq!(reviewed_at(&conn, &amb), None);
         assert!(!approve_entry_review(&conn, "nope").unwrap());
     }
 
     #[test]
-    fn switching_to_ambiance_clears_pool() {
+    fn switching_to_ambiance_deletes_moods() {
         let conn = open_memory_db();
-        let auto = music_entry(&conn, "/a.mp3");
-        let user = music_entry(&conn, "/b.mp3");
-        for id in [&auto, &user] {
-            apply_auto_pool(&conn, id, Some(suggestion(Pool::Awe, 0.5, Pool::Peaceful))).unwrap();
-        }
-        set_user_pool(&conn, std::slice::from_ref(&user), Some(Pool::Somber)).unwrap();
-
-        for id in [&auto, &user] {
-            update_library_entry_type(&conn, id, "ambiance").unwrap();
+        let a = music_entry(&conn, "/a.mp3");
+        let other = music_entry(&conn, "/b.mp3");
+        for id in [&a, &other] {
+            apply_auto_moods(&conn, id, &all_moods(0.5)).unwrap();
+            set_user_mood_level(&conn, std::slice::from_ref(id), MoodId::Wondrous, Some(0.25)).unwrap();
         }
 
-        for id in [&auto, &user] {
-            assert_eq!(pool_auto(&conn, id), (None, None, None));
-            assert_eq!(pool_user(&conn, id), (None, None));
-        }
+        update_library_entry_type(&conn, &a, "ambiance").unwrap();
+
+        assert_eq!(mood_rows(&conn, &a), 0);
+        assert_eq!(reviewed_at(&conn, &a), None);
+        assert_eq!(mood_rows(&conn, &other), MoodId::COUNT as i64);
+    }
+
+    #[test]
+    fn deleting_an_entry_deletes_its_moods() {
+        let conn = open_memory_db();
+        let a = music_entry(&conn, "/a.mp3");
+        apply_auto_moods(&conn, &a, &all_moods(0.5)).unwrap();
+        delete_library_entry(&conn, &a).unwrap();
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM library_entry_moods", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0);
     }
 
 }

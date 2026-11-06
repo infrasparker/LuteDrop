@@ -3,7 +3,7 @@ use tauri::State;
 use std::sync::Arc;
 use crate::actions;
 use crate::models::{
-    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, Pool,
+    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodId,
     Role, SceneConfig, TrackUpdates, VibeHit, VibePoint,
 };
 use crate::state::AppStateContainer;
@@ -307,12 +307,13 @@ pub fn keep_auto_role(
 }
 
 #[tauri::command]
-pub fn set_entry_pool(
+pub fn set_entry_mood_level(
     state: State<'_, Arc<AppStateContainer>>,
     entry_ids: Vec<String>,
-    pool: Option<Pool>,
+    mood: MoodId,
+    level: Option<f64>,
 ) -> Result<AppState, String> {
-    actions::set_entry_pool(&state, entry_ids, pool)
+    actions::set_entry_mood_level(&state, entry_ids, mood, level)
 }
 
 #[tauri::command]

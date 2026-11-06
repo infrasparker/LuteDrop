@@ -11,7 +11,7 @@ use crate::database::settings::{self as broadcast_settings, BroadcastSettings};
 use crate::database::settings as autotag_settings;
 use crate::models::{
     AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
-    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, Pool, Role, SceneConfig, Track, TrackUpdates, VibeHit,
+    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodId, Role, SceneConfig, Track, TrackUpdates, VibeHit,
     VibePoint,
 };
 use crate::relink;
@@ -423,19 +423,21 @@ pub fn set_entry_role(
     Ok(state)
 }
 
-/// Sets the user's pool on the given music entries (`None` goes back to the
-/// analyzer's suggestion) and marks each one reviewed now. No re-score: pools
-/// do not train anything yet (learned pool heads are a later release).
-pub fn set_entry_pool(
+/// Sets the user's level of one mood on the given music entries (`None` goes
+/// back to the analyzer's suggestion) and marks each one reviewed now. The
+/// level must be 0, 0.25, 0.5, 0.75 or 1. No re-score: levels do not train
+/// anything yet (learned mood heads are a later release).
+pub fn set_entry_mood_level(
     container: &AppStateContainer,
     entry_ids: Vec<String>,
-    pool: Option<Pool>,
+    mood: MoodId,
+    level: Option<f64>,
 ) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| library::set_user_pool(conn, &entry_ids, pool))
+    mutate_and_reload(container, |conn| library::set_user_mood_level(conn, &entry_ids, mood, level))
 }
 
-/// Approves one entry in Review: its shown pool and role become the user's
-/// and it is marked reviewed, atomically. Re-scores when that gave the entry
+/// Approves one entry in Review: its shown role becomes the user's and it is
+/// marked reviewed, atomically. Mood suggestions stay suggestions. Re-scores when that gave the entry
 /// a user role, since user roles train the Combat gate.
 pub fn approve_entry_review(container: &AppStateContainer, entry_id: &str) -> Result<AppState, String> {
     let role_changed = with_db(container, |conn| library::approve_entry_review(conn, entry_id))?;

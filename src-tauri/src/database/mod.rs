@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::models::{
     AnalysisStatus, AppState, AutoTag, Clip, Comp, Configuration, EntryAnalysis, EntryType, Group,
-    LibraryEntry, Pool, Role, Track, TrackMode, TrackTransition,
+    LibraryEntry, MoodId, MoodValue, Role, Track, TrackMode, TrackTransition,
 };
 
 /// Current schema version. Bump when adding a migration below; fresh
@@ -420,40 +420,67 @@ fn migrate_v10_to_v11(conn: &Connection) -> SqlResult<()> {
     )
 }
 
-/// Drops the three mood scales and moves to the eight-pool vocabulary (spec
-/// "Mood pools and the Review board", Revision 2026-11-05). Runs inside the
-/// migration runner's transaction.
+/// The mood profile table (schema v12), shared by init_schema (fresh DBs)
+/// and the v11→v12 migration. One row per (entry, mood) that has either
+/// layer: the analyzer's 0..1 value and the user's level, one of five.
+const LIBRARY_ENTRY_MOODS_DDL: &str = "
+    CREATE TABLE IF NOT EXISTS library_entry_moods (
+        library_entry_id TEXT NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,
+        mood             TEXT NOT NULL,
+        auto_score       REAL,
+        user_level       REAL,
+        PRIMARY KEY (library_entry_id, mood),
+        CHECK (user_level IS NULL OR user_level IN (0, 0.25, 0.5, 0.75, 1.0))
+    );
+";
+
+/// The analyzer's and user's pool columns schema v12 drops.
+const V11_POOL_COLUMNS: [&str; 4] = ["pool_auto", "pool_auto_p", "pool_auto_runner", "pool_user"];
+
+/// The mood scale columns (Bright ↔ Dark, Intimate ↔ Grand, Calm ↔
+/// Energetic; analyzer and user) schema v12 drops if they are still there.
+const V11_SCALE_COLUMNS: [&str; 6] = [
+    "mood_bright",
+    "mood_bright_user",
+    "mood_grand",
+    "mood_grand_user",
+    "mood_energy",
+    "mood_energy_user",
+];
+
+/// True if `table` has a column named `column`.
+fn column_exists(conn: &Connection, table: &str, column: &str) -> SqlResult<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
+        params![table, column],
+        |row| row.get(0),
+    )
+}
+
+/// Replaces mood pools (and the scales) with the mood profile (spec "Moods:
+/// lenses and the mood profile"). Runs inside the migration runner's
+/// transaction.
 ///
-/// - The scales (Bright ↔ Dark, Intimate ↔ Grand, Calm ↔ Energetic) go: the
-///   analyzer's z-scores and the user's steps, all six columns.
-/// - The user's retired pools map onto the new ones: Lighthearted becomes
-///   Cheerful, Epic becomes Heroic and Tense becomes Menacing. Every other
-///   user pool, and every review time, is kept.
-/// - The analyzer's suggestions (pool, probability, runner-up) are cleared
-///   for every entry: with a new set of pools the softmax behind them no
-///   longer holds. So is the pool calibration, which the next run that
-///   covers enough music takes again with all eight pools, and so are the
-///   stored scores, so the next run re-scores every entry.
+/// - New table `library_entry_moods`: per entry and mood, the analyzer's
+///   0..1 value and the user's level. It starts empty: a confirmed pool is
+///   not a level, so nothing carries over.
+/// - The pool columns go (suggestion, probability, runner-up, the user's
+///   pool), and so do the six scale columns where still present.
+/// - `pool_reviewed_at` is kept, renamed `mood_reviewed_at`, so reviewed
+///   entries stay out of the Review queue.
+/// - The pool calibration is deleted and the stored scores are cleared, so
+///   the next run scores moods and takes a new calibration.
 /// - Role and tags are untouched. The pre-migration backup keeps everything
 ///   dropped here.
 fn migrate_v11_to_v12(conn: &Connection) -> SqlResult<()> {
+    conn.execute_batch(LIBRARY_ENTRY_MOODS_DDL)?;
+    for column in V11_POOL_COLUMNS.into_iter().chain(V11_SCALE_COLUMNS) {
+        if column_exists(conn, "library_entries", column)? {
+            conn.execute_batch(&format!("ALTER TABLE library_entries DROP COLUMN {column}"))?;
+        }
+    }
     conn.execute_batch(
-        "ALTER TABLE library_entries DROP COLUMN mood_bright;
-         ALTER TABLE library_entries DROP COLUMN mood_bright_user;
-         ALTER TABLE library_entries DROP COLUMN mood_grand;
-         ALTER TABLE library_entries DROP COLUMN mood_grand_user;
-         ALTER TABLE library_entries DROP COLUMN mood_energy;
-         ALTER TABLE library_entries DROP COLUMN mood_energy_user;
-
-         UPDATE library_entries SET pool_user = CASE pool_user
-                 WHEN 'lighthearted' THEN 'cheerful'
-                 WHEN 'epic'         THEN 'heroic'
-                 WHEN 'tension'      THEN 'menacing'
-             END
-         WHERE pool_user IN ('lighthearted', 'epic', 'tension');
-
-         UPDATE library_entries
-         SET pool_auto = NULL, pool_auto_p = NULL, pool_auto_runner = NULL;
+        "ALTER TABLE library_entries RENAME COLUMN pool_reviewed_at TO mood_reviewed_at;
 
          DELETE FROM meta WHERE key = 'pool_calibration';
 
@@ -461,7 +488,7 @@ fn migrate_v11_to_v12(conn: &Connection) -> SqlResult<()> {
     )
 }
 
-/// Ordered migrations: entry `(n, f)` upgrades version n → n+1.
+// Ordered migrations: entry `(n, f)` upgrades version n → n+1.
 const MIGRATIONS: &[(i64, Migration)] = &[
     (3, migrate_v3_to_v4),
     (4, migrate_v4_to_v5),
@@ -547,8 +574,8 @@ pub fn open_db(path: &Path) -> Result<Connection, String> {
     // Migrations rewrite the user's library (v7 cleans up their tags, v8
     // splits every facet and tag into auto and user layers, v9 drops the old
     // Light/Heavy and pace values, v10 folds the `driving` tag into
-    // Calm ↔ Energetic, v11 drops the dark kind, v12 drops the mood scales and
-    // remaps pools), so an existing database behind the current schema is copied first, before anything changes it. No copy,
+    // Calm ↔ Energetic, v11 drops the dark kind, v12 drops the pools and the
+    // mood scales), so an existing database behind the current schema is copied first, before anything changes it. No copy,
     // no migration.
     if !fresh {
         let on_disk = match read_schema_version(&conn) {
@@ -609,11 +636,7 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
             role_auto        TEXT,
             role_auto_score  REAL,
             role_user        TEXT,
-            pool_auto        TEXT,
-            pool_auto_p      REAL,
-            pool_auto_runner TEXT,
-            pool_user        TEXT,
-            pool_reviewed_at TEXT
+            mood_reviewed_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS tags (
@@ -669,6 +692,7 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
         "CREATE TABLE IF NOT EXISTS library_entry_tags ({LIBRARY_ENTRY_TAGS_V8_COLUMNS});"
     ))?;
     conn.execute_batch(ENTRY_ANALYSIS_DDL)?;
+    conn.execute_batch(LIBRARY_ENTRY_MOODS_DDL)?;
     conn.execute_batch(INDEX_DDL)
 }
 
@@ -787,8 +811,7 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
         .prepare(
             "SELECT id, file_path, content_hash, name, duration, sample_rate, file_size,
                     volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type,
-                    role_auto, role_auto_score, role_user,
-                    pool_auto, pool_auto_p, pool_auto_runner, pool_user, pool_reviewed_at
+                    role_auto, role_auto_score, role_user, mood_reviewed_at
              FROM library_entries
              ORDER BY name ASC",
         )
@@ -816,13 +839,7 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
                     row.get::<_, Option<f64>>(15)?,    // role_auto_score
                     row.get::<_, Option<String>>(16)?, // role_user
                 ),
-                (
-                    row.get::<_, Option<String>>(17)?, // pool_auto
-                    row.get::<_, Option<f64>>(18)?,    // pool_auto_p
-                    row.get::<_, Option<String>>(19)?, // pool_auto_runner
-                    row.get::<_, Option<String>>(20)?, // pool_user
-                    row.get::<_, Option<String>>(21)?, // pool_reviewed_at
-                ),
+                row.get::<_, Option<String>>(17)?, // mood_reviewed_at
             ))
         })
         .map_err(|e| format!("Failed to query library_entries: {e}"))?
@@ -898,19 +915,50 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
         }
     }
 
+    // Mood rows per entry: (auto_score, user_level) by mood. Rows with an
+    // id outside the vocabulary are ignored.
+    type MoodLayers = HashMap<MoodId, (Option<f64>, Option<f64>)>;
+    let mut mood_map: HashMap<String, MoodLayers> = HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT library_entry_id, mood, auto_score, user_level FROM library_entry_moods")
+            .map_err(|e| format!("Failed to prepare mood query: {e}"))?;
+        let mood_rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<f64>>(2)?,
+                    row.get::<_, Option<f64>>(3)?,
+                ))
+            })
+            .map_err(|e| format!("Failed to query moods: {e}"))?;
+        for row in mood_rows {
+            let (entry_id, mood, auto, user) = row.map_err(|e| format!("Failed to read mood row: {e}"))?;
+            if let Some(mood) = MoodId::from_db_str(&mood) {
+                mood_map.entry(entry_id).or_default().insert(mood, (auto, user));
+            }
+        }
+    }
+
     let mut entries = Vec::with_capacity(rows.len());
     for (id, file_path, content_hash, name, duration, sample_rate, file_size,
          volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type,
-         (role_auto, role_auto_score, role_user),
-         (pool_auto, pool_auto_p, pool_auto_runner, pool_user, pool_reviewed_at))
+         (role_auto, role_auto_score, role_user), mood_reviewed_at)
         in rows
     {
         let tags = tag_map.remove(&id).unwrap_or_default();
         let analysis = analysis_map.remove(&id);
         let role_auto = role_auto.as_deref().and_then(Role::from_db_str);
         let role_user = role_user.as_deref().and_then(Role::from_db_str);
-        let pool = |s: Option<String>| s.as_deref().and_then(Pool::from_db_str);
-        let pool_auto = pool(pool_auto);
+        let stored = mood_map.remove(&id).unwrap_or_default();
+        let moods = MoodId::ALL
+            .iter()
+            .map(|&mood| {
+                let (auto, user) = stored.get(&mood).copied().unwrap_or((None, None));
+                MoodValue { mood, auto, user }
+            })
+            .collect();
         entries.push(LibraryEntry {
             id,
             file_path,
@@ -935,12 +983,8 @@ fn load_library_entries(conn: &Connection) -> Result<Vec<LibraryEntry>, String> 
             // A score without a role says nothing the UI can show.
             role_auto_score: role_auto.and(role_auto_score),
             role_user,
-            pool_auto,
-            // A probability or runner-up without a suggestion says nothing.
-            pool_auto_p: pool_auto.and(pool_auto_p),
-            pool_auto_runner: pool_auto.and(pool(pool_auto_runner)),
-            pool_user: pool(pool_user),
-            pool_reviewed_at,
+            moods,
+            mood_reviewed_at,
         });
     }
 
@@ -1402,6 +1446,7 @@ mod tests {
             "comps",
             "tracks",
             "clips",
+            "library_entry_moods",
         ];
 
         for table in &expected_tables {
@@ -1686,26 +1731,25 @@ mod tests {
         conn.prepare(&format!("SELECT {column} FROM {table}")).is_ok()
     }
 
-    /// The pool columns schema v11 adds to `library_entries`.
-    const V11_POOL_COLUMNS: [&str; 5] =
+    /// The pool columns schema v11 adds to `library_entries` (v12 drops the
+    /// first four and renames the review time).
+    const V11_ALL_POOL_COLUMNS: [&str; 5] =
         ["pool_auto", "pool_auto_p", "pool_auto_runner", "pool_user", "pool_reviewed_at"];
 
     /// The mood scale columns schema v12 drops from `library_entries`.
-    const V11_MOOD_COLUMNS: [&str; 6] = [
-        "mood_bright",
-        "mood_bright_user",
-        "mood_grand",
-        "mood_grand_user",
-        "mood_energy",
-        "mood_energy_user",
-    ];
+    const V11_MOOD_COLUMNS: [&str; 6] = V11_SCALE_COLUMNS;
 
-    /// Turns a database `init_schema` just built into the v11 shape of
-    /// `library_entries`: the three mood scales, auto and user, beside the
-    /// pools.
+    /// Turns a database `init_schema` just built into the v11 shape: the
+    /// three mood scales, auto and user, beside the pools, and no mood table.
     fn make_v11_shape(conn: &Connection) {
         conn.execute_batch(
-            "ALTER TABLE library_entries ADD COLUMN mood_bright REAL;
+            "DROP TABLE library_entry_moods;
+             ALTER TABLE library_entries RENAME COLUMN mood_reviewed_at TO pool_reviewed_at;
+             ALTER TABLE library_entries ADD COLUMN pool_auto TEXT;
+             ALTER TABLE library_entries ADD COLUMN pool_auto_p REAL;
+             ALTER TABLE library_entries ADD COLUMN pool_auto_runner TEXT;
+             ALTER TABLE library_entries ADD COLUMN pool_user TEXT;
+             ALTER TABLE library_entries ADD COLUMN mood_bright REAL;
              ALTER TABLE library_entries ADD COLUMN mood_bright_user TEXT;
              ALTER TABLE library_entries ADD COLUMN mood_grand REAL;
              ALTER TABLE library_entries ADD COLUMN mood_grand_user TEXT;
@@ -1719,7 +1763,7 @@ mod tests {
     /// `library_entries`: mood scales and dark kind columns, no pool columns.
     fn make_v10_shape(conn: &Connection) {
         make_v11_shape(conn);
-        for column in V11_POOL_COLUMNS {
+        for column in V11_ALL_POOL_COLUMNS {
             conn.execute_batch(&format!("ALTER TABLE library_entries DROP COLUMN {column}"))
                 .unwrap();
         }
@@ -1925,11 +1969,11 @@ mod tests {
         let conn = open_db(&dir.path().join("fresh.db")).unwrap();
         assert_eq!(read_schema_version(&conn), 12);
         conn.prepare(
-            "SELECT role_auto, role_auto_score, role_user,
-                    pool_auto, pool_auto_p, pool_auto_runner, pool_user, pool_reviewed_at
-             FROM library_entries",
+            "SELECT role_auto, role_auto_score, role_user, mood_reviewed_at FROM library_entries",
         )
         .unwrap();
+        conn.prepare("SELECT library_entry_id, mood, auto_score, user_level FROM library_entry_moods")
+            .unwrap();
         for old in [
             "role", "role_source", "role_score", "pace", "pace_source", "pace_score",
             "pace_auto", "pace_auto_score", "pace_user", "mood_light", "mood_light_user",
@@ -1937,6 +1981,7 @@ mod tests {
         ]
         .into_iter()
         .chain(V11_MOOD_COLUMNS)
+        .chain(V11_ALL_POOL_COLUMNS)
         {
             assert!(!has_column(&conn, "library_entries", old), "{old} should be gone");
         }
@@ -2652,7 +2697,8 @@ mod tests {
         ensure_test_config(&conn);
         let state = load_full_state(&conn).unwrap();
         let yes = state.library_entries.iter().find(|e| e.id == "YES").unwrap();
-        assert_eq!((yes.pool_auto, yes.pool_user, yes.pool_reviewed_at.as_deref()), (None, None, None));
+        assert!(yes.moods.iter().all(|m| m.auto.is_none() && m.user.is_none()));
+        assert_eq!(yes.mood_reviewed_at, None);
         let scores: i64 = conn
             .query_row("SELECT COUNT(*) FROM entry_analysis WHERE scores_json IS NOT NULL", [], |r| r.get(0))
             .unwrap();
@@ -2734,13 +2780,22 @@ mod tests {
             assert_eq!(moods("N"), (Some(0.5), None, Some(-0.2), None, Some(1.3), None));
         }
 
+        // At v11 the pool columns exist and start empty. v12 drops them, so
+        // check on a copy walked to v11.
+        {
+            let v11 = migrated_copy(&path, 11);
+            for column in V11_ALL_POOL_COLUMNS {
+                let set: i64 = v11
+                    .query_row(&format!("SELECT COUNT({column}) FROM library_entries"), [], |r| r.get(0))
+                    .unwrap();
+                assert_eq!(set, 0, "{column} should start empty");
+            }
+        }
+
         let conn = open_db(&path).unwrap();
         assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
 
-        // The pool columns exist; the dark kind columns are gone.
-        for column in V11_POOL_COLUMNS {
-            assert!(has_column(&conn, "library_entries", column), "{column} should exist");
-        }
+        // The dark kind columns are gone.
         for old in ["mood_sad", "mood_scary", "dark_kind_user"] {
             assert!(!has_column(&conn, "library_entries", old), "{old} should be gone");
         }
@@ -2751,20 +2806,18 @@ mod tests {
         // The role survives.
         assert_eq!((m.role_auto, m.role_user), (Some(Role::Combat), Some(Role::NonCombat)));
         let n = state.library_entries.iter().find(|e| e.id == "N").unwrap();
-        // Nothing carries into pools.
+        // Nothing carries into moods.
         for e in [m, n] {
-            assert_eq!(
-                (e.pool_auto, e.pool_auto_p, e.pool_auto_runner, e.pool_user, e.pool_reviewed_at.as_deref()),
-                (None, None, None, None, None)
-            );
+            assert!(e.moods.iter().all(|m| m.auto.is_none() && m.user.is_none()));
+            assert_eq!(e.mood_reviewed_at, None);
         }
-        // Stored scores are cleared so the next run scores pools; no
+        // Stored scores are cleared so the next run scores moods; no
         // calibration exists yet.
         let scores: i64 = conn
             .query_row("SELECT COUNT(*) FROM entry_analysis WHERE scores_json IS NOT NULL", [], |r| r.get(0))
             .unwrap();
         assert_eq!(scores, 0);
-        assert_eq!(settings::load_pool_calibration(&conn).unwrap(), None);
+        assert_eq!(settings::load_mood_calibration(&conn).unwrap(), None);
 
         // A pre-migration copy of the v10 database keeps the dark kind.
         let backups = pre_migration_backups(dir.path(), 10);
@@ -2777,14 +2830,14 @@ mod tests {
         assert_eq!(kind.as_deref(), Some("scary"));
     }
 
-    /// Every data case of the v11 → v12 upgrade: the mood scales go and the
-    /// pools move to the eight-pool vocabulary.
+    /// Every data case of the v11 → v12 upgrade: pools and the mood scales
+    /// go, the mood table arrives empty, and the review time is renamed.
     #[test]
-    fn v11_database_drops_mood_scales_and_remaps_pools() {
+    fn v11_database_moves_from_pools_to_the_mood_table() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("lutedrop.db");
         create_v11_db(&path);
-        const CALIBRATION: &str = r#"{"tracks":40,"pools":{"epic":{"mean":0.2,"sd":0.05}}}"#;
+        const CALIBRATION: &str = r#"{"tracks":64,"pools":{"heroic":{"mean":0.2,"sd":0.05}}}"#;
         {
             let conn = Connection::open(&path).unwrap();
             conn.execute_batch(
@@ -2793,15 +2846,13 @@ mod tests {
                        mood_bright, mood_bright_user, mood_grand, mood_grand_user, mood_energy, mood_energy_user,
                        pool_auto, pool_auto_p, pool_auto_runner, pool_user, pool_reviewed_at) VALUES
                      ('T', '/t.mp3', 'T', '5', 'music', 'combat', 0.9, 'non_combat',
-                       -1.1, 'low', 0.4, 'high', 0.2, 'mid', 'epic', 0.84, 'awe', 'tension', '1700000000001'),
-                     ('L', '/l.mp3', 'L', '6', 'music', NULL, NULL, NULL,
-                       0.5, NULL, -0.2, NULL, 1.3, NULL, 'peaceful', 0.4, 'somber', 'lighthearted', '1700000000002'),
-                     ('E', '/e.mp3', 'E', '7', 'music', NULL, NULL, NULL,
-                       NULL, NULL, NULL, NULL, NULL, NULL, 'lighthearted', 0.5, 'epic', 'epic', '1700000000003'),
+                       -1.1, 'low', 0.4, 'high', 0.2, 'mid', 'heroic', 0.84, 'awe', 'menacing', '1700000000001'),
                      ('K', '/k.mp3', 'K', '8', 'music', NULL, NULL, NULL,
-                       NULL, NULL, NULL, NULL, NULL, NULL, 'somber', 0.7, 'awe', 'somber', '1700000000004'),
+                       NULL, NULL, NULL, NULL, NULL, NULL, 'somber', 0.7, 'awe', NULL, '1700000000004'),
                      ('U', '/u.mp3', 'U', '9', 'music', NULL, NULL, NULL,
-                       NULL, NULL, NULL, NULL, NULL, NULL, 'epic', 0.3, 'mysterious', NULL, NULL);
+                       NULL, NULL, NULL, NULL, NULL, NULL, 'peaceful', 0.3, 'mysterious', NULL, NULL),
+                     ('A', '/a.ogg', 'A', '10', 'ambiance', NULL, NULL, NULL,
+                       NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
                    INSERT INTO tags (id, name) VALUES ('t-folk', 'folk'), ('t-brass', 'brass');
                    INSERT INTO library_entry_tags (library_entry_id, tag_id, auto_score, user_vote) VALUES
                      ('T', 't-folk', NULL, 1), ('T', 't-brass', 0.7, NULL);
@@ -2819,62 +2870,74 @@ mod tests {
         let conn = open_db(&path).unwrap();
         assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
 
-        // The six scale columns are gone; the pool and role columns stay.
-        for column in V11_MOOD_COLUMNS {
+        // The pool and scale columns are gone; the role columns stay, and the
+        // review time is renamed.
+        for column in V11_MOOD_COLUMNS.into_iter().chain(V11_ALL_POOL_COLUMNS) {
             assert!(!has_column(&conn, "library_entries", column), "{column} should be gone");
         }
-        for column in V11_POOL_COLUMNS.into_iter().chain(["role_auto", "role_auto_score", "role_user"]) {
+        for column in ["role_auto", "role_auto_score", "role_user", "mood_reviewed_at"] {
             assert!(has_column(&conn, "library_entries", column), "{column} should exist");
         }
         assert_eq!(index_names(&conn), EXPECTED_INDEXES);
 
-        // The user's pools: (pool_user, pool_reviewed_at) as stored.
-        let user_pool = |id: &str| -> (Option<String>, Option<String>) {
-            conn.query_row(
-                "SELECT pool_user, pool_reviewed_at FROM library_entries WHERE id = ?1",
-                [id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
+        // The mood table has its shape and starts empty: a confirmed pool is
+        // not a level.
+        let columns: Vec<(String, String, bool, i64)> = conn
+            .prepare("SELECT name, type, \"notnull\", pk FROM pragma_table_info('library_entry_moods') ORDER BY cid")
             .unwrap()
-        };
-        let s = |v: &str| Some(v.to_string());
-        // Tense → Menacing, Lighthearted → Cheerful, Epic → Heroic.
-        assert_eq!(user_pool("T"), (s("menacing"), s("1700000000001")));
-        assert_eq!(user_pool("L"), (s("cheerful"), s("1700000000002")));
-        assert_eq!(user_pool("E"), (s("heroic"), s("1700000000003")));
-        // A pool that still exists is kept, and so is "not reviewed".
-        assert_eq!(user_pool("K"), (s("somber"), s("1700000000004")));
-        assert_eq!(user_pool("U"), (None, None));
-
-        // Every suggestion is cleared, whatever its pool.
-        let suggestions: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM library_entries
-                 WHERE pool_auto IS NOT NULL OR pool_auto_p IS NOT NULL OR pool_auto_runner IS NOT NULL",
-                [],
-                |r| r.get(0),
-            )
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
             .unwrap();
-        assert_eq!(suggestions, 0);
+        let col = |n: &str, t: &str, nn: bool, pk: i64| (n.to_string(), t.to_string(), nn, pk);
+        assert_eq!(
+            columns,
+            vec![
+                col("library_entry_id", "TEXT", true, 1),
+                col("mood", "TEXT", true, 2),
+                col("auto_score", "REAL", false, 0),
+                col("user_level", "REAL", false, 0),
+            ]
+        );
+        let rows: i64 = conn.query_row("SELECT COUNT(*) FROM library_entry_moods", [], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 0);
+        // Its level check and cascade work on the migrated database.
+        assert!(conn
+            .execute("INSERT INTO library_entry_moods (library_entry_id, mood, user_level) VALUES ('T', 'grim', 0.3)", [])
+            .is_err());
+        conn.execute("INSERT INTO library_entry_moods (library_entry_id, mood, user_level) VALUES ('U', 'grim', 0.5)", [])
+            .unwrap();
+        library::delete_library_entry(&conn, "U").unwrap();
+        let rows: i64 = conn.query_row("SELECT COUNT(*) FROM library_entry_moods", [], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 0);
 
-        // What the app sees: the mapped pools, and role and tags untouched.
+        // What the app sees: review times kept under the new name, empty
+        // profiles, and role and tags untouched.
         ensure_test_config(&conn);
         let state = load_full_state(&conn).unwrap();
         let entry = |id: &str| state.library_entries.iter().find(|e| e.id == id).unwrap();
         let t = entry("T");
-        assert_eq!((t.pool_user, t.pool_auto, t.pool_auto_p, t.pool_auto_runner), (Some(Pool::Menacing), None, None, None));
+        assert_eq!(t.mood_reviewed_at.as_deref(), Some("1700000000001"));
+        assert_eq!(entry("K").mood_reviewed_at.as_deref(), Some("1700000000004"));
+        assert_eq!(entry("A").mood_reviewed_at, None);
+        for e in [t, entry("K"), entry("A")] {
+            assert_eq!(e.moods.iter().map(|m| m.mood).collect::<Vec<_>>(), MoodId::ALL);
+            assert!(e.moods.iter().all(|m| m.auto.is_none() && m.user.is_none()));
+        }
         assert_eq!(
             (t.role, t.role_auto, t.role_auto_score, t.role_user),
             (Some(Role::NonCombat), Some(Role::Combat), Some(0.9), Some(Role::NonCombat))
         );
         assert_eq!(t.tags, vec!["brass", "folk"]);
         assert_eq!(t.auto_tags, vec![crate::models::AutoTag { tag: "brass".into(), score: 0.7 }]);
-        assert_eq!(entry("L").pool_user, Some(Pool::Cheerful));
-        assert_eq!(entry("E").pool_user, Some(Pool::Heroic));
 
-        // The calibration and the stored scores are cleared, so the next run
-        // re-scores every entry and takes a new eight-pool calibration.
-        assert_eq!(settings::load_pool_calibration(&conn).unwrap(), None);
+        // The pool calibration row and the stored scores are gone, so the
+        // next run scores moods and takes a mood calibration.
+        let calibration: i64 = conn
+            .query_row("SELECT COUNT(*) FROM meta WHERE key = 'pool_calibration'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(calibration, 0);
+        assert_eq!(settings::load_mood_calibration(&conn).unwrap(), None);
         let scores: i64 = conn
             .query_row("SELECT COUNT(*) FROM entry_analysis WHERE scores_json IS NOT NULL", [], |r| r.get(0))
             .unwrap();
@@ -2884,7 +2947,7 @@ mod tests {
             .unwrap();
         assert_eq!(status, "embedded", "the embedding is still good; only scores are redone");
 
-        // A pre-migration copy of the v11 database keeps the scales, the old
+        // A pre-migration copy of the v11 database keeps the scales, the
         // pools and the calibration.
         let backups = pre_migration_backups(dir.path(), 11);
         assert_eq!(backups.len(), 1);
@@ -2897,11 +2960,27 @@ mod tests {
                 Ok((r.get(0)?, r.get(1)?))
             })
             .unwrap();
-        assert_eq!(old, (s("tension"), s("epic")));
+        assert_eq!(old, (Some("menacing".into()), Some("heroic".into())));
         let calibration: String = copy
             .query_row("SELECT value FROM meta WHERE key = 'pool_calibration'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(calibration, CALIBRATION);
+    }
+
+    #[test]
+    fn v12_migration_tolerates_missing_scale_columns() {
+        // "If still present": a v11 database without the scales migrates too.
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        make_v11_shape(&conn);
+        for column in V11_MOOD_COLUMNS {
+            conn.execute_batch(&format!("ALTER TABLE library_entries DROP COLUMN {column}")).unwrap();
+        }
+        conn.execute("INSERT INTO meta (key, value) VALUES ('schema_version', '11')", []).unwrap();
+        run_migrations(&conn).unwrap();
+        assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
+        assert!(has_column(&conn, "library_entries", "mood_reviewed_at"));
+        assert!(table_exists(&conn, "library_entry_moods"));
     }
 
     #[test]
@@ -2911,8 +2990,8 @@ mod tests {
         make_v11_shape(&conn);
         conn.execute_batch(
             "INSERT INTO meta (key, value) VALUES ('schema_version', '11');
-             INSERT INTO library_entries (id, file_path, name, created_at, mood_bright_user)
-               VALUES ('M', '/m.mp3', 'M', '0', 'high');
+             INSERT INTO library_entries (id, file_path, name, created_at, mood_bright_user, pool_user)
+               VALUES ('M', '/m.mp3', 'M', '0', 'high', 'heroic');
              -- An index on the last column v12 drops makes that DROP fail.
              CREATE INDEX idx_in_the_way ON library_entries(mood_energy_user);",
         )
@@ -2921,38 +3000,53 @@ mod tests {
         assert!(run_migrations(&conn).is_err());
 
         assert_eq!(read_schema_version(&conn), 11);
-        for column in V11_MOOD_COLUMNS {
+        for column in V11_MOOD_COLUMNS.into_iter().chain(V11_ALL_POOL_COLUMNS) {
             assert!(has_column(&conn, "library_entries", column), "{column} should be back");
         }
+        assert!(!table_exists(&conn, "library_entry_moods"));
         assert_eq!(mood_bright_user(&conn, "M").as_deref(), Some("high"));
     }
 
     #[test]
-    fn entries_load_pools() {
+    fn entries_load_moods_in_vocabulary_order() {
         let conn = open_memory_db();
         let set = library::insert_library_entry(&conn, "/a.mp3", None, "A", None, None, None, "music").unwrap();
         let unset = library::insert_library_entry(&conn, "/b.mp3", None, "B", None, None, None, "music").unwrap();
-        conn.execute(
-            "UPDATE library_entries
-             SET pool_auto = 'heroic', pool_auto_p = 0.84, pool_auto_runner = 'awe',
-                 pool_user = 'menacing', pool_reviewed_at = '1700000000000'
-             WHERE id = ?1",
-            [&set],
-        )
+        conn.execute_batch(&format!(
+            "INSERT INTO library_entry_moods (library_entry_id, mood, auto_score, user_level) VALUES
+               ('{set}', 'energy', 0.3, NULL),
+               ('{set}', 'grim', 0.8, 0.25),
+               ('{set}', 'peaceful', NULL, 1.0),
+               ('{set}', 'somber', 0.9, NULL);
+             UPDATE library_entries SET mood_reviewed_at = '1700000000000' WHERE id = '{set}';"
+        ))
         .unwrap();
 
         let entries = load_library_entries(&conn).unwrap();
         let a = entries.iter().find(|e| e.id == set).unwrap();
+        let v = |mood, auto, user| MoodValue { mood, auto, user };
+        // Every id, in order; missing rows (and a retired id) give neither layer.
         assert_eq!(
-            (a.pool_auto, a.pool_auto_p, a.pool_auto_runner, a.pool_user, a.pool_reviewed_at.as_deref()),
-            (Some(Pool::Heroic), Some(0.84), Some(Pool::Awe), Some(Pool::Menacing), Some("1700000000000"))
+            a.moods,
+            vec![
+                v(MoodId::Peaceful, None, Some(1.0)),
+                v(MoodId::Sorrowful, None, None),
+                v(MoodId::Wondrous, None, None),
+                v(MoodId::Cheerful, None, None),
+                v(MoodId::Quirky, None, None),
+                v(MoodId::Mysterious, None, None),
+                v(MoodId::Grim, Some(0.8), Some(0.25)),
+                v(MoodId::Heroic, None, None),
+                v(MoodId::Menacing, None, None),
+                v(MoodId::Energy, Some(0.3), None),
+            ]
         );
+        assert_eq!(a.mood_reviewed_at.as_deref(), Some("1700000000000"));
 
         let b = entries.iter().find(|e| e.id == unset).unwrap();
-        assert_eq!(
-            (b.pool_auto, b.pool_auto_p, b.pool_auto_runner, b.pool_user, b.pool_reviewed_at.as_deref()),
-            (None, None, None, None, None)
-        );
+        assert_eq!(b.moods.len(), MoodId::COUNT);
+        assert!(b.moods.iter().all(|m| m.auto.is_none() && m.user.is_none()));
+        assert_eq!(b.mood_reviewed_at, None);
     }
 
 }

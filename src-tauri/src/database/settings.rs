@@ -1,13 +1,13 @@
 //! Persisted app settings, stored as plain key/value rows in the `meta`
 //! table. This covers the Broadcast (live stream) settings, the folder
 //! the "Fix missing files" search starts in, the analyzer settings and the
-//! frozen mood pool calibration.
+//! frozen mood calibration.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
-use crate::autotag::plan::PoolCalibration;
-use crate::models::{AutoTagSettings, SceneConfig};
+use crate::autotag::plan::MoodCalibration;
+use crate::models::{AutoTagSettings, MoodId, SceneConfig};
 
 const KEY_ENABLED: &str = "broadcast_enabled";
 const KEY_PORT: &str = "broadcast_port";
@@ -20,7 +20,7 @@ const KEY_AUTOTAG_TOKEN: &str = "autotag_token";
 const KEY_AUTOTAG_LOCAL_PREFIX: &str = "autotag_local_prefix";
 const KEY_AUTOTAG_REMOTE_PREFIX: &str = "autotag_remote_prefix";
 const KEY_AUTOTAG_SCENE: &str = "autotag_scene_encounter";
-const KEY_POOL_CALIBRATION: &str = "pool_calibration";
+const KEY_MOOD_CALIBRATION: &str = "mood_calibration";
 
 /// Where the analyzer host mounts the audio folder until the user says otherwise.
 pub const DEFAULT_REMOTE_PREFIX: &str = "/media/audio";
@@ -172,30 +172,37 @@ pub fn save_scene_config(conn: &Connection, c: &SceneConfig) -> Result<(), Strin
     write_meta(conn, KEY_AUTOTAG_SCENE, &text)
 }
 
-/// Loads the frozen mood pool calibration (JSON). `None` until the first
-/// analyzer run that covers enough music computed one. A stored value that
-/// does not parse is treated as missing (and logged), so the next qualifying
-/// run takes a new one.
-pub fn load_pool_calibration(conn: &Connection) -> Result<Option<PoolCalibration>, String> {
-    let Some(text) = read_meta(conn, KEY_POOL_CALIBRATION)? else {
+/// Loads the frozen mood calibration (JSON `{ id: {mean, sd}, ... }`).
+/// `None` until the first analyzer run that covers enough music computed one.
+/// A stored value that does not parse, or lacks one of the ten ids, is
+/// treated as missing (and logged), so the next qualifying run takes a new
+/// one.
+pub fn load_mood_calibration(conn: &Connection) -> Result<Option<MoodCalibration>, String> {
+    let Some(text) = read_meta(conn, KEY_MOOD_CALIBRATION)? else {
         return Ok(None);
     };
-    match serde_json::from_str(&text) {
-        Ok(calibration) => Ok(Some(calibration)),
+    match serde_json::from_str::<MoodCalibration>(&text) {
+        Ok(calibration) if MoodId::ALL.iter().all(|id| calibration.0.contains_key(id.as_db_str())) => {
+            Ok(Some(calibration))
+        }
+        Ok(_) => {
+            log::warn!("Stored {KEY_MOOD_CALIBRATION} lacks a mood; treating it as missing");
+            Ok(None)
+        }
         Err(e) => {
-            log::warn!("Invalid stored {KEY_POOL_CALIBRATION}: {e}; treating it as missing");
+            log::warn!("Invalid stored {KEY_MOOD_CALIBRATION}: {e}; treating it as missing");
             Ok(None)
         }
     }
 }
 
-/// Saves the mood pool calibration as JSON, replacing any stored one. Only
-/// the analyzer run calls this, and only while none is stored: the
-/// calibration is frozen once taken.
-pub fn save_pool_calibration(conn: &Connection, calibration: &PoolCalibration) -> Result<(), String> {
+/// Saves the mood calibration as JSON, replacing any stored one. Only the
+/// analyzer run calls this, and only while none is stored: the calibration
+/// is frozen once taken.
+pub fn save_mood_calibration(conn: &Connection, calibration: &MoodCalibration) -> Result<(), String> {
     let text = serde_json::to_string(calibration)
-        .map_err(|e| format!("Failed to encode pool calibration: {e}"))?;
-    write_meta(conn, KEY_POOL_CALIBRATION, &text)
+        .map_err(|e| format!("Failed to encode mood calibration: {e}"))?;
+    write_meta(conn, KEY_MOOD_CALIBRATION, &text)
 }
 
 /// Replaces a saved scene configuration with `SceneConfig::default()`. A
@@ -248,21 +255,31 @@ mod tests {
     use rusqlite::Connection;
 
     #[test]
-    fn pool_calibration_is_none_until_saved_then_round_trips() {
-        use crate::autotag::plan::PoolStat;
+    fn mood_calibration_is_none_until_saved_then_round_trips() {
+        use crate::autotag::plan::MoodStat;
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
-        assert_eq!(load_pool_calibration(&conn).unwrap(), None);
+        assert_eq!(load_mood_calibration(&conn).unwrap(), None);
 
-        let cal = PoolCalibration {
-            tracks: 64,
-            pools: [("heroic".to_string(), PoolStat { mean: 0.21, sd: 0.03 })].into(),
-        };
-        save_pool_calibration(&conn, &cal).unwrap();
-        assert_eq!(load_pool_calibration(&conn).unwrap(), Some(cal));
+        let cal = MoodCalibration(
+            MoodId::ALL
+                .iter()
+                .map(|id| (id.as_db_str().to_string(), MoodStat { mean: 0.21, sd: 0.03 }))
+                .collect(),
+        );
+        save_mood_calibration(&conn, &cal).unwrap();
+        assert_eq!(load_mood_calibration(&conn).unwrap(), Some(cal.clone()));
+        // Stored flat, keyed by id.
+        let text = read_meta(&conn, KEY_MOOD_CALIBRATION).unwrap().unwrap();
+        assert!(text.contains(r#""energy":{"mean":0.21,"sd":0.03}"#));
 
-        write_meta(&conn, KEY_POOL_CALIBRATION, "not json").unwrap();
-        assert_eq!(load_pool_calibration(&conn).unwrap(), None);
+        // Missing an id, or not JSON: treated as missing.
+        let mut partial = cal;
+        partial.0.remove("grim");
+        save_mood_calibration(&conn, &partial).unwrap();
+        assert_eq!(load_mood_calibration(&conn).unwrap(), None);
+        write_meta(&conn, KEY_MOOD_CALIBRATION, "not json").unwrap();
+        assert_eq!(load_mood_calibration(&conn).unwrap(), None);
     }
 
     #[test]

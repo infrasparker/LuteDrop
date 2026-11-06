@@ -55,20 +55,14 @@ pub struct LibraryEntry {
     pub role_auto_score: Option<f64>,
     /// The user's role. When set it is shown instead of `role_auto`.
     pub role_user: Option<Role>,
-    /// The analyzer's suggested mood pool, from the frozen pool calibration.
-    /// `None` until a run with a calibration scored the entry (and always on
-    /// ambiance).
-    pub pool_auto: Option<Pool>,
-    /// The suggestion's softmax probability (0..1); low means unsure.
-    pub pool_auto_p: Option<f64>,
-    /// The analyzer's second-best pool.
-    pub pool_auto_runner: Option<Pool>,
-    /// The user's pool; when set it overrides `pool_auto`. The pool shown is
-    /// `pool_user ?? pool_auto`.
-    pub pool_user: Option<Pool>,
-    /// When the user last set the pool or approved the entry in Review
+    /// The mood profile: one value per mood id, in `MoodId::ALL` order (nine
+    /// moods, then Energy). Always all ten; an id with no stored row (and
+    /// every id on ambiance) has neither layer. The value shown is
+    /// `user ?? auto`.
+    pub moods: Vec<MoodValue>,
+    /// When the user last set a mood level or approved the entry in Review
     /// (Unix milliseconds as a string, like `created_at`); `None` until then.
-    pub pool_reviewed_at: Option<String>,
+    pub mood_reviewed_at: Option<String>,
 }
 
 /// Whether a music entry is meant for combat scenes.
@@ -103,81 +97,88 @@ impl Role {
     }
 }
 
-/// A music track's mood pool: a short, flat list of hedged mood words. A
-/// music track is in exactly one pool; ambiance has none. The vocabulary is
-/// fixed, and the analyzer scores and suggests every pool (there is no
-/// taught-only pool).
+/// One axis of a music track's mood profile: the nine moods, then Energy.
+/// A mood is a lens, not a label: every music track has a 0..1 value for
+/// every id. The vocabulary is fixed and never regenerated.
 ///
-/// The database, serde and the generated TypeScript all use the same
-/// lowercase ids (`"peaceful"`, ...).
+/// The database, serde, the analyzer and the generated TypeScript all use the
+/// same lowercase ids (`"peaceful"`, ..., `"energy"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
-pub enum Pool {
+pub enum MoodId {
     Peaceful,
-    /// Jaunty, merry, tavern music.
+    Sorrowful,
+    Wondrous,
     Cheerful,
-    /// Weird, offbeat, groovy, eccentric music.
     Quirky,
-    Somber,
-    /// Shown as "Wonder".
-    Awe,
     Mysterious,
-    /// Triumphant, bold, rousing.
+    Grim,
     Heroic,
-    /// Brutal, threatening, boss-fight music.
     Menacing,
+    /// Calm (0) to energetic (1). The analyzer scores it two-sided
+    /// (energetic prompts minus calm ones); after calibration it is treated
+    /// like any mood.
+    Energy,
 }
 
-impl Pool {
-    /// How many pools there are.
-    pub const COUNT: usize = 8;
+impl MoodId {
+    /// How many ids there are (nine moods plus Energy).
+    pub const COUNT: usize = 10;
 
-    /// Every pool, in vocabulary order. The analyzer scores and suggests all
-    /// of them.
-    pub const ALL: [Pool; Pool::COUNT] = [
-        Pool::Peaceful,
-        Pool::Cheerful,
-        Pool::Quirky,
-        Pool::Somber,
-        Pool::Awe,
-        Pool::Mysterious,
-        Pool::Heroic,
-        Pool::Menacing,
+    /// Every id, in vocabulary order.
+    pub const ALL: [MoodId; MoodId::COUNT] = [
+        MoodId::Peaceful,
+        MoodId::Sorrowful,
+        MoodId::Wondrous,
+        MoodId::Cheerful,
+        MoodId::Quirky,
+        MoodId::Mysterious,
+        MoodId::Grim,
+        MoodId::Heroic,
+        MoodId::Menacing,
+        MoodId::Energy,
     ];
 
-    /// The id stored in the `pool_*` columns and sent by the analyzer.
+    /// The id stored in `library_entry_moods.mood` and sent by the analyzer.
     pub fn as_db_str(&self) -> &'static str {
         match self {
-            Pool::Peaceful => "peaceful",
-            Pool::Cheerful => "cheerful",
-            Pool::Quirky => "quirky",
-            Pool::Somber => "somber",
-            Pool::Awe => "awe",
-            Pool::Mysterious => "mysterious",
-            Pool::Heroic => "heroic",
-            Pool::Menacing => "menacing",
+            MoodId::Peaceful => "peaceful",
+            MoodId::Sorrowful => "sorrowful",
+            MoodId::Wondrous => "wondrous",
+            MoodId::Cheerful => "cheerful",
+            MoodId::Quirky => "quirky",
+            MoodId::Mysterious => "mysterious",
+            MoodId::Grim => "grim",
+            MoodId::Heroic => "heroic",
+            MoodId::Menacing => "menacing",
+            MoodId::Energy => "energy",
         }
     }
 
-    /// Parses a stored id; anything unrecognised (including the retired
-    /// `lighthearted`, `epic` and `tension`) is `None`.
+    /// Parses a stored id; anything unrecognised (including the retired pool
+    /// ids `somber` and `awe`) is `None`.
     pub fn from_db_str(s: &str) -> Option<Self> {
-        Pool::ALL.into_iter().find(|p| p.as_db_str() == s)
+        MoodId::ALL.into_iter().find(|m| m.as_db_str() == s)
     }
 }
 
-/// The analyzer's pool suggestion for one entry. Backend-only: the frontend
-/// reads it from `LibraryEntry` (`pool_auto`, `pool_auto_p`,
-/// `pool_auto_runner`).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PoolSuggestion {
-    /// The most likely pool.
-    pub pool: Pool,
-    /// Its softmax probability.
-    pub p: f64,
-    /// The second most likely pool.
-    pub runner: Pool,
+/// The levels a user can set a mood to (a 1-5 rating).
+pub const MOOD_LEVELS: [f64; 5] = [0.0, 0.25, 0.5, 0.75, 1.0];
+
+/// One mood of an entry's profile, both layers. The value shown is
+/// `user ?? auto`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct MoodValue {
+    pub mood: MoodId,
+    /// The analyzer's suggestion, 0..1, from the frozen calibration. `None`
+    /// until a run with a calibration scored the entry.
+    pub auto: Option<f64>,
+    /// The level the user set, one of `MOOD_LEVELS`; `None` means the
+    /// suggestion shows.
+    pub user: Option<f64>,
 }
 
 /// Which layer a shown value comes from: the user's, or the analyzer's.
@@ -606,17 +607,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pool_db_strings_round_trip_and_match_serde() {
-        for pool in Pool::ALL {
-            assert_eq!(Pool::from_db_str(pool.as_db_str()), Some(pool));
-            assert_eq!(serde_json::to_value(pool).unwrap(), pool.as_db_str());
+    fn mood_db_strings_round_trip_and_match_serde() {
+        for mood in MoodId::ALL {
+            assert_eq!(MoodId::from_db_str(mood.as_db_str()), Some(mood));
+            assert_eq!(serde_json::to_value(mood).unwrap(), mood.as_db_str());
         }
         assert_eq!(
-            Pool::ALL.map(|p| p.as_db_str()),
-            ["peaceful", "cheerful", "quirky", "somber", "awe", "mysterious", "heroic", "menacing"]
+            MoodId::ALL.map(|m| m.as_db_str()),
+            [
+                "peaceful", "sorrowful", "wondrous", "cheerful", "quirky",
+                "mysterious", "grim", "heroic", "menacing", "energy",
+            ]
         );
-        for retired in ["sad", "lighthearted", "epic", "tension"] {
-            assert_eq!(Pool::from_db_str(retired), None);
+        for retired in ["somber", "awe", "lighthearted", "epic", "tension"] {
+            assert_eq!(MoodId::from_db_str(retired), None);
         }
     }
 

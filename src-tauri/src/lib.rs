@@ -220,7 +220,7 @@ pub fn run() {
             commands::reset_entry_tag_votes,
             commands::set_entry_role,
             commands::keep_auto_role,
-            commands::set_entry_pool,
+            commands::set_entry_mood_level,
             commands::approve_entry_review,
             commands::bulk_edit_library_entry_tags,
             commands::update_library_entry_type,
