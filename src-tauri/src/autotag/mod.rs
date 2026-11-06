@@ -10,7 +10,7 @@ pub mod client;
 pub mod plan;
 pub mod scry;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -19,7 +19,7 @@ use rusqlite::{params, Connection};
 
 use crate::database::autotag_db::{self, RunEntry};
 use crate::database::{library, now_millis, settings};
-use crate::models::{AnalysisStatus, AutoTagProgress, AutoTagReport, TagQuality};
+use crate::models::{AnalysisStatus, AutoTagProgress, AutoTagReport, MoodVocabulary, TagQuality};
 use crate::state::AppStateContainer;
 use client::{AnalyzerClient, HttpAnalyzer};
 use plan::{EntryFacts, ScoreSet};
@@ -520,9 +520,13 @@ fn run_steps(
             .map_err(|e| format!("Failed to begin auto-tag transaction: {e}"))?;
         // Recalibrate (or a vocabulary save) may have run while the analyzer
         // worked: write moods only if the calibration is still the one this
-        // run started with, and only for moods still in the vocabulary.
-        let moods_current = settings::load_mood_calibration(&conn)? == stored_calibration;
+        // run started with and every id still has the prompts the analyzer
+        // scored. A changed vocabulary means a calibration taken here would
+        // be signed with stale prompts, so the run skips moods and leaves
+        // them to the next run.
         let vocabulary_now = settings::load_mood_vocabulary(&conn)?;
+        let moods_current = settings::load_mood_calibration(&conn)? == stored_calibration
+            && same_prompts(&vocabulary_now, &mood_vocabulary);
         if let Some(calibration) = new_calibration.as_ref().filter(|_| moods_current) {
             settings::save_mood_calibration(&conn, calibration)?;
             log::info!("Mood calibration taken from {} tracks", calibration.tracks);
@@ -582,6 +586,15 @@ fn run_steps(
 
     progress(progress_update("done", analyzed, target_count, None));
     Ok(())
+}
+
+/// True if both vocabularies have the same ids with the same prompt
+/// signature each (names and order may differ: they do not affect scores).
+fn same_prompts(a: &MoodVocabulary, b: &MoodVocabulary) -> bool {
+    let signatures = |v: &MoodVocabulary| -> BTreeMap<String, Option<Vec<String>>> {
+        v.ids().into_iter().map(|id| { let sig = v.prompt_signature(&id); (id, sig) }).collect()
+    };
+    signatures(a) == signatures(b)
 }
 
 /// True if the entry exists and is currently a music entry.
@@ -1301,6 +1314,42 @@ pub(crate) mod tests {
         run_once(&db, &fake, &[], &no_progress);
         assert_eq!(settings::load_mood_calibration(&db.lock().unwrap()).unwrap(), None);
         assert!(ids.iter().all(|id| mood_row_count(&db, id) == 0));
+    }
+
+    #[test]
+    fn recalibrate_with_new_prompts_during_an_uncalibrated_run_is_not_lost() {
+        let db = setup();
+        let (ids, gate, mood) = mood_library(&db, plan::CALIBRATION_MIN_TRACKS);
+        let mut edited = MoodVocabulary::defaults();
+        edited.moods[7].prompts = vec!["fanfare".into()];
+        // The run starts with no calibration; during /score the user saves
+        // new prompts and recalibrates (a no-op on the calibration).
+        let hook_db = db.clone();
+        let hook_vocab = edited.clone();
+        let fake = FakeAnalyzer {
+            gate: gate.clone(),
+            mood: mood.clone(),
+            on_score: Some(Box::new(move || {
+                let conn = hook_db.try_lock().expect("database is free during /score");
+                library::save_mood_vocabulary(&conn, &hook_vocab).unwrap();
+                library::clear_mood_analysis(&conn).unwrap();
+            })),
+            ..Default::default()
+        };
+        let report = run_once(&db, &fake, &ids, &no_progress);
+        assert_eq!(report.error, None);
+        // Scored with the old prompts: no calibration and no moods saved.
+        assert_eq!(settings::load_mood_calibration(&db.lock().unwrap()).unwrap(), None);
+        assert!(ids.iter().all(|id| mood_row_count(&db, id) == 0));
+
+        // The next run calibrates with the new prompts; nothing needs
+        // recalibrating.
+        let fake = FakeAnalyzer { gate, mood, ..Default::default() };
+        run_once(&db, &fake, &[], &no_progress);
+        let cal = settings::load_mood_calibration(&db.lock().unwrap()).unwrap().unwrap();
+        assert_eq!(cal.prompts["heroic"], ["fanfare"]);
+        assert!(!plan::needs_recalibration(Some(&cal), &edited.normalized().unwrap()));
+        assert_eq!(mood_row_count(&db, &ids[0]), 9);
     }
 
     #[test]
