@@ -4,13 +4,14 @@ import multiprocessing
 import os
 import threading
 from collections.abc import Callable
+from typing import Annotated
 from concurrent.futures import Executor, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 from . import heads, moods, rhythm, scry
 from .embed import Embedder, EmbeddingCache, MuqEmbedder, decode_track
@@ -20,6 +21,14 @@ MAX_EMBED_ITEMS = 32
 DEFAULT_RESULTS = 50
 MAX_RESULTS = 500
 MAP_CACHE_SIZE = 8
+
+# Limits on the mood vocabulary a /score request may carry.
+MAX_MOODS = 32
+MAX_PROMPTS_PER_GROUP = 16
+MAX_PROMPT_CHARS = 300
+# Embedded prompt texts kept between requests. Past this the cache starts
+# over; it only grows when the user keeps editing prompts.
+MAX_CACHED_PROMPTS = 2048
 
 # How long /embed waits for the model to finish loading before it answers
 # 503. Loading starts when the app is created.
@@ -42,6 +51,16 @@ class Examples(BaseModel):
     negatives: list[str] = []
 
 
+PromptText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_PROMPT_CHARS)]
+PromptList = Annotated[list[PromptText], Field(min_length=1, max_length=MAX_PROMPTS_PER_GROUP)]
+MoodKey = Annotated[str, StringConstraints(pattern=r"^[a-z]+$", max_length=32)]
+
+
+class EnergyPrompts(BaseModel):
+    positive: PromptList
+    negative: PromptList
+
+
 class ScoreRequest(BaseModel):
     scene: str = ""
     gate: Examples
@@ -51,6 +70,10 @@ class ScoreRequest(BaseModel):
     # and the rhythm features can be removed once older versions are retired.
     pace: Examples | None = None
     targets: list[str] = []
+    # The app's mood vocabulary: prompts per mood id, and Energy's two sides.
+    # Either one, when given, replaces the matching defaults in `moods.py`.
+    mood_prompts: Annotated[dict[MoodKey, PromptList], Field(max_length=MAX_MOODS)] | None = None
+    energy_prompts: EnergyPrompts | None = None
 
 
 class SimilarRequest(BaseModel):
@@ -214,38 +237,44 @@ def create_app(
             else {},
         }
 
-    # Unit-length prompt vectors per mood (and for each side of energy),
-    # embedded the first time /score finds the model loaded and reused after
-    # that. Published only once every prompt group succeeded, so a failure
-    # part-way leaves nothing half-filled.
-    mood_vecs: dict[str, np.ndarray] = {}
-    mood_lock = threading.Lock()
-    energy_groups = {"energy+": moods.ENERGY_POS, "energy-": moods.ENERGY_NEG}
+    # Unit-length vectors per prompt text, embedded the first time /score
+    # needs a text with the model loaded and reused after that, so changing
+    # one mood's prompts embeds only the new texts. A batch is added only once
+    # it embedded in full, so a failure part-way leaves nothing half-filled.
+    text_vecs: dict[str, np.ndarray] = {}
+    text_lock = threading.Lock()
 
-    def mood_prompts() -> dict[str, np.ndarray] | None:
-        """The prompt vectors, keyed by mood id plus `energy+` / `energy-`, or
-        None while the model is not ready (or the prompts could not be
-        embedded); /score then omits mood. Never waits."""
+    def prompt_vectors(groups: dict[str, list[str]]) -> dict[str, np.ndarray] | None:
+        """One matrix of unit prompt vectors per group, or None while the
+        model is not ready (or the prompts could not be embedded); /score
+        then omits mood. Never waits for the model."""
         if not loaded.is_set() or load_error:
             return None
-        with mood_lock:
-            if not mood_vecs:
-                built = {}
+        with text_lock:
+            missing = list(dict.fromkeys(t for texts in groups.values() for t in texts if t not in text_vecs))
+            if missing:
                 try:
-                    for name, texts in {**moods.MOODS, **energy_groups}.items():
-                        vecs = np.asarray(embedder.embed_text(texts), dtype=np.float64)
-                        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
-                        built[name] = vecs / np.where(norms == 0, 1, norms)
+                    vecs = np.asarray(embedder.embed_text(missing), dtype=np.float64)
                 except Exception:
                     log.exception("Mood prompts failed to embed")
                     return None
-                mood_vecs.update(built)
-            return dict(mood_vecs)
+                norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+                vecs = vecs / np.where(norms == 0, 1, norms)
+                if len(text_vecs) + len(missing) > MAX_CACHED_PROMPTS:
+                    text_vecs.clear()
+                text_vecs.update(zip(missing, vecs))
+            return {name: np.vstack([text_vecs[t] for t in texts]) for name, texts in groups.items()}
 
-    def mood_scores(target_hashes: list[str], X_targets: np.ndarray) -> dict[str, dict] | None:
+    def mood_scores(req: ScoreRequest, target_hashes: list[str], X_targets: np.ndarray) -> dict[str, dict] | None:
         if not target_hashes:
             return {}
-        vecs = mood_prompts()
+        mood_groups = req.mood_prompts if req.mood_prompts is not None else moods.MOODS
+        if req.energy_prompts is not None:
+            energy_pos, energy_neg = req.energy_prompts.positive, req.energy_prompts.negative
+        else:
+            energy_pos, energy_neg = moods.ENERGY_POS, moods.ENERGY_NEG
+        # "energy+" / "energy-" cannot clash with a mood id (lowercase letters only).
+        vecs = prompt_vectors({**mood_groups, "energy+": energy_pos, "energy-": energy_neg})
         if vecs is None:
             return None
         # Raw scores; the app calibrates them. Each mood is the mean cosine
@@ -254,7 +283,7 @@ def create_app(
         energy = sims["energy+"] - sims["energy-"]
         return {
             h: {
-                "moods": {name: float(sims[name][i]) for name in moods.MOODS},
+                "moods": {name: float(sims[name][i]) for name in mood_groups},
                 "energy": float(energy[i]),
             }
             for i, h in enumerate(target_hashes)
@@ -274,7 +303,7 @@ def create_app(
         if req.pace is not None:
             r_hashes, R_targets = rhythm_vectors(req.targets)
             out["pace"] = score_head(req.pace, r_hashes, R_targets, rhythm_vectors, scale=True)
-        mood = mood_scores(target_hashes, X_targets)
+        mood = mood_scores(req, target_hashes, X_targets)
         if mood is not None:
             out["mood"] = mood
         return out

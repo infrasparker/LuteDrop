@@ -532,8 +532,8 @@ def test_score_returns_raw_mood_for_targets(tmp_path, monkeypatch):
     body = {"gate": {}, "targets": ["a", "b", "ghost"]}
     data = c.post("/score", json=body, headers=HEADERS).json()
     c.post("/score", json=body, headers=HEADERS)
-    # One embed_text per mood and per energy side, computed once.
-    assert MoodEmbedder.calls == len(moods.MOODS) + 2
+    # Every prompt text embedded in one call, then reused.
+    assert MoodEmbedder.calls == 1
     assert set(data["mood"]) == {"a", "b"}
 
     mean = cache.get("a")
@@ -541,13 +541,13 @@ def test_score_returns_raw_mood_for_targets(tmp_path, monkeypatch):
     def pole(texts):
         return float(np.mean([mean @ dirs[t] for t in texts]))
 
-    # Nine moods plus energy; the pools and the scales are gone.
+    # The default moods plus energy; the pools and the scales are gone.
     assert set(data["mood"]["a"]) == {"moods", "energy"}
     # Moods are absolute similarities (mean cosine with the mood's prompts).
     scores = data["mood"]["a"]["moods"]
     assert list(scores) == [
-        "peaceful", "sorrowful", "wondrous", "cheerful", "quirky",
-        "mysterious", "grim", "heroic", "menacing",
+        "peaceful", "sorrowful", "wondrous", "joyful", "quirky",
+        "mysterious", "grim", "heroic",
     ]
     for mood_id, prompts in moods.MOODS.items():
         assert scores[mood_id] == pytest.approx(pole(prompts))
@@ -564,7 +564,7 @@ def test_score_mood_recovers_after_partial_embed_failure(tmp_path, monkeypatch):
 
         def embed_text(self, texts):
             FlakyEmbedder.calls += 1
-            if FlakyEmbedder.calls == 3:  # fail part-way through the prompts
+            if FlakyEmbedder.calls == 1:  # the first prompt batch fails
                 raise RuntimeError("transient")
             return super().embed_text(texts)
 
@@ -578,7 +578,82 @@ def test_score_mood_recovers_after_partial_embed_failure(tmp_path, monkeypatch):
     second = c.post("/score", json=body, headers=HEADERS)
     assert second.status_code == 200
     assert set(second.json()["mood"]["a"]) == {"moods", "energy"}
-    assert len(second.json()["mood"]["a"]["moods"]) == 9
+    assert len(second.json()["mood"]["a"]["moods"]) == 8
+
+
+def _text_embedder():
+    """An embedder that gives each new prompt text its own axis and counts
+    the texts it was asked to embed."""
+
+    class TextEmbedder(FakeEmbedder):
+        def __init__(self):
+            self.axes: dict[str, int] = {}
+            self.embedded: list[str] = []
+
+        def embed_text(self, texts):
+            self.embedded.extend(texts)
+            rows = []
+            for t in texts:
+                v = np.zeros(DIM)
+                v[self.axes.setdefault(t, len(self.axes) % DIM)] = 1.0
+                rows.append(v)
+            return np.vstack(rows)
+
+    return TextEmbedder()
+
+
+def test_score_uses_mood_prompts_from_the_request(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), FEATS))
+    cache = EmbeddingCache(tmp_path)
+    embedder = _text_embedder()
+    c = TestClient(create_app(embedder, cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2)))
+    embed(c, [("a", "x-1")])
+    vocab = {
+        "gate": {},
+        "targets": ["a"],
+        "mood_prompts": {"spooky": ["ghost music", "  haunted halls  "], "calm": ["still water"]},
+        "energy_prompts": {"positive": ["fast"], "negative": ["slow", "still water"]},
+    }
+    data = c.post("/score", json=vocab, headers=HEADERS).json()
+    # Only the request's moods come back, in its order; prompts are trimmed.
+    assert list(data["mood"]["a"]["moods"]) == ["spooky", "calm"]
+    assert sorted(embedder.embedded) == sorted(["ghost music", "haunted halls", "still water", "fast", "slow"])
+
+    mean = cache.get("a")
+
+    def pole(texts):
+        return float(np.mean([mean @ np.eye(DIM)[embedder.axes[t] % DIM] for t in texts]))
+
+    assert data["mood"]["a"]["moods"]["spooky"] == pytest.approx(pole(["ghost music", "haunted halls"]))
+    assert data["mood"]["a"]["energy"] == pytest.approx(pole(["fast"]) - pole(["slow", "still water"]))
+
+    # Changing one mood's prompts embeds only the new text.
+    embedder.embedded.clear()
+    vocab["mood_prompts"]["calm"] = ["still water", "a quiet lake"]
+    c.post("/score", json=vocab, headers=HEADERS)
+    assert embedder.embedded == ["a quiet lake"]
+
+    # Leaving the vocabulary out falls back to the defaults in moods.py.
+    from tagger import moods
+
+    data = c.post("/score", json={"gate": {}, "targets": ["a"]}, headers=HEADERS).json()
+    assert list(data["mood"]["a"]["moods"]) == list(moods.MOODS)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"mood_prompts": {"calm": []}},
+        {"mood_prompts": {"calm": ["   "]}},
+        {"mood_prompts": {"Calm": ["still"]}},
+        {"mood_prompts": {"energy+": ["still"]}},
+        {"energy_prompts": {"positive": ["fast"], "negative": []}},
+        {"energy_prompts": {"positive": ["fast"]}},
+    ],
+)
+def test_score_rejects_a_bad_vocabulary(client, extra):
+    r = client.post("/score", json={"gate": {}, "targets": [], **extra}, headers=HEADERS)
+    assert r.status_code == 422
 
 
 def test_score_without_loaded_model_omits_mood(tmp_path, monkeypatch):
