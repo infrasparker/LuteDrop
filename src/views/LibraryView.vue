@@ -14,16 +14,23 @@ import ImportDialog from '../components/ImportDialog.vue';
 import FixMissingDialog from '../components/FixMissingDialog.vue';
 import AutoTaggingDialog from '../components/AutoTaggingDialog.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
-import type { LibraryEntry, LibraryEntryUsage, Pool, Role } from '@generated/index';
-import PoolFilters from '../components/PoolFilters.vue';
+import type { LibraryEntry, LibraryEntryUsage, Role } from '@generated/index';
+import MoodFilters from '../components/MoodFilters.vue';
+import MoodProfile from '../components/MoodProfile.vue';
 import {
-  emptyPoolFilters,
-  matchesPoolFilters,
-  POOLS,
+  emptyMoodFilters,
+  lensLabel,
+  lensScore,
+  matchesMoodFilters,
+  matchesTagSelection,
+  moodLayers,
+  moodValue,
   sortByKey,
-  type PoolFilters as PoolFilterState,
+  type MatchMode,
+  type MoodFilters as MoodFilterState,
+  type SortDir,
   type SortKey,
-} from '../utils/pools';
+} from '../utils/moods';
 import { AUDIO_EXTENSIONS } from '../constants';
 import { formatDuration } from '../shared/format';
 import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
@@ -37,20 +44,24 @@ const router = useRouter();
 
 const searchQuery = ref('');
 const selectedTags = ref<string[]>([]);
+const tagMode = ref<MatchMode>('any');
 const untagged = ref(false);
 const hasAuto = ref(false);
 const selectedType = ref<string>('all');
-const poolFilters = ref<PoolFilterState>(emptyPoolFilters());
+const moodFilters = ref<MoodFilterState>(emptyMoodFilters());
 const sortKey = ref<SortKey>('name');
-const SORT_KEYS: SortKey[] = ['name', 'confidence'];
-// Pool, role and the scales apply to music only and their bar is hidden for
-// ambiance, so its filters and sort must not keep applying there.
+const sortDir = ref<SortDir>('asc');
+const SORT_KEYS: SortKey[] = ['name', 'energy'];
+// Lenses and role apply to music only and their bar is hidden for ambiance,
+// so its filters and sort must not keep applying there.
 watch(selectedType, (type) => {
   if (type === 'ambiance') {
-    poolFilters.value = emptyPoolFilters();
+    moodFilters.value = emptyMoodFilters();
     sortKey.value = 'name';
+    sortDir.value = 'asc';
   }
 });
+const lensOn = computed(() => moodFilters.value.lenses.length > 0);
 
 // Search text also matches the album folder (parent) and artist folder
 // (grandparent) of the file path, so a game is findable by soundtrack folder.
@@ -74,11 +85,6 @@ watch(tags, (current) => {
   }
 });
 
-// Entries of the selected type: the population the pool chips count.
-const typeEntries = computed(() =>
-  libraryEntries.value.filter((e) => selectedType.value === 'all' || e.entryType === selectedType.value),
-);
-
 const filteredEntries = computed(() => {
   const matching = libraryEntries.value.filter((entry) => {
     const query = (searchQuery.value ?? '').trim().toLowerCase();
@@ -87,26 +93,40 @@ const filteredEntries = computed(() => {
     // Auto tags are part of `tags`, so "untagged" means no user tags.
     const matchesTags = untagged.value
       ? entry.tags.length === entry.autoTags.length
-      : selectedTags.value.length === 0 ||
-        selectedTags.value.every((tag) => entry.tags.includes(tag));
+      : matchesTagSelection(entry.tags, selectedTags.value, tagMode.value);
     const matchesType =
       selectedType.value === 'all' || entry.entryType === selectedType.value;
     const matchesAuto = !hasAuto.value || entry.autoTags.length > 0;
-    return matchesSearch && matchesTags && matchesType && matchesAuto && matchesPoolFilters(entry, poolFilters.value);
+    return matchesSearch && matchesTags && matchesType && matchesAuto && matchesMoodFilters(entry, moodFilters.value);
   });
-  return sortByKey(matching, sortKey.value, (e) => e);
+  return sortByKey(matching, sortKey.value, sortDir.value, moodFilters.value, (e) => e);
 });
 
-const headers = [
+// The Energy column, and the lens score column while a lens is on. Both sort
+// from their header too; an entry with no value sorts below every score.
+const headers = computed(() => [
   { title: '', key: 'status', sortable: true, width: '48px',
     sort: (a: boolean, b: boolean) => (a === b ? 0 : a ? -1 : 1) },
   { title: 'Type', key: 'entryType', sortable: true, width: '60px' },
-  { title: 'Name', key: 'name', sortable: true, width: '40%' },
+  { title: 'Name', key: 'name', sortable: true, width: '32%' },
+  ...(lensOn.value
+    ? [{ title: lensLabel(moodFilters.value), key: 'lens', sortable: true, width: '140px',
+        value: (item: LibraryEntry) => lensScore(item, moodFilters.value) ?? -1 }]
+    : []),
   { title: 'Role', key: 'role', sortable: true, width: '60px' },
+  { title: 'Energy', key: 'energy', sortable: true, width: '80px', align: 'end' as const,
+    value: (item: LibraryEntry) => moodValue(item, 'energy') ?? -1 },
   { title: 'Tags', key: 'tags', sortable: false },
   { title: 'Duration', key: 'duration', sortable: true, width: '80px', align: 'end' as const },
   { title: '', key: 'actions', sortable: false, width: '112px', align: 'end' as const },
-];
+]);
+
+/// Hover text for an Energy cell: where the value comes from.
+function energyHint(entry: LibraryEntry): string {
+  const { auto, user } = moodLayers(entry, 'energy');
+  if (user !== null) return `Set by you${auto === null ? '' : ` · suggested ${auto.toFixed(2)}`}`;
+  return 'Suggested';
+}
 
 const previewState = computed(() => store.playbackStates.get(LIBRARY_PLAYBACK_ID));
 
@@ -191,11 +211,15 @@ async function applyBulkMusic(cmd: string, args: Record<string, unknown>): Promi
 }
 
 const applyBulkRole = (role: Role | null) => applyBulkMusic('set_entry_role', { role });
-// "Set pool…" acts on the selected music entries; ambiance has no pool.
-const applyBulkPool = (pool: Pool | null) => applyBulkMusic('set_entry_pool', { pool });
-const selectedHaveMusic = computed(() =>
-  libraryEntries.value.some((e) => selectedIds.value.includes(e.id) && e.entryType === 'music'),
+// "Set mood levels…" opens the mood profile for the selected music entries;
+// ambiance has no moods.
+const selectedMusic = computed(() =>
+  libraryEntries.value.filter((e) => selectedIds.value.includes(e.id) && e.entryType === 'music'),
 );
+const showMoodDialog = ref(false);
+watch(selectedMusic, (list) => {
+  if (list.length === 0) showMoodDialog.value = false;
+});
 
 const selectedHaveAuto = computed(() =>
   libraryEntries.value.some((e) => selectedIds.value.includes(e.id) && e.autoTags.length > 0),
@@ -365,20 +389,20 @@ async function relocateEntry(entryId: string): Promise<void> {
       </VMenu>
     </Teleport>
 
-    <!-- Pool, role and sort apply to music only, so the bar is hidden while browsing ambiance. -->
-    <PoolFilters
+    <!-- Lenses, role and sort apply to music only, so the bar is hidden while browsing ambiance. -->
+    <MoodFilters
       v-if="selectedType !== 'ambiance'"
-      v-model="poolFilters"
+      v-model="moodFilters"
       v-model:sort="sortKey"
+      v-model:dir="sortDir"
       size="small"
-      :entries="typeEntries"
       :sort-keys="SORT_KEYS"
       class="mb-2"
     />
 
     <div class="d-flex align-end mb-2 ga-2">
       <div class="d-flex flex-wrap ga-1 flex-grow-1" style="min-width: 0;">
-        <TagFilter v-model:selected-tags="selectedTags" v-model:untagged="untagged" v-model:has-auto="hasAuto" />
+        <TagFilter v-model:selected-tags="selectedTags" v-model:untagged="untagged" v-model:has-auto="hasAuto" v-model:tag-mode="tagMode" />
       </div>
       <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
         {{ filteredEntries.length }} {{ filteredEntries.length === 1 ? 'entry' : 'entries' }}
@@ -452,6 +476,23 @@ async function relocateEntry(entryId: string): Promise<void> {
             {{ roleLabel(item.role) }} · Suggested{{ item.roleAutoScore === null ? '' : ` · ${item.roleAutoScore.toFixed(2)}` }}
           </VTooltip>
         </span>
+      </template>
+
+      <template #item.lens="{ item }">
+        <div v-if="lensScore(item, moodFilters) !== null" class="lens-cell" :title="lensLabel(moodFilters)">
+          <div class="lens-bar"><div class="lens-fill" :style="{ width: `${(lensScore(item, moodFilters) ?? 0) * 100}%` }" /></div>
+          <span class="lens-value">{{ (lensScore(item, moodFilters) ?? 0).toFixed(2) }}</span>
+        </div>
+        <span v-else class="text-medium-emphasis" title="Not analyzed yet">—</span>
+      </template>
+
+      <template #item.energy="{ item }">
+        <span
+          v-if="moodValue(item, 'energy') !== null"
+          class="energy-cell"
+          :class="moodLayers(item, 'energy').user === null ? 'text-medium-emphasis' : 'text-primary'"
+          :title="energyHint(item)"
+        >{{ moodValue(item, 'energy')?.toFixed(2) }}</span>
       </template>
 
       <template #item.tags="{ item }">
@@ -555,25 +596,15 @@ async function relocateEntry(entryId: string): Promise<void> {
             <VListItem prepend-icon="mdi-restore" title="Use suggestion" subtitle="Clear the confirmed role" @click="applyBulkRole(null)" />
           </VList>
         </VMenu>
-        <VMenu>
-          <template #activator="{ props: menuProps }">
-            <VBtn
-              v-bind="menuProps"
-              prepend-icon="mdi-shape-outline"
-              append-icon="mdi-menu-down"
-              variant="tonal"
-              size="small"
-              :disabled="bulkBusy || !selectedHaveMusic"
-            >
-              Set pool…
-            </VBtn>
-          </template>
-          <VList density="compact">
-            <VListItem v-for="p in POOLS" :key="p.id" :title="p.name" @click="applyBulkPool(p.id)" />
-            <VDivider />
-            <VListItem prepend-icon="mdi-restore" title="Use suggestion" subtitle="Clear the confirmed pool" @click="applyBulkPool(null)" />
-          </VList>
-        </VMenu>
+        <VBtn
+          prepend-icon="mdi-tune-vertical"
+          variant="tonal"
+          size="small"
+          :disabled="bulkBusy || selectedMusic.length === 0"
+          @click="showMoodDialog = true"
+        >
+          Set mood levels…
+        </VBtn>
         <VBtn
           prepend-icon="mdi-check"
           variant="tonal"
@@ -607,6 +638,24 @@ async function relocateEntry(entryId: string): Promise<void> {
       :paths="pendingImportPaths"
       @import="handleImportConfirm"
     />
+
+    <VDialog v-model="showMoodDialog" max-width="560">
+      <VCard>
+        <VCardTitle class="pt-4 px-5">
+          Mood levels · {{ selectedMusic.length }} music {{ selectedMusic.length === 1 ? 'entry' : 'entries' }}
+        </VCardTitle>
+        <VCardText class="px-5">
+          <div class="text-caption text-medium-emphasis mb-3">
+            Click a bar to set that level on every selected entry. "mixed" means the entries differ.
+          </div>
+          <MoodProfile :entries="selectedMusic" />
+        </VCardText>
+        <VCardActions class="px-5 pb-4">
+          <VSpacer />
+          <VBtn variant="text" @click="showMoodDialog = false">Done</VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
 
     <FixMissingDialog v-model="showFixMissing" />
     <AutoTaggingDialog v-model="showAutoTagging" />
@@ -668,6 +717,32 @@ async function relocateEntry(entryId: string): Promise<void> {
   top: -4px;
   right: -8px;
   opacity: 0.8;
+}
+
+.lens-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lens-bar {
+  flex: 1 1 auto;
+  min-width: 40px;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(var(--v-theme-on-surface), 0.1);
+  overflow: hidden;
+}
+
+.lens-fill {
+  height: 100%;
+  background: rgb(var(--v-theme-primary));
+}
+
+.lens-value,
+.energy-cell {
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .library-table {

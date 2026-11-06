@@ -1,18 +1,24 @@
 <script setup lang="ts">
-// Ranked Scry results with pool and Role filters and a sort menu. Each row has a checkbox,
-// a preview button, the track name, its game tags, Role, the score as a short
+// Ranked Scry results with mood lenses, a Role filter and a sort menu. Each
+// row has a checkbox, a preview button, the track name, its game tags, Role,
+// the lens score (while a lens is on), Energy, the match score as a short
 // bar, and an "Add as seed" action. Clicking the row itself opens the entry's
 // details.
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import type { LibraryEntry, Role, ScryHit } from '@generated/index';
-import PoolFilters from './PoolFilters.vue';
+import MoodFilters from './MoodFilters.vue';
 import {
-  emptyPoolFilters,
-  matchesPoolFilters,
+  emptyMoodFilters,
+  lensLabel,
+  lensScore,
+  matchesMoodFilters,
+  moodLayers,
+  moodValue,
   sortByKey,
-  type PoolFilters as PoolFilterState,
+  type MoodFilters as MoodFilterState,
+  type SortDir,
   type SortKey,
-} from '../utils/pools';
+} from '../utils/moods';
 
 const props = defineProps<{
   hits: ScryHit[];
@@ -36,10 +42,12 @@ const emit = defineEmits<{
 
 let hoveredId: string | null = null;
 
-const filters = ref<PoolFilterState>(emptyPoolFilters());
+const filters = ref<MoodFilterState>(emptyMoodFilters());
 // "Best match" keeps the analyzer's ranking.
 const sortKey = ref<SortKey>('match');
-const SORT_KEYS: SortKey[] = ['match', 'name', 'confidence'];
+const sortDir = ref<SortDir>('desc');
+const SORT_KEYS: SortKey[] = ['match', 'name', 'energy'];
+const lensOn = computed(() => filters.value.lenses.length > 0);
 
 interface Row { entry: LibraryEntry; score: number }
 
@@ -52,16 +60,21 @@ const rows = computed<Row[]>(() => {
   return out;
 });
 
-// The chip counts are over every result, before the pool and Role filters.
-const rowEntries = computed(() => rows.value.map((r) => r.entry));
-
 const visibleRows = computed(() =>
   sortByKey(
-    rows.value.filter(({ entry }) => matchesPoolFilters(entry, filters.value)),
+    rows.value.filter(({ entry }) => matchesMoodFilters(entry, filters.value)),
     sortKey.value,
+    sortDir.value,
+    filters.value,
     (r) => r.entry,
   ),
 );
+
+function energyHint(entry: LibraryEntry): string {
+  const { auto, user } = moodLayers(entry, 'energy');
+  if (user !== null) return `Energy · Set by you${auto === null ? '' : ` · suggested ${auto.toFixed(2)}`}`;
+  return 'Energy · Suggested';
+}
 
 // A filter change can hide the hovered row without a mouseleave.
 watch(visibleRows, (list) => {
@@ -167,11 +180,11 @@ onBeforeUnmount(() => {
         aria-label="Select all shown results"
         @update:model-value="toggleAllVisible"
       />
-      <PoolFilters
+      <MoodFilters
         v-model="filters"
         v-model:sort="sortKey"
+        v-model:dir="sortDir"
         size="x-small"
-        :entries="rowEntries"
         :sort-keys="SORT_KEYS"
         class="flex-grow-1"
         style="min-width: 0;"
@@ -228,7 +241,23 @@ onBeforeUnmount(() => {
           {{ entry.role === 'combat' ? 'mdi-sword-cross' : 'mdi-music-note' }}
         </VIcon>
         <span v-else class="role-placeholder" />
-        <div class="score-bar" :title="`Score ${score.toFixed(3)}`">
+        <div v-if="lensOn" class="lens-cell" :title="lensLabel(filters)">
+          <template v-if="lensScore(entry, filters) !== null">
+            <div class="lens-bar">
+              <div class="lens-fill" :style="{ width: `${(lensScore(entry, filters) ?? 0) * 100}%` }" />
+            </div>
+            <span class="num">{{ (lensScore(entry, filters) ?? 0).toFixed(2) }}</span>
+          </template>
+          <span v-else class="num text-medium-emphasis">—</span>
+        </div>
+        <span
+          class="num energy-cell"
+          :class="moodLayers(entry, 'energy').user === null ? 'text-medium-emphasis' : 'text-primary'"
+          :title="energyHint(entry)"
+        >
+          <VIcon size="x-small">mdi-lightning-bolt</VIcon>{{ moodValue(entry, 'energy')?.toFixed(2) ?? '—' }}
+        </span>
+        <div class="score-bar" :class="{ 'is-muted': lensOn }" :title="`Match ${score.toFixed(3)}`">
           <div class="score-fill" :style="{ width: barWidth(score) }" />
         </div>
         <VBtn
@@ -303,6 +332,37 @@ onBeforeUnmount(() => {
   width: 20px;
 }
 
+.lens-cell {
+  flex: 0 0 92px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lens-bar {
+  flex: 1 1 auto;
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(var(--v-theme-on-surface), 0.1);
+  overflow: hidden;
+}
+
+.lens-fill {
+  height: 100%;
+  background: rgb(var(--v-theme-primary));
+}
+
+.num {
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.energy-cell {
+  flex: 0 0 44px;
+  text-align: right;
+}
+
 .score-bar {
   flex: 0 0 56px;
   height: 6px;
@@ -314,5 +374,10 @@ onBeforeUnmount(() => {
 .score-fill {
   height: 100%;
   background: rgb(var(--v-theme-primary));
+}
+
+/* While a lens ranks the list, the match bar is muted so the lens bar reads as the ranking. */
+.score-bar.is-muted .score-fill {
+  background: rgba(var(--v-theme-on-surface), 0.45);
 }
 </style>

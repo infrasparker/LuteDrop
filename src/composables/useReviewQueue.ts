@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue';
 import type { LibraryEntry } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
-import { compareReview, needsReview } from '../utils/pools';
+import { compareReview, needsReview } from '../utils/moods';
 
 // Session state, kept at module level so leaving the Review tab and coming
 // back keeps it. Nothing here is saved: Skip is ordering only.
@@ -10,8 +10,8 @@ const skipped = ref<string[]>([]);
 /// How many cards were approved from the Review tab this session.
 const approvedCount = ref(0);
 
-/// The Review queue: music with a pool to look at that has not been reviewed,
-/// newest first and least sure first (see `compareReview`). Skipped entries
+/// The Review queue: music that has not been reviewed (no mood level set, not
+/// approved), newest first and lowest top mood score first (see `compareReview`). Skipped entries
 /// move to the end, in the order they were skipped.
 export function useReviewQueue() {
   const store = useAppStore();

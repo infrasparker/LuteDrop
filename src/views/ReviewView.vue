@@ -1,9 +1,10 @@
 <script setup lang="ts">
-// The Review tab: one music track at a time, with the analyzer's pool and role
-// suggestions shown as the defaults. Approve confirms whatever is shown and
-// moves on; Skip moves on without saving anything (the track goes to the end
-// of the queue for this session). Changing Role or Pool on the card saves at
-// once but does not move on by itself.
+// The Review tab: one music track at a time, with its Role and mood profile.
+// Approve confirms the role shown, marks the track reviewed and moves on
+// (mood bars the user did not touch stay the analyzer's suggestions); Skip
+// moves on without saving anything (the track goes to the end of the queue
+// for this session). Changing Role or a mood level on the card saves at once
+// but does not move on by itself.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { ScryHit } from '@generated/index';
@@ -11,14 +12,14 @@ import { useAppStore } from '../stores/appStore';
 import { useReviewQueue } from '../composables/useReviewQueue';
 import { useLibraryPreview } from '../composables/useLibraryPreview';
 import RoleControl from '../components/RoleControl.vue';
-import PoolControl from '../components/PoolControl.vue';
-import { effectivePool, poolName, suggestionText } from '../utils/pools';
+import MoodProfile from '../components/MoodProfile.vue';
+import { topMoodText } from '../utils/moods';
 
 const store = useAppStore();
 const { queue, skippedWaiting, approvedCount, skip, noteApproved } = useReviewQueue();
 const { playingId, toggle: togglePreview, stop: stopPreview } = useLibraryPreview();
 
-// The card stays on its entry until Approve or Skip, even when a Role or Pool
+// The card stays on its entry until Approve or Skip, even when a Role or mood
 // change has already marked it reviewed (and so taken it out of the queue).
 const currentId = ref<string | null>(null);
 const current = computed(() => (currentId.value === null ? undefined : store.findLibraryEntry(currentId.value)));
@@ -43,13 +44,11 @@ const folder = computed(() => {
   return [parts[parts.length - 3], parts[parts.length - 2]].filter(Boolean).join(' / ');
 });
 
-const suggestion = computed(() => (current.value ? suggestionText(current.value) : null));
-const shownPool = computed(() => (current.value ? effectivePool(current.value) : null));
-/// The big word on the card: the pool shown (confirmed, else suggested).
-const shownPoolName = computed(() => poolName(shownPool.value));
+/// A readout only: the two highest moods shown, e.g. "Mysterious 0.87 · Menacing 0.74".
+const readout = computed(() => (current.value ? topMoodText(current.value, 2) : ''));
 const isPlaying = computed(() => current.value !== undefined && playingId.value === current.value.id);
 
-// --- Sounds like: the two nearest confirmed tracks in the shown pool ---
+// --- Sounds like: the two nearest reviewed tracks by sound ---
 
 const SIMILAR_LIMIT = 200;
 const SIMILAR_TIMEOUT_MS = 5000;
@@ -77,11 +76,11 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 watch(
-  [currentId, shownPool],
-  async ([id, pool]) => {
+  currentId,
+  async (id) => {
     const request = ++neighbourRequest;
     neighbourIds.value = [];
-    if (id === null || pool === null) return;
+    if (id === null) return;
     try {
       const hits = await withTimeout(
         invoke<ScryHit[]>('similar_entries', { entryIds: [id], limit: SIMILAR_LIMIT }),
@@ -90,7 +89,7 @@ watch(
       if (request !== neighbourRequest) return;
       neighbourIds.value = hits
         .map((h) => h.entryId)
-        .filter((hitId) => hitId !== id && store.findLibraryEntry(hitId)?.poolUser === pool)
+        .filter((hitId) => hitId !== id && (store.findLibraryEntry(hitId)?.moodReviewedAt ?? null) !== null)
         .slice(0, 2);
     } catch {
       // Not analyzed, analyzer off or slow: the line is left out.
@@ -191,12 +190,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
         <span class="text-caption text-medium-emphasis progress">{{ position }} of {{ total }}</span>
       </div>
 
-      <div class="pool-headline text-center my-6">
-        <div class="text-display-small font-weight-medium">{{ shownPoolName ?? '—' }}</div>
-        <div class="text-caption text-medium-emphasis mt-2">
-          <template v-if="suggestion">suggested: {{ suggestion }}</template>
-          <template v-else>no suggestion</template>
-        </div>
+      <div class="readout text-body-1 text-medium-emphasis my-4">
+        {{ readout || 'Not analyzed yet' }}
       </div>
 
       <div class="facet-grid mb-4">
@@ -207,9 +202,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
           :role-auto-score="current.roleAutoScore"
           :role-user="current.roleUser"
         />
-        <span class="text-caption text-medium-emphasis">Pool</span>
-        <PoolControl :entry="current" />
       </div>
+
+      <MoodProfile :entries="[current]" class="mb-4" />
 
 
       <div v-if="neighbours.length > 0" class="d-flex flex-wrap align-center ga-2 mb-3">
@@ -259,9 +254,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
   white-space: nowrap;
   padding-top: 10px;
 }
-/* Label | options | status. The options column wraps (the Pool buttons go
-   onto two lines) only when the card is too narrow for one; the status
-   column keeps its text on one line, right-aligned, and is never squeezed. */
+/* Label | options | status. The status column keeps its text on one line,
+   right-aligned, and is never squeezed. */
 .facet-grid {
   display: grid;
   grid-template-columns: max-content minmax(min-content, 1fr) max-content;

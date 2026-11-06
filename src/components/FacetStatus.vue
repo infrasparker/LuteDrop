@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 
-/// Right-hand status column for one facet (Role or Pool).
+/// Right-hand status column for the Role facet.
 /// It says where the shown value comes from and offers the one action that
 /// makes sense in that state:
 /// - suggested: the analyzer's value is shown; ✓ Confirm keeps it as the
