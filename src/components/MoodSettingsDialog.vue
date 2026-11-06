@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { EnergyPreview, MoodResetImpact, MoodVocabulary, ScryHit } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useToast } from '../composables/useToast';
+import { calibrationLabel } from '../utils/moods';
 import ConfirmDialog from './ConfirmDialog.vue';
 
 /// Settings → Moods: the mood vocabulary the analyzer scores, and its
@@ -370,12 +371,7 @@ const removeMessage = computed(() => {
   return `Removing ${names} deletes its values on every track, including ${n} ${n === 1 ? 'level' : 'levels'} set by you.`;
 });
 
-const calibratedLabel = computed(() => {
-  const c = store.moodCalibration;
-  if (!c) return 'Not calibrated yet. The next analysis run calibrates once it covers 50 music tracks.';
-  const date = new Date(Number(c.calibratedAt)).toLocaleString();
-  return `Last calibrated: ${date}, ${c.tracks} tracks`;
-});
+const calibratedLabel = computed(() => calibrationLabel(store.moodCalibration));
 </script>
 
 <template>
@@ -672,7 +668,7 @@ const calibratedLabel = computed(() => {
     <ConfirmDialog
       v-model="confirmRecalibrate"
       title="Recalibrate moods?"
-      message="This clears the calibration and every suggested mood value, then analyzes the library again to suggest them from the current prompts. Levels set by you stay."
+      message="This clears the calibration and every suggested mood value, then analyzes the library again. The new calibration comes from the analyzer's reference set when it has one, otherwise from your library. Levels set by you stay."
       confirm-label="Recalibrate"
       @confirm="recalibrate"
     />

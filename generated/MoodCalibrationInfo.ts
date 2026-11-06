@@ -8,4 +8,13 @@ export type MoodCalibrationInfo = {
 /**
  * Unix milliseconds as a string, like `created_at`.
  */
-calibratedAt: string, tracks: number, };
+calibratedAt: string, tracks: number, 
+/**
+ * `"library"` (statistics from the user's library) or `"reference"`
+ * (the analyzer's fixed reference set).
+ */
+source: string, 
+/**
+ * Id of the reference set when `source` is `"reference"`.
+ */
+referenceSet: string | null, };

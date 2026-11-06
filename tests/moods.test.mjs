@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import {
   ENERGY_HIGH_ABOVE,
   ENERGY_LOW_BELOW,
+  calibrationLabel,
   canSortBy,
   chipState,
   cycleChip,
@@ -171,4 +172,12 @@ test('Energy ties between set levels break by the suggested Energy, then by name
     entry('b', { energy: 0.55, energyUser: 0.5 }),
   ];
   assert.deepEqual(sortByKey(items, 'energy', 'desc', f, (e) => e).map((e) => e.name), ['b', 'a', 'c']);
+});
+
+test('calibrationLabel says where the calibration came from', () => {
+  const lib = calibrationLabel({ calibratedAt: '1700000000000', tracks: 129, source: 'library', referenceSet: null });
+  assert.ok(lib.includes('your library') && lib.includes('129 tracks'));
+  const ref = calibrationLabel({ calibratedAt: '1700000000000', tracks: 300, source: 'reference', referenceSet: 'incompetech-300-v1' });
+  assert.ok(ref.includes('reference set') && ref.includes('300') && ref.includes('incompetech-300-v1'));
+  assert.equal(calibrationLabel(null), 'Not calibrated yet. The next analysis run calibrates once it covers 50 music tracks.');
 });

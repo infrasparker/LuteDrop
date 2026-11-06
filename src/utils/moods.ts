@@ -1,5 +1,5 @@
 import { shallowRef } from 'vue';
-import type { LibraryEntry, MoodId, MoodVocabulary, Role } from '@generated/index';
+import type { LibraryEntry, MoodCalibrationInfo, MoodId, MoodVocabulary, Role } from '@generated/index';
 
 /// One row of the mood profile: its id (as stored) and the name shown.
 export interface MoodInfo {
@@ -317,3 +317,14 @@ export function sortByKey<T>(
   return out;
 }
 
+
+/** The line under "Calibration" in Settings → Moods: which statistics the
+ * bars are measured against. */
+export function calibrationLabel(info: MoodCalibrationInfo | null): string {
+  if (!info) return 'Not calibrated yet. The next analysis run calibrates once it covers 50 music tracks.';
+  if (info.source === 'reference') {
+    return `Calibrated against the reference set: ${info.tracks} soundtrack tracks (Kevin MacLeod, CC BY), ${info.referenceSet}`;
+  }
+  const date = new Date(Number(info.calibratedAt)).toLocaleString();
+  return `Calibrated against your library: ${date}, ${info.tracks} tracks`;
+}

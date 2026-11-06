@@ -909,6 +909,12 @@ pub fn load_full_state(conn: &Connection) -> Result<AppState, String> {
         mood_calibration: calibration.map(|c| MoodCalibrationInfo {
             calibrated_at: c.calibrated_at,
             tracks: c.tracks as u32,
+            source: match c.source {
+                crate::autotag::plan::CalibrationSource::Library => "library",
+                crate::autotag::plan::CalibrationSource::Reference => "reference",
+            }
+            .to_string(),
+            reference_set: c.reference_set,
         }),
         mood_vocabulary,
         mood_vocabulary_unreadable: settings::mood_vocabulary_problem(conn)?.is_some(),
@@ -3510,7 +3516,12 @@ mod tests {
         let state = load_full_state(&conn).unwrap();
         assert_eq!(
             state.mood_calibration,
-            Some(MoodCalibrationInfo { calibrated_at: "1700000000000".into(), tracks: 50 })
+            Some(MoodCalibrationInfo {
+                calibrated_at: "1700000000000".into(),
+                tracks: 50,
+                source: "library".into(),
+                reference_set: None,
+            })
         );
         assert!(!state.moods_need_recalibration);
 

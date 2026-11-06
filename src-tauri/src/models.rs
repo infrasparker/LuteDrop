@@ -297,6 +297,11 @@ pub struct MoodCalibrationInfo {
     /// Unix milliseconds as a string, like `created_at`.
     pub calibrated_at: String,
     pub tracks: u32,
+    /// `"library"` (statistics from the user's library) or `"reference"`
+    /// (the analyzer's fixed reference set).
+    pub source: String,
+    /// Id of the reference set when `source` is `"reference"`.
+    pub reference_set: Option<String>,
 }
 
 /// What Reset to defaults (Settings → Moods) would delete: the stored mood
