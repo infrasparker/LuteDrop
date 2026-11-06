@@ -51,9 +51,9 @@ Every music entry has a role, **Combat** or **Non-combat**; there is no "no role
 
 ### Moods
 
-A mood is a **lens**, not a label: picking a mood ranks the whole music library by how well each track fits it. No track belongs to a mood, and nothing is cut off. The moods are yours to edit (see **Mood vocabulary** below); a new library starts with eight moods and Energy:
+A mood is a **lens**, not a label: picking a mood ranks the whole music library by how well each track fits it. No track belongs to a mood, and nothing is cut off. The moods are yours to edit (see **Mood vocabulary** below); a new library starts with nine moods and Energy:
 
-- **Peaceful**, **Sorrowful**, **Wondrous**, **Joyful**, **Quirky**, **Mysterious**, **Grim**, **Heroic**
+- **Peaceful**, **Sorrowful**, **Wondrous**, **Joyful**, **Quirky**, **Mysterious** (enigma and chimes), **Grim** (fear and dread), **Heroic**, **Battle** (combat)
 - **Energy** (calm and slow at 0, energetic at 1)
 
 Each music track has a **mood profile**: one value from 0 to 1 per mood, plus one for Energy. Ambiance entries have no moods.

@@ -1,4 +1,4 @@
-"""Default text prompts for the mood profile: eight moods plus Energy.
+"""Default text prompts for the mood profile: nine moods plus Energy.
 
 Each mood is scored on its own as the absolute mean similarity of a track with
 its prompts. Energy is the one two-sided score: the mean similarity with the

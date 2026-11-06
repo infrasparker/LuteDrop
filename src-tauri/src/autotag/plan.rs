@@ -809,7 +809,7 @@ mod tests {
         assert!(serde_json::to_value(&req).unwrap().get("pace").is_none());
     }
 
-    /// The default vocabulary's ids: eight moods, then energy.
+    /// The default vocabulary's ids: nine moods, then energy.
     fn ids() -> Vec<String> {
         MoodVocabulary::defaults().ids()
     }

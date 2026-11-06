@@ -61,22 +61,6 @@ export function stepLevel(value: number | null, step: 1 | -1): number {
   return [...MOOD_LEVELS].reverse().find((l) => l < value - eps) ?? MOOD_LEVELS[0];
 }
 
-/// The entry's highest moods (Energy left out), best first, e.g. for the
-/// readout "Mysterious 0.87 · Grim 0.74".
-export function topMoods(entry: LibraryEntry, n: number): { id: MoodId; name: string; value: number }[] {
-  const out: { id: MoodId; name: string; value: number }[] = [];
-  for (const m of moodsOnly()) {
-    const value = moodValue(entry, m.id);
-    if (value !== null) out.push({ id: m.id, name: m.name, value });
-  }
-  return out.sort((a, b) => b.value - a.value).slice(0, n);
-}
-
-export const topMoodText = (entry: LibraryEntry, n = 2): string =>
-  topMoods(entry, n)
-    .map((m) => `${m.name} ${m.value.toFixed(2)}`)
-    .join(' · ');
-
 // --- Lenses and filters ---
 
 /// A tag chip's state. Tag chips cycle off → include → exclude → off. (Mood

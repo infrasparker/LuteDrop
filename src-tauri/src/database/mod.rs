@@ -546,14 +546,36 @@ fn migrate_v12_to_v13(conn: &Connection) -> SqlResult<()> {
     )
 }
 
+/// The `mood_vocabulary` row exactly as v13 seeded it (the v0.16.1 defaults
+/// before the set was settled), for the v14 swap.
+const V13_DEFAULT_MOOD_VOCABULARY_JSON: &str = r#"{"moods":[{"id":"peaceful","name":"Peaceful","prompts":["relaxing, positive"]},{"id":"sorrowful","name":"Sorrowful","prompts":["sad, sorrowful, mournful, melancholic, somber, wistful, grieving, nostalgic, reflective music"]},{"id":"wondrous","name":"Wondrous","prompts":["hopeful, inspiring"]},{"id":"joyful","name":"Joyful","prompts":["happy, upbeat"]},{"id":"quirky","name":"Quirky","prompts":["quirky, weird, offbeat, groovy, funky, eccentric, strange, campy, oddball, mischievous music"]},{"id":"mysterious","name":"Mysterious","prompts":["mysterious, unsettling, eerie, strange, uncanny, otherworldly, suspenseful, looming, dread music"]},{"id":"grim","name":"Grim","prompts":["horror, dark, heavy"]},{"id":"heroic","name":"Heroic","prompts":["heroic, triumphant, bold, rousing, victorious, adventurous, noble, uplifting, epic orchestral music"]}],"energy":{"positive":["energetic, upbeat, powerful"],"negative":["slow, relaxing, calm"]}}"#;
+
 /// v13 → v14: the mood bars changed meaning. A mood's bar now reads 0.5 one
 /// standard deviation above the library average instead of at the average
 /// (Energy keeps the average as its middle), so every stored suggestion is on
 /// the old scale. Clear the calibration, the suggested values and the cached
 /// scores; the next analysis run takes a calibration and fills every profile
 /// again on the new scale. Levels set by the user, the vocabulary, roles,
-/// tags and review timestamps stay.
+/// tags and review timestamps stay. A vocabulary still exactly the v13
+/// defaults is replaced by the settled set (with Battle); an edited, missing
+/// or unreadable one is left alone, like v13 did for v12.
 fn migrate_v13_to_v14(conn: &Connection) -> SqlResult<()> {
+    use rusqlite::OptionalExtension;
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            params![settings::KEY_MOOD_VOCABULARY],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if stored.as_deref() == Some(V13_DEFAULT_MOOD_VOCABULARY_JSON) {
+        let json = settings::mood_vocabulary_json(&MoodVocabulary::defaults())
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+        conn.execute(
+            "UPDATE meta SET value = ?1 WHERE key = ?2",
+            params![json, settings::KEY_MOOD_VOCABULARY],
+        )?;
+    }
     conn.execute("DELETE FROM meta WHERE key = ?1", params![settings::KEY_MOOD_CALIBRATION])?;
     conn.execute_batch(
         "UPDATE library_entry_moods SET auto_score = NULL;
@@ -3248,6 +3270,61 @@ mod tests {
             .query_row("SELECT mood_reviewed_at FROM library_entries WHERE id = 'L'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(reviewed.as_deref(), Some("1700000000000"));
+        assert_eq!(pre_migration_backups(dir.path(), 13).len(), 1);
+    }
+
+
+    fn v13_default_vocabulary() -> MoodVocabulary {
+        let mood = |id: &str, name: &str, prompts: &[&str]| crate::models::MoodDef {
+            id: id.into(),
+            name: name.into(),
+            prompts: prompts.iter().map(|p| p.to_string()).collect(),
+        };
+        MoodVocabulary {
+            moods: vec![
+                mood("peaceful", "Peaceful", &["relaxing, positive"]),
+                mood("sorrowful", "Sorrowful", &["sad, sorrowful, mournful, melancholic, somber, wistful, grieving, nostalgic, reflective music"]),
+                mood("wondrous", "Wondrous", &["hopeful, inspiring"]),
+                mood("joyful", "Joyful", &["happy, upbeat"]),
+                mood("quirky", "Quirky", &["quirky, weird, offbeat, groovy, funky, eccentric, strange, campy, oddball, mischievous music"]),
+                mood("mysterious", "Mysterious", &["mysterious, unsettling, eerie, strange, uncanny, otherworldly, suspenseful, looming, dread music"]),
+                mood("grim", "Grim", &["horror, dark, heavy"]),
+                mood("heroic", "Heroic", &["heroic, triumphant, bold, rousing, victorious, adventurous, noble, uplifting, epic orchestral music"]),
+            ],
+            energy: crate::models::EnergyPrompts {
+                positive: vec!["energetic, upbeat, powerful".into()],
+                negative: vec!["slow, relaxing, calm".into()],
+            },
+        }
+    }
+
+    #[test]
+    fn v13_default_json_is_what_v13_wrote() {
+        assert_eq!(
+            settings::mood_vocabulary_json(&v13_default_vocabulary()).unwrap(),
+            V13_DEFAULT_MOOD_VOCABULARY_JSON
+        );
+    }
+
+    #[test]
+    fn v14_swaps_the_untouched_v13_defaults_for_the_settled_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lutedrop.db");
+        create_v12_db(&path, V13_DEFAULT_MOOD_VOCABULARY_JSON);
+        Connection::open(&path)
+            .unwrap()
+            .execute("UPDATE meta SET value = '13' WHERE key = 'schema_version'", [])
+            .unwrap();
+
+        let conn = open_db(&path).unwrap();
+        assert_eq!(read_schema_version(&conn), 14);
+        assert_eq!(
+            meta_value(&conn, "mood_vocabulary").unwrap(),
+            settings::mood_vocabulary_json(&MoodVocabulary::defaults()).unwrap()
+        );
+        assert!(meta_value(&conn, "mood_vocabulary").unwrap().contains("\"battle\""));
+        assert_eq!(meta_value(&conn, "mood_calibration"), None);
+        assert_eq!(mood_rows(&conn), vec![("L".into(), "peaceful".into(), None, Some(0.25))]);
         assert_eq!(pre_migration_backups(dir.path(), 13).len(), 1);
     }
 

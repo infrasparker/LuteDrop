@@ -2064,7 +2064,7 @@ mod tests {
         MoodVocabulary::defaults().ids().into_iter().map(|m| (m, v)).collect()
     }
 
-    /// How many ids the default vocabulary has (eight moods plus Energy).
+    /// How many ids the default vocabulary has (nine moods plus Energy).
     const MOOD_COUNT: i64 = 10;
 
     #[test]
