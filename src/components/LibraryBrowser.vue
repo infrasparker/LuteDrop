@@ -5,7 +5,7 @@ import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
 import TagFilter from './TagFilter.vue';
 import LibraryPickerRow from './LibraryPickerRow.vue';
-import { matchesTagSelection, type MatchMode } from '../utils/moods';
+import { emptyChipSelection, matchesTagSelection, type ChipSelection } from '../utils/moods';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -21,8 +21,7 @@ const audio = useAudio();
 const { libraryEntries } = storeToRefs(store);
 
 const searchQuery = ref('');
-const selectedTags = ref<string[]>([]);
-const tagMode = ref<MatchMode>('any');
+const tagSelection = ref<ChipSelection>(emptyChipSelection());
 const untagged = ref(false);
 const selectedType = ref<string>('all');
 const selectedIds = ref<Set<string>>(new Set());
@@ -34,7 +33,7 @@ const filteredEntries = computed(() => {
       entry.name.toLowerCase().includes(searchQuery.value.toLowerCase());
     const matchesTags = untagged.value
       ? entry.tags.length === 0
-      : matchesTagSelection(entry.tags, selectedTags.value, tagMode.value);
+      : matchesTagSelection(entry.tags, tagSelection.value);
     const matchesType =
       selectedType.value === 'all' || entry.entryType === selectedType.value;
     return matchesSearch && matchesTags && matchesType;
@@ -55,8 +54,7 @@ function close(): void {
   audio.stopLibrarySound();
   selectedIds.value = new Set();
   searchQuery.value = '';
-  selectedTags.value = [];
-  tagMode.value = 'any';
+  tagSelection.value = emptyChipSelection();
   untagged.value = false;
   selectedType.value = 'all';
   emit('update:modelValue', false);
@@ -104,7 +102,7 @@ async function addClips(): Promise<void> {
 
         <!-- Tag filter -->
         <div class="mb-3">
-          <TagFilter v-model:selected-tags="selectedTags" v-model:untagged="untagged" v-model:tag-mode="tagMode" />
+          <TagFilter v-model:selection="tagSelection" v-model:untagged="untagged" />
         </div>
 
         <!-- Entry count -->

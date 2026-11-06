@@ -79,82 +79,114 @@ export const topMoodText = (entry: LibraryEntry, n = 2): string =>
 
 // --- Lenses and filters ---
 
-/// How several selected lenses (or tag chips) combine: `any` ranks by a
-/// track's best score among them, `all` by its weakest.
-export type MatchMode = 'any' | 'all';
+/// A filter chip's state. Chips cycle off → include → exclude → off.
+export type ChipState = 'off' | 'include' | 'exclude';
+
+export function nextChipState(state: ChipState): ChipState {
+  return state === 'off' ? 'include' : state === 'include' ? 'exclude' : 'off';
+}
+
+/// Included and excluded chips of one kind (tags, or mood lenses).
+export interface ChipSelection {
+  include: string[];
+  exclude: string[];
+}
+
+export const emptyChipSelection = (): ChipSelection => ({ include: [], exclude: [] });
+
+export function chipState(sel: ChipSelection, id: string): ChipState {
+  if (sel.include.includes(id)) return 'include';
+  if (sel.exclude.includes(id)) return 'exclude';
+  return 'off';
+}
+
+/// The selection with `id` moved to its next state.
+export function cycleChip(sel: ChipSelection, id: string): ChipSelection {
+  const next = nextChipState(chipState(sel, id));
+  const include = sel.include.filter((x) => x !== id);
+  const exclude = sel.exclude.filter((x) => x !== id);
+  if (next === 'include') include.push(id);
+  if (next === 'exclude') exclude.push(id);
+  return { include, exclude };
+}
 
 export type RoleChoice = 'all' | Role;
 
 export interface MoodFilters {
-  /// Selected lenses, in the order they were picked; empty means no lens.
-  lenses: MoodId[];
-  mode: MatchMode;
+  /// Mood lenses, in the order they were picked. Included moods rank the
+  /// list by the weakest of their scores; an excluded mood keeps only
+  /// tracks scoring below `EXCLUDE_BELOW` in it.
+  lenses: ChipSelection;
   role: RoleChoice;
 }
 
 export function emptyMoodFilters(): MoodFilters {
-  return { lenses: [], mode: 'any', role: 'all' };
+  return { lenses: emptyChipSelection(), role: 'all' };
 }
 
-/// The entry's score under the selected lenses: its best (any) or weakest
-/// (all) value among them. Null when no lens is selected, for ambiance, and
-/// for music with no value for a selected mood (`any` uses those it has).
-export function lensScore(entry: LibraryEntry, f: Pick<MoodFilters, 'lenses' | 'mode'>): number | null {
-  if (f.lenses.length === 0 || entry.entryType !== 'music') return null;
-  const values = f.lenses.map((id) => moodValue(entry, id));
-  if (f.mode === 'all') {
-    if (values.some((v) => v === null)) return null;
-    return Math.min(...(values as number[]));
-  }
-  const present = values.filter((v): v is number => v !== null);
-  return present.length === 0 ? null : Math.max(...present);
+/// An excluded mood keeps a track only while its score there is below this.
+export const EXCLUDE_BELOW = 0.5;
+
+/// True while at least one mood lens is included (the list is ranked).
+export const lensOn = (f: Pick<MoodFilters, 'lenses'>): boolean => f.lenses.include.length > 0;
+
+/// The entry's score under the included lenses: the weakest of them, so a
+/// track ranks high only when it is high in every included mood. Null when
+/// no lens is included, for ambiance, and for music missing a value for an
+/// included mood.
+export function lensScore(entry: LibraryEntry, f: Pick<MoodFilters, 'lenses'>): number | null {
+  const ids = f.lenses.include;
+  if (ids.length === 0 || entry.entryType !== 'music') return null;
+  const values = ids.map((id) => moodValue(entry, id));
+  if (values.some((v) => v === null)) return null;
+  return Math.min(...(values as number[]));
 }
 
-/// True when the entry passes the lens and role filters. Under a lens only
-/// music shows (ambiance has no moods); music not scored yet stays, ranked
-/// last. A role choice shows music with that role (ambiance has none).
+/// True when the entry passes the lens and role filters. With any lens on
+/// (included or excluded) only music shows (ambiance has no moods). Music
+/// not scored yet stays, ranked last; an excluded mood drops a track only
+/// when its score there is known and at least `EXCLUDE_BELOW`. A role
+/// choice shows music with that role (ambiance has none).
 export function matchesMoodFilters(entry: LibraryEntry, f: MoodFilters): boolean {
-  if (f.lenses.length > 0 && entry.entryType !== 'music') return false;
+  const anyLens = f.lenses.include.length > 0 || f.lenses.exclude.length > 0;
+  if (anyLens && entry.entryType !== 'music') return false;
+  for (const id of f.lenses.exclude) {
+    const v = moodValue(entry, id);
+    if (v !== null && v >= EXCLUDE_BELOW) return false;
+  }
   if (f.role === 'all') return true;
   return entry.role === f.role;
 }
 
-/// Short label for the lens column's header and hover text.
-export function lensLabel(f: Pick<MoodFilters, 'lenses' | 'mode'>): string {
-  if (f.lenses.length === 0) return '';
-  if (f.lenses.length === 1) return moodName(f.lenses[0]);
-  const names = f.lenses.map(moodName).join(f.mode === 'any' ? ' or ' : ' and ');
-  return f.mode === 'any' ? `Best of ${names}` : `Weakest of ${names}`;
+/// The names in the lens column's header: what is ranked (included moods)
+/// and what is excluded (shown struck through after a middot).
+export function lensHeaderParts(f: Pick<MoodFilters, 'lenses'>): { ranked: string; excluded: string[] } {
+  return { ranked: f.lenses.include.map(moodName).join(' + '), excluded: f.lenses.exclude.map(moodName) };
 }
 
-/// True when an entry with `tags` passes the selected tag chips: one of them
-/// (any) or every one (all). No chip selected passes everything.
-export function matchesTagSelection(tags: string[], selected: string[], mode: MatchMode): boolean {
-  if (selected.length === 0) return true;
-  return mode === 'all' ? selected.every((t) => tags.includes(t)) : selected.some((t) => tags.includes(t));
+/// Plain-text version of the lens header, for hover text: "Grim + Heroic",
+/// "Heroic · not Grim".
+export function lensLabel(f: Pick<MoodFilters, 'lenses'>): string {
+  const { ranked, excluded } = lensHeaderParts(f);
+  const not = excluded.length > 0 ? ` · not ${excluded.join(', ')}` : '';
+  const how = f.lenses.include.length > 1 ? ' (the weakest of them)' : '';
+  return `${ranked}${how}${not}`;
 }
 
-/// The lens column's header: the mood's name, or "Best of 2" / "Weakest of 2"
-/// (the full names are in `lensLabel`, shown on hover).
-export function lensHeader(f: Pick<MoodFilters, 'lenses' | 'mode'>): string {
-  if (f.lenses.length <= 1) return lensLabel(f);
-  return `${f.mode === 'any' ? 'Best' : 'Weakest'} of ${f.lenses.length}`;
+/// True when an entry with `tags` passes the tag chips: it has at least one
+/// included tag (when any is included) and none of the excluded ones.
+export function matchesTagSelection(tags: string[], sel: ChipSelection): boolean {
+  if (sel.include.length > 0 && !sel.include.some((t) => tags.includes(t))) return false;
+  return !sel.exclude.some((t) => tags.includes(t));
 }
 
 // --- Sorting ---
 
-/// Sort keys for the filter bar. `match` keeps the incoming order (Scry's
-/// ranking); `lens` ranks by the lens score, highest first, and is offered
-/// while a lens is selected.
+/// Sort keys, picked from the list's column headers. `match` keeps the
+/// incoming order (Scry's ranking); `lens` ranks by the lens score and is
+/// there while a lens is included.
 export type SortKey = 'match' | 'lens' | 'name' | 'energy';
 export type SortDir = 'asc' | 'desc';
-
-export const SORT_LABELS: Record<SortKey, string> = {
-  match: 'Best match',
-  lens: 'Lens score',
-  name: 'Name',
-  energy: 'Energy',
-};
 
 /// The direction a key starts in when picked: scores high first, names A–Z.
 export const DEFAULT_DIR: Record<SortKey, SortDir> = {
@@ -163,6 +195,22 @@ export const DEFAULT_DIR: Record<SortKey, SortDir> = {
   name: 'asc',
   energy: 'desc',
 };
+
+/// The sort after a header click: a new key starts in its default
+/// direction, the current key flips.
+export function clickSort(current: { key: SortKey; dir: SortDir }, key: SortKey): { key: SortKey; dir: SortDir } {
+  if (current.key !== key) return { key, dir: DEFAULT_DIR[key] };
+  return { key, dir: current.dir === 'asc' ? 'desc' : 'asc' };
+}
+
+/// The sort after the lenses changed: including the first lens ranks by it
+/// (highest first); dropping the last one while ranking by it goes back to
+/// Name.
+export function sortForLens(current: { key: SortKey; dir: SortDir }, wasOn: boolean, isOn: boolean): { key: SortKey; dir: SortDir } {
+  if (isOn && !wasOn) return { key: 'lens', dir: 'desc' };
+  if (!isOn && current.key === 'lens') return { key: 'name', dir: 'asc' };
+  return current;
+}
 
 const byName = (a: LibraryEntry, b: LibraryEntry): number => a.name.localeCompare(b.name);
 
@@ -179,7 +227,7 @@ export function sortByKey<T>(
   items: T[],
   key: SortKey,
   dir: SortDir,
-  filters: Pick<MoodFilters, 'lenses' | 'mode'>,
+  filters: Pick<MoodFilters, 'lenses'>,
   entryOf: (item: T) => LibraryEntry,
 ): T[] {
   if (key === 'match') return dir === 'desc' ? items : [...items].reverse();

@@ -62,21 +62,21 @@ The analyzer suggests every value by comparing the track's sound with a few desc
 
 - **The profile.** One bar per mood, each with five levels (0, 0.25, 0.5, 0.75, 1). A bar at the analyzer's value is **Suggested** and drawn muted. Clicking a bar (or using the arrow keys on a focused bar) sets the nearest level; the bar is then **Set by you**, drawn in the accent colour, and hovering it shows "Set by you · suggested 0.62". **↺** goes back to the suggestion. A level you set always wins over the analyzer's.
 - The entry editor has a **Role** row and the mood profile under it. The Library's bulk bar has **Set mood levels…**, which opens the profile for the selected music; a click sets that level on every selected track, and a bar whose tracks differ shows "mixed".
-- **Lenses.** The Library and Scry have a row of lens buttons, one per mood (Energy has no lens; sort by it instead). One lens ranks the list by that score, highest first, with the score as a bar in its own column. With two or more lenses an **Any / All** switch appears: any (the default) ranks by a track's best score among them, all by its weakest. Ambiance is hidden while a lens is on.
-- The filter bar also has the role filter and a **Sort** menu (Name, Energy, and Lens score while a lens is on) with a direction arrow. Energy is a column in the Library too, sortable either way.
-- Tag chips work the same way: with two or more selected, **Any / All** chooses between entries with one of the tags (the default) and entries with every one.
+- **Lenses.** The Library and Scry have a row of lens chips, one per mood (Energy has no lens; sort by its column instead). A chip cycles **off → include → exclude** with each click. Included moods rank the list, highest first, by the *weaker* of their scores, so with Grim and Heroic included a track ranks high only when it is high in both. An excluded mood (red outline, struck through) hides tracks scoring 0.5 or more in it; tracks not analyzed yet stay. The lens column shows the score used for ranking, and its header names what is ranked, for example "Grim + Heroic" or "Heroic · ~~Grim~~". Ambiance is hidden while any lens is on.
+- **Sorting** is done from the column headers only: Name, Energy, and the lens score while a lens is included (Scry adds Match, its search ranking). Click a header to sort by it, again to flip the direction. Including the first lens sorts by the lens score, highest first; clearing the last one goes back to Name. The filter bar also has the Role filter.
+- Tag chips cycle the same way: an entry passes when it has at least one included tag (if any is included) and none of the excluded ones. **Untagged** and **Has auto tags** are plain on/off filters on top.
 
 #### Mood vocabulary
 
 **Moods** in the left rail opens the mood vocabulary: the moods the analyzer scores and the text prompts it compares each track with.
 
-- Each mood has an **id** (lowercase letters; it cannot change once saved), a **name** (rename freely), and **prompts**, one per line. Moods can be added, removed and moved up or down; the order is the order of the lens buttons and the profile. Energy is always last and has two sides of prompts: energetic and calm.
+- Each mood has an **id** (lowercase letters; it cannot change once saved), a **name** (rename freely), and **prompts**, one per line. Moods can be added, removed and moved up or down; the order is the order of the lens chips and the profile. Energy is always last and has two sides of prompts: energetic and calm.
 - The **word bank** above the list holds tag words the analyzer's text model knows well. Clicking one adds it, on a line of its own, to the prompt field you were last in. Single tag words work as well as sentences, but not every word is reliable, so check with Preview.
 - **Preview** on a mood lists the 15 tracks its current prompts rank highest, with their album folder and raw similarity, without saving or recalibrating anything. It needs the analyzer.
 - **Save** stores the vocabulary. Removing a mood deletes its values on every track; when that includes levels set by you, Save asks first and says how many.
 - **Recalibrate** clears the calibration and every suggested mood value (levels set by you stay) and starts an analysis run, which suggests every mood again from the current prompts. The panel shows when the calibration was taken and from how many tracks.
 - **Reset to defaults** puts back the shipped mood list and prompts. Levels set by you stay for moods still in the list; moods not in the defaults lose their values, and the confirm dialog says how many. It also works when the stored list is unreadable (when Save is blocked). If prompts changed, it then offers to recalibrate.
-- After you change a mood's prompts (or add a mood), Save offers to recalibrate. Until you do, the lens buttons show **Needs recalibration**, and the changed moods keep their old suggestions; the others are still suggested as before.
+- After you change a mood's prompts (or add a mood), Save offers to recalibrate. Until you do, the lens row shows **Needs recalibration**, and the changed moods keep their old suggestions; the others are still suggested as before.
 
 ### Review
 
@@ -104,7 +104,7 @@ Auto tags are learned from the tags the user applied by hand.
 
 - **Text search.** A description such as "tense strings building to a battle" returns the closest tracks, ranked by score.
 - **More like this.** The action on a Library row opens Scry seeded with that track. Seeds are shown as removable chips, more can be added from the results, and the results are the tracks closest to the seeds together.
-- **Filters.** The results can be ranked by mood lenses and filtered by Role, and sorted by best match, name, Energy or lens score.
+- **Filters.** The results can be ranked and filtered by mood lens chips and filtered by Role, and sorted from the column headers by match, name, Energy or lens score.
 - **Map.** A scatter plot of every analyzed music track, colored by role. Hovering shows the track name and clicking plays it. Dragging draws a lasso that adds the enclosed tracks to the selection. Seeds and results are highlighted.
 - **Playlists.** The selection can become a playlist with **Create playlist**, which adds a composition with one shuffle track holding the selected tracks to a chosen group of the active configuration, or be appended to a track with **Add to existing track**.
 

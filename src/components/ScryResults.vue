@@ -1,6 +1,7 @@
 <script setup lang="ts">
-// Ranked Scry results with mood lenses, a Role filter and a sort menu. Each
-// row has a checkbox, a preview button, the track name, its game tags, Role,
+// Ranked Scry results with mood lenses and a Role filter, sorted from the
+// list's column headers (Name, lens score, Energy, Match) like the Library's
+// table. Each row has a checkbox, a preview button, the track name, its game tags, Role,
 // the lens score (while a lens is on), Energy, the match score as a short
 // bar, and an "Add as seed" action. Clicking the row itself opens the entry's
 // details.
@@ -8,8 +9,11 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import type { LibraryEntry, Role, ScryHit } from '@generated/index';
 import MoodFilters from './MoodFilters.vue';
 import {
+  clickSort,
   emptyMoodFilters,
+  lensHeaderParts,
   lensLabel,
+  lensOn as lensIsOn,
   lensScore,
   matchesMoodFilters,
   moodLayers,
@@ -46,8 +50,22 @@ const filters = ref<MoodFilterState>(emptyMoodFilters());
 // "Best match" keeps the analyzer's ranking.
 const sortKey = ref<SortKey>('match');
 const sortDir = ref<SortDir>('desc');
-const SORT_KEYS: SortKey[] = ['match', 'name', 'energy'];
-const lensOn = computed(() => filters.value.lenses.length > 0);
+const lensOn = computed(() => lensIsOn(filters.value));
+
+function sortBy(key: SortKey): void {
+  const picked = clickSort({ key: sortKey.value, dir: sortDir.value }, key);
+  sortKey.value = picked.key;
+  sortDir.value = picked.dir;
+}
+
+/// The arrow a header shows: none unless the list is sorted by it.
+function sortIcon(key: SortKey): string | null {
+  if (sortKey.value !== key) return null;
+  return sortDir.value === 'asc' ? 'mdi-arrow-up' : 'mdi-arrow-down';
+}
+
+const ariaSort = (key: SortKey): 'ascending' | 'descending' | 'none' =>
+  sortKey.value !== key ? 'none' : sortDir.value === 'asc' ? 'ascending' : 'descending';
 
 interface Row { entry: LibraryEntry; score: number }
 
@@ -185,7 +203,6 @@ onBeforeUnmount(() => {
         v-model:sort="sortKey"
         v-model:dir="sortDir"
         size="x-small"
-        :sort-keys="SORT_KEYS"
         class="flex-grow-1"
         style="min-width: 0;"
       />
@@ -193,6 +210,38 @@ onBeforeUnmount(() => {
       <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
         {{ visibleRows.length }} of {{ rows.length }}
       </span>
+    </div>
+
+    <!-- Column headers: the only sort control, laid out like the rows below. -->
+    <div v-if="rows.length > 0" class="scry-head d-flex align-center ga-1 px-1 text-caption" role="row">
+      <span class="head-lead" />
+      <button type="button" class="head-btn flex-grow-1 text-left" :aria-sort="ariaSort('name')" @click="sortBy('name')">
+        Name<VIcon v-if="sortIcon('name')" size="x-small">{{ sortIcon('name') }}</VIcon>
+      </button>
+      <span class="role-placeholder" />
+      <button
+        v-if="lensOn"
+        type="button"
+        class="head-btn lens-head text-left"
+        :title="lensLabel(filters)"
+        :aria-sort="ariaSort('lens')"
+        @click="sortBy('lens')"
+      >
+        <span class="text-truncate">
+          {{ lensHeaderParts(filters).ranked }}
+          <template v-if="lensHeaderParts(filters).excluded.length > 0">
+            · <s class="text-error">{{ lensHeaderParts(filters).excluded.join(', ') }}</s>
+          </template>
+        </span>
+        <VIcon v-if="sortIcon('lens')" size="x-small">{{ sortIcon('lens') }}</VIcon>
+      </button>
+      <button type="button" class="head-btn energy-head" :aria-sort="ariaSort('energy')" @click="sortBy('energy')">
+        Energy<VIcon v-if="sortIcon('energy')" size="x-small">{{ sortIcon('energy') }}</VIcon>
+      </button>
+      <button type="button" class="head-btn match-head" :aria-sort="ariaSort('match')" @click="sortBy('match')">
+        Match<VIcon v-if="sortIcon('match')" size="x-small">{{ sortIcon('match') }}</VIcon>
+      </button>
+      <span class="head-trail" />
     </div>
 
     <div ref="listEl" class="scry-results-list flex-grow-1" @mouseleave="setHovered(null)">
@@ -280,6 +329,53 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.scry-head {
+  min-height: 28px;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-left: 3px solid transparent;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+/* Checkbox + play button, and the seed button, of a row. */
+.head-lead {
+  flex: 0 0 76px;
+}
+.head-trail {
+  flex: 0 0 36px;
+}
+
+.head-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.head-btn:hover,
+.head-btn[aria-sort='ascending'],
+.head-btn[aria-sort='descending'] {
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.lens-head {
+  flex: 0 0 92px;
+  overflow: hidden;
+}
+.energy-head {
+  flex: 0 0 44px;
+  justify-content: flex-end;
+}
+.match-head {
+  flex: 0 0 56px;
+  justify-content: flex-end;
+}
+
 .scry-results {
   min-height: 0;
   height: 100%;
