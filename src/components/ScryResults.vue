@@ -1,17 +1,18 @@
 <script setup lang="ts">
-// Ranked Scry results with mood lenses and a Role filter, sorted from the
-// list's column headers (Name, lens score, Energy, Match) like the Library's
-// table. Each row has a checkbox, a preview button, the track name, its game tags, Role,
-// the lens score (while a lens is on), Energy, the match score as a short
-// bar, and an "Add as seed" action. Clicking the row itself opens the entry's
+// Ranked Scry results with mood lenses, Energy bands and a Role filter,
+// sorted from the list's column headers (Name, Match, Energy, Search) like the
+// Library's table. Each row has a checkbox, a preview button, the track name,
+// its game tags, Role, the lens score ("Match", while a lens is on), Energy,
+// the search score ("Search") as a short bar, and an "Add as seed" action. Clicking the row itself opens the entry's
 // details.
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import type { LibraryEntry, Role, ScryHit } from '@generated/index';
 import MoodFilters from './MoodFilters.vue';
 import {
+  LENS_COLUMN_TITLE,
+  canSortBy,
   clickSort,
   emptyMoodFilters,
-  lensHeaderParts,
   lensLabel,
   lensOn as lensIsOn,
   lensScore,
@@ -47,12 +48,13 @@ const emit = defineEmits<{
 let hoveredId: string | null = null;
 
 const filters = ref<MoodFilterState>(emptyMoodFilters());
-// "Best match" keeps the analyzer's ranking.
+// "match" keeps the search ranking (the Search column).
 const sortKey = ref<SortKey>('match');
 const sortDir = ref<SortDir>('desc');
 const lensOn = computed(() => lensIsOn(filters.value));
 
 function sortBy(key: SortKey): void {
+  if (!canSortBy(key, filters.value)) return;
   const picked = clickSort({ key: sortKey.value, dir: sortDir.value }, key);
   sortKey.value = picked.key;
   sortDir.value = picked.dir;
@@ -223,23 +225,26 @@ onBeforeUnmount(() => {
         v-if="lensOn"
         type="button"
         class="head-btn lens-head text-left"
-        :title="lensLabel(filters)"
+        :title="`${LENS_COLUMN_TITLE}: ${lensLabel(filters)}`"
         :aria-sort="ariaSort('lens')"
         @click="sortBy('lens')"
       >
-        <span class="text-truncate">
-          {{ lensHeaderParts(filters).ranked }}
-          <template v-if="lensHeaderParts(filters).excluded.length > 0">
-            · <s class="text-error">{{ lensHeaderParts(filters).excluded.join(', ') }}</s>
-          </template>
-        </span>
+        <span class="text-truncate">{{ LENS_COLUMN_TITLE }}</span>
         <VIcon v-if="sortIcon('lens')" size="x-small">{{ sortIcon('lens') }}</VIcon>
       </button>
-      <button type="button" class="head-btn energy-head" :aria-sort="ariaSort('energy')" @click="sortBy('energy')">
+      <!-- While a lens ranks the list, Energy is not a sort: a plain label. -->
+      <span v-if="lensOn" class="head-static energy-head">Energy</span>
+      <button v-else type="button" class="head-btn energy-head" :aria-sort="ariaSort('energy')" @click="sortBy('energy')">
         Energy<VIcon v-if="sortIcon('energy')" size="x-small">{{ sortIcon('energy') }}</VIcon>
       </button>
-      <button type="button" class="head-btn match-head" :aria-sort="ariaSort('match')" @click="sortBy('match')">
-        Match<VIcon v-if="sortIcon('match')" size="x-small">{{ sortIcon('match') }}</VIcon>
+      <button
+        type="button"
+        class="head-btn match-head"
+        title="Search: how close to the search or seeds"
+        :aria-sort="ariaSort('match')"
+        @click="sortBy('match')"
+      >
+        Search<VIcon v-if="sortIcon('match')" size="x-small">{{ sortIcon('match') }}</VIcon>
       </button>
       <span class="head-trail" />
     </div>
@@ -306,7 +311,7 @@ onBeforeUnmount(() => {
         >
           <VIcon size="x-small">mdi-lightning-bolt</VIcon>{{ moodValue(entry, 'energy')?.toFixed(2) ?? '—' }}
         </span>
-        <div class="score-bar" :class="{ 'is-muted': lensOn }" :title="`Match ${score.toFixed(3)}`">
+        <div class="score-bar" :class="{ 'is-muted': lensOn }" :title="`Search ${score.toFixed(3)}`">
           <div class="score-fill" :style="{ width: barWidth(score) }" />
         </div>
         <VBtn
@@ -329,7 +334,10 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* Caption size set here: Vuetify 4 has no `text-caption` class, and at body
+   size "Search ↓" and "Energy" overflow their columns into each other. */
 .scry-head {
+  font-size: 0.75rem;
   min-height: 28px;
   border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.12);
   border-left: 3px solid transparent;
@@ -361,6 +369,12 @@ onBeforeUnmount(() => {
 .head-btn[aria-sort='ascending'],
 .head-btn[aria-sort='descending'] {
   color: rgb(var(--v-theme-on-surface));
+}
+
+.head-static {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
 }
 
 .lens-head {
