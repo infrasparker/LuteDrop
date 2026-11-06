@@ -214,22 +214,25 @@ def create_app(
             else {},
         }
 
-    # Unit-length mood prompt vectors per pool, embedded the first time /score
-    # finds the model loaded and reused after that. Published only once every
-    # pool succeeded, so a failure part-way leaves nothing half-filled.
+    # Unit-length prompt vectors per mood (and for each side of energy),
+    # embedded the first time /score finds the model loaded and reused after
+    # that. Published only once every prompt group succeeded, so a failure
+    # part-way leaves nothing half-filled.
     mood_vecs: dict[str, np.ndarray] = {}
     mood_lock = threading.Lock()
+    energy_groups = {"energy+": moods.ENERGY_POS, "energy-": moods.ENERGY_NEG}
 
-    def mood_pools() -> dict[str, np.ndarray] | None:
-        """The pool prompt vectors, or None while the model is not ready (or the
-        prompts could not be embedded); /score then omits mood. Never waits."""
+    def mood_prompts() -> dict[str, np.ndarray] | None:
+        """The prompt vectors, keyed by mood id plus `energy+` / `energy-`, or
+        None while the model is not ready (or the prompts could not be
+        embedded); /score then omits mood. Never waits."""
         if not loaded.is_set() or load_error:
             return None
         with mood_lock:
             if not mood_vecs:
                 built = {}
                 try:
-                    for name, texts in moods.POOLS.items():
+                    for name, texts in {**moods.MOODS, **energy_groups}.items():
                         vecs = np.asarray(embedder.embed_text(texts), dtype=np.float64)
                         norms = np.linalg.norm(vecs, axis=1, keepdims=True)
                         built[name] = vecs / np.where(norms == 0, 1, norms)
@@ -242,14 +245,18 @@ def create_app(
     def mood_scores(target_hashes: list[str], X_targets: np.ndarray) -> dict[str, dict] | None:
         if not target_hashes:
             return {}
-        pool_vecs = mood_pools()
-        if pool_vecs is None:
+        vecs = mood_prompts()
+        if vecs is None:
             return None
-        # Absolute similarities (mean cosine with each pool's prompts); the
-        # app z-scores them.
-        pools = {name: (X_targets @ v.T).mean(axis=1) for name, v in pool_vecs.items()}
+        # Raw scores; the app calibrates them. Each mood is the mean cosine
+        # with its prompts; energy is positive minus negative.
+        sims = {name: (X_targets @ v.T).mean(axis=1) for name, v in vecs.items()}
+        energy = sims["energy+"] - sims["energy-"]
         return {
-            h: {"pools": {name: float(values[i]) for name, values in pools.items()}}
+            h: {
+                "moods": {name: float(sims[name][i]) for name in moods.MOODS},
+                "energy": float(energy[i]),
+            }
             for i, h in enumerate(target_hashes)
         }
 

@@ -510,7 +510,8 @@ def test_score_returns_raw_mood_for_targets(tmp_path, monkeypatch):
     from tagger import moods
 
     dirs = {}
-    texts = [t for group in moods.POOLS.values() for t in group]
+    texts = [t for group in moods.MOODS.values() for t in group] + moods.ENERGY_POS + moods.ENERGY_NEG
+    assert len(set(texts)) == len(texts)
     for i, text in enumerate(texts):
         v = np.zeros(DIM)
         v[i % DIM] = 1.0
@@ -531,8 +532,8 @@ def test_score_returns_raw_mood_for_targets(tmp_path, monkeypatch):
     body = {"gate": {}, "targets": ["a", "b", "ghost"]}
     data = c.post("/score", json=body, headers=HEADERS).json()
     c.post("/score", json=body, headers=HEADERS)
-    # One embed_text per pool, computed once.
-    assert MoodEmbedder.calls == len(moods.POOLS)
+    # One embed_text per mood and per energy side, computed once.
+    assert MoodEmbedder.calls == len(moods.MOODS) + 2
     assert set(data["mood"]) == {"a", "b"}
 
     mean = cache.get("a")
@@ -540,14 +541,21 @@ def test_score_returns_raw_mood_for_targets(tmp_path, monkeypatch):
     def pole(texts):
         return float(np.mean([mean @ dirs[t] for t in texts]))
 
-    # Only pools: the mood scales are gone.
-    assert set(data["mood"]["a"]) == {"pools"}
-    # Pools are absolute similarities (mean cosine with the pool's prompts).
-    pools = data["mood"]["a"]["pools"]
-    assert list(pools) == ["peaceful", "cheerful", "quirky", "somber", "awe", "mysterious", "heroic", "menacing"]
-    for pool_id, prompts in moods.POOLS.items():
-        assert pools[pool_id] == pytest.approx(pole(prompts))
-    assert any(v != 0 for v in pools.values())
+    # Nine moods plus energy; the pools and the scales are gone.
+    assert set(data["mood"]["a"]) == {"moods", "energy"}
+    # Moods are absolute similarities (mean cosine with the mood's prompts).
+    scores = data["mood"]["a"]["moods"]
+    assert list(scores) == [
+        "peaceful", "sorrowful", "wondrous", "cheerful", "quirky",
+        "mysterious", "grim", "heroic", "menacing",
+    ]
+    for mood_id, prompts in moods.MOODS.items():
+        assert scores[mood_id] == pytest.approx(pole(prompts))
+    assert any(v != 0 for v in scores.values())
+    # Energy is two-sided: positive minus negative.
+    energy = data["mood"]["a"]["energy"]
+    assert energy == pytest.approx(pole(moods.ENERGY_POS) - pole(moods.ENERGY_NEG))
+    assert energy != 0
 
 
 def test_score_mood_recovers_after_partial_embed_failure(tmp_path, monkeypatch):
@@ -556,7 +564,7 @@ def test_score_mood_recovers_after_partial_embed_failure(tmp_path, monkeypatch):
 
         def embed_text(self, texts):
             FlakyEmbedder.calls += 1
-            if FlakyEmbedder.calls == 3:  # fail part-way through the pools
+            if FlakyEmbedder.calls == 3:  # fail part-way through the prompts
                 raise RuntimeError("transient")
             return super().embed_text(texts)
 
@@ -569,8 +577,8 @@ def test_score_mood_recovers_after_partial_embed_failure(tmp_path, monkeypatch):
     assert first.status_code == 200 and "mood" not in first.json()
     second = c.post("/score", json=body, headers=HEADERS)
     assert second.status_code == 200
-    assert set(second.json()["mood"]["a"]) == {"pools"}
-    assert len(second.json()["mood"]["a"]["pools"]) == 8
+    assert set(second.json()["mood"]["a"]) == {"moods", "energy"}
+    assert len(second.json()["mood"]["a"]["moods"]) == 9
 
 
 def test_score_without_loaded_model_omits_mood(tmp_path, monkeypatch):
