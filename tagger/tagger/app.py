@@ -24,8 +24,6 @@ MAP_CACHE_SIZE = 8
 # How long /embed waits for the model to finish loading before it answers
 # 503. Loading starts when the app is created.
 LOAD_WAIT_SECONDS = 10
-# Keys the pool prompt vectors apart from the pole vectors in one cache.
-POOL_PREFIX = "pool:"
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +47,7 @@ class ScoreRequest(BaseModel):
     gate: Examples
     tags: dict[str, Examples] = {}
     # Pace (Still/Moving) on rhythm features. App versions after v0.12 no
-    # longer send it (the Calm - Energetic mood axis replaced it); this head
+    # longer send it (the mood scales, since removed, replaced it); this head
     # and the rhythm features can be removed once older versions are retired.
     pace: Examples | None = None
     targets: list[str] = []
@@ -216,14 +214,14 @@ def create_app(
             else {},
         }
 
-    # Unit-length mood prompt vectors per pole, embedded the first time /score
+    # Unit-length mood prompt vectors per pool, embedded the first time /score
     # finds the model loaded and reused after that. Published only once every
-    # pole succeeded, so a failure part-way leaves nothing half-filled.
+    # pool succeeded, so a failure part-way leaves nothing half-filled.
     mood_vecs: dict[str, np.ndarray] = {}
     mood_lock = threading.Lock()
 
-    def mood_poles() -> dict[str, np.ndarray] | None:
-        """The pole and pool vectors (pools keyed with POOL_PREFIX), or None while the model is not ready (or the
+    def mood_pools() -> dict[str, np.ndarray] | None:
+        """The pool prompt vectors, or None while the model is not ready (or the
         prompts could not be embedded); /score then omits mood. Never waits."""
         if not loaded.is_set() or load_error:
             return None
@@ -231,11 +229,7 @@ def create_app(
             if not mood_vecs:
                 built = {}
                 try:
-                    groups = {
-                        **moods.POLES,
-                        **{POOL_PREFIX + name: texts for name, texts in moods.POOLS.items()},
-                    }
-                    for name, texts in groups.items():
+                    for name, texts in moods.POOLS.items():
                         vecs = np.asarray(embedder.embed_text(texts), dtype=np.float64)
                         norms = np.linalg.norm(vecs, axis=1, keepdims=True)
                         built[name] = vecs / np.where(norms == 0, 1, norms)
@@ -248,22 +242,14 @@ def create_app(
     def mood_scores(target_hashes: list[str], X_targets: np.ndarray) -> dict[str, dict] | None:
         if not target_hashes:
             return {}
-        poles = mood_poles()
-        if poles is None:
+        pool_vecs = mood_pools()
+        if pool_vecs is None:
             return None
-        sims = {name: (X_targets @ v.T).mean(axis=1) for name, v in poles.items()}
-        axes = {
-            "bright": sims["bright"] - sims["dark"],
-            "grand": sims["grand"] - sims["intimate"],
-            "energy": sims["energetic"] - sims["calm"],
-        }
-        # Pools: absolute similarities; the app z-scores them.
-        pools = {name: sims[POOL_PREFIX + name] for name in moods.POOLS}
+        # Absolute similarities (mean cosine with each pool's prompts); the
+        # app z-scores them.
+        pools = {name: (X_targets @ v.T).mean(axis=1) for name, v in pool_vecs.items()}
         return {
-            h: {
-                **{name: float(values[i]) for name, values in axes.items()},
-                "pools": {name: float(values[i]) for name, values in pools.items()},
-            }
+            h: {"pools": {name: float(values[i]) for name, values in pools.items()}}
             for i, h in enumerate(target_hashes)
         }
 
