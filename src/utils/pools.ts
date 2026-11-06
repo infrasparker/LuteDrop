@@ -1,5 +1,4 @@
-import type { LibraryEntry, MoodScale, MoodStep, Pool, Role } from '@generated/index';
-import { effectiveStep, scaleValues } from './mood';
+import type { LibraryEntry, Pool, Role } from '@generated/index';
 
 /// One mood pool: its id (as stored), the hedged name shown everywhere, and
 /// its place in the vocabulary order (buttons, chips and menus follow it).
@@ -85,36 +84,28 @@ export function countByPool(entries: LibraryEntry[]): Map<PoolChoice, number> {
 
 // --- Sorting ---
 
-/// Sort keys for the filter bar. `match` keeps the incoming order (Scry's ranking).
-export type SortKey = 'match' | 'name' | MoodScale;
+/// Sort keys for the filter bar. `match` keeps the incoming order (Scry's
+/// ranking); `confidence` is the analyzer's pool suggestion probability.
+export type SortKey = 'match' | 'name' | 'confidence';
 
 export const SORT_LABELS: Record<SortKey, string> = {
   match: 'Best match',
   name: 'Name',
-  energy: 'Energy',
-  bright: 'Brightness',
-  grand: 'Size',
+  confidence: 'Suggestion confidence',
 };
 
-/// Menu subtitles: which end of each scale comes first.
+/// Menu subtitles.
 export const SORT_HINTS: Partial<Record<SortKey, string>> = {
-  energy: 'Energetic first',
-  bright: 'Bright first',
-  grand: 'Grand first',
+  confidence: 'Least sure first',
 };
 
-const STEP_RANK: Record<MoodStep, number> = { low: 0, mid: 1, high: 2 };
-
-/// Orders two entries on one scale: highest shown step first (Energetic,
-/// Bright, Grand), then highest z-score, entries without a value last.
-function compareScale(a: LibraryEntry, b: LibraryEntry, scale: MoodScale): number {
-  const va = scaleValues(a, scale);
-  const vb = scaleValues(b, scale);
-  const sa = effectiveStep(va.z, va.user);
-  const sb = effectiveStep(vb.z, vb.user);
-  if (sa === null || sb === null) return sa === sb ? 0 : sa === null ? 1 : -1;
-  if (sa !== sb) return STEP_RANK[sb] - STEP_RANK[sa];
-  return (vb.z ?? -Infinity) - (va.z ?? -Infinity);
+/// Orders two entries by the suggestion's probability, least sure first (as
+/// in Review); entries without a suggestion last.
+function compareConfidence(a: LibraryEntry, b: LibraryEntry): number {
+  const pa = a.poolAutoP;
+  const pb = b.poolAutoP;
+  if (pa === null || pb === null) return pa === pb ? 0 : pa === null ? 1 : -1;
+  return pa - pb;
 }
 
 const byName = (a: LibraryEntry, b: LibraryEntry): number => a.name.localeCompare(b.name);
@@ -127,7 +118,7 @@ export function sortByKey<T>(items: T[], key: SortKey, entryOf: (item: T) => Lib
   if (key === 'name') {
     out.sort((x, y) => byName(entryOf(x), entryOf(y)));
   } else {
-    out.sort((x, y) => compareScale(entryOf(x), entryOf(y), key) || byName(entryOf(x), entryOf(y)));
+    out.sort((x, y) => compareConfidence(entryOf(x), entryOf(y)) || byName(entryOf(x), entryOf(y)));
   }
   return out;
 }

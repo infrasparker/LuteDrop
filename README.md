@@ -68,15 +68,13 @@ The analyzer suggests a pool for each analyzed track by comparing its sound with
 
 - A suggested value is marked **✨ Suggested**; **✓ Confirm** keeps it. Picking a pool by hand confirms it. A confirmed value always wins over the analyzer's, and **↺ Use suggestion** clears it. When the two differ, the status reads "Confirmed · suggested: …". The same wording is used for roles and tags.
 - The entry editor has a **Role** row and a **Pool** row with the seven pools.
-- The Library and Scry have a filter bar: pool chips with counts (any number at once, plus **Unsorted** for music with no pool), the role filter, and a **Sort** menu (Name, Energy, Brightness, Size). The bulk bar's **Set pool…** sets the pool of several music entries at once.
-
-**Scales.** Every analyzed music entry also has three scales, each with three steps: **Bright ↔ Dark** (Dark, Neutral, Bright), **Intimate ↔ Grand** (Intimate, Moderate, Grand) and **Calm ↔ Energetic** (Calm, Steady, Energetic). The analyzer scores each scale as a z-score across the library's analyzed music, and a score more than 0.6 from the mean moves the entry off the middle step. The scales are not shown as controls; they drive the Sort menu and shade the word on the Review card.
+- The Library and Scry have a filter bar: pool chips with counts (any number at once, plus **Unsorted** for music with no pool), the role filter, and a **Sort** menu (Name, Suggestion confidence). The bulk bar's **Set pool…** sets the pool of several music entries at once.
 
 ### Review
 
 The **Review** tab goes through new music one track at a time. Its badge counts the music entries that have a pool (suggested or confirmed) and have not been reviewed yet.
 
-- The card shows the track's name and folder, a play button, and a one-word readout of its feel (from the pool, the energy step and the size step, for example *Triumphant* for Epic, Energetic and Grand). Under it are the analyzer's suggestion with its confidence and its second choice.
+- The card shows the track's name and folder, a play button, and the pool shown (confirmed, else suggested) in large type. Under it are the analyzer's suggestion with its confidence and its second choice.
 - The **Role** and **Pool** rows work as in the editor; changing them does not move on. **Sounds like** names the two closest confirmed tracks in the same pool, when the analyzer is available.
 - **Approve** (key **A**) confirms the role and pool shown and moves on. **Skip** (key **S**) moves the track to the end of the queue for this session without saving anything. **Space** plays or stops the track.
 - Newest imports come first, and within a day the least certain suggestions first.
@@ -98,7 +96,7 @@ Auto tags are learned from the tags the user applied by hand.
 
 - **Text search.** A description such as "tense strings building to a battle" returns the closest tracks, ranked by score.
 - **More like this.** The action on a Library row opens Scry seeded with that track. Seeds are shown as removable chips, more can be added from the results, and the results are the tracks closest to the seeds together.
-- **Filters.** The results can be filtered by pool and Role, and sorted by best match, name or a scale.
+- **Filters.** The results can be filtered by pool and Role, and sorted by best match, name or suggestion confidence.
 - **Map.** A scatter plot of every analyzed music track, colored by role. Hovering shows the track name and clicking plays it. Dragging draws a lasso that adds the enclosed tracks to the selection. Seeds and results are highlighted.
 - **Playlists.** The selection can become a playlist with **Create playlist**, which adds a composition with one shuffle track holding the selected tracks to a chosen group of the active configuration, or be appended to a track with **Add to existing track**.
 

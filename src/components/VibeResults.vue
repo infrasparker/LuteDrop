@@ -39,7 +39,7 @@ let hoveredId: string | null = null;
 const filters = ref<PoolFilterState>(emptyPoolFilters());
 // "Best match" keeps the analyzer's ranking.
 const sortKey = ref<SortKey>('match');
-const SORT_KEYS: SortKey[] = ['match', 'name', 'energy', 'bright', 'grand'];
+const SORT_KEYS: SortKey[] = ['match', 'name', 'confidence'];
 
 interface Row { entry: LibraryEntry; score: number }
 

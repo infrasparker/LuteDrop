@@ -12,8 +12,7 @@ import { useReviewQueue } from '../composables/useReviewQueue';
 import { useLibraryPreview } from '../composables/useLibraryPreview';
 import RoleControl from '../components/RoleControl.vue';
 import PoolControl from '../components/PoolControl.vue';
-import { effectivePool, suggestionText } from '../utils/pools';
-import { entryReadout } from '../utils/readout';
+import { effectivePool, poolName, suggestionText } from '../utils/pools';
 
 const store = useAppStore();
 const { queue, skippedWaiting, approvedCount, skip, noteApproved } = useReviewQueue();
@@ -44,9 +43,10 @@ const folder = computed(() => {
   return [parts[parts.length - 3], parts[parts.length - 2]].filter(Boolean).join(' / ');
 });
 
-const word = computed(() => (current.value ? entryReadout(current.value) : null));
 const suggestion = computed(() => (current.value ? suggestionText(current.value) : null));
 const shownPool = computed(() => (current.value ? effectivePool(current.value) : null));
+/// The big word on the card: the pool shown (confirmed, else suggested).
+const shownPoolName = computed(() => poolName(shownPool.value));
 const isPlaying = computed(() => current.value !== undefined && playingId.value === current.value.id);
 
 // --- Sounds like: the two nearest confirmed tracks in the shown pool ---
@@ -191,8 +191,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
         <span class="text-caption text-medium-emphasis progress">{{ position }} of {{ total }}</span>
       </div>
 
-      <div class="readout text-center my-6">
-        <div class="text-display-small font-weight-medium">{{ word ?? '—' }}</div>
+      <div class="pool-headline text-center my-6">
+        <div class="text-display-small font-weight-medium">{{ shownPoolName ?? '—' }}</div>
         <div class="text-caption text-medium-emphasis mt-2">
           <template v-if="suggestion">suggested: {{ suggestion }}</template>
           <template v-else>no suggestion</template>

@@ -42,7 +42,7 @@ const hasAuto = ref(false);
 const selectedType = ref<string>('all');
 const poolFilters = ref<PoolFilterState>(emptyPoolFilters());
 const sortKey = ref<SortKey>('name');
-const SORT_KEYS: SortKey[] = ['name', 'energy', 'bright', 'grand'];
+const SORT_KEYS: SortKey[] = ['name', 'confidence'];
 // Pool, role and the scales apply to music only and their bar is hidden for
 // ambiance, so its filters and sort must not keep applying there.
 watch(selectedType, (type) => {
