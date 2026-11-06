@@ -213,6 +213,7 @@ pub fn pause_track(tracks: &mut HashMap<String, ManagedTrack>, track_id: &str) -
 pub fn resume_track(tracks: &mut HashMap<String, ManagedTrack>, track_id: &str) -> Result<(), String> {
     let track = tracks.get_mut(track_id).ok_or_else(|| format!("Track not found: {}", track_id))?;
     track.is_paused = false;
+    log::info!("audio resume: track {}", track_id);
     track.voice.resume();
     Ok(())
 }
@@ -555,6 +556,13 @@ fn start_clip(
     let track = tracks.get_mut(track_id).ok_or_else(|| format!("Track not found: {}", track_id))?;
     let clip = track.config.clips.get(clip_index)
         .ok_or_else(|| format!("Clip index {} out of range", clip_index))?.clone();
+
+    // Diagnostic: every sound start is logged so an unexpected playback can be
+    // traced to the call that started it (see the app log).
+    log::info!(
+        "audio start: track {} clip {} ({}) at {:?}",
+        track_id, clip.id, clip.library_entry_id, start_position
+    );
 
     // Clip-level (sound node) volume. Track/master gain come from group/engine nodes.
     let volume = levels::clip_sound_volume(clip.volume, clip.library_volume, mute_state.clip_muted(&clip.id));
