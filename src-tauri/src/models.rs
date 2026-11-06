@@ -170,9 +170,11 @@ fn check_prompts(what: &str, prompts: &[String]) -> Result<(), String> {
 }
 
 impl MoodVocabulary {
-    /// The defaults the database is seeded with (spec "Revision 2"). Once
-    /// seeded, the app reads the vocabulary from the database, never from
-    /// here.
+    /// The defaults the database is seeded with (spec "Revision 2", with
+    /// tag-word prompts for Peaceful, Wondrous and Joyful since schema v13),
+    /// and what Reset to defaults writes. Once seeded, the app reads the
+    /// vocabulary from the database, never from here. Keep these identical
+    /// to `MOODS` / `ENERGY_POS` / `ENERGY_NEG` in `tagger/tagger/moods.py`.
     pub fn defaults() -> Self {
         let mood = |id: &str, name: &str, prompts: &[&str]| MoodDef {
             id: id.to_string(),
@@ -181,26 +183,14 @@ impl MoodVocabulary {
         };
         Self {
             moods: vec![
-                mood("peaceful", "Peaceful", &[
-                    "benign, pleasant, agreeable music with no threat",
-                    "music that signals safety, whatever its tempo",
-                    "friendly and harmless",
-                ]),
+                mood("peaceful", "Peaceful", &["relaxing", "positive"]),
                 mood("sorrowful", "Sorrowful", &[
                     "reflective, somber, sorrowful music",
                     "sad, mournful, melancholic music",
                     "wistful, grieving, nostalgic music",
                 ]),
-                mood("wondrous", "Wondrous", &[
-                    "music full of wonder and awe",
-                    "sacred, divine, celestial music, a choir in a cathedral",
-                    "a breathtaking vista, hopeful and vast, slow and soaring",
-                ]),
-                mood("joyful", "Joyful", &[
-                    "joyful, glad music, any tempo",
-                    "bright major-key happiness",
-                    "contented and sunny",
-                ]),
+                mood("wondrous", "Wondrous", &["hopeful", "inspiring"]),
+                mood("joyful", "Joyful", &["happy", "upbeat"]),
                 mood("quirky", "Quirky", &[
                     "quirky, weird, offbeat music",
                     "groovy, funky, eccentric and strange",
@@ -781,7 +771,7 @@ mod tests {
         );
         assert_eq!(v.normalized().unwrap(), v);
         assert!(v.contains("energy") && v.contains("grim") && !v.contains("menacing"));
-        assert_eq!(v.prompt_signature("joyful").unwrap().len(), 3);
+        assert_eq!(v.prompt_signature("joyful").unwrap(), ["happy", "upbeat"]);
         let energy = v.prompt_signature("energy").unwrap();
         assert_eq!(energy[0], "+ energetic");
         assert_eq!(energy[5], "- calm");

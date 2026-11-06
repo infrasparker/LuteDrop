@@ -12,9 +12,8 @@ used when a request leaves them out.
 
 MOODS = {
     "peaceful": [
-        "benign, pleasant, agreeable music with no threat",
-        "music that signals safety, whatever its tempo",
-        "friendly and harmless",
+        "relaxing",
+        "positive",
     ],
     "sorrowful": [
         "reflective, somber, sorrowful music",
@@ -22,14 +21,12 @@ MOODS = {
         "wistful, grieving, nostalgic music",
     ],
     "wondrous": [
-        "music full of wonder and awe",
-        "sacred, divine, celestial music, a choir in a cathedral",
-        "a breathtaking vista, hopeful and vast, slow and soaring",
+        "hopeful",
+        "inspiring",
     ],
     "joyful": [
-        "joyful, glad music, any tempo",
-        "bright major-key happiness",
-        "contented and sunny",
+        "happy",
+        "upbeat",
     ],
     "quirky": [
         "quirky, weird, offbeat music",

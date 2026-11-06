@@ -20,7 +20,7 @@ const KEY_AUTOTAG_TOKEN: &str = "autotag_token";
 const KEY_AUTOTAG_LOCAL_PREFIX: &str = "autotag_local_prefix";
 const KEY_AUTOTAG_REMOTE_PREFIX: &str = "autotag_remote_prefix";
 const KEY_AUTOTAG_SCENE: &str = "autotag_scene_encounter";
-const KEY_MOOD_CALIBRATION: &str = "mood_calibration";
+pub(crate) const KEY_MOOD_CALIBRATION: &str = "mood_calibration";
 pub(crate) const KEY_MOOD_VOCABULARY: &str = "mood_vocabulary";
 
 /// Where the analyzer host mounts the audio folder until the user says otherwise.
