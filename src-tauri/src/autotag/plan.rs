@@ -99,6 +99,29 @@ pub struct ScoreResponse {
     /// profile) is left out, as if the analyzer sent no mood for it.
     #[serde(default, deserialize_with = "complete_moods")]
     pub mood: HashMap<String, MoodRaw>,
+    /// Mood statistics of the analyzer's fixed reference set, when it sends
+    /// them. `None` when absent (an older analyzer) or malformed.
+    #[serde(default, deserialize_with = "lenient_reference")]
+    pub mood_reference: Option<MoodReference>,
+}
+
+/// The analyzer's fixed reference set: how many tracks it holds and, per mood
+/// id (Energy included), the mean and population sd of their raw scores.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MoodReference {
+    /// The set's id, e.g. `incompetech-300-v1`.
+    pub set: String,
+    pub tracks: usize,
+    pub stats: HashMap<String, MoodStat>,
+}
+
+/// Reads `mood_reference`, turning anything that is not the expected shape
+/// into `None`. A plain `Option<MoodReference>` would fail the whole response
+/// on a bad value; here we first read it as untyped JSON (which always
+/// works), then try to convert, and `.ok()` swallows a failed conversion.
+fn lenient_reference<'de, D: Deserializer<'de>>(d: D) -> Result<Option<MoodReference>, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(value).ok())
 }
 
 /// The analyzer's raw mood scores for one entry: each mood's absolute prompt
@@ -135,9 +158,46 @@ pub const MOOD_SLOPE: f64 = 1.5;
 /// two-sided, and average energy is a meaningful middle.
 pub const MOOD_MIDPOINT_Z: f64 = 1.0;
 
-/// The z-score at which `id`'s bar reads 0.5.
-pub fn midpoint_z(id: &str) -> f64 {
-    if id == ENERGY_ID { 0.0 } else { MOOD_MIDPOINT_Z }
+/// Where a mood's bar reads 0.5 against the reference set: the 75th
+/// percentile of a normal distribution (z = 0.674).
+pub const REFERENCE_MIDPOINT_Z: f64 = 0.674;
+
+/// Slope against the reference set: chosen so the bar reads 0.75 at the 90th
+/// percentile (z = 1.2816), i.e. `ln(3)` of logit over that span.
+pub fn reference_slope() -> f64 {
+    3f64.ln() / (1.2816 - REFERENCE_MIDPOINT_Z)
+}
+
+/// Which statistics a calibration holds: the user's own library, or the
+/// analyzer's fixed reference set.
+// `rename_all = "lowercase"` makes the JSON values "library" / "reference".
+// `#[default]` marks the variant `Default::default()` returns, which serde
+// uses for old stored calibrations that have no `source` field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CalibrationSource {
+    #[default]
+    Library,
+    Reference,
+}
+
+/// The z-score at which `id`'s bar reads 0.5 for a calibration of `source`.
+pub fn midpoint_z(id: &str, source: CalibrationSource) -> f64 {
+    match (id == ENERGY_ID, source) {
+        (true, _) => 0.0,
+        (false, CalibrationSource::Library) => MOOD_MIDPOINT_Z,
+        (false, CalibrationSource::Reference) => REFERENCE_MIDPOINT_Z,
+    }
+}
+
+/// The logistic slope for a calibration of `source`. Energy uses the library
+/// slope either way: it has no reference percentile lines of its own.
+fn slope(id: &str, source: CalibrationSource) -> f64 {
+    if id != ENERGY_ID && source == CalibrationSource::Reference {
+        reference_slope()
+    } else {
+        MOOD_SLOPE
+    }
 }
 
 /// Mean and standard deviation of one mood's raw score.
@@ -167,6 +227,15 @@ pub struct MoodCalibration {
     /// Recalibrate.
     pub prompts: BTreeMap<String, Vec<String>>,
     pub stats: BTreeMap<String, MoodStat>,
+    /// Where the statistics come from. Calibrations saved before this field
+    /// existed have none, and read as `Library`.
+    #[serde(default)]
+    pub source: CalibrationSource,
+    /// For a `Reference` calibration, the reference set's id.
+    // `skip_serializing_if` leaves the key out of the JSON when it is `None`,
+    // so library calibrations are stored exactly as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_set: Option<String>,
 }
 
 /// One raw score of an entry: a mood's, or Energy's.
@@ -213,7 +282,46 @@ pub fn calibrate(
         tracks: rows.len(),
         prompts,
         stats,
+        source: CalibrationSource::Library,
+        reference_set: None,
     })
+}
+
+/// A calibration built from the analyzer's reference-set statistics.
+/// `None` unless every id of `vocabulary` has a stat with a usable spread
+/// (finite sd above 1e-12), same rule as `calibrate`.
+pub fn reference_calibration(
+    reference: &MoodReference,
+    vocabulary: &MoodVocabulary,
+    calibrated_at: String,
+) -> Option<MoodCalibration> {
+    let mut stats = BTreeMap::new();
+    let mut prompts = BTreeMap::new();
+    for id in vocabulary.ids() {
+        let stat = *reference.stats.get(&id)?;
+        if !stat.sd.is_finite() || stat.sd <= 1e-12 {
+            return None;
+        }
+        prompts.insert(id.clone(), vocabulary.prompt_signature(&id)?);
+        stats.insert(id, stat);
+    }
+    Some(MoodCalibration {
+        calibrated_at,
+        tracks: reference.tracks,
+        prompts,
+        stats,
+        source: CalibrationSource::Reference,
+        reference_set: Some(reference.set.clone()),
+    })
+}
+
+/// True when two calibrations are the same apart from when they were taken.
+pub fn same_calibration(a: &MoodCalibration, b: &MoodCalibration) -> bool {
+    a.tracks == b.tracks
+        && a.prompts == b.prompts
+        && a.stats == b.stats
+        && a.source == b.source
+        && a.reference_set == b.reference_set
 }
 
 /// The ids of `vocabulary` the calibration can score: those it has
@@ -238,11 +346,12 @@ pub fn needs_recalibration(calibration: Option<&MoodCalibration>, vocabulary: &M
 }
 
 /// Turns one raw score into 0..1: `z = (raw - mean) / sd`, then
-/// `1 / (1 + exp(-MOOD_SLOPE * (z - midpoint_z(id))))`, clamped to [0, 1].
+/// `1 / (1 + exp(-slope * (z - midpoint)))`, clamped to [0, 1]. Midpoint and
+/// slope depend on the calibration's `source` (see `midpoint_z`).
 /// The ranking never depends on this; only the number shown does.
-pub fn mood_score(id: &str, raw: f64, stat: MoodStat) -> f64 {
-    let z = (raw - stat.mean) / stat.sd - midpoint_z(id);
-    (1.0 / (1.0 + (-MOOD_SLOPE * z).exp())).clamp(0.0, 1.0)
+pub fn mood_score(id: &str, raw: f64, stat: MoodStat, source: CalibrationSource) -> f64 {
+    let z = (raw - stat.mean) / stat.sd - midpoint_z(id, source);
+    (1.0 / (1.0 + (-slope(id, source) * z).exp())).clamp(0.0, 1.0)
 }
 
 /// The analyzer's 0..1 value for each of `ids` (see `scorable_ids`) on one
@@ -262,7 +371,7 @@ pub fn auto_moods(mood: &MoodRaw, calibration: &MoodCalibration, ids: &[String])
         .filter_map(|id| {
             let raw = raw_score(mood, id)?;
             let stat = *calibration.stats.get(id)?;
-            Some((id.clone(), mood_score(id, raw, stat)))
+            Some((id.clone(), mood_score(id, raw, stat, calibration.source)))
         })
         .collect();
     (!out.is_empty()).then_some(out)
@@ -549,6 +658,7 @@ mod tests {
     fn response(gate: ScoreSet, tags: &[(&str, ScoreSet)]) -> ScoreResponse {
         ScoreResponse {
             mood: HashMap::new(),
+            mood_reference: None,
             model: "test".into(),
             gate,
             tags: tags
@@ -833,6 +943,8 @@ mod tests {
             tracks: 50,
             prompts: ids().into_iter().map(|id| (id.clone(), v.prompt_signature(&id).unwrap())).collect(),
             stats: ids().into_iter().map(|id| (id, MoodStat { mean, sd })).collect(),
+            source: CalibrationSource::Library,
+            reference_set: None,
         }
     }
 
@@ -857,20 +969,106 @@ mod tests {
     }
 
     #[test]
-    fn mood_score_is_a_logistic_of_one_and_a_half_z_centred_one_sd_up() {
+    fn library_mood_score_is_unchanged() {
         let stat = MoodStat { mean: 0.2, sd: 0.04 };
         // A mood reads 0.5 one sd above the mean (z = 1), and the old z = 0
         // point now reads what z = -1 used to.
-        assert!((mood_score("heroic", 0.24, stat) - 0.5).abs() < 1e-12);
-        assert!((mood_score("heroic", 0.20, stat) - 0.182_425_523_806_356_3).abs() < 1e-12);
-        assert!((mood_score("heroic", 0.28, stat) - 0.817_574_476_193_643_7).abs() < 1e-12);
+        assert!((mood_score("heroic", 0.24, stat, CalibrationSource::Library) - 0.5).abs() < 1e-12);
+        assert!((mood_score("heroic", 0.20, stat, CalibrationSource::Library) - 0.182_425_523_806_356_3).abs() < 1e-12);
+        assert!((mood_score("heroic", 0.28, stat, CalibrationSource::Library) - 0.817_574_476_193_643_7).abs() < 1e-12);
         // Energy keeps its midpoint at the mean.
-        assert_eq!(mood_score(ENERGY_ID, 0.2, stat), 0.5);
-        assert!((mood_score(ENERGY_ID, 0.24, stat) - 0.817_574_476_193_643_7).abs() < 1e-12);
+        assert_eq!(mood_score(ENERGY_ID, 0.2, stat, CalibrationSource::Library), 0.5);
+        assert!((mood_score(ENERGY_ID, 0.24, stat, CalibrationSource::Library) - 0.817_574_476_193_643_7).abs() < 1e-12);
         // Extremes stay inside [0, 1].
-        assert_eq!(mood_score("heroic", 10.0, stat), 1.0);
-        assert!((0.0..1e-20).contains(&mood_score("heroic", -10.0, stat)));
-        assert!(mood_score("heroic", f64::MAX, stat) <= 1.0 && mood_score("heroic", f64::MIN, stat) >= 0.0);
+        assert_eq!(mood_score("heroic", 10.0, stat, CalibrationSource::Library), 1.0);
+        assert!((0.0..1e-20).contains(&mood_score("heroic", -10.0, stat, CalibrationSource::Library)));
+        assert!(mood_score("heroic", f64::MAX, stat, CalibrationSource::Library) <= 1.0 && mood_score("heroic", f64::MIN, stat, CalibrationSource::Library) >= 0.0);
+    }
+
+    fn reference_with(stats: &[(String, f64)]) -> MoodReference {
+        MoodReference {
+            set: "incompetech-300-v1".into(),
+            tracks: 300,
+            stats: stats.iter().map(|(id, sd)| (id.clone(), MoodStat { mean: 0.1, sd: *sd })).collect(),
+        }
+    }
+
+    #[test]
+    fn reference_mood_score_puts_the_lines_at_the_reference_percentiles() {
+        let stat = MoodStat { mean: 0.0, sd: 1.0 };
+        let r = CalibrationSource::Reference;
+        assert!((mood_score("grim", 0.674, stat, r) - 0.5).abs() < 1e-9);
+        assert!((mood_score("grim", 1.2816, stat, r) - 0.75).abs() < 1e-3);
+        assert!((mood_score("grim", 1.889, stat, r) - 0.9).abs() < 0.005);
+        // Energy is two-sided: its midpoint is the mean.
+        assert!((mood_score(ENERGY_ID, 0.0, stat, r) - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reference_calibration_needs_every_id_with_spread() {
+        let v = MoodVocabulary::defaults();
+        let full: Vec<(String, f64)> = ids().into_iter().map(|id| (id, 0.05)).collect();
+        let cal = reference_calibration(&reference_with(&full), &v, "9".into()).unwrap();
+        assert_eq!(cal.source, CalibrationSource::Reference);
+        assert_eq!(cal.reference_set.as_deref(), Some("incompetech-300-v1"));
+        assert_eq!(cal.tracks, 300);
+        assert_eq!(cal.calibrated_at, "9");
+        for id in ids() {
+            assert_eq!(cal.prompts[&id], v.prompt_signature(&id).unwrap());
+            assert_eq!(cal.stats[&id], MoodStat { mean: 0.1, sd: 0.05 });
+        }
+        assert!(reference_calibration(&reference_with(&full[1..]), &v, "9".into()).is_none());
+        let mut flat = full.clone();
+        flat[3].1 = 0.0;
+        assert!(reference_calibration(&reference_with(&flat), &v, "9".into()).is_none());
+    }
+
+    #[test]
+    fn old_calibration_json_parses_as_library() {
+        let old = r#"{"calibratedAt":"1","tracks":50,"prompts":{"grim":["x"]},"stats":{"grim":{"mean":0.1,"sd":0.2}}}"#;
+        let cal: MoodCalibration = serde_json::from_str(old).unwrap();
+        assert_eq!(cal.source, CalibrationSource::Library);
+        assert_eq!(cal.reference_set, None);
+        // A library calibration does not write the optional field back out.
+        let json = serde_json::to_value(&cal).unwrap();
+        assert!(json.get("referenceSet").is_none());
+        assert_eq!(json["source"], "library");
+
+        let full: Vec<(String, f64)> = ids().into_iter().map(|id| (id, 0.05)).collect();
+        let r = reference_calibration(&reference_with(&full), &MoodVocabulary::defaults(), "2".into()).unwrap();
+        let back: MoodCalibration = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(back, r);
+        assert_eq!(serde_json::to_value(&r).unwrap()["source"], "reference");
+    }
+
+    #[test]
+    fn same_calibration_ignores_the_timestamp() {
+        let a = flat_calibration(0.1, 0.05);
+        let mut b = a.clone();
+        b.calibrated_at = "2".into();
+        assert!(same_calibration(&a, &b));
+        b.tracks += 1;
+        assert!(!same_calibration(&a, &b));
+        let mut c = a.clone();
+        c.source = CalibrationSource::Reference;
+        assert!(!same_calibration(&a, &c));
+    }
+
+    #[test]
+    fn score_response_reads_mood_reference_and_tolerates_garbage() {
+        let base = r#""model":"m","gate":{"quality":{"auc":null,"pos":0,"neg":0},"trusted":false,"threshold":null,"scores":{}},"tags":{}"#;
+        let good = format!(
+            r#"{{{base},"mood_reference":{{"set":"s","tracks":3,"stats":{{"grim":{{"mean":0.1,"sd":0.2}}}}}}}}"#
+        );
+        let resp: ScoreResponse = serde_json::from_str(&good).unwrap();
+        let r = resp.mood_reference.unwrap();
+        assert_eq!((r.set.as_str(), r.tracks), ("s", 3));
+        assert_eq!(r.stats["grim"], MoodStat { mean: 0.1, sd: 0.2 });
+
+        let bad = format!(r#"{{{base},"mood_reference":5}}"#);
+        assert_eq!(serde_json::from_str::<ScoreResponse>(&bad).unwrap().mood_reference, None);
+        let absent = format!("{{{base}}}");
+        assert_eq!(serde_json::from_str::<ScoreResponse>(&absent).unwrap().mood_reference, None);
     }
 
     #[test]

@@ -706,6 +706,7 @@ pub(crate) mod tests {
                 hook();
             }
             Ok(ScoreResponse {
+                mood_reference: None,
                 model: "fake".into(),
                 gate: ScoreSet {
                     trusted: !self.untrusted_gate,
@@ -1188,7 +1189,7 @@ pub(crate) mod tests {
         // Every id gets an analyzer value and no user level.
         assert_eq!(mood_row_count(&db, &ids[0]), 10);
         let (auto, user) = mood_of(&db, &ids[0], "heroic").unwrap();
-        assert!((auto.unwrap() - plan::mood_score("heroic", 0.3, heroic)).abs() < 1e-12);
+        assert!((auto.unwrap() - plan::mood_score("heroic", 0.3, heroic, plan::CalibrationSource::Library)).abs() < 1e-12);
         // z 1.69 for heroic, centred one sd up: clearly in, not at the top.
         assert!(auto.unwrap() > 0.7);
         assert_eq!(user, None);
@@ -1205,7 +1206,7 @@ pub(crate) mod tests {
         assert_eq!(settings::load_mood_calibration(&db.lock().unwrap()).unwrap().unwrap(), cal);
         // Scored against the frozen calibration, heroic is near the top.
         let (auto, _) = mood_of(&db, &ids[1], "heroic").unwrap();
-        assert!((auto.unwrap() - plan::mood_score("heroic", 0.9, heroic)).abs() < 1e-12);
+        assert!((auto.unwrap() - plan::mood_score("heroic", 0.9, heroic, plan::CalibrationSource::Library)).abs() < 1e-12);
     }
 
     #[test]

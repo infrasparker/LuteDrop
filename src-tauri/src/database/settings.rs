@@ -311,6 +311,8 @@ mod tests {
             tracks: 64,
             prompts: [("grim".to_string(), vec!["horror".to_string()])].into(),
             stats: [("energy".to_string(), MoodStat { mean: 0.21, sd: 0.03 })].into(),
+            source: Default::default(),
+            reference_set: None,
         };
         save_mood_calibration(&conn, &cal).unwrap();
         assert_eq!(load_mood_calibration(&conn).unwrap(), Some(cal.clone()));
