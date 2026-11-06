@@ -12,6 +12,7 @@ embeddings, average, normalise again. Needs the model (torch + muq).
 import argparse
 import hashlib
 import json
+import shutil
 import sys
 import time
 import urllib.request
@@ -61,7 +62,13 @@ def main() -> None:
         path = args.audio_dir / entry["file"]
         if not path.is_file() and args.download:
             print(f"[{i}/{len(entries)}] downloading {entry['file']}")
-            urllib.request.urlretrieve(entry["url"], path)
+            part = path.with_name(path.name + ".part")
+            try:
+                with urllib.request.urlopen(entry["url"], timeout=60) as resp, open(part, "wb") as f:
+                    shutil.copyfileobj(resp, f)
+                part.replace(path)
+            finally:
+                part.unlink(missing_ok=True)
             time.sleep(1)
         if not path.is_file():
             sys.exit(f"missing audio file: {path} (use --download?)")
