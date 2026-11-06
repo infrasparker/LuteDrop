@@ -603,6 +603,18 @@ pub async fn search_scry(
         .map_err(|e| format!("Scry search failed: {e}"))?
 }
 
+/// Async like the Scry commands: it waits on the analyzer.
+#[tauri::command]
+pub async fn preview_mood_prompts(
+    state: State<'_, Arc<AppStateContainer>>,
+    prompts: Vec<String>,
+) -> Result<Vec<ScryHit>, String> {
+    let container = state.inner().clone();
+    tokio::task::spawn_blocking(move || actions::preview_mood_prompts(&container, &prompts))
+        .await
+        .map_err(|e| format!("Mood preview failed: {e}"))?
+}
+
 #[tauri::command]
 pub async fn scry_map(state: State<'_, Arc<AppStateContainer>>) -> Result<Vec<ScryPoint>, String> {
     let container = state.inner().clone();

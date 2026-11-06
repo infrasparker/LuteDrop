@@ -726,6 +726,13 @@ pub(crate) mod tests {
             self.record(hashes.to_vec(), &[], 0)?;
             Ok(self.points.clone())
         }
+
+        /// Returns `ranked` as a map for the targets it names, recording the
+        /// prompts as the query and the targets as the candidates.
+        fn preview(&self, prompts: &[String], targets: &[String]) -> Result<HashMap<String, f64>, String> {
+            self.record(prompts.to_vec(), targets, 0)?;
+            Ok(self.ranked.iter().filter(|r| targets.contains(&r.hash)).map(|r| (r.hash.clone(), r.score)).collect())
+        }
     }
 
     pub(crate) fn setup() -> Arc<Mutex<Connection>> {
@@ -1334,6 +1341,7 @@ pub(crate) mod tests {
             fn similar(&self, q: &[String], c: &[String], l: u32) -> Result<Vec<HashScore>, String> { self.1.similar(q, c, l) }
             fn search(&self, t: &str, c: &[String], l: u32) -> Result<Vec<HashScore>, String> { self.1.search(t, c, l) }
             fn map(&self, h: &[String]) -> Result<Vec<HashPoint>, String> { self.1.map(h) }
+            fn preview(&self, p: &[String], t: &[String]) -> Result<HashMap<String, f64>, String> { self.1.preview(p, t) }
         }
 
         let pools = format!(

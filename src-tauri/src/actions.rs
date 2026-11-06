@@ -832,6 +832,14 @@ pub fn search_scry(container: &AppStateContainer, text: &str, limit: u32) -> Res
     scry::search(&container.db, &client, text, limit)
 }
 
+/// The top music entries for a set of mood prompts, by raw similarity,
+/// without saving or recalibrating anything (Settings → Moods, Preview).
+/// Blocks while the analyzer works.
+pub fn preview_mood_prompts(container: &AppStateContainer, prompts: &[String]) -> Result<Vec<ScryHit>, String> {
+    let client = scry::client_for(&container.db)?;
+    scry::preview_prompts(&container.db, &client, prompts)
+}
+
 /// A 2D position for every analyzed music entry. Blocks while the analyzer
 /// works.
 pub fn scry_map(container: &AppStateContainer) -> Result<Vec<ScryPoint>, String> {

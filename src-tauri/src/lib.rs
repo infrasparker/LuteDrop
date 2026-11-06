@@ -260,6 +260,7 @@ pub fn run() {
             commands::similar_entries,
             commands::search_scry,
             commands::scry_map,
+            commands::preview_mood_prompts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LuteDrop");
