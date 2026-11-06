@@ -21,7 +21,7 @@ import {
 /// by the weakest of their scores; an excluded mood keeps only tracks scoring
 /// below 0.5 in it. Including the first lens sorts by the lens score
 /// (highest first); dropping the last one while sorted by it goes back to
-/// Name. Sorting itself is done from the list's column headers. Lenses and
+/// the view's `defaultSort`. Sorting itself is done from the list's column headers. Lenses and
 /// role apply to music only, so callers hide the bar for ambiance.
 ///
 /// Energy has no lens chip: it is a sort key (its column header), not a mood
@@ -29,7 +29,12 @@ import {
 const filters = defineModel<MoodFilters>({ required: true });
 const sort = defineModel<SortKey>('sort', { required: true });
 const dir = defineModel<SortDir>('dir', { required: true });
-defineProps<{ size: 'small' | 'x-small' }>();
+const props = defineProps<{
+  size: 'small' | 'x-small';
+  /// The view's own sort, used again once the last lens is cleared: Name in
+  /// the Library, Match (search ranking) in Scry.
+  defaultSort: SortKey;
+}>();
 
 const store = useAppStore();
 const moods = computed(() => moodsOnly());
@@ -45,7 +50,7 @@ watch(moods, (list) => {
 watch(
   () => lensOn(filters.value),
   (isOn, wasOn) => {
-    const next = sortForLens({ key: sort.value, dir: dir.value }, wasOn, isOn);
+    const next = sortForLens({ key: sort.value, dir: dir.value }, wasOn, isOn, props.defaultSort);
     sort.value = next.key;
     dir.value = next.dir;
   },

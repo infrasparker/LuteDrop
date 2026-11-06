@@ -203,6 +203,7 @@ onBeforeUnmount(() => {
         v-model:sort="sortKey"
         v-model:dir="sortDir"
         size="x-small"
+        default-sort="match"
         class="flex-grow-1"
         style="min-width: 0;"
       />

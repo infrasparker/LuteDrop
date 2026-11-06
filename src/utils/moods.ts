@@ -184,16 +184,22 @@ export function matchesTagSelection(tags: string[], sel: ChipSelection): boolean
 
 /// Sort keys, picked from the list's column headers. `match` keeps the
 /// incoming order (Scry's ranking); `lens` ranks by the lens score and is
-/// there while a lens is included.
-export type SortKey = 'match' | 'lens' | 'name' | 'energy';
+/// there while a lens is included. `status`, `entryType`, `role` and
+/// `duration` are the Library's other sortable columns.
+export type SortKey = 'match' | 'lens' | 'name' | 'energy' | 'status' | 'entryType' | 'role' | 'duration';
 export type SortDir = 'asc' | 'desc';
 
-/// The direction a key starts in when picked: scores high first, names A–Z.
+/// The direction a key starts in when picked: scores high first, names A–Z,
+/// missing files first (status), shortest first (duration).
 export const DEFAULT_DIR: Record<SortKey, SortDir> = {
   match: 'desc',
   lens: 'desc',
   name: 'asc',
   energy: 'desc',
+  status: 'desc',
+  entryType: 'asc',
+  role: 'asc',
+  duration: 'asc',
 };
 
 /// The sort after a header click: a new key starts in its default
@@ -205,10 +211,15 @@ export function clickSort(current: { key: SortKey; dir: SortDir }, key: SortKey)
 
 /// The sort after the lenses changed: including the first lens ranks by it
 /// (highest first); dropping the last one while ranking by it goes back to
-/// Name.
-export function sortForLens(current: { key: SortKey; dir: SortDir }, wasOn: boolean, isOn: boolean): { key: SortKey; dir: SortDir } {
+/// the view's own default (`fallback`: Name in the Library, Match in Scry).
+export function sortForLens(
+  current: { key: SortKey; dir: SortDir },
+  wasOn: boolean,
+  isOn: boolean,
+  fallback: SortKey,
+): { key: SortKey; dir: SortDir } {
   if (isOn && !wasOn) return { key: 'lens', dir: 'desc' };
-  if (!isOn && current.key === 'lens') return { key: 'name', dir: 'asc' };
+  if (!isOn && current.key === 'lens') return { key: fallback, dir: DEFAULT_DIR[fallback] };
   return current;
 }
 
@@ -220,22 +231,47 @@ function compareNullable(a: number | null, b: number | null, dir: SortDir): numb
   return dir === 'asc' ? a - b : b - a;
 }
 
+/// The number a key sorts by (null sorts last in either direction), for the
+/// keys that are not text. `isMissing` tells a missing file (status: 1).
+function sortValue(
+  e: LibraryEntry,
+  key: Exclude<SortKey, 'match' | 'name'>,
+  filters: Pick<MoodFilters, 'lenses'>,
+  isMissing: (e: LibraryEntry) => boolean,
+): number | null {
+  switch (key) {
+    case 'lens':
+      return lensScore(e, filters);
+    case 'energy':
+      return moodValue(e, 'energy');
+    case 'status':
+      return isMissing(e) ? 1 : 0;
+    case 'entryType':
+      return e.entryType === 'music' ? 0 : 1;
+    case 'role':
+      return e.role === null ? null : e.role === 'combat' ? 0 : 1;
+    case 'duration':
+      return e.duration;
+  }
+}
+
 /// A sorted copy of `items` (stable). `entryOf` picks the library entry from
 /// an item, so Scry's rows sort the same way as Library entries. `match`
-/// keeps the incoming order (reversed for ascending).
+/// keeps the incoming order (reversed for ascending). Ties go by name.
 export function sortByKey<T>(
   items: T[],
   key: SortKey,
   dir: SortDir,
   filters: Pick<MoodFilters, 'lenses'>,
   entryOf: (item: T) => LibraryEntry,
+  isMissing: (e: LibraryEntry) => boolean = () => false,
 ): T[] {
   if (key === 'match') return dir === 'desc' ? items : [...items].reverse();
   const out = [...items];
   if (key === 'name') {
     out.sort((x, y) => (dir === 'asc' ? 1 : -1) * byName(entryOf(x), entryOf(y)));
   } else {
-    const score = (e: LibraryEntry): number | null => (key === 'lens' ? lensScore(e, filters) : moodValue(e, 'energy'));
+    const score = (e: LibraryEntry): number | null => sortValue(e, key, filters, isMissing);
     out.sort((x, y) => compareNullable(score(entryOf(x)), score(entryOf(y)), dir) || byName(entryOf(x), entryOf(y)));
   }
   return out;

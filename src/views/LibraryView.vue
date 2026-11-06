@@ -102,25 +102,26 @@ const filteredEntries = computed(() => {
     const matchesAuto = !hasAuto.value || entry.autoTags.length > 0;
     return matchesSearch && matchesTags && matchesType && matchesAuto && matchesMoodFilters(entry, moodFilters.value);
   });
-  return sortByKey(matching, sortKey.value, sortDir.value, moodFilters.value, (e) => e);
+  return sortByKey(matching, sortKey.value, sortDir.value, moodFilters.value, (e) => e, (e) => store.isEntryMissing(e.id));
 });
 
-// Column headers are the only sort control: Name, Energy, and the lens score
-// column while a lens is included. `filteredEntries` is already in that
-// order (`sortByKey`, entries with no value last), so the table's own sort
-// is a no-op that only draws the header arrow.
+// Column headers are the only sort control: status (missing files first),
+// Type, Name, the lens score column while a lens is included, Role, Energy
+// and Duration. `filteredEntries` is already in that order (`sortByKey`,
+// entries with no value last), so the table's own sort is a no-op that only
+// draws the header arrow.
 const keepOrder = (): number => 0;
 const headers = computed(() => [
-  { title: '', key: 'status', sortable: false, width: '48px' },
-  { title: 'Type', key: 'entryType', sortable: false, width: '60px' },
+  { title: '', key: 'status', sortable: true, sort: keepOrder, width: '48px' },
+  { title: 'Type', key: 'entryType', sortable: true, sort: keepOrder, width: '60px' },
   { title: 'Name', key: 'name', sortable: true, sort: keepOrder, width: '32%' },
   ...(lensOn.value
     ? [{ title: lensLabel(moodFilters.value), key: 'lens', sortable: true, sort: keepOrder, width: '160px' }]
     : []),
-  { title: 'Role', key: 'role', sortable: false, width: '60px' },
+  { title: 'Role', key: 'role', sortable: true, sort: keepOrder, width: '60px' },
   { title: 'Energy', key: 'energy', sortable: true, sort: keepOrder, width: '80px', align: 'end' as const },
   { title: 'Tags', key: 'tags', sortable: false },
-  { title: 'Duration', key: 'duration', sortable: false, width: '80px', align: 'end' as const },
+  { title: 'Duration', key: 'duration', sortable: true, sort: keepOrder, width: '80px', align: 'end' as const },
   { title: '', key: 'actions', sortable: false, width: '112px', align: 'end' as const },
 ]);
 
@@ -410,6 +411,7 @@ async function relocateEntry(entryId: string): Promise<void> {
       v-model:sort="sortKey"
       v-model:dir="sortDir"
       size="small"
+      default-sort="name"
       class="mb-2"
     />
 
