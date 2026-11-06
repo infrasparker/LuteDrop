@@ -20,7 +20,7 @@ use crate::models::{
 
 /// Current schema version. Bump when adding a migration below; fresh
 /// databases are stamped with this directly.
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// Spacing between sibling `sort_order` values, leaving room for insertions
 /// between neighbours without renumbering. Shared by hierarchy + configurations.
@@ -503,6 +503,49 @@ fn seed_mood_vocabulary(conn: &Connection) -> SqlResult<()> {
     Ok(())
 }
 
+/// The mood vocabulary exactly as schema v12 seeded it: the JSON
+/// `mood_vocabulary_json` wrote for the defaults of that release. v13 compares
+/// the stored row with it byte for byte.
+const V12_DEFAULT_MOOD_VOCABULARY_JSON: &str = r#"{"moods":[{"id":"peaceful","name":"Peaceful","prompts":["benign, pleasant, agreeable music with no threat","music that signals safety, whatever its tempo","friendly and harmless"]},{"id":"sorrowful","name":"Sorrowful","prompts":["reflective, somber, sorrowful music","sad, mournful, melancholic music","wistful, grieving, nostalgic music"]},{"id":"wondrous","name":"Wondrous","prompts":["music full of wonder and awe","sacred, divine, celestial music, a choir in a cathedral","a breathtaking vista, hopeful and vast, slow and soaring"]},{"id":"joyful","name":"Joyful","prompts":["joyful, glad music, any tempo","bright major-key happiness","contented and sunny"]},{"id":"quirky","name":"Quirky","prompts":["quirky, weird, offbeat music","groovy, funky, eccentric and strange","campy, oddball, mischievous tune"]},{"id":"mysterious","name":"Mysterious","prompts":["mysterious, unsettling, eerie music","strange, uncanny, otherworldly sounds","quiet suspense and looming dread, something is about to happen"]},{"id":"grim","name":"Grim","prompts":["horror","dark","heavy"]},{"id":"heroic","name":"Heroic","prompts":["heroic, triumphant, bold orchestral music","a rousing victory anthem, brass and choir soaring","adventurous, noble, uplifting epic music"]}],"energy":{"positive":["energetic","upbeat","powerful"],"negative":["slow","relaxing","calm"]}}"#;
+
+/// New default prompts: every mood, and each side of Energy, becomes one
+/// prompt, a cluster of tag words. Runs inside the migration runner's
+/// transaction.
+///
+/// Only a vocabulary still exactly as v12 seeded it is replaced: the stored
+/// row must equal `V12_DEFAULT_MOOD_VOCABULARY_JSON` byte for byte, or be
+/// missing (a database without the row ran on the v12 defaults, which the
+/// loader falls back to). Then the new defaults are written and what the analyzer said about moods is
+/// cleared, since it came from the old prompts: the calibration, every
+/// `auto_score` (rows with no user level go) and every entry's stored
+/// scores, so the next run recalibrates. User-set levels and review times
+/// stay. A vocabulary the user edited (or an unreadable row) is left alone. The pre-migration backup keeps the old row.
+fn migrate_v12_to_v13(conn: &Connection) -> SqlResult<()> {
+    use rusqlite::OptionalExtension;
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            params![settings::KEY_MOOD_VOCABULARY],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if stored.as_deref().is_some_and(|s| s != V12_DEFAULT_MOOD_VOCABULARY_JSON) {
+        return Ok(());
+    }
+    let json = settings::mood_vocabulary_json(&MoodVocabulary::defaults())
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+        params![settings::KEY_MOOD_VOCABULARY, json],
+    )?;
+    conn.execute("DELETE FROM meta WHERE key = ?1", params![settings::KEY_MOOD_CALIBRATION])?;
+    conn.execute_batch(
+        "UPDATE library_entry_moods SET auto_score = NULL;
+         DELETE FROM library_entry_moods WHERE user_level IS NULL;
+         UPDATE entry_analysis SET scores_json = NULL;",
+    )
+}
+
 // Ordered migrations: entry `(n, f)` upgrades version n → n+1.
 const MIGRATIONS: &[(i64, Migration)] = &[
     (3, migrate_v3_to_v4),
@@ -514,6 +557,7 @@ const MIGRATIONS: &[(i64, Migration)] = &[
     (9, migrate_v9_to_v10),
     (10, migrate_v10_to_v11),
     (11, migrate_v11_to_v12),
+    (12, migrate_v12_to_v13),
 ];
 
 fn read_schema_version(conn: &Connection) -> i64 {
@@ -590,7 +634,8 @@ pub fn open_db(path: &Path) -> Result<Connection, String> {
     // splits every facet and tag into auto and user layers, v9 drops the old
     // Light/Heavy and pace values, v10 folds the `driving` tag into
     // Calm ↔ Energetic, v11 drops the dark kind, v12 drops the pools and the
-    // mood scales), so an existing database behind the current schema is copied first, before anything changes it. No copy,
+    // mood scales, v13 may replace the default mood words and clear mood
+    // suggestions), so an existing database behind the current schema is copied first, before anything changes it. No copy,
     // no migration.
     if !fresh {
         let on_disk = match read_schema_version(&conn) {
@@ -980,6 +1025,7 @@ fn load_library_entries(conn: &Connection, vocabulary: &MoodVocabulary) -> Resul
         let analysis = analysis_map.remove(&id);
         let role_auto = role_auto.as_deref().and_then(Role::from_db_str);
         let role_user = role_user.as_deref().and_then(Role::from_db_str);
+        let entry_type = EntryType::from_str(&entry_type);
         let stored = mood_map.remove(&id).unwrap_or_default();
         let moods = mood_ids
             .iter()
@@ -1003,11 +1049,11 @@ fn load_library_entries(conn: &Connection, vocabulary: &MoodVocabulary) -> Resul
             loop_end,
             created_at,
             tags: tags.shown,
-            entry_type: EntryType::from_str(&entry_type),
+            role: crate::models::effective_role(&entry_type, role_user, role_auto),
+            entry_type,
             auto_tags: tags.auto,
             rejected_tags: tags.rejected,
             analysis,
-            role: role_user.or(role_auto),
             role_auto,
             // A score without a role says nothing the UI can show.
             role_auto_score: role_auto.and(role_auto_score),
@@ -1993,21 +2039,28 @@ mod tests {
     }
 
     #[test]
-    fn fresh_database_is_v12() {
+    fn fresh_database_is_current() {
         let dir = tempfile::tempdir().unwrap();
         let conn = open_db(&dir.path().join("fresh.db")).unwrap();
-        assert_eq!(read_schema_version(&conn), 12);
+        assert_eq!(read_schema_version(&conn), 13);
         conn.prepare(
             "SELECT role_auto, role_auto_score, role_user, mood_reviewed_at FROM library_entries",
         )
         .unwrap();
         conn.prepare("SELECT library_entry_id, mood, auto_score, user_level FROM library_entry_moods")
             .unwrap();
-        // The default mood vocabulary is seeded.
+        // The default mood vocabulary is seeded, with the v13 words.
         let stored: String = conn
             .query_row("SELECT value FROM meta WHERE key = 'mood_vocabulary'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(serde_json::from_str::<MoodVocabulary>(&stored).unwrap(), MoodVocabulary::defaults());
+        assert_eq!(stored, settings::mood_vocabulary_json(&MoodVocabulary::defaults()).unwrap());
+        assert_ne!(stored, V12_DEFAULT_MOOD_VOCABULARY_JSON);
+        let seeded = serde_json::from_str::<MoodVocabulary>(&stored).unwrap();
+        let prompts = |id: &str| seeded.moods.iter().find(|m| m.id == id).unwrap().prompts.clone();
+        assert_eq!(prompts("peaceful"), ["relaxing, positive"]);
+        assert_eq!(prompts("grim"), ["horror, dark, heavy"]);
+        assert!(seeded.moods.iter().all(|m| m.prompts.len() == 1));
+        assert_eq!(seeded.energy.positive, ["energetic, upbeat, powerful"]);
         for old in [
             "role", "role_source", "role_score", "pace", "pace_source", "pace_score",
             "pace_auto", "pace_auto_score", "pace_user", "mood_light", "mood_light_user",
@@ -2049,7 +2102,12 @@ mod tests {
             (Some(Role::NonCombat), Some(Role::Combat), Some(0.8), Some(Role::NonCombat))
         );
         assert_eq!(layers(&user), (Some(Role::NonCombat), None, None, Some(Role::NonCombat)));
-        assert_eq!(layers(&unset), (None, None, None, None));
+        // Neither layer: Non-combat by default, with no layer behind it.
+        assert_eq!(layers(&unset), (Some(Role::NonCombat), None, None, None));
+        // Ambiance has no role.
+        let amb = library::insert_library_entry(&conn, "/e.ogg", None, "E", None, None, None, "ambiance").unwrap();
+        let entries = load_library_entries(&conn, &MoodVocabulary::defaults()).unwrap();
+        assert_eq!(entries.iter().find(|e| e.id == amb).unwrap().role, None);
     }
 
     /// The columns schema v7 adds to `library_entries`.
@@ -3047,6 +3105,196 @@ mod tests {
         }
         assert!(!table_exists(&conn, "library_entry_moods"));
         assert_eq!(mood_bright_user(&conn, "M").as_deref(), Some("high"));
+    }
+
+    /// The defaults as schema v12 shipped them (three sentences per mood
+    /// for most, three tag words per side of Energy).
+    fn v12_default_vocabulary() -> MoodVocabulary {
+        let mood = |id: &str, name: &str, prompts: &[&str]| crate::models::MoodDef {
+            id: id.into(),
+            name: name.into(),
+            prompts: prompts.iter().map(|p| p.to_string()).collect(),
+        };
+        MoodVocabulary {
+            moods: vec![
+                mood("peaceful", "Peaceful", &[
+                    "benign, pleasant, agreeable music with no threat",
+                    "music that signals safety, whatever its tempo",
+                    "friendly and harmless",
+                ]),
+                mood("sorrowful", "Sorrowful", &[
+                    "reflective, somber, sorrowful music",
+                    "sad, mournful, melancholic music",
+                    "wistful, grieving, nostalgic music",
+                ]),
+                mood("wondrous", "Wondrous", &[
+                    "music full of wonder and awe",
+                    "sacred, divine, celestial music, a choir in a cathedral",
+                    "a breathtaking vista, hopeful and vast, slow and soaring",
+                ]),
+                mood("joyful", "Joyful", &["joyful, glad music, any tempo", "bright major-key happiness", "contented and sunny"]),
+                mood("quirky", "Quirky", &[
+                    "quirky, weird, offbeat music",
+                    "groovy, funky, eccentric and strange",
+                    "campy, oddball, mischievous tune",
+                ]),
+                mood("mysterious", "Mysterious", &[
+                    "mysterious, unsettling, eerie music",
+                    "strange, uncanny, otherworldly sounds",
+                    "quiet suspense and looming dread, something is about to happen",
+                ]),
+                mood("grim", "Grim", &["horror", "dark", "heavy"]),
+                mood("heroic", "Heroic", &[
+                    "heroic, triumphant, bold orchestral music",
+                    "a rousing victory anthem, brass and choir soaring",
+                    "adventurous, noble, uplifting epic music",
+                ]),
+            ],
+            energy: crate::models::EnergyPrompts {
+                positive: vec!["energetic".into(), "upbeat".into(), "powerful".into()],
+                negative: vec!["slow".into(), "relaxing".into(), "calm".into()],
+            },
+        }
+    }
+
+    #[test]
+    fn v12_default_json_is_what_v12_wrote() {
+        assert_eq!(
+            settings::mood_vocabulary_json(&v12_default_vocabulary()).unwrap(),
+            V12_DEFAULT_MOOD_VOCABULARY_JSON
+        );
+    }
+
+    /// A v12 database on disk with the given `mood_vocabulary` row, a mood
+    /// calibration, stored scores, and two entries: one with only
+    /// suggestions, one with a user level beside a suggestion.
+    fn create_v12_db(path: &Path, vocabulary_json: &str) {
+        drop(open_db(path).unwrap());
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            r#"UPDATE meta SET value = '12' WHERE key = 'schema_version';
+               INSERT OR REPLACE INTO meta (key, value) VALUES ('mood_calibration', '{"calibratedAt":"1"}');
+               INSERT INTO library_entries (id, file_path, name, created_at, entry_type, mood_reviewed_at) VALUES
+                 ('S', '/s.mp3', 'S', '1', 'music', NULL),
+                 ('L', '/l.mp3', 'L', '2', 'music', '1700000000000');
+               INSERT INTO library_entry_moods (library_entry_id, mood, auto_score, user_level) VALUES
+                 ('S', 'grim', 0.4, NULL),
+                 ('S', 'energy', 0.6, NULL),
+                 ('L', 'peaceful', 0.7, 0.25),
+                 ('L', 'heroic', 0.2, NULL);
+               INSERT INTO entry_analysis (library_entry_id, content_hash, status, analyzed_at, scores_json) VALUES
+                 ('S', 'h-s', 'embedded', '1', '{"mood":1}');"#,
+        )
+        .unwrap();
+        conn.execute("UPDATE meta SET value = ?1 WHERE key = 'mood_vocabulary'", [vocabulary_json])
+            .unwrap();
+    }
+
+    type MoodRow = (String, String, Option<f64>, Option<f64>);
+
+    fn mood_rows(conn: &Connection) -> Vec<MoodRow> {
+        conn.prepare(
+            "SELECT library_entry_id, mood, auto_score, user_level FROM library_entry_moods
+             ORDER BY library_entry_id, mood",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    }
+
+    fn meta_value(conn: &Connection, key: &str) -> Option<String> {
+        use rusqlite::OptionalExtension;
+        conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+            .optional()
+            .unwrap()
+    }
+
+    fn stored_score_count(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM entry_analysis WHERE scores_json IS NOT NULL", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn v13_replaces_the_untouched_v12_defaults_and_clears_suggestions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lutedrop.db");
+        create_v12_db(&path, V12_DEFAULT_MOOD_VOCABULARY_JSON);
+
+        let conn = open_db(&path).unwrap();
+        assert_eq!(read_schema_version(&conn), 13);
+        // The new defaults are stored, byte for byte as a fresh database's.
+        assert_eq!(
+            meta_value(&conn, "mood_vocabulary").unwrap(),
+            settings::mood_vocabulary_json(&MoodVocabulary::defaults()).unwrap()
+        );
+        // The calibration and every suggestion are gone; the user's level
+        // stays (its suggestion cleared), and rows with no level go.
+        assert_eq!(meta_value(&conn, "mood_calibration"), None);
+        assert_eq!(mood_rows(&conn), vec![("L".into(), "peaceful".into(), None, Some(0.25))]);
+        assert_eq!(stored_score_count(&conn), 0);
+        let status: String = conn
+            .query_row("SELECT status FROM entry_analysis WHERE library_entry_id = 'S'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "embedded");
+        let reviewed: Option<String> = conn
+            .query_row("SELECT mood_reviewed_at FROM library_entries WHERE id = 'L'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(reviewed.as_deref(), Some("1700000000000"));
+
+        // The pre-migration copy keeps the v12 vocabulary and suggestions.
+        let backups = pre_migration_backups(dir.path(), 12);
+        assert_eq!(backups.len(), 1);
+        let copy = Connection::open(&backups[0]).unwrap();
+        assert_eq!(read_schema_version(&copy), 12);
+        assert_eq!(meta_value(&copy, "mood_vocabulary").as_deref(), Some(V12_DEFAULT_MOOD_VOCABULARY_JSON));
+        assert!(meta_value(&copy, "mood_calibration").is_some());
+        assert_eq!(mood_rows(&copy).len(), 4);
+    }
+
+    #[test]
+    fn v13_treats_a_missing_vocabulary_as_the_v12_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lutedrop.db");
+        create_v12_db(&path, V12_DEFAULT_MOOD_VOCABULARY_JSON);
+        Connection::open(&path)
+            .unwrap()
+            .execute("DELETE FROM meta WHERE key = 'mood_vocabulary'", [])
+            .unwrap();
+
+        let conn = open_db(&path).unwrap();
+        assert_eq!(read_schema_version(&conn), 13);
+        assert_eq!(
+            meta_value(&conn, "mood_vocabulary").unwrap(),
+            settings::mood_vocabulary_json(&MoodVocabulary::defaults()).unwrap()
+        );
+        assert_eq!(meta_value(&conn, "mood_calibration"), None);
+        assert_eq!(mood_rows(&conn), vec![("L".into(), "peaceful".into(), None, Some(0.25))]);
+        assert_eq!(stored_score_count(&conn), 0);
+        assert_eq!(pre_migration_backups(dir.path(), 12).len(), 1);
+    }
+
+    #[test]
+    fn v13_leaves_an_edited_vocabulary_alone() {
+        let mut edited = v12_default_vocabulary();
+        edited.moods[0].name = "Calm".into();
+        let edited_json = settings::mood_vocabulary_json(&edited).unwrap();
+        // Unreadable and merely reformatted rows are not the shipped bytes either.
+        let reformatted = serde_json::to_string_pretty(&v12_default_vocabulary()).unwrap();
+        for stored in [edited_json.as_str(), "{oops", reformatted.as_str()] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("lutedrop.db");
+            create_v12_db(&path, stored);
+
+            let conn = open_db(&path).unwrap();
+            assert_eq!(read_schema_version(&conn), 13);
+            assert_eq!(meta_value(&conn, "mood_vocabulary").as_deref(), Some(stored));
+            assert!(meta_value(&conn, "mood_calibration").is_some());
+            assert_eq!(mood_rows(&conn).len(), 4);
+            assert_eq!(stored_score_count(&conn), 1);
+            assert_eq!(pre_migration_backups(dir.path(), 12).len(), 1);
+        }
     }
 
     #[test]

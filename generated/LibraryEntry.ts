@@ -26,7 +26,8 @@ rejectedTags: Array<string>,
  */
 analysis: EntryAnalysis | null, 
 /**
- * The role shown: `role_user` if set, otherwise `role_auto`.
+ * The role shown (see `effective_role`): for music `role_user`, else
+ * `role_auto`, else Non-combat, so never `None`; for ambiance `None`.
  */
 role: Role | null, 
 /**

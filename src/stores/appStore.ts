@@ -33,13 +33,13 @@ export const useAppStore = defineStore('app', () => {
   const moodVocabulary = ref<MoodVocabulary>({ moods: [], energy: { positive: [], negative: [] } });
   const moodCalibration = ref<MoodCalibrationInfo | null>(null);
   /// Some mood's prompts changed (or a mood was added) since the
-  /// calibration: lens buttons show a marker until Recalibrate runs.
+  /// calibration: the lens row shows a marker until Recalibrate runs.
   const moodsNeedRecalibration = ref(false);
   /// The stored vocabulary is unreadable: the defaults are shown and Save is
   /// refused, so it cannot delete the real moods' levels.
   const moodVocabularyUnreadable = ref(false);
   /// Whether the Moods settings dialog is open (opened from the nav rail and
-  /// from the lens buttons' marker).
+  /// from the lens row's marker).
   const moodSettingsOpen = ref(false);
 
   /// Non-null while a background library import is active. Drives the

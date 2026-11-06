@@ -21,7 +21,11 @@ pub struct EntryFacts {
     pub rejected: Vec<String>,
     pub is_music: bool,
     /// The user's role (`role_user`); `None` when the user has not set one,
-    /// whatever the analyzer says.
+    /// whatever the analyzer says. This is the only role that trains the
+    /// Combat gate. The app shows Non-combat for music with neither a user
+    /// nor an analyzer role (`models::effective_role`), but that default is
+    /// not the user's word, so it must never become a Non-combat negative
+    /// example: only an entry the user set to Non-combat is one.
     pub user_role: Option<Role>,
 }
 
@@ -834,8 +838,8 @@ mod tests {
                 "sorrowful": v.moods[1].prompts,
             })
         );
-        assert_eq!(json["energy_prompts"]["positive"][0], "energetic");
-        assert_eq!(json["energy_prompts"]["negative"].as_array().unwrap().len(), 3);
+        assert_eq!(json["energy_prompts"]["positive"][0], "energetic, upbeat, powerful");
+        assert_eq!(json["energy_prompts"]["negative"].as_array().unwrap().len(), 1);
     }
 
     #[test]

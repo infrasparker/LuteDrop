@@ -1,20 +1,19 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 
-/// Right-hand status column for the Role facet.
-/// It says where the shown value comes from and offers the one action that
-/// makes sense in that state:
-/// - suggested: the analyzer's value is shown; ✓ Confirm keeps it as the
-///   confirmed value.
-/// - confirmed: a confirmed value is shown; ↺ Use suggestion clears it so the
-///   analyzer's shows. When the analyzer suggests something else, it is named.
-/// - none: nothing to show.
+/// Right-hand status column for the Role facet. A role is always shown (the
+/// user's, else the analyzer's, else Non-combat by default), so there are two
+/// states:
+/// - suggested: the analyzer's value or the default is shown; ✓ Confirm
+///   makes it the user's.
+/// - set: the user set the value ("Set by you"); ↺ goes back to the
+///   suggestion. When the analyzer suggests something else, it is named.
 const props = defineProps<{
   /** Label of the analyzer's value, or null when it has none. */
   autoLabel: string | null;
-  /** Label of the confirmed value, or null when none was chosen. */
+  /** Label of the value the user set, or null when none was set. */
   userLabel: string | null;
-  /** Hover text for the suggested state: the analyzer's score. */
+  /** Hover text for the suggestion: the analyzer's score, or why the default applies. */
   autoHint?: string | null;
   disabled?: boolean;
 }>();
@@ -24,23 +23,15 @@ const emit = defineEmits<{
   useSuggestion: [];
 }>();
 
-type State = 'suggested' | 'confirmed' | 'none';
+const isSet = computed(() => props.userLabel !== null);
 
-const state = computed<State>(() => {
-  if (props.userLabel !== null) return 'confirmed';
-  if (props.autoLabel !== null) return 'suggested';
-  return 'none';
-});
-
-// The suggestion is only worth naming when it differs from the confirmed value.
-const differs = computed(
-  () => state.value === 'confirmed' && props.autoLabel !== null && props.autoLabel !== props.userLabel,
-);
+// The suggestion is only worth naming when it differs from the value set.
+const differs = computed(() => isSet.value && props.autoLabel !== null && props.autoLabel !== props.userLabel);
 </script>
 
 <template>
   <div class="facet-status d-flex align-center ga-1 text-caption">
-    <template v-if="state === 'suggested'">
+    <template v-if="!isSet">
       <span class="d-inline-flex align-center ga-1 text-medium-emphasis status-text">
         <VIcon size="x-small">mdi-creation</VIcon>Suggested
         <VTooltip v-if="autoHint" activator="parent" location="top" open-delay="300">{{ autoHint }}</VTooltip>
@@ -53,38 +44,34 @@ const differs = computed(
         @click="emit('confirm')"
       >
         Confirm
-        <VTooltip activator="parent" location="top" open-delay="300">Keep the suggestion</VTooltip>
+        <VTooltip activator="parent" location="top" open-delay="300">Keep the suggestion as yours</VTooltip>
       </VBtn>
     </template>
-    <template v-else-if="state === 'confirmed'">
+    <template v-else>
       <span class="status-text">
-        Confirmed<span v-if="differs" class="text-medium-emphasis"> · suggested: {{ autoLabel }}</span>
+        Set by you<span v-if="differs" class="text-medium-emphasis"> · suggested: {{ autoLabel }}</span>
         <VTooltip v-if="differs && autoHint" activator="parent" location="top" open-delay="300">{{ autoHint }}</VTooltip>
       </span>
       <VBtn
+        icon="mdi-restore"
         size="x-small"
         variant="text"
-        prepend-icon="mdi-restore"
+        density="comfortable"
         :disabled="disabled"
+        aria-label="Back to the suggestion"
         @click="emit('useSuggestion')"
       >
-        Use suggestion
-        <VTooltip activator="parent" location="top" open-delay="300">
-          Clear the confirmed value; the suggestion shows
-        </VTooltip>
+        <VIcon size="small">mdi-restore</VIcon>
+        <VTooltip activator="parent" location="top" open-delay="300">Back to the suggestion</VTooltip>
       </VBtn>
     </template>
-    <span v-else class="status-text text-medium-emphasis">
-      —
-      <VTooltip activator="parent" location="top" open-delay="300">Not analyzed</VTooltip>
-    </span>
   </div>
 </template>
 
 <style scoped>
-/* Wide enough for most states ("Confirmed · suggested: Non-combat" + Use
-   suggestion), so the column does not jump when the state changes. One line
-   always: a grid track holding it grows to fit rather than wrap or clip. */
+/* Wide enough for "Set by you · suggested: Non-combat" + ↺, so the column
+   does not jump when the state changes. One line always: a grid track
+   holding it grows to fit rather than wrap or clip. */
 .facet-status {
   min-width: 260px;
   min-height: 28px;

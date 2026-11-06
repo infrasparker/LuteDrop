@@ -112,7 +112,8 @@ function gateLabel(): string | null {
   const e = entry.value;
   if (!e?.role) return null;
   const name = e.role === 'combat' ? 'Combat' : 'Non-combat';
-  return `${name} · ${e.roleUser !== null ? 'confirmed' : 'suggested'}`;
+  if (e.roleUser !== null) return `${name} · Set by you`;
+  return `${name} · Suggested${e.roleAuto === null ? ' (default)' : ''}`;
 }
 
 function percent(score: number): number {

@@ -83,6 +83,9 @@ pub fn load_run_entries(conn: &Connection) -> Result<Vec<RunEntry>, String> {
                 user_tags: user_tags.remove(&id).unwrap_or_default(),
                 rejected: rejected.remove(&id).unwrap_or_default(),
                 is_music: matches!(EntryType::from_str(&entry_type), EntryType::Music),
+                // Only the user's own role is a training label; never the
+                // shown role, which may be the analyzer's or the Non-combat
+                // default (see `EntryFacts::user_role`).
                 user_role: role_user.as_deref().and_then(Role::from_db_str),
                 hash,
                 id,

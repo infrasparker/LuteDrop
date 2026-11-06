@@ -42,13 +42,12 @@ Auto-tagging suggests a role and tags for music entries by comparing how they so
 
 ### Role
 
-Every music entry can have a role, **Combat** or **Non-combat**. The analyzer scores the Combat probability of each entry. The role is Combat when the probability reaches the Combat threshold, Non-combat when one minus the probability reaches the Non-combat threshold, and otherwise unset. An auto role is set only once the role classifier is trusted.
+Every music entry has a role, **Combat** or **Non-combat**; there is no "no role" state. The role shown is the one you set, else the analyzer's suggestion, else **Non-combat** by default. Ambiance entries have no role. The analyzer scores the Combat probability of each entry. Its suggestion is Combat when the probability reaches the Combat threshold, Non-combat when one minus the probability reaches the Non-combat threshold, and otherwise there is none (the default shows). An auto role is suggested only once the role classifier is trusted.
 
 - A role set by hand always wins. Auto-tagging never changes it.
-- Clearing a role is a decision too: the entry stays without a role and auto-tagging does not fill it again.
-- An auto role is shown as **✨ Suggested** with its score. **Confirm** keeps it as a confirmed role.
-- The Library has a Role column and a Role filter (All, Combat, Non-combat, Unset). The entry editor has a Combat / Non-combat control with a clear action, and the bulk bar can set or clear the role on several music entries at once.
-- Only entries whose role was set by hand count as examples. Auto roles never do.
+- A suggested role (the analyzer's, or the default) is shown as **✨ Suggested**, with the analyzer's score when there is one. **Confirm** makes it yours; a role you set reads **Set by you**, and **↺** goes back to the suggestion.
+- The Library has a Role column and a Role filter (Any role, Combat, Non-combat). The entry editor and the Review card have a Combat / Non-combat control, and the bulk bar can set the role on several music entries at once or send them back to the suggestion.
+- Only entries whose role was set by hand count as examples. Auto roles never do, and neither does the Non-combat default.
 
 ### Moods
 
@@ -63,20 +62,21 @@ The analyzer suggests every value by comparing the track's sound with a few desc
 
 - **The profile.** One bar per mood, each with five levels (0, 0.25, 0.5, 0.75, 1). A bar at the analyzer's value is **Suggested** and drawn muted. Clicking a bar (or using the arrow keys on a focused bar) sets the nearest level; the bar is then **Set by you**, drawn in the accent colour, and hovering it shows "Set by you · suggested 0.62". **↺** goes back to the suggestion. A level you set always wins over the analyzer's.
 - The entry editor has a **Role** row and the mood profile under it. The Library's bulk bar has **Set mood levels…**, which opens the profile for the selected music; a click sets that level on every selected track, and a bar whose tracks differ shows "mixed".
-- **Lenses.** The Library and Scry have a row of lens buttons, one per mood and one for Energy. One lens ranks the list by that score, highest first, with the score as a bar in its own column. With two or more lenses an **Any / All** switch appears: any (the default) ranks by a track's best score among them, all by its weakest. Ambiance is hidden while a lens is on.
-- The filter bar also has the role filter and a **Sort** menu (Name, Energy, and Lens score while a lens is on) with a direction arrow. Energy is a column in the Library too, sortable either way.
-- Tag chips work the same way: with two or more selected, **Any / All** chooses between entries with one of the tags (the default) and entries with every one.
+- **Lenses.** The Library and Scry have a row of lens chips, one per mood (Energy has no lens; sort by its column instead). A chip cycles **off → include → exclude** with each click. Included moods rank the list, highest first, by the *weaker* of their scores, so with Grim and Heroic included a track ranks high only when it is high in both. An excluded mood (red outline, struck through) hides tracks scoring 0.5 or more in it; tracks not analyzed yet stay. The lens column shows the score used for ranking, and its header names what is ranked, for example "Grim + Heroic" or "Heroic · ~~Grim~~". Ambiance is hidden while any lens is on.
+- **Sorting** is done from the column headers only. The Library sorts by status (missing files first), Type, Name, Role, Energy, Duration, and the lens score while a lens is included; Scry by Name, Energy, Match (its search ranking) and the lens score. Click a header to sort by it, again to flip the direction. Including the first lens sorts by the lens score, highest first; clearing the last one goes back to the view's default sort (Name in the Library, Match in Scry). The filter bar also has the Role filter.
+- Tag chips cycle the same way: an entry passes when it has at least one included tag (if any is included) and none of the excluded ones. **Untagged** and **Has auto tags** are plain on/off filters on top.
 
 #### Mood vocabulary
 
 **Moods** in the left rail opens the mood vocabulary: the moods the analyzer scores and the text prompts it compares each track with.
 
-- Each mood has an **id** (lowercase letters; it cannot change once saved), a **name** (rename freely), and **prompts**, one per line. Moods can be added, removed and moved up or down; the order is the order of the lens buttons and the profile. Energy is always last and has two sides of prompts: energetic and calm.
+- Each mood has an **id** (lowercase letters; it cannot change once saved), a **name** (rename freely), and **prompts**, one per line. Moods can be added, removed and moved up or down; the order is the order of the lens chips and the profile. Energy is always last and has two sides of prompts: energetic and calm.
 - The **word bank** above the list holds tag words the analyzer's text model knows well. Clicking one adds it, on a line of its own, to the prompt field you were last in. Single tag words work as well as sentences, but not every word is reliable, so check with Preview.
 - **Preview** on a mood lists the 15 tracks its current prompts rank highest, with their album folder and raw similarity, without saving or recalibrating anything. It needs the analyzer.
 - **Save** stores the vocabulary. Removing a mood deletes its values on every track; when that includes levels set by you, Save asks first and says how many.
 - **Recalibrate** clears the calibration and every suggested mood value (levels set by you stay) and starts an analysis run, which suggests every mood again from the current prompts. The panel shows when the calibration was taken and from how many tracks.
-- After you change a mood's prompts (or add a mood), Save offers to recalibrate. Until you do, the lens buttons show **Needs recalibration**, and the changed moods keep their old suggestions; the others are still suggested as before.
+- **Reset to defaults** puts back the shipped mood list and prompts. Levels set by you stay for moods still in the list; moods not in the defaults lose their values, and the confirm dialog says how many. It also works when the stored list is unreadable (when Save is blocked). If prompts changed, it then offers to recalibrate.
+- After you change a mood's prompts (or add a mood), Save offers to recalibrate. Until you do, the lens row shows **Needs recalibration**, and the changed moods keep their old suggestions; the others are still suggested as before.
 
 ### Review
 
@@ -84,7 +84,7 @@ The **Review** tab goes through music one track at a time. Its badge counts the 
 
 - The card shows the track's name and folder, a play button, and its two highest moods as a readout, for example "Mysterious 0.87 · Grim 0.74".
 - The **Role** row and the mood profile work as in the editor; changing them does not move on. **Sounds like** names the two closest reviewed tracks by sound, when the analyzer is available.
-- **Approve** (key **A**) confirms the role shown, marks the track reviewed and moves on. Mood bars you did not touch stay suggestions. **Skip** (key **S**) moves the track to the end of the queue for this session without saving anything. **Space** plays or stops the track.
+- **Approve** (key **A**) confirms the analyzer's role (a default Non-combat stays a suggestion, so it never trains the analyzer), marks the track reviewed and moves on. Mood bars you did not touch stay suggestions. **Skip** (key **S**) moves the track to the end of the queue for this session without saving anything. **Space** plays or stops the track.
 - Newest imports come first, and within a day the tracks with the lowest top mood score first.
 
 ### Auto tags
@@ -104,7 +104,7 @@ Auto tags are learned from the tags the user applied by hand.
 
 - **Text search.** A description such as "tense strings building to a battle" returns the closest tracks, ranked by score.
 - **More like this.** The action on a Library row opens Scry seeded with that track. Seeds are shown as removable chips, more can be added from the results, and the results are the tracks closest to the seeds together.
-- **Filters.** The results can be ranked by mood lenses and filtered by Role, and sorted by best match, name, Energy or lens score.
+- **Filters.** The results can be ranked and filtered by mood lens chips and filtered by Role, and sorted from the column headers by match, name, Energy or lens score.
 - **Map.** A scatter plot of every analyzed music track, colored by role. Hovering shows the track name and clicking plays it. Dragging draws a lasso that adds the enclosed tracks to the selection. Seeds and results are highlighted.
 - **Playlists.** The selection can become a playlist with **Create playlist**, which adds a composition with one shuffle track holding the selected tracks to a chosen group of the active configuration, or be appended to a track with **Add to existing track**.
 

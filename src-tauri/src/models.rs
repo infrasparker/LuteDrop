@@ -47,7 +47,8 @@ pub struct LibraryEntry {
     pub rejected_tags: Vec<String>,
     /// Analyzer state for this entry; `None` if it was never submitted.
     pub analysis: Option<EntryAnalysis>,
-    /// The role shown: `role_user` if set, otherwise `role_auto`.
+    /// The role shown (see `effective_role`): for music `role_user`, else
+    /// `role_auto`, else Non-combat, so never `None`; for ambiance `None`.
     pub role: Option<Role>,
     /// The analyzer's role, written by every analysis run.
     pub role_auto: Option<Role>,
@@ -94,6 +95,18 @@ impl Role {
             "non_combat" => Some(Role::NonCombat),
             _ => None,
         }
+    }
+}
+
+/// The role a music entry shows: the user's, else the analyzer's, else
+/// Non-combat (the default; there is no "no role" state). Ambiance has no
+/// role. Only `role_user` ever trains the Combat gate: a role that is shown
+/// because of this default is not a training example (see
+/// `EntryFacts::user_role`).
+pub fn effective_role(entry_type: &EntryType, role_user: Option<Role>, role_auto: Option<Role>) -> Option<Role> {
+    match entry_type {
+        EntryType::Music => Some(role_user.or(role_auto).unwrap_or(Role::NonCombat)),
+        EntryType::Ambiance => None,
     }
 }
 
@@ -170,9 +183,11 @@ fn check_prompts(what: &str, prompts: &[String]) -> Result<(), String> {
 }
 
 impl MoodVocabulary {
-    /// The defaults the database is seeded with (spec "Revision 2"). Once
-    /// seeded, the app reads the vocabulary from the database, never from
-    /// here.
+    /// The defaults the database is seeded with (since schema v13, each mood
+    /// and each side of Energy is one prompt: a cluster of tag words),
+    /// and what Reset to defaults writes. Once seeded, the app reads the
+    /// vocabulary from the database, never from here. Keep these identical
+    /// to `MOODS` / `ENERGY_POS` / `ENERGY_NEG` in `tagger/tagger/moods.py`.
     pub fn defaults() -> Self {
         let mood = |id: &str, name: &str, prompts: &[&str]| MoodDef {
             id: id.to_string(),
@@ -181,51 +196,20 @@ impl MoodVocabulary {
         };
         Self {
             moods: vec![
-                mood("peaceful", "Peaceful", &[
-                    "benign, pleasant, agreeable music with no threat",
-                    "music that signals safety, whatever its tempo",
-                    "friendly and harmless",
-                ]),
-                mood("sorrowful", "Sorrowful", &[
-                    "reflective, somber, sorrowful music",
-                    "sad, mournful, melancholic music",
-                    "wistful, grieving, nostalgic music",
-                ]),
-                mood("wondrous", "Wondrous", &[
-                    "music full of wonder and awe",
-                    "sacred, divine, celestial music, a choir in a cathedral",
-                    "a breathtaking vista, hopeful and vast, slow and soaring",
-                ]),
-                mood("joyful", "Joyful", &[
-                    "joyful, glad music, any tempo",
-                    "bright major-key happiness",
-                    "contented and sunny",
-                ]),
-                mood("quirky", "Quirky", &[
-                    "quirky, weird, offbeat music",
-                    "groovy, funky, eccentric and strange",
-                    "campy, oddball, mischievous tune",
-                ]),
-                mood("mysterious", "Mysterious", &[
-                    "mysterious, unsettling, eerie music",
-                    "strange, uncanny, otherworldly sounds",
-                    "quiet suspense and looming dread, something is about to happen",
-                ]),
-                mood("grim", "Grim", &[
-                    "horror",
-                    "dark",
-                    "heavy",
-                ]),
-                mood("heroic", "Heroic", &[
-                    "heroic, triumphant, bold orchestral music",
-                    "a rousing victory anthem, brass and choir soaring",
-                    "adventurous, noble, uplifting epic music",
-                ]),
+                mood("peaceful", "Peaceful", &["relaxing, positive"]),
+                mood("sorrowful", "Sorrowful", &["sad, sorrowful, mournful, melancholic, somber, wistful, grieving, nostalgic, reflective music"]),
+                mood("wondrous", "Wondrous", &["hopeful, inspiring"]),
+                mood("joyful", "Joyful", &["happy, upbeat"]),
+                mood("quirky", "Quirky", &["quirky, weird, offbeat, groovy, funky, eccentric, strange, campy, oddball, mischievous music"]),
+                mood("mysterious", "Mysterious", &["mysterious, unsettling, eerie, strange, uncanny, otherworldly, suspenseful, looming, dread music"]),
+                mood("grim", "Grim", &["horror, dark, heavy"]),
+                mood("heroic", "Heroic", &["heroic, triumphant, bold, rousing, victorious, adventurous, noble, uplifting, epic orchestral music"]),
             ],
             energy: EnergyPrompts {
-                // Bare tag words; never the bare word "fast", which the model reads against energy.
-                positive: strings(&["energetic", "upbeat", "powerful"]),
-                negative: strings(&["slow", "relaxing", "calm"]),
+                // One cluster of tag words per side; never the bare word
+                // "fast", which the model reads against energy.
+                positive: strings(&["energetic, upbeat, powerful"]),
+                negative: strings(&["slow, relaxing, calm"]),
             },
         }
     }
@@ -310,6 +294,20 @@ pub struct MoodCalibrationInfo {
     /// Unix milliseconds as a string, like `created_at`.
     pub calibrated_at: String,
     pub tracks: u32,
+}
+
+/// What Reset to defaults (Settings → Moods) would delete: the stored mood
+/// rows whose id is not a default mood, and how many of them hold a level
+/// set by the user. Read from the rows themselves, so it is right even while
+/// the stored vocabulary is unreadable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct MoodResetImpact {
+    /// The ids that would go, sorted.
+    pub moods: Vec<String>,
+    pub rows: u32,
+    pub user_levels: u32,
 }
 
 /// The levels a user can set a mood to (a 1-5 rating).
@@ -773,6 +771,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn effective_role_is_user_then_auto_then_non_combat() {
+        use Role::{Combat, NonCombat};
+        let music = EntryType::Music;
+        assert_eq!(effective_role(&music, Some(Combat), Some(NonCombat)), Some(Combat));
+        assert_eq!(effective_role(&music, Some(NonCombat), Some(Combat)), Some(NonCombat));
+        assert_eq!(effective_role(&music, None, Some(Combat)), Some(Combat));
+        assert_eq!(effective_role(&music, None, None), Some(NonCombat));
+        // Ambiance has no role, whatever is stored.
+        assert_eq!(effective_role(&EntryType::Ambiance, Some(Combat), Some(Combat)), None);
+        assert_eq!(effective_role(&EntryType::Ambiance, None, None), None);
+    }
+
+    #[test]
     fn default_vocabulary_is_eight_moods_then_energy_and_valid() {
         let v = MoodVocabulary::defaults();
         assert_eq!(
@@ -781,10 +792,9 @@ mod tests {
         );
         assert_eq!(v.normalized().unwrap(), v);
         assert!(v.contains("energy") && v.contains("grim") && !v.contains("menacing"));
-        assert_eq!(v.prompt_signature("joyful").unwrap().len(), 3);
+        assert_eq!(v.prompt_signature("joyful").unwrap(), ["happy, upbeat"]);
         let energy = v.prompt_signature("energy").unwrap();
-        assert_eq!(energy[0], "+ energetic");
-        assert_eq!(energy[5], "- calm");
+        assert_eq!(energy, ["+ energetic, upbeat, powerful", "- slow, relaxing, calm"]);
         assert_eq!(v.prompt_signature("menacing"), None);
     }
 
@@ -821,7 +831,7 @@ mod tests {
         let json = serde_json::to_value(MoodVocabulary::defaults()).unwrap();
         assert_eq!(json["moods"][3]["id"], "joyful");
         assert_eq!(json["moods"][3]["name"], "Joyful");
-        assert_eq!(json["energy"]["negative"].as_array().unwrap().len(), 3);
+        assert_eq!(json["energy"]["negative"], serde_json::json!(["slow, relaxing, calm"]));
     }
 
     #[test]

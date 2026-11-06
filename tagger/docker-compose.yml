@@ -1,5 +1,6 @@
 services:
-  tagger:
+  analyzer:
+    container_name: lutedrop-analyzer
     build: .
     env_file: .env
     ports:

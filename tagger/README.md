@@ -11,11 +11,11 @@ Needs Docker with the NVIDIA container toolkit.
 
 ```
 cp .env.example .env     # set LUTEDROP_TAGGER_TOKEN
-docker compose up -d --build
+docker compose up -d --build --remove-orphans
 curl -H "X-LuteDrop-Token: <token>" http://localhost:8765/health
 ```
 
-The service starts loading the model as soon as it starts. On first start the
+The container is named `lutedrop-analyzer`. The service starts loading the model as soon as it starts. On first start the
 weights download into `./hf`, which can take several minutes; `/health`
 reports `ready: false` until loading finishes, and `/embed` answers 503 in the
 meantime. If loading fails, `/health` carries the reason in `error`. Embeddings

@@ -3,7 +3,7 @@ use tauri::State;
 use std::sync::Arc;
 use crate::actions;
 use crate::models::{
-    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodVocabulary,
+    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodResetImpact, MoodVocabulary,
     Role, SceneConfig, TrackUpdates, ScryHit, ScryPoint,
 };
 use crate::state::AppStateContainer;
@@ -299,14 +299,6 @@ pub fn set_entry_role(
 }
 
 #[tauri::command]
-pub fn keep_auto_role(
-    state: State<'_, Arc<AppStateContainer>>,
-    entry_ids: Vec<String>,
-) -> Result<AppState, String> {
-    actions::keep_auto_role(&state, entry_ids)
-}
-
-#[tauri::command]
 pub fn set_entry_mood_level(
     state: State<'_, Arc<AppStateContainer>>,
     entry_ids: Vec<String>,
@@ -322,6 +314,16 @@ pub fn set_mood_vocabulary(
     vocabulary: MoodVocabulary,
 ) -> Result<AppState, String> {
     actions::set_mood_vocabulary(&state, vocabulary)
+}
+
+#[tauri::command]
+pub fn mood_reset_impact(state: State<'_, Arc<AppStateContainer>>) -> Result<MoodResetImpact, String> {
+    actions::mood_reset_impact(&state)
+}
+
+#[tauri::command]
+pub fn reset_mood_vocabulary(state: State<'_, Arc<AppStateContainer>>) -> Result<AppState, String> {
+    actions::reset_mood_vocabulary(&state)
 }
 
 #[tauri::command]

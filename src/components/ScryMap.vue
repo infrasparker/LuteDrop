@@ -116,7 +116,6 @@ function roleColor(entry: LibraryEntry | undefined): Rgb {
 const legend = computed(() => [
   { label: 'Combat', color: rgba(palette.value.combat) },
   { label: 'Non-combat', color: rgba(palette.value.nonCombat) },
-  { label: 'No role', color: rgba(palette.value.unset, 0.45) },
 ]);
 
 // --- Drawing ---

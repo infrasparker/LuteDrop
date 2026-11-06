@@ -18,16 +18,19 @@ import type { LibraryEntry, LibraryEntryUsage, Role } from '@generated/index';
 import MoodFilters from '../components/MoodFilters.vue';
 import MoodProfile from '../components/MoodProfile.vue';
 import {
+  clickSort,
+  emptyChipSelection,
   emptyMoodFilters,
-  lensHeader,
+  lensHeaderParts,
   lensLabel,
+  lensOn as lensIsOn,
   lensScore,
   matchesMoodFilters,
   matchesTagSelection,
   moodLayers,
   moodValue,
   sortByKey,
-  type MatchMode,
+  type ChipSelection,
   type MoodFilters as MoodFilterState,
   type SortDir,
   type SortKey,
@@ -44,15 +47,13 @@ const toast = useToast();
 const router = useRouter();
 
 const searchQuery = ref('');
-const selectedTags = ref<string[]>([]);
-const tagMode = ref<MatchMode>('any');
+const tagSelection = ref<ChipSelection>(emptyChipSelection());
 const untagged = ref(false);
 const hasAuto = ref(false);
 const selectedType = ref<string>('all');
 const moodFilters = ref<MoodFilterState>(emptyMoodFilters());
 const sortKey = ref<SortKey>('name');
 const sortDir = ref<SortDir>('asc');
-const SORT_KEYS: SortKey[] = ['name', 'energy'];
 // Lenses and role apply to music only and their bar is hidden for ambiance,
 // so its filters and sort must not keep applying there.
 watch(selectedType, (type) => {
@@ -62,7 +63,7 @@ watch(selectedType, (type) => {
     sortDir.value = 'asc';
   }
 });
-const lensOn = computed(() => moodFilters.value.lenses.length > 0);
+const lensOn = computed(() => lensIsOn(moodFilters.value));
 
 // Search text also matches the album folder (parent) and artist folder
 // (grandparent) of the file path, so a game is findable by soundtrack folder.
@@ -73,16 +74,16 @@ function searchFields(entry: LibraryEntry): string[] {
   return [entry.name, parts[parts.length - 2] ?? '', parts[parts.length - 3] ?? ''];
 }
 
-function roleLabel(role: Role | null): string {
-  if (role === 'combat') return 'Combat';
-  if (role === 'nonCombat') return 'Non-combat';
-  return 'No role';
+/// Music always has a role (ambiance has none and shows no role cell).
+function roleLabel(role: Role): string {
+  return role === 'combat' ? 'Combat' : 'Non-combat';
 }
 
 watch(tags, (current) => {
-  const stale = selectedTags.value.filter((t) => !current.includes(t));
-  if (stale.length > 0) {
-    selectedTags.value = selectedTags.value.filter((t) => current.includes(t));
+  const { include, exclude } = tagSelection.value;
+  const known = (t: string): boolean => current.includes(t);
+  if (!include.every(known) || !exclude.every(known)) {
+    tagSelection.value = { include: include.filter(known), exclude: exclude.filter(known) };
   }
 });
 
@@ -94,33 +95,45 @@ const filteredEntries = computed(() => {
     // Auto tags are part of `tags`, so "untagged" means no user tags.
     const matchesTags = untagged.value
       ? entry.tags.length === entry.autoTags.length
-      : matchesTagSelection(entry.tags, selectedTags.value, tagMode.value);
+      : matchesTagSelection(entry.tags, tagSelection.value);
     const matchesType =
       selectedType.value === 'all' || entry.entryType === selectedType.value;
     const matchesAuto = !hasAuto.value || entry.autoTags.length > 0;
     return matchesSearch && matchesTags && matchesType && matchesAuto && matchesMoodFilters(entry, moodFilters.value);
   });
-  return sortByKey(matching, sortKey.value, sortDir.value, moodFilters.value, (e) => e);
+  return sortByKey(matching, sortKey.value, sortDir.value, moodFilters.value, (e) => e, (e) => store.isEntryMissing(e.id));
 });
 
-// The Energy column, and the lens score column while a lens is on. Both sort
-// from their header too; an entry with no value sorts below every score.
+// Column headers are the only sort control: status (missing files first),
+// Type, Name, the lens score column while a lens is included, Role, Energy
+// and Duration. `filteredEntries` is already in that order (`sortByKey`,
+// entries with no value last), so the table's own sort is a no-op that only
+// draws the header arrow.
+const keepOrder = (): number => 0;
 const headers = computed(() => [
-  { title: '', key: 'status', sortable: true, width: '48px',
-    sort: (a: boolean, b: boolean) => (a === b ? 0 : a ? -1 : 1) },
-  { title: 'Type', key: 'entryType', sortable: true, width: '60px' },
-  { title: 'Name', key: 'name', sortable: true, width: '32%' },
+  { title: '', key: 'status', sortable: true, sort: keepOrder, width: '48px' },
+  { title: 'Type', key: 'entryType', sortable: true, sort: keepOrder, width: '60px' },
+  { title: 'Name', key: 'name', sortable: true, sort: keepOrder, width: '32%' },
   ...(lensOn.value
-    ? [{ title: lensHeader(moodFilters.value), key: 'lens', sortable: true, width: '140px',
-        value: (item: LibraryEntry) => lensScore(item, moodFilters.value) ?? -1 }]
+    ? [{ title: lensLabel(moodFilters.value), key: 'lens', sortable: true, sort: keepOrder, width: '160px' }]
     : []),
-  { title: 'Role', key: 'role', sortable: true, width: '60px' },
-  { title: 'Energy', key: 'energy', sortable: true, width: '80px', align: 'end' as const,
-    value: (item: LibraryEntry) => moodValue(item, 'energy') ?? -1 },
+  { title: 'Role', key: 'role', sortable: true, sort: keepOrder, width: '60px' },
+  { title: 'Energy', key: 'energy', sortable: true, sort: keepOrder, width: '80px', align: 'end' as const },
   { title: 'Tags', key: 'tags', sortable: false },
-  { title: 'Duration', key: 'duration', sortable: true, width: '80px', align: 'end' as const },
+  { title: 'Duration', key: 'duration', sortable: true, sort: keepOrder, width: '80px', align: 'end' as const },
   { title: '', key: 'actions', sortable: false, width: '112px', align: 'end' as const },
 ]);
+
+const tableSortBy = computed(() => [{ key: sortKey.value, order: sortDir.value }]);
+
+/// A header click: the table reports its new sort; the clicked key is the
+/// first one that differs from ours (or ours again, flipped).
+function onSortBy(next: { key: string; order?: unknown }[]): void {
+  const key = (next.find((s) => s.key !== sortKey.value)?.key ?? sortKey.value) as SortKey;
+  const picked = clickSort({ key: sortKey.value, dir: sortDir.value }, key);
+  sortKey.value = picked.key;
+  sortDir.value = picked.dir;
+}
 
 /// Hover text for an Energy cell: where the value comes from.
 function energyHint(entry: LibraryEntry): string {
@@ -390,20 +403,20 @@ async function relocateEntry(entryId: string): Promise<void> {
       </VMenu>
     </Teleport>
 
-    <!-- Lenses, role and sort apply to music only, so the bar is hidden while browsing ambiance. -->
+    <!-- Lenses and role apply to music only, so the bar is hidden while browsing ambiance. -->
     <MoodFilters
       v-if="selectedType !== 'ambiance'"
       v-model="moodFilters"
       v-model:sort="sortKey"
       v-model:dir="sortDir"
       size="small"
-      :sort-keys="SORT_KEYS"
+      default-sort="name"
       class="mb-2"
     />
 
     <div class="d-flex align-end mb-2 ga-2">
       <div class="d-flex flex-wrap ga-1 flex-grow-1" style="min-width: 0;">
-        <TagFilter v-model:selected-tags="selectedTags" v-model:untagged="untagged" v-model:has-auto="hasAuto" v-model:tag-mode="tagMode" />
+        <TagFilter v-model:selection="tagSelection" v-model:untagged="untagged" v-model:has-auto="hasAuto" />
       </div>
       <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
         {{ filteredEntries.length }} {{ filteredEntries.length === 1 ? 'entry' : 'entries' }}
@@ -417,11 +430,14 @@ async function relocateEntry(entryId: string): Promise<void> {
       show-select
       :headers="headers"
       :items="filteredEntries"
+      :sort-by="tableSortBy"
+      must-sort
       item-value="id"
       :item-height="48"
       fixed-header
       hover
       density="comfortable"
+      @update:sort-by="onSortBy"
       class="library-table flex-grow-1"
       :row-props="({ item }: { item: LibraryEntry }) => ({
         class: [
@@ -474,9 +490,19 @@ async function relocateEntry(entryId: string): Promise<void> {
           </VIcon>
           <VIcon v-if="item.roleUser === null" size="x-small" class="role-auto">mdi-creation</VIcon>
           <VTooltip v-if="item.roleUser === null" activator="parent" location="top" open-delay="300">
-            {{ roleLabel(item.role) }} · Suggested{{ item.roleAutoScore === null ? '' : ` · ${item.roleAutoScore.toFixed(2)}` }}
+            {{ roleLabel(item.role) }} · Suggested{{ item.roleAuto === null ? ' (default)' : item.roleAutoScore === null ? '' : ` · ${item.roleAutoScore.toFixed(2)}` }}
           </VTooltip>
         </span>
+      </template>
+
+      <template #header.lens="{ column, getSortIcon }">
+        <div class="v-data-table-header__content lens-header" :title="lensLabel(moodFilters)">
+          <span>{{ lensHeaderParts(moodFilters).ranked }}</span>
+          <span v-if="lensHeaderParts(moodFilters).excluded.length > 0">
+            · <s class="text-error">{{ lensHeaderParts(moodFilters).excluded.join(', ') }}</s>
+          </span>
+          <VIcon class="v-data-table-header__sort-icon" :icon="getSortIcon(column)" />
+        </div>
       </template>
 
       <template #item.lens="{ item }">
@@ -594,7 +620,7 @@ async function relocateEntry(entryId: string): Promise<void> {
           <VList density="compact">
             <VListItem prepend-icon="mdi-sword-cross" title="Combat" @click="applyBulkRole('combat')" />
             <VListItem prepend-icon="mdi-music-note" title="Non-combat" @click="applyBulkRole('nonCombat')" />
-            <VListItem prepend-icon="mdi-restore" title="Use suggestion" subtitle="Clear the confirmed role" @click="applyBulkRole(null)" />
+            <VListItem prepend-icon="mdi-restore" title="Back to suggestion" subtitle="Clear the role you set" @click="applyBulkRole(null)" />
           </VList>
         </VMenu>
         <VBtn
