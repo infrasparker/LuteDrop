@@ -21,6 +21,8 @@ export type { MoodValue } from "./MoodValue";
 export type { RelinkCandidate } from "./RelinkCandidate";
 export type { Role } from "./Role";
 export type { SceneConfig } from "./SceneConfig";
+export type { ScryHit } from "./ScryHit";
+export type { ScryPoint } from "./ScryPoint";
 export type { TagQuality } from "./TagQuality";
 export type { TagScore } from "./TagScore";
 export type { TagSource } from "./TagSource";
@@ -28,7 +30,5 @@ export type { Track } from "./Track";
 export type { TrackMode } from "./TrackMode";
 export type { TrackPlaybackState } from "./TrackPlaybackState";
 export type { TrackTransition } from "./TrackTransition";
-export type { VibeHit } from "./VibeHit";
-export type { VibePoint } from "./VibePoint";
 
 export type CompStatus = "active" | "partial" | "paused" | "inactive";

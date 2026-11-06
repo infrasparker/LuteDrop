@@ -337,9 +337,9 @@ def test_search_empty_text_or_candidates(client):
 def test_map_shape_range_and_cache(client, monkeypatch):
     hashes = seed(client)
     n_calls = []
-    real = app_module.vibe.layout_2d
+    real = app_module.scry.layout_2d
     monkeypatch.setattr(
-        app_module.vibe, "layout_2d", lambda v: (n_calls.append(1), real(v))[1]
+        app_module.scry, "layout_2d", lambda v: (n_calls.append(1), real(v))[1]
     )
     first = client.post("/map", json={"hashes": hashes}, headers=HEADERS).json()["points"]
     second = client.post(
@@ -383,7 +383,7 @@ def test_endpoints_drop_uncached_hashes(client):
         ("/map", {"hashes": []}),
     ],
 )
-def test_vibe_endpoints_require_token(client, path, body):
+def test_scry_endpoints_require_token(client, path, body):
     assert client.post(path, json=body).status_code == 401
     assert client.post(path, json=body, headers={"X-LuteDrop-Token": "nope"}).status_code == 401
 

@@ -256,8 +256,8 @@ pub fn run() {
             commands::get_autotag_report,
             commands::get_entry_tag_scores,
             commands::similar_entries,
-            commands::search_vibe,
-            commands::vibe_map,
+            commands::search_scry,
+            commands::scry_map,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LuteDrop");

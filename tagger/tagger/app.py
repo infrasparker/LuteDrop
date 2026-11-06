@@ -12,7 +12,7 @@ import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from . import heads, moods, rhythm, vibe
+from . import heads, moods, rhythm, scry
 from .embed import Embedder, EmbeddingCache, MuqEmbedder, decode_track
 
 MAX_EMBED_ITEMS = 32
@@ -286,7 +286,7 @@ def create_app(
         c_hashes, C = vectors([h for h in req.candidates if h not in excluded])
         if len(Q) == 0 or len(C) == 0:
             return {"results": []}
-        ranked = vibe.similar(vibe.centroid(Q), C, _limit(req.limit))
+        ranked = scry.similar(scry.centroid(Q), C, _limit(req.limit))
         return {"results": [{"hash": c_hashes[i], "score": s} for i, s in ranked]}
 
     @app.post("/search")
@@ -299,7 +299,7 @@ def create_app(
         if load_error:
             raise HTTPException(status_code=503, detail=f"model failed to load: {load_error[0]}")
         text_vec = embedder.embed_text([req.text])[0]
-        ranked = vibe.rank_by_text(text_vec, C, _limit(req.limit))
+        ranked = scry.rank_by_text(text_vec, C, _limit(req.limit))
         return {"results": [{"hash": c_hashes[i], "score": s} for i, s in ranked]}
 
     # Layouts keyed by the sorted hash tuple; the oldest entry is dropped first.
@@ -314,7 +314,7 @@ def create_app(
             points = map_cache.get(key)
         if points is None:
             row = {h: i for i, h in enumerate(found)}
-            coords = vibe.layout_2d(X[[row[h] for h in key]] if key else X)
+            coords = scry.layout_2d(X[[row[h] for h in key]] if key else X)
             points = [
                 {"hash": h, "x": float(x), "y": float(y)} for h, (x, y) in zip(key, coords)
             ]

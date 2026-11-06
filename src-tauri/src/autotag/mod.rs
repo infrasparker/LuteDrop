@@ -8,7 +8,7 @@
 
 pub mod client;
 pub mod plan;
-pub mod vibe;
+pub mod scry;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};

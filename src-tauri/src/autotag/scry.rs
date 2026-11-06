@@ -1,4 +1,4 @@
-//! Vibe browsing: similar tracks, text search and the map, built on the
+//! Scry browsing: similar tracks, text search and the map, built on the
 //! analyzer's `/similar`, `/search` and `/map`.
 //!
 //! The analyzer knows files by content hash, the app knows entries by id.
@@ -16,7 +16,7 @@ use rusqlite::Connection;
 
 use super::client::{AnalyzerClient, HashScore, HttpAnalyzer};
 use crate::database::{autotag_db, settings};
-use crate::models::{AnalysisStatus, EntryAnalysis, VibeHit, VibePoint};
+use crate::models::{AnalysisStatus, EntryAnalysis, ScryHit, ScryPoint};
 
 /// Largest result count the analyzer returns.
 const MAX_LIMIT: u32 = 500;
@@ -77,13 +77,13 @@ impl MusicIndex {
     }
 
     /// Turns the analyzer's ranked hashes into hits, one per entry.
-    fn hits(&self, ranked: Vec<HashScore>) -> Vec<VibeHit> {
+    fn hits(&self, ranked: Vec<HashScore>) -> Vec<ScryHit> {
         ranked
             .into_iter()
             .flat_map(|r| {
                 self.entries(&r.hash)
                     .iter()
-                    .map(move |id| VibeHit { entry_id: id.clone(), score: r.score })
+                    .map(move |id| ScryHit { entry_id: id.clone(), score: r.score })
             })
             .collect()
     }
@@ -115,7 +115,7 @@ pub fn similar(
     client: &dyn AnalyzerClient,
     entry_ids: &[String],
     limit: u32,
-) -> Result<Vec<VibeHit>, String> {
+) -> Result<Vec<ScryHit>, String> {
     let index = MusicIndex::load(db)?;
     let mut query: Vec<String> = Vec::new();
     {
@@ -145,7 +145,7 @@ pub fn search(
     client: &dyn AnalyzerClient,
     text: &str,
     limit: u32,
-) -> Result<Vec<VibeHit>, String> {
+) -> Result<Vec<ScryHit>, String> {
     let text = text.trim();
     let index = MusicIndex::load(db)?;
     if text.is_empty() || index.hashes.is_empty() {
@@ -156,7 +156,7 @@ pub fn search(
 }
 
 /// A 2D position for every analyzed music entry.
-pub fn map(db: &Mutex<Connection>, client: &dyn AnalyzerClient) -> Result<Vec<VibePoint>, String> {
+pub fn map(db: &Mutex<Connection>, client: &dyn AnalyzerClient) -> Result<Vec<ScryPoint>, String> {
     let index = MusicIndex::load(db)?;
     if index.hashes.is_empty() {
         return Ok(Vec::new());
@@ -168,7 +168,7 @@ pub fn map(db: &Mutex<Connection>, client: &dyn AnalyzerClient) -> Result<Vec<Vi
             index
                 .entries(&p.hash)
                 .iter()
-                .map(move |id| VibePoint { entry_id: id.clone(), x: p.x, y: p.y })
+                .map(move |id| ScryPoint { entry_id: id.clone(), x: p.x, y: p.y })
         })
         .collect())
 }
@@ -208,8 +208,8 @@ mod tests {
         assert_eq!(
             hits,
             vec![
-                VibeHit { entry_id: near, score: 0.9 },
-                VibeHit { entry_id: far, score: 0.4 },
+                ScryHit { entry_id: near, score: 0.9 },
+                ScryHit { entry_id: far, score: 0.4 },
             ]
         );
         let (query, candidates, limit) = fake.last_call.lock().unwrap().clone().unwrap();
@@ -297,7 +297,7 @@ mod tests {
 
         let hits = search(&db, &fake, "  dark brass  ", 25).unwrap();
 
-        assert_eq!(hits, vec![VibeHit { entry_id: a, score: 0.7 }]);
+        assert_eq!(hits, vec![ScryHit { entry_id: a, score: 0.7 }]);
         let (text, mut candidates, limit) = fake.last_call.lock().unwrap().clone().unwrap();
         assert_eq!(text, strings(&["dark brass"]));
         candidates.sort();
@@ -353,7 +353,7 @@ mod tests {
 
         let points = map(&db, &fake).unwrap();
 
-        assert_eq!(points, vec![VibePoint { entry_id: a, x: 0.1, y: 0.2 }]);
+        assert_eq!(points, vec![ScryPoint { entry_id: a, x: 0.1, y: 0.2 }]);
         let (hashes, _, _) = fake.last_call.lock().unwrap().clone().unwrap();
         assert_eq!(hashes, strings(&["h-a"]));
     }
@@ -365,7 +365,7 @@ mod tests {
         mark_embedded(&db, &seed, "h-seed");
         let fake = FakeAnalyzer { down: Some("Could not reach the analyzer: refused".into()), ..Default::default() };
 
-        let expected: Result<Vec<VibeHit>, String> = Err("Could not reach the analyzer: refused".to_string());
+        let expected: Result<Vec<ScryHit>, String> = Err("Could not reach the analyzer: refused".to_string());
         assert_eq!(similar(&db, &fake, &[seed], 10), expected.clone());
         assert_eq!(search(&db, &fake, "dark", 10), expected.clone());
         assert_eq!(map(&db, &fake), Err("Could not reach the analyzer: refused".to_string()));

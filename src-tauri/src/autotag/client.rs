@@ -318,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn vibe_responses_parse() {
+    fn scry_responses_parse() {
         let ranked: RankedResponse = serde_json::from_str(r#"{"results":[{"hash":"a","score":0.5}]}"#).unwrap();
         assert_eq!(ranked.results, vec![HashScore { hash: "a".into(), score: 0.5 }]);
         let map: MapResponse = serde_json::from_str(r#"{"points":[{"hash":"a","x":0.1,"y":0.9}]}"#).unwrap();
