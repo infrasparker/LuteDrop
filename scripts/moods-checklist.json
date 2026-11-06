@@ -1,11 +1,62 @@
 {
-  "Peril": { "mood": "quirky", "top": 10 },
-  "Dirtmouth": { "mood": "sorrowful", "top": 15 },
-  "Dank Bodies": { "mood": "mysterious", "top": 15 },
-  "Bloody Blades": { "mood": "heroic", "top": 5 },
-  "Titans of Infamy": { "mood": "grim", "top": 10 },
-  "Steel on Steel": { "mood": "grim", "top": 30 },
-  "Far Horizons": { "mood": "wondrous", "top": 5 },
-  "Another Round": { "mood": "joyful", "top": 10 },
-  "An Esoteric Ebb": { "mood": "peaceful", "top": 10 }
+  "Peril": {
+    "mood": "quirky",
+    "top": 10
+  },
+  "Dirtmouth": {
+    "mood": "sorrowful",
+    "top": 15
+  },
+  "Dank Bodies": {
+    "mood": "grim",
+    "top": 15
+  },
+  "Bloody Blades": {
+    "mood": "heroic",
+    "top": 5
+  },
+  "Titans of Infamy": {
+    "mood": "battle",
+    "top": 5
+  },
+  "Steel on Steel": {
+    "mood": "battle",
+    "top": 40
+  },
+  "Far Horizons": {
+    "mood": "wondrous",
+    "top": 10
+  },
+  "Another Round": {
+    "mood": "joyful",
+    "top": 10
+  },
+  "An Esoteric Ebb": {
+    "mood": "peaceful",
+    "top": 10
+  },
+  "Roars": {
+    "mood": "battle",
+    "top": 5
+  },
+  "What Lies Unseen": {
+    "mood": "grim",
+    "top": 10
+  },
+  "Fungal Wastes": {
+    "mood": "mysterious",
+    "top": 10
+  },
+  "Specter": {
+    "mood": "mysterious",
+    "top": 10
+  },
+  "King and Country": {
+    "mood": "wondrous",
+    "top": 5
+  },
+  "The Vagabond": {
+    "mood": "sorrowful",
+    "top": 5
+  }
 }

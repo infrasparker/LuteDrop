@@ -125,8 +125,20 @@ fn complete_moods<'de, D: Deserializer<'de>>(d: D) -> Result<HashMap<String, Moo
 pub const CALIBRATION_MIN_TRACKS: usize = 50;
 
 /// The slope of the logistic that turns a z-score into 0..1:
-/// `score = 1 / (1 + exp(-MOOD_SLOPE * z))`.
+/// `score = 1 / (1 + exp(-MOOD_SLOPE * (z - midpoint)))`.
 pub const MOOD_SLOPE: f64 = 1.5;
+
+/// Where a mood's bar reads 0.5, in standard deviations above the library
+/// average. A mood is rare in most libraries, so "above average" is cheap;
+/// with the midpoint one sd up, 0.5 means "clearly in this mood" and the top
+/// band is the real top. Energy keeps its midpoint at the average (0): it is
+/// two-sided, and average energy is a meaningful middle.
+pub const MOOD_MIDPOINT_Z: f64 = 1.0;
+
+/// The z-score at which `id`'s bar reads 0.5.
+pub fn midpoint_z(id: &str) -> f64 {
+    if id == ENERGY_ID { 0.0 } else { MOOD_MIDPOINT_Z }
+}
 
 /// Mean and standard deviation of one mood's raw score.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -226,9 +238,10 @@ pub fn needs_recalibration(calibration: Option<&MoodCalibration>, vocabulary: &M
 }
 
 /// Turns one raw score into 0..1: `z = (raw - mean) / sd`, then
-/// `1 / (1 + exp(-MOOD_SLOPE * z))`, clamped to [0, 1].
-pub fn mood_score(raw: f64, stat: MoodStat) -> f64 {
-    let z = (raw - stat.mean) / stat.sd;
+/// `1 / (1 + exp(-MOOD_SLOPE * (z - midpoint_z(id))))`, clamped to [0, 1].
+/// The ranking never depends on this; only the number shown does.
+pub fn mood_score(id: &str, raw: f64, stat: MoodStat) -> f64 {
+    let z = (raw - stat.mean) / stat.sd - midpoint_z(id);
     (1.0 / (1.0 + (-MOOD_SLOPE * z).exp())).clamp(0.0, 1.0)
 }
 
@@ -249,7 +262,7 @@ pub fn auto_moods(mood: &MoodRaw, calibration: &MoodCalibration, ids: &[String])
         .filter_map(|id| {
             let raw = raw_score(mood, id)?;
             let stat = *calibration.stats.get(id)?;
-            Some((id.clone(), mood_score(raw, stat)))
+            Some((id.clone(), mood_score(id, raw, stat)))
         })
         .collect();
     (!out.is_empty()).then_some(out)
@@ -801,12 +814,13 @@ mod tests {
         MoodVocabulary::defaults().ids()
     }
 
-    /// Raw scores in the default vocabulary's order (eight moods, then energy).
-    fn with_moods(raws: [f64; 9]) -> MoodRaw {
+    /// Raw scores in the default vocabulary's order (nine moods, then energy).
+    const N: usize = 10;
+    fn with_moods(raws: [f64; N]) -> MoodRaw {
         let ids = ids();
         MoodRaw {
-            moods: ids[..8].iter().zip(raws).map(|(m, v)| (m.clone(), v)).collect(),
-            energy: raws[8],
+            moods: ids[..N - 1].iter().zip(raws).map(|(m, v)| (m.clone(), v)).collect(),
+            energy: raws[N - 1],
         }
     }
 
@@ -838,22 +852,25 @@ mod tests {
                 "sorrowful": v.moods[1].prompts,
             })
         );
-        assert_eq!(json["energy_prompts"]["positive"][0], "energetic, upbeat, powerful");
+        assert_eq!(json["energy_prompts"]["positive"][0], "energetic, exciting, intense, upbeat, powerful");
         assert_eq!(json["energy_prompts"]["negative"].as_array().unwrap().len(), 1);
     }
 
     #[test]
-    fn mood_score_is_a_logistic_of_one_and_a_half_z() {
+    fn mood_score_is_a_logistic_of_one_and_a_half_z_centred_one_sd_up() {
         let stat = MoodStat { mean: 0.2, sd: 0.04 };
-        // z = 0, 1, -2, 2.5.
-        assert_eq!(mood_score(0.2, stat), 0.5);
-        assert!((mood_score(0.24, stat) - 0.817_574_476_193_643_7).abs() < 1e-12);
-        assert!((mood_score(0.12, stat) - 0.047_425_873_177_566_78).abs() < 1e-12);
-        assert!((mood_score(0.30, stat) - 0.977_022_630_089_974_4).abs() < 1e-12);
+        // A mood reads 0.5 one sd above the mean (z = 1), and the old z = 0
+        // point now reads what z = -1 used to.
+        assert!((mood_score("heroic", 0.24, stat) - 0.5).abs() < 1e-12);
+        assert!((mood_score("heroic", 0.20, stat) - 0.182_425_523_806_356_3).abs() < 1e-12);
+        assert!((mood_score("heroic", 0.28, stat) - 0.817_574_476_193_643_7).abs() < 1e-12);
+        // Energy keeps its midpoint at the mean.
+        assert_eq!(mood_score(ENERGY_ID, 0.2, stat), 0.5);
+        assert!((mood_score(ENERGY_ID, 0.24, stat) - 0.817_574_476_193_643_7).abs() < 1e-12);
         // Extremes stay inside [0, 1].
-        assert_eq!(mood_score(10.0, stat), 1.0);
-        assert!((0.0..1e-20).contains(&mood_score(-10.0, stat)));
-        assert!(mood_score(f64::MAX, stat) <= 1.0 && mood_score(f64::MIN, stat) >= 0.0);
+        assert_eq!(mood_score("heroic", 10.0, stat), 1.0);
+        assert!((0.0..1e-20).contains(&mood_score("heroic", -10.0, stat)));
+        assert!(mood_score("heroic", f64::MAX, stat) <= 1.0 && mood_score("heroic", f64::MIN, stat) >= 0.0);
     }
 
     #[test]
@@ -863,26 +880,28 @@ mod tests {
         cal.stats.insert("peaceful".into(), MoodStat { mean: 0.3, sd: 0.05 });
         // Energy is a difference, so it has its own centre and spread.
         cal.stats.insert("energy".into(), MoodStat { mean: -0.02, sd: 0.01 });
-        let m = with_moods([0.3, 0.15, 0.1, 0.1, 0.1, 0.1, 0.1, 0.0, -0.04]);
+        let m = with_moods([0.3, 0.15, 0.1, 0.1, 0.1, 0.1, 0.1, 0.0, 0.1, -0.04]);
         let out = auto_moods(&m, &cal, &ids()).unwrap();
         assert_eq!(out.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(), ids());
-        assert_eq!(out[0].1, 0.5); // peaceful: z 0
-        assert!((out[1].1 - 0.817_574_476_193_643_7).abs() < 1e-12); // sorrowful: z 1
-        assert!((out[7].1 - 0.047_425_873_177_566_78).abs() < 1e-12); // heroic: z -2
-        assert!((out[8].1 - 0.047_425_873_177_566_78).abs() < 1e-12); // energy: z -2
+        // A mood's bar is centred one sd up: z 0 reads what z -1 used to.
+        assert!((out[0].1 - 0.182_425_523_806_356_3).abs() < 1e-12); // peaceful: z 0
+        assert!((out[1].1 - 0.5).abs() < 1e-12); // sorrowful: z 1
+        assert!((out[7].1 - 0.010_986_942_630_593_18).abs() < 1e-12); // heroic: z -2, centred -3
+        // Energy keeps its centre at the mean.
+        assert!((out[9].1 - 0.047_425_873_177_566_78).abs() < 1e-12); // energy: z -2
     }
 
     #[test]
     fn auto_moods_leaves_out_ids_without_a_score_or_statistics() {
         let cal = flat_calibration(0.0, 1.0);
-        let mut m = with_moods([0.1; 9]);
+        let mut m = with_moods([0.1; N]);
         m.moods.remove("wondrous");
         let out = auto_moods(&m, &cal, &ids()).unwrap();
-        assert_eq!(out.len(), 8);
+        assert_eq!(out.len(), N - 1);
         assert!(out.iter().all(|(id, _)| id != "wondrous"));
         // An id the calibration lacks (a mood added since) is left out too.
         let extra = ["energy".to_string(), "spooky".to_string()];
-        let out = auto_moods(&with_moods([0.1; 9]), &cal, &extra).unwrap();
+        let out = auto_moods(&with_moods([0.1; N]), &cal, &extra).unwrap();
         assert_eq!(out.len(), 1);
         // Nothing left: none.
         assert_eq!(auto_moods(&m, &cal, &["wondrous".to_string()]), None);
@@ -898,7 +917,7 @@ mod tests {
 
         // Removing a mood keeps the rest scorable.
         v.moods.retain(|m| m.id != "quirky");
-        assert_eq!(scorable_ids(&cal, &v).len(), 8);
+        assert_eq!(scorable_ids(&cal, &v).len(), N - 1);
         assert!(!needs_recalibration(Some(&cal), &v));
 
         // Changed prompts, a new mood and changed Energy prompts are not.
@@ -909,7 +928,7 @@ mod tests {
         assert!(!ok.contains(&"peaceful".to_string()));
         assert!(!ok.contains(&"spooky".to_string()));
         assert!(!ok.contains(&"energy".to_string()));
-        assert_eq!(ok.len(), 6);
+        assert_eq!(ok.len(), N - 3);
         assert!(needs_recalibration(Some(&cal), &v));
 
         // Renaming changes nothing.
@@ -923,7 +942,7 @@ mod tests {
         (0..n)
             .map(|k| {
                 let bump = if k % 2 == 0 { 0.0 } else { step };
-                let raws: [f64; 9] = std::array::from_fn(|i| 0.1 + i as f64 * 0.01 + bump);
+                let raws: [f64; N] = std::array::from_fn(|i| 0.1 + i as f64 * 0.01 + bump);
                 (format!("h-{k}"), with_moods(raws))
             })
             .collect()
@@ -938,7 +957,7 @@ mod tests {
         assert_eq!(calibrate_defaults(&library(49, 0.02)), None);
         // Entries missing a mood do not count.
         let mut short = library(49, 0.02);
-        let mut partial = with_moods([0.1; 9]);
+        let mut partial = with_moods([0.1; N]);
         partial.moods.remove("grim");
         short.insert("h-old".into(), partial);
         assert_eq!(calibrate_defaults(&short), None);
@@ -946,7 +965,7 @@ mod tests {
         let cal = calibrate_defaults(&library(50, 0.02)).unwrap();
         assert_eq!(cal.tracks, 50);
         assert_eq!(cal.calibrated_at, "1700000000000");
-        assert_eq!(cal.stats.len(), 9);
+        assert_eq!(cal.stats.len(), N);
         // Half at base, half at base + 0.02: mean base + 0.01, population sd 0.01.
         for (i, id) in ids().iter().enumerate() {
             let stat = cal.stats[id];
@@ -981,7 +1000,7 @@ mod tests {
         let cal = calibrate_defaults(&library(50, 0.02)).unwrap();
         let text = serde_json::to_string(&cal).unwrap();
         assert!(text.starts_with(r#"{"calibratedAt":"1700000000000","tracks":50,"prompts":{"#));
-        assert!(text.contains(r#""stats":{"energy":{"mean":"#));
+        assert!(text.contains(r#""stats":{"battle":{"mean":"#));
         let back: MoodCalibration = serde_json::from_str(&text).unwrap();
         assert_eq!(back.prompts, cal.prompts);
         for (id, stat) in &cal.stats {
@@ -992,7 +1011,7 @@ mod tests {
     #[test]
     fn decide_scores_moods_only_with_a_calibration() {
         let mut resp = response(gate(true, Some(0.6), None, &[("h-a", 0.9), ("h-b", 0.9)]), &[]);
-        resp.mood = [("h-a".to_string(), with_moods([0.2; 9]))].into();
+        resp.mood = [("h-a".to_string(), with_moods([0.2; N]))].into();
         let entries = [entry("a", &[]), entry("b", &[])];
         let out = decide(&entries, &scene(), &resp, None, &ids());
         assert_eq!((out["a"].moods.clone(), out["b"].moods.clone()), (None, None));
@@ -1000,19 +1019,26 @@ mod tests {
         let cal = flat_calibration(0.2, 0.01);
         let out = decide(&entries, &scene(), &resp, Some(&cal), &ids());
         assert_eq!(out["a"].moods, auto_moods(&resp.mood["h-a"], &cal, &ids()));
-        assert!(out["a"].moods.as_ref().unwrap().iter().all(|(_, v)| *v == 0.5));
+        // At the mean, Energy reads 0.5 and every mood reads the centred-one-sd-up value.
+        for (id, v) in out["a"].moods.as_ref().unwrap() {
+            let want = if id == ENERGY_ID { 0.5 } else { 0.182_425_523_806_356_3 };
+            assert!((v - want).abs() < 1e-12, "{id}: {v}");
+        }
         // No mood for the entry: no moods.
         assert_eq!(out["b"].moods, None);
         // Only the ids asked for are scored.
         let out = decide(&entries, &scene(), &resp, Some(&cal), &["grim".to_string()]);
-        assert_eq!(out["a"].moods, Some(vec![("grim".to_string(), 0.5)]));
+        let grim = out["a"].moods.as_ref().unwrap();
+        assert_eq!(grim.len(), 1);
+        assert_eq!(grim[0].0, "grim");
+        assert!((grim[0].1 - 0.182_425_523_806_356_3).abs() < 1e-12);
     }
 
     #[test]
     fn moods_do_not_depend_on_role() {
         // Same mood scores, opposite gate scores (Combat vs Non-combat).
         let mut resp = response(gate(true, Some(0.6), Some(0.6), &[("h-a", 0.95), ("h-b", 0.05)]), &[]);
-        let m = with_moods([0.25, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2]);
+        let m = with_moods([0.25, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2]);
         resp.mood = [("h-a".to_string(), m.clone()), ("h-b".to_string(), m)].into();
         let cal = flat_calibration(0.2, 0.01);
         let out = decide(&[entry("a", &[]), entry("b", &[])], &scene(), &resp, Some(&cal), &ids());
@@ -1034,7 +1060,7 @@ mod tests {
             "trusted":true,"threshold":0.61,"scores":{}},"tags":{},
             "pace":{"quality":{"auc":null,"pos":0,"neg":0},"trusted":false,"threshold":null,"scores":{}},
             "mood":{"h-new":{"moods":{"peaceful":0.1,"sorrowful":0.2,"wondrous":0.3,"joyful":0.4,
-                                      "quirky":0.5,"mysterious":0.6,"grim":0.7,"heroic":0.8},
+                                      "quirky":0.5,"mysterious":0.6,"grim":0.7,"heroic":0.8,"battle":0.9},
                              "energy":-0.05},
                     "h-pools":{"pools":{"peaceful":0.1,"cheerful":0.2,"quirky":0.3,"somber":0.4,"awe":0.5,
                                         "mysterious":0.6,"heroic":0.7,"menacing":0.8}},
@@ -1044,7 +1070,7 @@ mod tests {
         // Entries from analyzers that predate the mood profile (pools, the
         // scales) count as no mood.
         assert_eq!(resp.mood.len(), 1);
-        assert_eq!(resp.mood["h-new"], with_moods([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, -0.05]));
+        assert_eq!(resp.mood["h-new"], with_moods([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, -0.05]));
     }
 
     #[test]
