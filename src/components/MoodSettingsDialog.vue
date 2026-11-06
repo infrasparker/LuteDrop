@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { MoodResetImpact, MoodVocabulary, ScryHit } from '@generated/index';
+import type { EnergyPreview, MoodResetImpact, MoodVocabulary, ScryHit } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useToast } from '../composables/useToast';
 import ConfirmDialog from './ConfirmDialog.vue';
@@ -247,6 +247,48 @@ async function preview(row: DraftRow): Promise<void> {
 
 const previewStale = (row: DraftRow, state: PreviewState): boolean => !sameList(lines(row.prompts), state.prompts);
 
+/// The Energy preview: the most and least energetic tracks under the two
+/// sides as written (saved or not), raw difference of similarities.
+interface EnergyPreviewState {
+  loading: boolean;
+  error: string | null;
+  positive: string[];
+  negative: string[];
+  most: PreviewState['tracks'];
+  least: PreviewState['tracks'];
+}
+const energyPreview = ref<EnergyPreviewState | null>(null);
+
+async function previewEnergy(): Promise<void> {
+  const positive = lines(energyPositive.value);
+  const negative = lines(energyNegative.value);
+  if (positive.length === 0 || negative.length === 0) return;
+  const state = reactive<EnergyPreviewState>({ loading: true, error: null, positive, negative, most: [], least: [] });
+  energyPreview.value = state;
+  const toTracks = (hits: ScryHit[]): PreviewState['tracks'] =>
+    hits.map((h) => {
+      const entry = store.findLibraryEntry(h.entryId);
+      return { id: h.entryId, name: entry?.name ?? h.entryId, album: entry ? albumOf(entry.filePath) : '', score: h.score };
+    });
+  try {
+    const result = await invoke<EnergyPreview>('preview_energy_prompts', { positive, negative });
+    if (energyPreview.value !== state) return;
+    state.most = toTracks(result.most);
+    state.least = toTracks(result.least);
+  } catch (e) {
+    if (energyPreview.value === state) state.error = String(e);
+  } finally {
+    state.loading = false;
+  }
+}
+
+const energyPreviewStale = computed(
+  () =>
+    energyPreview.value !== null &&
+    (!sameList(lines(energyPositive.value), energyPreview.value.positive) ||
+      !sameList(lines(energyNegative.value), energyPreview.value.negative)),
+);
+
 // --- Save and recalibrate ---
 
 const confirmRemove = ref(false);
@@ -299,6 +341,7 @@ async function reset(): Promise<void> {
   resetting.value = false;
   if (!ok) return;
   previews.clear();
+  energyPreview.value = null;
   load(store.moodVocabulary);
   if (store.moodsNeedRecalibration) askRecalibrate.value = true;
 }
@@ -526,6 +569,55 @@ const calibratedLabel = computed(() => {
             />
           </div>
           <div v-if="energyError" class="text-caption text-error mt-1">{{ energyError }}</div>
+          <div class="d-flex align-center ga-2 mt-1">
+            <VBtn
+              size="x-small"
+              variant="tonal"
+              prepend-icon="mdi-eye-outline"
+              :loading="energyPreview?.loading"
+              :disabled="energyError !== null"
+              @click="previewEnergy"
+            >
+              Preview
+            </VBtn>
+            <span v-if="energyPreview" class="text-caption text-medium-emphasis">
+              <template v-if="energyPreviewStale">Prompts changed since this preview</template>
+              <template v-else>Most and least energetic tracks for these prompts, raw difference (not saved)</template>
+            </span>
+            <VSpacer />
+            <VBtn
+              v-if="energyPreview"
+              icon="mdi-close"
+              size="x-small"
+              variant="text"
+              aria-label="Close Energy preview"
+              @click="energyPreview = null"
+            />
+          </div>
+          <div v-if="energyPreview?.error" class="text-caption text-error mt-1">{{ energyPreview.error }}</div>
+          <div v-else-if="energyPreview && !energyPreview.loading" class="d-flex ga-3 mt-1" :class="{ stale: energyPreviewStale }">
+            <div class="flex-1-1-0">
+              <div class="text-caption font-weight-medium">Most energetic</div>
+              <ol class="preview-list text-caption" :class="{ stale: energyPreviewStale }">
+                <li v-for="t in energyPreview.most" :key="t.id">
+                  <span class="preview-score">{{ t.score.toFixed(3) }}</span>
+                  <span class="preview-name">{{ t.name }}</span>
+                  <span v-if="t.album" class="text-medium-emphasis"> · {{ t.album }}</span>
+                </li>
+                <li v-if="energyPreview.most.length === 0" class="text-medium-emphasis">No analyzed music yet.</li>
+              </ol>
+            </div>
+            <div class="flex-1-1-0">
+              <div class="text-caption font-weight-medium">Least energetic</div>
+              <ol class="preview-list text-caption" :class="{ stale: energyPreviewStale }">
+                <li v-for="t in energyPreview.least" :key="t.id">
+                  <span class="preview-score">{{ t.score.toFixed(3) }}</span>
+                  <span class="preview-name">{{ t.name }}</span>
+                  <span v-if="t.album" class="text-medium-emphasis"> · {{ t.album }}</span>
+                </li>
+              </ol>
+            </div>
+          </div>
         </div>
       </VCardText>
       <VDivider />

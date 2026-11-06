@@ -262,6 +262,7 @@ pub fn run() {
             commands::search_scry,
             commands::scry_map,
             commands::preview_mood_prompts,
+            commands::preview_energy_prompts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LuteDrop");

@@ -4,8 +4,7 @@ use std::sync::Arc;
 use crate::actions;
 use crate::models::{
     AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodResetImpact, MoodVocabulary,
-    Role, SceneConfig, TrackUpdates, ScryHit, ScryPoint,
-};
+    Role, SceneConfig, TrackUpdates, ScryHit, ScryPoint, EnergyPreview};
 use crate::state::AppStateContainer;
 use crate::waveform;
 
@@ -606,6 +605,18 @@ pub async fn search_scry(
 }
 
 /// Async like the Scry commands: it waits on the analyzer.
+#[tauri::command]
+pub async fn preview_energy_prompts(
+    state: State<'_, Arc<AppStateContainer>>,
+    positive: Vec<String>,
+    negative: Vec<String>,
+) -> Result<EnergyPreview, String> {
+    let container = state.inner().clone();
+    tokio::task::spawn_blocking(move || actions::preview_energy_prompts(&container, &positive, &negative))
+        .await
+        .map_err(|e| format!("Energy preview failed: {e}"))?
+}
+
 #[tauri::command]
 pub async fn preview_mood_prompts(
     state: State<'_, Arc<AppStateContainer>>,

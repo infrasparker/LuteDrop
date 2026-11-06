@@ -8,6 +8,7 @@ export type { BulkImportProgress } from "./BulkImportProgress";
 export type { Clip } from "./Clip";
 export type { Comp } from "./Comp";
 export type { Configuration } from "./Configuration";
+export type { EnergyPreview } from "./EnergyPreview";
 export type { EnergyPrompts } from "./EnergyPrompts";
 export type { EntryTagScores } from "./EntryTagScores";
 export type { EntryType } from "./EntryType";

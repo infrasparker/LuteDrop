@@ -483,6 +483,16 @@ pub struct ScryHit {
     pub score: f64,
 }
 
+/// The two ends of an Energy preview: the most and the least energetic
+/// cached tracks under a pair of prompt sides, each best-first for its end.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct EnergyPreview {
+    pub most: Vec<ScryHit>,
+    pub least: Vec<ScryHit>,
+}
+
 /// One entry's position on the Scry map. `x` and `y` are in [0, 1].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]

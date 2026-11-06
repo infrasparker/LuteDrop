@@ -12,8 +12,7 @@ use crate::database::settings as autotag_settings;
 use crate::models::{
     AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
     FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodResetImpact, MoodVocabulary, Role, SceneConfig, Track, TrackUpdates, ScryHit,
-    ScryPoint,
-};
+    ScryPoint, EnergyPreview};
 use crate::relink;
 use crate::state::AppStateContainer;
 use rusqlite::params;
@@ -838,6 +837,15 @@ pub fn search_scry(container: &AppStateContainer, text: &str, limit: u32) -> Res
 pub fn preview_mood_prompts(container: &AppStateContainer, prompts: &[String]) -> Result<Vec<ScryHit>, String> {
     let client = scry::client_for(&container.db)?;
     scry::preview_prompts(&container.db, &client, prompts)
+}
+
+pub fn preview_energy_prompts(
+    container: &AppStateContainer,
+    positive: &[String],
+    negative: &[String],
+) -> Result<EnergyPreview, String> {
+    let client = scry::client_for(&container.db)?;
+    scry::preview_energy(&container.db, &client, positive, negative)
 }
 
 /// A 2D position for every analyzed music entry. Blocks while the analyzer

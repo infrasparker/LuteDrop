@@ -16,7 +16,7 @@ use rusqlite::Connection;
 
 use super::client::{AnalyzerClient, HashScore, HttpAnalyzer};
 use crate::database::{autotag_db, settings};
-use crate::models::{AnalysisStatus, EntryAnalysis, ScryHit, ScryPoint};
+use crate::models::{AnalysisStatus, EntryAnalysis, EnergyPreview, ScryHit, ScryPoint};
 
 /// Largest result count the analyzer returns.
 const MAX_LIMIT: u32 = 500;
@@ -187,6 +187,44 @@ pub fn preview_prompts(
     let mut hits = index.hits(ranked);
     hits.truncate(PREVIEW_TOP);
     Ok(hits)
+}
+
+/// The Energy preview: each cached music track's similarity with the positive
+/// prompts minus its similarity with the negative ones, as `/score` computes
+/// Energy before calibration. Returns the `PREVIEW_TOP` most energetic tracks
+/// and the `PREVIEW_TOP` least energetic, each list best-first for its end.
+pub fn preview_energy(
+    db: &Mutex<Connection>,
+    client: &dyn AnalyzerClient,
+    positive: &[String],
+    negative: &[String],
+) -> Result<EnergyPreview, String> {
+    let clean = |ps: &[String]| -> Vec<String> { ps.iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect() };
+    let (positive, negative) = (clean(positive), clean(negative));
+    if positive.is_empty() || negative.is_empty() {
+        return Err("Energy needs at least one prompt on each side to preview".to_string());
+    }
+    let index = MusicIndex::load(db)?;
+    if index.hashes.is_empty() {
+        return Ok(EnergyPreview { most: Vec::new(), least: Vec::new() });
+    }
+    let pos = client.preview(&positive, &index.hashes)?;
+    let neg = client.preview(&negative, &index.hashes)?;
+    let mut ranked: Vec<HashScore> = index
+        .hashes
+        .iter()
+        .filter_map(|h| match (pos.get(h), neg.get(h)) {
+            (Some(p), Some(n)) => Some(HashScore { hash: h.clone(), score: p - n }),
+            _ => None,
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.score.total_cmp(&a.score));
+    let mut most = index.hits(ranked.clone());
+    most.truncate(PREVIEW_TOP);
+    ranked.reverse();
+    let mut least = index.hits(ranked);
+    least.truncate(PREVIEW_TOP);
+    Ok(EnergyPreview { most, least })
 }
 
 /// A 2D position for every analyzed music entry.
