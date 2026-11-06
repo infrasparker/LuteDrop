@@ -8,7 +8,8 @@ import TagScoresPanel from './TagScoresPanel.vue';
 import RoleControl from './RoleControl.vue';
 import MoodScaleControl from './MoodScaleControl.vue';
 import MoodPadPicker from './MoodPadPicker.vue';
-import { MOOD_SCALES, SCALE_NAMES, scaleValues } from '../utils/mood';
+import DarkKindControl from './DarkKindControl.vue';
+import { isShownDark, MOOD_SCALES, SCALE_NAMES, scaleValues } from '../utils/mood';
 import { open } from '@tauri-apps/plugin-dialog';
 import { AUDIO_EXTENSIONS } from '../constants';
 import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
@@ -326,6 +327,17 @@ async function relocateFile(): Promise<void> {
               :z="scaleValues(entry, scale).z"
               :user="scaleValues(entry, scale).user"
             />
+            <!-- Dark kind sits under Bright ↔ Dark, only while the shown step is Dark. -->
+            <template v-if="scale === 'bright' && isShownDark(entry)">
+              <span class="text-caption text-medium-emphasis dark-kind-sub">Dark kind</span>
+              <DarkKindControl
+                :entry-ids="[props.entryId]"
+                :auto="entry.darkKindAuto"
+                :user="entry.darkKindUser"
+                :sad-z="entry.moodSad"
+                :scary-z="entry.moodScary"
+              />
+            </template>
           </template>
         </div>
 
@@ -456,6 +468,9 @@ async function relocateFile(): Promise<void> {
    as two cells (display: contents), so the columns line up across rows. */
 .mood-sub {
   padding-left: 12px;
+}
+.dark-kind-sub {
+  padding-left: 24px;
 }
 .facet-grid {
   display: grid;

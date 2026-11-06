@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 
-/// Right-hand status column for one facet (Role or a mood scale).
+/// Right-hand status column for one facet (Role, a mood scale or the dark kind).
 /// It says where the shown value comes from and offers the one action that
 /// makes sense in that state:
 /// - auto: the analyzer's value is shown; ✓ Confirm makes it yours.
