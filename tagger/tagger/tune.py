@@ -66,6 +66,28 @@ def split_units(texts: list[str]) -> list[str]:
     return list(seen)
 
 
+def excluded(text: str, words) -> bool:
+    """Whether `text` holds any of `words` (each a word or phrase) as a whole word,
+    ignoring case. Blank entries match nothing."""
+    for w in words:
+        w = " ".join(w.lower().split())
+        if w and re.search(r"(?<![\w'])" + re.escape(w) + r"(?![\w'])", text.lower()):
+            return True
+    return False
+
+
+def unit_sources(groups) -> dict[str, list[str]]:
+    """Where each unit comes from: `groups` are (label, texts) pairs, the texts split
+    like `split_units`. A unit lists every label it appears under, in group order."""
+    out: dict[str, list[str]] = {}
+    for label, texts in groups:
+        for unit in split_units(texts):
+            labels = out.setdefault(unit, [])
+            if label not in labels:
+                labels.append(label)
+    return out
+
+
 def words_of(line: str) -> frozenset[str]:
     """The words of a line, lowercased, without punctuation or SMALL_WORDS. The search
     never puts two lines in one combination when one's words are all in the other's."""
@@ -266,22 +288,29 @@ def _combo_bars(U_lib, U_ref, rows: list[int], m: Mapping) -> np.ndarray:
 
 def blend_units(U_lib, U_ref, units: list[str], flags: list[FlagTarget], m: Mapping,
                 top: int = 8) -> list[str]:
+    """The texts of `blend_groups`."""
+    return [text for text, _ in blend_groups(U_lib, U_ref, units, flags, m, top)]
+
+
+def blend_groups(U_lib, U_ref, units: list[str], flags: list[FlagTarget], m: Mapping,
+                 top: int = 8) -> list[tuple[str, tuple[int, ...]]]:
     """Comma blends ("a, b" and "a, b, c") of every pair and triple of the `top`
-    best single units. A unit that is itself a comma list adds its parts, and a
-    part that repeats is kept once (first place). Blends with fewer than two distinct
-    parts, over the line length limit, or already in `units` are dropped."""
+    best single units, each with the rows of the units it is made of. A unit that
+    is itself a comma list adds its parts, and a part that repeats is kept once
+    (first place). Blends with fewer than two distinct parts, over the line length
+    limit, or already in `units` are dropped."""
     loss_fn = _loss_fn(flags)
     solo = sorted((_score((i,), U_lib, U_ref, loss_fn, m), i) for i in range(len(units)))
     best = [i for _, i in solo[:top]]
     taken = set(units)
-    out: list[str] = []
+    out: list[tuple[str, tuple[int, ...]]] = []
     for n in (2, 3):
         for group in itertools.combinations(best, n):
             parts = dict.fromkeys(p.strip() for i in group for p in units[i].split(",") if p.strip())
             text = ", ".join(parts)
             if len(parts) >= 2 and len(text) <= MAX_UNIT_CHARS and text not in taken:
                 taken.add(text)
-                out.append(text)
+                out.append((text, tuple(group)))
     return out
 
 
@@ -380,13 +409,16 @@ def _top(b: np.ndarray, hashes: list[str]) -> list[dict]:
 
 def build_report(*, lines, after, before, flags: list[FlagTarget], flag_hashes: list[str],
                  hashes: list[str], m: Mapping, other_raw: dict[str, np.ndarray],
-                 loo: tuple[int, int], names: list[tuple[str, float]]) -> dict:
+                 loo: tuple[int, int], names: list[tuple[str, float]],
+                 sources: dict[str, list[str]] | None = None) -> dict:
     """One review report (the JSON shape /tune returns).
 
     `after` and `before` are (library raw, reference raw or None) for this combination
     and for the current lines of the mood; `hashes` names each library row; `other_raw`
-    is each other mood's library raw, for the overlap notes.
+    is each other mood's library raw, for the overlap notes; `sources` names where
+    each line came from (`line_sources`, aligned with `lines`; [] when unknown).
     """
+    sources = sources or {}
     b_after = bars(after[0], after[0] if after[1] is None else after[1], m)
     b_before = bars(before[0], before[0] if before[1] is None else before[1], m)
     broken_after = set(broken(b_after, flags))
@@ -402,6 +434,7 @@ def build_report(*, lines, after, before, flags: list[FlagTarget], flag_hashes: 
 
     return {
         "lines": list(lines),
+        "line_sources": [list(sources.get(line) or sources.get(line.lower(), [])) for line in lines],
         # What the search ranks by: the flags' loss, stability (0.0 for the current lines)
         # and the line cost.
         "loss": loss(b_after, flags) + stab + LINE_COST * len(lines),

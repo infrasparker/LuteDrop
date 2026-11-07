@@ -19,6 +19,28 @@ def test_split_units_drops_overlong_items():
     assert split_units(["ok, " + "x" * 301]) == ["ok"]
 
 
+def test_excluded_matches_whole_words_ignoring_case():
+    assert tune.excluded("Ambient drones", ["ambient"])
+    assert tune.excluded("a dream, sad", ["DREAM"])
+    assert not tune.excluded("ambiental", ["ambient"])
+    assert not tune.excluded("dreamy music", ["dream"])
+    assert tune.excluded("a haunted house", ["haunted house"])
+    assert not tune.excluded("anything", [])
+    assert not tune.excluded("anything", ["", "  "])
+
+
+def test_unit_sources_lists_every_source_of_a_unit_in_order():
+    got = tune.unit_sources([
+        ("word bank", ["sad, calm", "ambient"]),
+        ("current lines", ["Sad, grief"]),
+        ("Mysterious words", ["ambient, eerie"]),
+    ])
+    assert got == {
+        "sad": ["word bank", "current lines"], "calm": ["word bank"], "ambient": ["word bank", "Mysterious words"],
+        "grief": ["current lines"], "eerie": ["Mysterious words"],
+    }
+
+
 def test_bars_match_app_reference_mapping():
     m = Mapping(midpoint_z=0.674, slope=math.log(3) / (1.2816 - 0.674), source="reference")
     ref = np.array([0.0, 1.0])            # mean 0.5, sd 0.5
@@ -295,6 +317,16 @@ def test_a_leak_into_unflagged_songs_loses_to_a_near_miss():
     assert got[0].lines == ("near miss",)
 
 
+def test_blend_groups_name_their_members():
+    units = ["sad", "deep", "lonely"]
+    U = np.array([[1.0, 0.0, 0.0], [0.9, 0.0, 0.0], [0.8, 0.0, 0.0]])
+    flags = [FlagTarget(0, 0.75, None, 1.0, True, "high")]
+    groups = tune.blend_groups(U, None, units, flags, M_LIB, top=3)
+    assert ("sad, deep", (0, 1)) in groups
+    assert ("sad, deep, lonely", (0, 1, 2)) in groups
+    assert [t for t, _ in groups] == blend_units(U, None, units, flags, M_LIB, top=3)
+
+
 # --- report pieces -----------------------------------------------------------
 
 
@@ -397,9 +429,10 @@ def test_build_report_describes_a_change():
     r = build_report(
         lines=["x"], after=(after, None), before=(before, None), flags=flags,
         flag_hashes=["h0", "h1", "h2"], hashes=hashes, m=M_LIB, other_raw={"grim": after},
-        loo=(1, 2), names=[("sad", 0.5)],
+        loo=(1, 2), names=[("sad", 0.5)], sources={"x": ["phrase list"]},
     )
     assert r["lines"] == ["x"] and r["loo"] == {"held": 1, "total": 2}
+    assert r["line_sources"] == [["phrase list"]]
     assert [f["holds"] for f in r["flags"]] == [True, True, False]
     assert [f["focus"] for f in r["flags"]] == [False, False, True]
     assert r["unsatisfied"] == ["h2"]

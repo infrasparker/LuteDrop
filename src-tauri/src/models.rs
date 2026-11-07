@@ -503,6 +503,9 @@ pub struct TuneNameIdea {
 #[serde(rename_all = "camelCase")]
 pub struct TuneReview {
     pub lines: Vec<String>,
+    /// Where each line came from ("word bank", "phrase list", "Mysterious
+    /// words", "blend" then its parts' sources, ...), aligned with `lines`.
+    pub line_sources: Vec<Vec<String>>,
     pub loss: f64,
     pub stability: f64,
     pub flags: Vec<TuneFlagOutcome>,

@@ -59,6 +59,14 @@ pub struct TuneCalibration {
     pub slope: f64,
 }
 
+/// Another mood, for the overlap notes and as a source of words: its name
+/// labels the lines the search takes from it ("Mysterious words").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OtherMood {
+    pub name: String,
+    pub lines: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TuneRequest {
     pub mood_id: String,
@@ -69,8 +77,13 @@ pub struct TuneRequest {
     pub targets: Vec<String>,
     /// Words and lines the search may use, besides the moods' own lines.
     pub bank: Vec<String>,
-    /// Every other mood's current lines, by id, for the overlap notes.
-    pub other_moods: BTreeMap<String, Vec<String>>,
+    /// The words typed in the Tune dialog (also in `bank`), so a line taken
+    /// from them says so.
+    pub extra_words: Vec<String>,
+    /// Every other mood's name and current lines, by id.
+    pub other_moods: BTreeMap<String, OtherMood>,
+    /// Words to leave out: the search uses no line holding one as a whole word.
+    pub exclude: Vec<String>,
     pub calibration: TuneCalibration,
 }
 
@@ -124,6 +137,10 @@ pub struct TuneReport {
     pub loo: TuneLeaveOneOut,
     pub names: Vec<TuneNameIdea>,
     pub unsatisfied: Vec<String>,
+    /// Where each line came from ("word bank", "Mysterious words", ...),
+    /// aligned with `lines`; absent from an analyzer older than it.
+    #[serde(default)]
+    pub line_sources: Vec<Vec<String>>,
     /// How much the lines reshape the mood for unflagged songs (part of
     /// `loss`); absent from an analyzer older than it.
     #[serde(default)]
@@ -244,7 +261,9 @@ pub struct BuiltRequest {
 /// the song's current bar, since the bar it was made at is on another scale;
 /// one stale only by wording keeps the bar it was made at. `extra_words` (typed in the Tune dialog) join `bank`;
 /// the bank is trimmed, repeats dropped ignoring case (the first spelling
-/// stays), and capped at the analyzer's `MAX_BANK`.
+/// stays), and capped at the analyzer's `MAX_BANK`; the typed words also go
+/// as `extra_words` (trimmed, without blanks), and `exclude_words` likewise,
+/// without repeats ignoring case.
 ///
 /// One flag can be the focus, the one the search favours: `focus_entry_id`
 /// names its song (a flagged or levelled one); `None` picks the song whose
@@ -257,6 +276,7 @@ pub fn build_tune_request(
     extra_words: &[String],
     bank: &[String],
     focus_entry_id: Option<&str>,
+    exclude_words: &[String],
 ) -> Result<BuiltRequest, String> {
     let vocabulary = settings::load_mood_vocabulary(conn)?;
     let mood = vocabulary
@@ -349,6 +369,15 @@ pub fn build_tune_request(
         .take(MAX_BANK)
         .collect();
 
+    let trimmed = |words: &[String]| -> Vec<String> {
+        let mut seen = HashSet::new();
+        words
+            .iter()
+            .map(|w| w.trim().to_string())
+            .filter(|w| !w.is_empty() && seen.insert(w.to_lowercase()))
+            .collect()
+    };
+
     let music = MusicIndex::read(conn)?;
     let request = TuneRequest {
         mood_id: mood.id.clone(),
@@ -357,12 +386,14 @@ pub fn build_tune_request(
         flags: out,
         targets: music.hashes.clone(),
         bank,
+        extra_words: trimmed(extra_words),
         other_moods: vocabulary
             .moods
             .iter()
             .filter(|m| m.id != mood_id)
-            .map(|m| (m.id.clone(), m.prompts.clone()))
+            .map(|m| (m.id.clone(), OtherMood { name: m.name.clone(), lines: m.prompts.clone() }))
             .collect(),
+        exclude: trimmed(exclude_words),
         calibration: TuneCalibration {
             source: calibration.source,
             midpoint_z: midpoint_z(mood_id, calibration.source),
@@ -500,6 +531,7 @@ impl Songs {
                 .collect(),
             unsatisfied: self.all(&r.unsatisfied),
             lines: r.lines,
+            line_sources: r.line_sources,
             loss: r.loss,
             stability: r.stability,
             fires_before: r.fires_before,
@@ -511,7 +543,7 @@ impl Songs {
 }
 
 /// Runs Tune for one mood: builds the request (see `build_tune_request` for
-/// `focus_entry_id`), asks the analyzer (which can take tens of seconds), and
+/// `focus_entry_id` and `exclude_words`), asks the analyzer (which can take tens of seconds), and
 /// resolves every hash in its review to a song. Saves nothing. The database
 /// lock is held only to read, never during the analyzer call.
 pub fn tune(
@@ -521,10 +553,11 @@ pub fn tune(
     extra_words: &[String],
     bank: &[String],
     focus_entry_id: Option<&str>,
+    exclude_words: &[String],
 ) -> Result<TuneResult, String> {
     let (built, songs) = {
         let conn = db.lock().map_err(|e| format!("Database lock poisoned: {e}"))?;
-        let built = build_tune_request(&conn, mood_id, extra_words, bank, focus_entry_id)?;
+        let built = build_tune_request(&conn, mood_id, extra_words, bank, focus_entry_id, exclude_words)?;
         (built, Songs::read(&conn, mood_id)?)
     };
     let BuiltRequest { request, skipped: skipped_flags, focus_entry_id } = built;
@@ -705,7 +738,7 @@ mod tests {
     }
 
     fn request(db: &Mutex<Connection>) -> (TuneRequest, usize) {
-        let built = build_tune_request(&db.lock().unwrap(), MOOD, &[], &[], None).unwrap();
+        let built = build_tune_request(&db.lock().unwrap(), MOOD, &[], &[], None, &[]).unwrap();
         (built.request, built.skipped)
     }
 
@@ -851,7 +884,7 @@ mod tests {
 
         let extra = vec![" mournful ".to_string(), "".to_string(), "calm".to_string()];
         let bank = vec!["calm".to_string(), "gentle".to_string()];
-        let req = build_tune_request(&db.lock().unwrap(), MOOD, &extra, &bank, None).unwrap().request;
+        let req = build_tune_request(&db.lock().unwrap(), MOOD, &extra, &bank, None, &[]).unwrap().request;
 
         let mood = vocabulary.moods.iter().find(|m| m.id == MOOD).unwrap();
         assert_eq!(req.mood_id, MOOD);
@@ -859,11 +892,17 @@ mod tests {
         assert_eq!(req.current_lines, mood.prompts);
         assert_eq!(req.targets, vec!["h-a".to_string(), "h-b".to_string()]);
         assert_eq!(req.bank, vec!["calm", "gentle", "mournful"]);
+        // The typed words, so the analyzer can say a line came from them.
+        assert_eq!(req.extra_words, vec!["mournful", "calm"]);
         let others: Vec<&String> = req.other_moods.keys().collect();
         let want: Vec<&String> = vocabulary.moods.iter().map(|m| &m.id).filter(|id| *id != MOOD).collect();
         assert_eq!(others.len(), want.len());
         assert!(want.iter().all(|id| req.other_moods.contains_key(*id)));
         assert!(!req.other_moods.contains_key("energy"));
+        for m in vocabulary.moods.iter().filter(|m| m.id != MOOD) {
+            assert_eq!(req.other_moods[&m.id], OtherMood { name: m.name.clone(), lines: m.prompts.clone() });
+        }
+        assert!(req.exclude.is_empty());
     }
 
     /// Puts the flag of `id` at `ms` milliseconds after the epoch, so tests order flags without sleeping.
@@ -888,7 +927,7 @@ mod tests {
         let levelled = add(&db, "levelled", "music");
         set_level(&db, &levelled, 1.0);
 
-        let built = build_tune_request(&db.lock().unwrap(), MOOD, &[], &[], None).unwrap();
+        let built = build_tune_request(&db.lock().unwrap(), MOOD, &[], &[], None, &[]).unwrap();
         assert_eq!(focused(&built.request), vec!["h-new"]);
         assert_eq!(built.focus_entry_id, Some(new));
     }
@@ -905,7 +944,7 @@ mod tests {
         set_created(&db, &new, 2_000);
         let levelled = add(&db, "levelled", "music");
         set_level(&db, &levelled, 1.0);
-        let build = |focus: Option<&str>| build_tune_request(&db.lock().unwrap(), MOOD, &[], &[], focus).unwrap();
+        let build = |focus: Option<&str>| build_tune_request(&db.lock().unwrap(), MOOD, &[], &[], focus, &[]).unwrap();
 
         let picked = build(Some(&old));
         assert_eq!((focused(&picked.request), picked.focus_entry_id), (vec!["h-old"], Some(old.clone())));
@@ -928,9 +967,23 @@ mod tests {
         let a = add(&db, "a", "music");
         band(&db, &a, FlagBand::Definitely, FlagBound::AtLeast, &current_sig(&db));
         let fake = FakeAnalyzer { tune: Some(TuneResponse::default()), ..Default::default() };
-        assert_eq!(tune(&db, &fake, MOOD, &[], &[], None).unwrap().focus_entry_id, Some(a.clone()));
+        assert_eq!(tune(&db, &fake, MOOD, &[], &[], None, &[]).unwrap().focus_entry_id, Some(a.clone()));
         assert_eq!(fake.last_tune.lock().unwrap().as_ref().map(|r| focused(r).len()), Some(1));
-        assert_eq!(tune(&db, &fake, MOOD, &[], &[], Some("")).unwrap().focus_entry_id, None);
+        assert_eq!(tune(&db, &fake, MOOD, &[], &[], Some(""), &[]).unwrap().focus_entry_id, None);
+    }
+
+    #[test]
+    fn request_carries_the_words_to_leave_out() {
+        let db = setup();
+        calibrate(&db, CalibrationSource::Library);
+        let a = add(&db, "a", "music");
+        band(&db, &a, FlagBand::No, FlagBound::In, "x");
+        let exclude = vec![" ambient ".to_string(), "".to_string(), "dream".to_string(), "Dream".to_string()];
+        let req = build_tune_request(&db.lock().unwrap(), MOOD, &[], &[], None, &exclude).unwrap().request;
+        assert_eq!(req.exclude, vec!["ambient", "dream"]);
+        let fake = FakeAnalyzer { tune: Some(TuneResponse::default()), ..Default::default() };
+        tune(&db, &fake, MOOD, &[], &[], None, &exclude).unwrap();
+        assert_eq!(fake.last_tune.lock().unwrap().as_ref().unwrap().exclude, vec!["ambient", "dream"]);
     }
 
     #[test]
@@ -956,11 +1009,11 @@ mod tests {
         let db = setup();
         let a = add(&db, "a", "music");
         band(&db, &a, FlagBand::No, FlagBound::In, "x");
-        let err = build_tune_request(&db.lock().unwrap(), MOOD, &[], &[], None).unwrap_err();
+        let err = build_tune_request(&db.lock().unwrap(), MOOD, &[], &[], None, &[]).unwrap_err();
         assert_eq!(err, "Run an analysis first so the moods are calibrated");
         calibrate(&db, CalibrationSource::Library);
-        assert!(build_tune_request(&db.lock().unwrap(), "energy", &[], &[], None).is_err());
-        assert!(build_tune_request(&db.lock().unwrap(), "nosuchmood", &[], &[], None).is_err());
+        assert!(build_tune_request(&db.lock().unwrap(), "energy", &[], &[], None, &[]).is_err());
+        assert!(build_tune_request(&db.lock().unwrap(), "nosuchmood", &[], &[], None, &[]).is_err());
     }
 
     #[test]
@@ -969,7 +1022,7 @@ mod tests {
         calibrate(&db, CalibrationSource::Library);
         add(&db, "a", "music");
         let fake = FakeAnalyzer::default();
-        let err = tune(&db, &fake, MOOD, &[], &[], None).unwrap_err();
+        let err = tune(&db, &fake, MOOD, &[], &[], None, &[]).unwrap_err();
         assert!(err.contains("Flag a few songs on this mood first"), "{err}");
         assert!(fake.last_tune.lock().unwrap().is_none(), "nothing is sent");
     }
@@ -983,7 +1036,7 @@ mod tests {
         let before = settings::load_mood_vocabulary(&db.lock().unwrap()).unwrap();
         let fake = FakeAnalyzer { down: Some("analyzer down".into()), ..Default::default() };
 
-        assert_eq!(tune(&db, &fake, MOOD, &[], &[], None).unwrap_err(), "analyzer down");
+        assert_eq!(tune(&db, &fake, MOOD, &[], &[], None, &[]).unwrap_err(), "analyzer down");
         assert_eq!(settings::load_mood_vocabulary(&db.lock().unwrap()).unwrap(), before);
         assert_eq!(flags_for_mood(&db.lock().unwrap(), MOOD).unwrap().len(), 1);
     }
@@ -1010,6 +1063,7 @@ mod tests {
             risers: vec![TuneMover { hash: "h-b".into(), before: 0.2, after: 0.8 }],
             unsatisfied: vec!["h-a".into()],
             stability: 0.03,
+            line_sources: lines.iter().map(|_| vec!["phrase list".to_string()]).collect(),
             ..Default::default()
         };
         let fake = FakeAnalyzer {
@@ -1028,7 +1082,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = tune(&db, &fake, MOOD, &[], &[], None).unwrap();
+        let result = tune(&db, &fake, MOOD, &[], &[], None, &[]).unwrap();
         let sent = fake.last_tune.lock().unwrap().clone().unwrap();
         assert_eq!(sent.flags.len(), 1);
         // The newest flag is the unhashed song's, which never reaches the request: no focus.
@@ -1047,6 +1101,7 @@ mod tests {
         assert_eq!(p.risers[0].song, song(&b, "b"));
         assert_eq!(p.unsatisfied, vec![song(&a, "a")]);
         assert_eq!(p.stability, 0.03);
+        assert_eq!(p.line_sources, vec![vec!["phrase list".to_string()]]);
         let split = result.split.unwrap();
         assert_eq!(split.keep.lines, vec!["k"]);
         assert_eq!(split.keep_songs, vec![song(&a, "a")]);
@@ -1063,7 +1118,7 @@ mod tests {
             "fires_before":3,"fires_after":5,
             "overlap":[{"mood_id":"grim","before":0.2,"after":0.4}],
             "loo":{"held":0,"total":0},"names":[{"word":"calm","rho":0.7}],"unsatisfied":["h"],
-            "stability":0.04}"#;
+            "stability":0.04,"line_sources":[["blend","word bank"]]}"#;
         let json = format!(r#"{{"baseline":{report},"proposals":[{report}],"split":null,"skipped":["x"]}}"#);
         let parsed: TuneResponse = serde_json::from_str(&json).unwrap();
         let r = &parsed.proposals[0];
@@ -1074,6 +1129,7 @@ mod tests {
         assert!(!r.flags[0].fresh);
         assert!(r.flags[0].focus);
         assert_eq!(r.stability, 0.04);
+        assert_eq!(r.line_sources, vec![vec!["blend".to_string(), "word bank".to_string()]]);
         // An analyzer from before focus sends no "focus": it reads as false.
         let old: TuneFlagResult =
             serde_json::from_str(r#"{"hash":"h","before":0.4,"after":0.8,"holds":true,"fresh":true}"#).unwrap();
@@ -1101,7 +1157,9 @@ mod tests {
             }],
             targets: vec!["h".into()],
             bank: vec![],
-            other_moods: BTreeMap::new(),
+            extra_words: vec![],
+            other_moods: BTreeMap::from([("grim".to_string(), OtherMood { name: "Grim".into(), lines: vec!["dark".into()] })]),
+            exclude: vec!["ambient".into()],
             calibration: TuneCalibration { source: CalibrationSource::Reference, midpoint_z: 0.674, slope: 1.7 },
         };
         let v = serde_json::to_value(&req).unwrap();
@@ -1110,7 +1168,9 @@ mod tests {
         assert_eq!(v["flags"][0]["side"], "mid");
         assert_eq!(v["flags"][0]["max"], serde_json::Value::Null);
         assert_eq!(v["flags"][0]["focus"], true);
-        assert_eq!(v["other_moods"], serde_json::json!({}));
+        assert_eq!(v["other_moods"], serde_json::json!({"grim": {"name": "Grim", "lines": ["dark"]}}));
+        assert_eq!(v["exclude"], serde_json::json!(["ambient"]));
+        assert_eq!(v["extra_words"], serde_json::json!([]));
         assert_eq!(v["calibration"]["source"], "reference");
         assert_eq!(v["calibration"]["midpoint_z"], 0.674);
     }
@@ -1307,12 +1367,12 @@ mod tests {
         )
         .unwrap();
         band(&db, &unhashed, FlagBand::Definitely, FlagBound::AtLeast, &sig);
-        let err = build_tune_request(&db.lock().unwrap(), MOOD, &[], &[], None).unwrap_err();
+        let err = build_tune_request(&db.lock().unwrap(), MOOD, &[], &[], None, &[]).unwrap_err();
         assert_eq!(err, "None of the songs flagged on this mood have been analyzed yet");
 
         let no_floor = add(&db, "nofloor", "music");
         band(&db, &no_floor, FlagBand::No, FlagBound::AtLeast, &sig);
-        let err = build_tune_request(&db.lock().unwrap(), MOOD, &[], &[], None).unwrap_err();
+        let err = build_tune_request(&db.lock().unwrap(), MOOD, &[], &[], None, &[]).unwrap_err();
         assert_eq!(err, "None of this mood's flags can be used for tuning");
     }
 
@@ -1325,7 +1385,7 @@ mod tests {
         let mut bank: Vec<String> = vec!["Calm".into(), "calm".into(), "CALM ".into()];
         bank.extend((0..1100).map(|i| format!("word{i}")));
         let extra = vec!["calm".to_string(), "late".to_string()];
-        let req = build_tune_request(&db.lock().unwrap(), MOOD, &extra, &bank, None).unwrap().request;
+        let req = build_tune_request(&db.lock().unwrap(), MOOD, &extra, &bank, None, &[]).unwrap().request;
         assert_eq!(req.bank.len(), 1000);
         assert_eq!(req.bank[0], "Calm");
         assert_eq!(req.bank[1], "word0");

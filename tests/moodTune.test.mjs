@@ -17,6 +17,7 @@ import {
   overlapRises,
   parseExtraWords,
   shakyNote,
+  sourceCaption,
   rankLabel,
   reviewTargetIsHigh,
   splitAcceptLabel,
@@ -209,4 +210,13 @@ test('focusNote names the focused song and why it was picked', () => {
   assert.equal(focusNote('White Orchard', false), 'Focusing on White Orchard (your newest flag)');
   assert.equal(focusNote('White Orchard', true), 'Focusing on White Orchard (the flag you picked)');
   assert.equal(focusNote(null, false), null);
+});
+
+test('sourceCaption says where a proposed line came from', () => {
+  assert.equal(sourceCaption(['Mysterious words']), 'from Mysterious words');
+  assert.equal(sourceCaption(['word bank', 'current lines']), 'from word bank, current lines');
+  assert.equal(sourceCaption(['blend', 'word bank', 'phrase list']), 'blend of word bank, phrase list');
+  assert.equal(sourceCaption(['blend']), 'blend');
+  assert.equal(sourceCaption([]), '');
+  assert.equal(sourceCaption(undefined), '');
 });

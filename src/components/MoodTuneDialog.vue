@@ -21,6 +21,7 @@ import {
   rankLabel,
   reviewTargetIsHigh,
   shakyNote,
+  sourceCaption,
   splitAcceptLabel,
   splitBrokenFresh,
   splitName,
@@ -109,6 +110,12 @@ function keepFlag(entryId: string): void {
 // --- Running Tune ---
 
 const extraText = ref('');
+/// "Words to leave out", remembered per mood while the app runs.
+const excludeText = ref('');
+const excludeByMood = new Map<string, string>();
+watch(excludeText, (text) => {
+  if (props.moodId !== null) excludeByMood.set(props.moodId, text);
+});
 /// Which flag the next run focuses on: null for the newest flag (the
 /// backend's default), an entry id for a picked one, '' for none.
 const focusRequest = ref<string | null>(null);
@@ -133,6 +140,7 @@ async function runTune(): Promise<void> {
       extraWords: parseExtraWords(extraText.value),
       bank: WORD_BANK,
       focusEntryId: focusRequest.value,
+      excludeWords: parseExtraWords(excludeText.value),
     });
     if (token !== runToken) return;
     result.value = r;
@@ -287,6 +295,7 @@ watch(open, async (isOpen) => {
   selected.value = 0;
   touched.clear();
   focusRequest.value = props.focusEntryId ?? null;
+  excludeText.value = props.moodId === null ? '' : (excludeByMood.get(props.moodId) ?? '');
   flagsOpen.value = !!props.showFlags;
   if (props.showFlags) {
     await nextTick();
@@ -362,6 +371,14 @@ watch(open, async (isOpen) => {
               hide-details
               :disabled="running"
             />
+            <VTextField
+              v-model="excludeText"
+              label="Words to leave out (comma-separated)"
+              variant="outlined"
+              density="compact"
+              hide-details
+              :disabled="running"
+            />
             <VBtn
               color="primary"
               variant="tonal"
@@ -424,7 +441,14 @@ watch(open, async (isOpen) => {
               </div>
               <div v-if="hasProposal">
                 <div class="text-subtitle-2">Proposed lines</div>
-                <pre class="lines">{{ review.lines.join('\n') }}</pre>
+                <div class="lines">
+                  <div v-for="(line, i) in review.lines" :key="i" class="proposed-line">
+                    {{ line }}
+                    <div v-if="sourceCaption(review.lineSources[i])" class="text-caption text-medium-emphasis">
+                      {{ sourceCaption(review.lineSources[i]) }}
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </section>
@@ -723,6 +747,14 @@ watch(open, async (isOpen) => {
   margin: 2px 0 0;
   border-radius: 4px;
   background: rgba(var(--v-theme-on-surface), 0.05);
+}
+
+.proposed-line + .proposed-line {
+  margin-top: 4px;
+}
+
+.proposed-line .text-caption {
+  line-height: 1.2;
 }
 
 .bars {

@@ -120,6 +120,11 @@ class TuneCalibration(BaseModel):
     slope: float
 
 
+class OtherMood(BaseModel):
+    name: str
+    lines: PromptList
+
+
 class TuneRequest(BaseModel):
     mood_id: str
     name: str
@@ -127,8 +132,18 @@ class TuneRequest(BaseModel):
     flags: Annotated[list[TuneFlag], Field(max_length=MAX_TUNE_FLAGS)]
     targets: list[str] = []
     bank: Annotated[list[str], Field(max_length=MAX_TUNE_BANK)] = []
-    other_moods: Annotated[dict[MoodKey, PromptList], Field(max_length=MAX_MOODS)] = {}
+    # Which of `bank` the user typed ("Extra words to try"), so their lines say so.
+    extra_words: Annotated[list[str], Field(max_length=MAX_TUNE_BANK)] = []
+    # Each other mood's name and lines; app versions before line sources sent the lines alone.
+    other_moods: Annotated[dict[MoodKey, OtherMood | PromptList], Field(max_length=MAX_MOODS)] = {}
+    # Words to leave out: no unit (or blend) holding one as a whole word is used.
+    exclude: Annotated[list[str], Field(max_length=MAX_TUNE_BANK)] = []
     calibration: TuneCalibration
+
+    def other(self) -> dict[str, OtherMood]:
+        """`other_moods` with a name for each (its id when the app sent lines alone)."""
+        return {k: v if isinstance(v, OtherMood) else OtherMood(name=k, lines=v)
+                for k, v in self.other_moods.items()}
 
 
 def _limit(n: int) -> int:
@@ -428,18 +443,37 @@ def create_app(
         m = tune.Mapping(req.calibration.midpoint_z, req.calibration.slope, req.calibration.source)
         use_ref = req.calibration.source == "reference"
 
-        # Units: the words and lines in play, then the shipped phrases (kept whole).
+        # Units: the words and lines in play, then the shipped phrases (kept whole), each
+        # with where it came from, less any holding a word the user left out.
         name = req.name.strip().lower()
-        other_lines = [line for lines in req.other_moods.values() for line in lines]
+        others = req.other()
+        typed = {w.strip().lower() for w in req.extra_words}
+        sources = tune.unit_sources([
+            ("word bank", [t for t in req.bank if t.strip().lower() not in typed]),
+            ("your extra words", req.extra_words),
+            ("current lines", req.current_lines),
+            *((f"{o.name} words", o.lines) for o in others.values()),
+            ("mood name", [name]),
+        ])
+        # Current lines and phrases are also units whole.
+        for line in req.current_lines:
+            sources.setdefault(line, ["current lines"])
+        for phrase in PHRASES:
+            labels = sources.setdefault(phrase.lower(), [])
+            if "phrase list" not in labels:
+                labels.append("phrase list")
+        other_lines = [line for o in others.values() for line in o.lines]
         units = tune.split_units([*req.bank, *req.current_lines, *other_lines, name])
         # Each current line as written, so the search can start from (and keep) them whole.
         units += [line for line in dict.fromkeys(req.current_lines) if line not in set(units)]
         units += [p.lower() for p in PHRASES if p.lower() not in set(units)]
-        current_rows = tuple(units.index(line) for line in dict.fromkeys(req.current_lines))
-        candidates = [u for u in tune.split_units(req.bank) if " " not in u] + [name]
+        units = [u for u in units if not tune.excluded(u, req.exclude)]
+        current_rows = tuple(units.index(line) for line in dict.fromkeys(req.current_lines) if line in units)
+        candidates = [u for u in tune.split_units(req.bank) if " " not in u and u in units]
+        candidates += [name] if name in units else []
 
         groups = {"units": units, "current": req.current_lines}
-        groups.update({f"other:{k}": v for k, v in req.other_moods.items()})
+        groups.update({f"other:{k}": o.lines for k, o in others.items()})
         vecs = prompt_vectors(groups)
         if vecs is None:
             raise HTTPException(status_code=503, detail="the prompts could not be embedded")
@@ -453,7 +487,7 @@ def create_app(
         before = raws(vecs["current"])
         # The current lines' bars: the search pays for moving unflagged songs away from them.
         b_before = tune.bars(before[0], before[0] if before[1] is None else before[1], m)
-        other_raw = {k: raws(vecs[f"other:{k}"])[0] for k in req.other_moods}
+        other_raw = {k: raws(vecs[f"other:{k}"])[0] for k in others}
 
         loo_memo: dict = {}
 
@@ -466,14 +500,18 @@ def create_app(
                 names = tune.name_suggestions(U_lib, units, names_from, after[0])
             return tune.build_report(
                 lines=lines, after=after, before=before, flags=sub_flags, flag_hashes=sub_hashes,
-                hashes=hashes, m=m, other_raw=other_raw, loo=loo, names=names,
+                hashes=hashes, m=m, other_raw=other_raw, loo=loo, names=names, sources=sources,
             )
 
         baseline = report(req.current_lines, before, flags, flag_hashes, proposed=False)
         proposals, split = [], None
-        if flags:
-            # Blends of the best single units join the pool as extra units.
-            blends = tune.blend_units(U_lib, U_ref, units, flags, m)
+        if flags and units:
+            # Blends of the best single units join the pool as extra units. A blend's
+            # sources are "blend" and then its members'.
+            groups_ = tune.blend_groups(U_lib, U_ref, units, flags, m)
+            blends = [text for text, _ in groups_]
+            for text, members in groups_:
+                sources[text] = list(dict.fromkeys(["blend", *(s for i in members for s in sources.get(units[i], []))]))
             if blends:
                 blend_vecs = prompt_vectors({"blends": blends})
                 if blend_vecs is None:

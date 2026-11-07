@@ -119,6 +119,17 @@ export function focusNote(songName: string | null, picked: boolean): string | nu
   return `Focusing on ${songName} (${picked ? 'the flag you picked' : 'your newest flag'})`;
 }
 
+/// The caption under a proposed line: where its words came from ("from
+/// Mysterious words", "blend of word bank, phrase list"), or '' when unknown.
+export function sourceCaption(sources: string[] | undefined): string {
+  if (!sources || sources.length === 0) return '';
+  if (sources[0] === 'blend') {
+    const parts = sources.slice(1);
+    return parts.length > 0 ? `blend of ${parts.join(', ')}` : 'blend';
+  }
+  return `from ${sources.join(', ')}`;
+}
+
 /// The songs with a flag on `moodId`, for the Flags list and the flag count.
 export function flaggedEntries<E extends Pick<LibraryEntry, 'id' | 'moods'>>(
   entries: E[],

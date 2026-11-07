@@ -481,9 +481,10 @@ pub fn tune_mood(
     extra_words: &[String],
     bank: &[String],
     focus_entry_id: Option<&str>,
+    exclude_words: &[String],
 ) -> Result<TuneResult, String> {
     let client = scry::client_for(&container.db)?;
-    tune::tune(&container.db, &client, mood_id, extra_words, bank, focus_entry_id)
+    tune::tune(&container.db, &client, mood_id, extra_words, bank, focus_entry_id, exclude_words)
 }
 
 /// Accepts a Tune proposal: the mood's lines become `lines` and the holding

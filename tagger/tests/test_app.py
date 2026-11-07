@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from tagger import app as app_module, moods, rhythm, tune
+from tagger import app as app_module, moods, rhythm, tune, tune_phrases
 from tagger.app import create_app
 from tagger.embed import EmbeddingCache
 from tagger.reference import ReferenceSet, reference_stats
@@ -839,7 +839,7 @@ def test_health_reports_reference(ref_client, client):
 
 REPORT_KEYS = {
     "lines", "loss", "flags", "top", "top_before", "risers", "fallers", "fires_before",
-    "fires_after", "overlap", "loo", "names", "unsatisfied", "stability",
+    "fires_after", "overlap", "loo", "names", "unsatisfied", "stability", "line_sources",
 }
 
 
@@ -881,7 +881,7 @@ def _tune_body(**over):
         ],
         "targets": [f"s{i}" for i in range(12)],
         "bank": ["alpha", "beta", "gamma, delta"],
-        "other_moods": {"grim": ["alpha beta"]},
+        "other_moods": {"grim": {"name": "Grim", "lines": ["alpha beta"]}},
         "calibration": {"source": "library", "midpoint_z": 0.5, "slope": 1.5},
     }
     body.update(over)
@@ -926,6 +926,62 @@ def test_tune_marks_the_focused_flag(client_tune):
 def test_tune_focus_defaults_to_false(client_tune):
     body = client_tune.post("/tune", json=_tune_body(), headers=HEADERS).json()
     assert not any(f["focus"] for f in body["baseline"]["flags"])
+
+
+def test_tune_reports_where_each_line_comes_from(client_tune):
+    body = _tune_body(bank=["beta", "gamma, delta", "alpha"], extra_words=["alpha"])
+    out = client_tune.post("/tune", json=body, headers=HEADERS).json()
+    reports = [out["baseline"], *out["proposals"]]
+    for r in reports:
+        assert len(r["line_sources"]) == len(r["lines"])
+        assert all(r["line_sources"]), r
+    assert out["baseline"]["line_sources"] == [["word bank", "current lines"]]
+    by_line = {line: src for r in reports for line, src in zip(r["lines"], r["line_sources"])}
+    if "alpha" in by_line:
+        assert by_line["alpha"] == ["your extra words"]
+    for line, src in by_line.items():
+        if "," in line and line not in tune_phrases.PHRASES:
+            assert src[0] == "blend", (line, src)
+
+
+def test_tune_labels_other_moods_and_phrases(client_tune):
+    # With only other moods' lines and the phrase list to draw from, each line names one.
+    body = _tune_body(bank=[], current_lines=["zeta"])
+    out = client_tune.post("/tune", json=body, headers=HEADERS).json()
+    sources = {s for r in out["proposals"] for line in r["line_sources"] for s in line}
+    assert sources <= {"Grim words", "phrase list", "blend", "current lines", "mood name"}
+    assert out["proposals"]
+    for r in out["proposals"]:
+        for line, src in zip(r["lines"], r["line_sources"]):
+            if line in [p.lower() for p in tune_phrases.PHRASES]:
+                assert "phrase list" in src, (line, src)
+
+
+def test_tune_still_accepts_other_moods_as_plain_line_lists(client_tune):
+    r = client_tune.post("/tune", json=_tune_body(other_moods={"grim": ["alpha beta"]}), headers=HEADERS)
+    assert r.status_code == 200
+    assert [o["mood_id"] for o in r.json()["baseline"]["overlap"]] == ["grim"]
+
+
+def test_tune_leaves_out_excluded_words(client_tune, monkeypatch):
+    searched = []
+    real = tune.beam_search
+
+    def spy(U_lib, U_ref, units, flags, m, **kw):
+        searched.append(list(units))
+        return real(U_lib, U_ref, units, flags, m, **kw)
+
+    monkeypatch.setattr(app_module.tune, "beam_search", spy)
+    bank = ["alpha", "alpha strings", "alphabet soup", "beta", "gamma, delta"]
+    client_tune.post("/tune", json=_tune_body(bank=bank), headers=HEADERS)
+    assert {"alpha", "alpha strings"} <= set(searched[0])
+    searched.clear()
+    out = client_tune.post("/tune", json=_tune_body(bank=bank, exclude=["Alpha"]), headers=HEADERS).json()
+    # Every search (the main one, leave-one-out, blends included) saw no unit with the word.
+    assert searched and not any(tune.excluded(u, ["alpha"]) for units in searched for u in units)
+    assert "alphabet soup" in searched[0]                     # whole words only
+    lines = [line for p in out["proposals"] for line in p["lines"]]
+    assert not any(tune.excluded(line, ["alpha"]) for line in lines), lines
 
 
 def test_tune_skips_unknown_hashes(client_tune):
