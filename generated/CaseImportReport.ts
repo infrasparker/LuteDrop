@@ -2,7 +2,8 @@
 
 /**
  * What the one-off case-study import did: how many flags it wrote, the
- * tracks it could not find in the library, and the moods in the file that
- * are not in the vocabulary.
+ * tracks it could not find in the library, the moods in the file that are
+ * not in the vocabulary, and how many (track, mood) labels it left out
+ * because the case lists that mood as `settled` (a target let go of).
  */
-export type CaseImportReport = { imported: number, unmatched: Array<string>, skippedMoods: Array<string>, };
+export type CaseImportReport = { imported: number, unmatched: Array<string>, skippedMoods: Array<string>, settledSkipped: number, };

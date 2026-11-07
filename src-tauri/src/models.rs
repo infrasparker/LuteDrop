@@ -404,8 +404,9 @@ pub struct MoodFlag {
 }
 
 /// What the one-off case-study import did: how many flags it wrote, the
-/// tracks it could not find in the library, and the moods in the file that
-/// are not in the vocabulary.
+/// tracks it could not find in the library, the moods in the file that are
+/// not in the vocabulary, and how many (track, mood) labels it left out
+/// because the case lists that mood as `settled` (a target let go of).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
@@ -413,6 +414,7 @@ pub struct CaseImportReport {
     pub imported: usize,
     pub unmatched: Vec<String>,
     pub skipped_moods: Vec<String>,
+    pub settled_skipped: usize,
 }
 
 /// A song in a Tune review: the analyzer's content hash resolved to a

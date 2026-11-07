@@ -1,7 +1,9 @@
 //! One-off import of the hand-kept case-study file (`cases[]` with `high`,
 //! `maybe`, `stretch` and `low` mood lists per track) as flags, so the first
-//! auto-tune starts from the notes already made. Everything else in the file
-//! (`top`, `above`, `settled`, `orderings`, the logs) is ignored.
+//! auto-tune starts from the notes already made. A mood the case lists as
+//! `settled` is one whose target was let go of, so it gets no flag on that
+//! track whatever else lists it. Everything else in the file (`top`, `above`,
+//! `orderings`, the logs) is ignored.
 
 use std::collections::BTreeSet;
 
@@ -72,7 +74,9 @@ fn band_for(high: bool, maybe: bool, stretch: bool, low: bool) -> Option<(FlagBa
 }
 
 /// Reads the case-study JSON and plans the flags to write. `names` are the
-/// library's (entry id, name) pairs and `mood_ids` the vocabulary's ids.
+/// library's (entry id, name) pairs and `mood_ids` the vocabulary's ids. A
+/// mood in a case's `settled` list writes no flag for that track; it counts in
+/// `settled_skipped`, not as imported or unknown.
 pub fn plan_import(
     json: &str,
     names: &[(String, String)],
@@ -87,24 +91,31 @@ pub fn plan_import(
     let mut flags = Vec::new();
     let mut unmatched = Vec::new();
     let mut skipped = BTreeSet::new();
+    let mut settled_skipped = 0;
     for case in cases {
         let Some(track) = case.get("track").and_then(Value::as_str) else { continue };
-        let (high, maybe, stretch, low) = (
+        let (high, maybe, stretch, low, settled) = (
             mood_list(case, "high"),
             mood_list(case, "maybe"),
             mood_list(case, "stretch"),
             mood_list(case, "low"),
+            mood_list(case, "settled"),
         );
         let mut moods: Vec<&String> = high.iter().chain(&maybe).chain(&stretch).chain(&low).collect();
         moods.sort();
         moods.dedup();
+        let before = moods.len();
+        moods.retain(|m| !settled.contains(m));
+        let settled_here = before - moods.len();
         if moods.is_empty() {
+            settled_skipped += settled_here;
             continue;
         }
         let Some(entry_id) = find_entry(track, names) else {
             unmatched.push(track.to_string());
             continue;
         };
+        settled_skipped += settled_here;
         for mood in moods {
             if !mood_ids.contains(mood) {
                 skipped.insert(mood.clone());
@@ -121,6 +132,7 @@ pub fn plan_import(
         imported: flags.len(),
         unmatched,
         skipped_moods: skipped.into_iter().collect(),
+        settled_skipped,
     };
     Ok((flags, report))
 }
@@ -185,8 +197,30 @@ mod tests {
         assert_eq!(got("joyful"), (FlagBand::Stretch, FlagBound::In));
         assert_eq!(got("grim"), (FlagBand::Stretch, FlagBound::AtMost));
         assert_eq!(got("battle"), (FlagBand::No, FlagBound::In));
-        assert!(flags.iter().all(|f| f.mood != "quirky"), "settled is imported as normal, no flag");
-        assert_eq!(report, CaseImportReport { imported: 5, unmatched: vec![], skipped_moods: vec![] });
+        assert!(flags.iter().all(|f| f.mood != "quirky"), "settled alone imports no flag");
+        assert_eq!(
+            report,
+            CaseImportReport { imported: 5, unmatched: vec![], skipped_moods: vec![], settled_skipped: 0 }
+        );
+    }
+
+    #[test]
+    fn import_skips_settled_moods() {
+        // `settled` lists the moods whose targets were let go: no flag for them,
+        // even when the same mood is also listed as high or maybe.
+        let json = r#"{"cases":[
+            {"track":"Dirtmouth","high":["peaceful","sorrowful"],"settled":["peaceful"]},
+            {"track":"17 Roots","high":["mysterious"],"maybe":["wondrous","sorrowful"],
+             "settled":["sorrowful","wondrous","gloomy"]}]}"#;
+        let moods = ids(&["peaceful", "sorrowful", "mysterious", "wondrous"]);
+        let (flags, report) = plan_import(json, &names(&["Dirtmouth", "17 Roots"]), &moods).unwrap();
+        let got: Vec<(&str, &str)> = flags.iter().map(|f| (f.entry_id.as_str(), f.mood.as_str())).collect();
+        assert_eq!(got, vec![("id0", "sorrowful"), ("id1", "mysterious")]);
+        assert_eq!(report.imported, 2);
+        // Counted once per (track, mood) skipped; "gloomy" is in no label list, so it is not counted.
+        assert_eq!(report.settled_skipped, 3);
+        assert!(report.unmatched.is_empty());
+        assert!(report.skipped_moods.is_empty(), "a settled mood is not reported as unknown");
     }
 
     #[test]

@@ -745,6 +745,10 @@ async function importCaseStudies(): Promise<void> {
         <VCardText>
           <div class="mb-2">
             {{ importReport.imported }} flag{{ importReport.imported === 1 ? '' : 's' }} imported.
+            <template v-if="importReport.settledSkipped > 0">
+              {{ importReport.settledSkipped }} settled label{{ importReport.settledSkipped === 1 ? '' : 's' }}
+              left out (targets you let go of).
+            </template>
           </div>
           <div v-if="importReport.unmatched.length > 0" class="mb-2">
             <div class="text-subtitle-2">Not found in the library ({{ importReport.unmatched.length }})</div>
