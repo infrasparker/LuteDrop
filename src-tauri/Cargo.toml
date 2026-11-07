@@ -34,6 +34,7 @@ thiserror = "1"
 chrono = "0.4"
 walkdir = "2"
 ureq = { version = "2", features = ["json"] }
+lofty = "0.22.2"
 
 # Windows only: reach WebView2's settings to turn off general autofill (see lib.rs).
 # Versions match the ones tauri/wry already resolve to, so nothing new is compiled.

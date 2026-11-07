@@ -27,6 +27,19 @@ const LIBRARY_TRACK_ID: &str = "__library";
 /// `playback_polling_loop`.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// See [`AudioEngine::play_library_entry`].
+struct LibraryLevel {
+    entry_id: String,
+    user_volume: f64,
+    loudness_factor: f64,
+}
+
+impl LibraryLevel {
+    fn linear(&self) -> f32 {
+        levels::clip_sound_volume(1.0, self.user_volume, self.loudness_factor, false)
+    }
+}
+
 pub struct AudioEngine {
     // Fields are declared so playing sounds / groups drop before the engine.
     // Rust drops struct fields in declaration order; miniaudio requires the
@@ -51,6 +64,11 @@ pub struct AudioEngine {
     loader: Loader,
     master_volume: f64,
     mute_state: MuteState,
+    /// The library preview's level, when it plays a library entry: the
+    /// entry id, the user's volume and the entry's loudness factor, kept
+    /// apart so the volume slider and "Even out music loudness" can each
+    /// change it while it plays.
+    library_level: Option<LibraryLevel>,
     /// The live broadcast, when it is on. Declared before `engine`: its
     /// encoder thread reads the engine's tap through a raw pointer, and
     /// dropping the `Broadcaster` joins that thread, so it must finish
@@ -81,6 +99,7 @@ impl AudioEngine {
             loader,
             master_volume: 1.0,
             mute_state: MuteState::new(),
+            library_level: None,
             broadcaster: None,
             last_broadcast_error: None,
             engine,
@@ -237,7 +256,31 @@ impl AudioEngine {
     }
 
     pub fn set_library_volume(&mut self, volume: f64) {
-        self.library.set_volume(volume.clamp(0.0, 1.0) as f32);
+        match &mut self.library_level {
+            Some(level) => {
+                level.user_volume = volume;
+                self.library.set_volume(level.linear());
+            }
+            None => self.library.set_volume(volume.clamp(0.0, 1.0) as f32),
+        }
+    }
+
+    /// Push new loudness factors (entry id → factor) to every loaded track
+    /// and the library preview, and drop the preloaded next clips (their
+    /// volume was fixed when they were loaded). Used when "Even out music
+    /// loudness" is toggled or the library's ReplayGain values change.
+    pub fn set_loudness_factors(&mut self, factors: &HashMap<String, f64>) {
+        let ids: Vec<String> = self.tracks.keys().cloned().collect();
+        for id in &ids {
+            self.invalidate_preload(id);
+        }
+        orchestrator::set_loudness_factors(&mut self.tracks, factors, &self.mute_state);
+        if let Some(level) = &mut self.library_level {
+            if let Some(f) = factors.get(&level.entry_id) {
+                level.loudness_factor = *f;
+                self.library.set_volume(level.linear());
+            }
+        }
     }
 
     // --- Mute ---
@@ -299,6 +342,26 @@ impl AudioEngine {
     /// position; `paused = true` (seeking a paused preview) leaves the new
     /// sound paused at that position. Start and pause happen together under
     /// the caller's one audio lock, so nothing audible plays in between.
+    /// Play a library entry in the preview: `params.volume` is the user's
+    /// volume, which is multiplied by the entry's `loudness_factor`.
+    pub fn play_library_entry(
+        &mut self,
+        entry_id: &str,
+        mut params: PlayParams,
+        loudness_factor: f64,
+        paused: bool,
+    ) -> Result<(), String> {
+        let level = LibraryLevel {
+            entry_id: entry_id.to_string(),
+            user_volume: params.volume as f64,
+            loudness_factor,
+        };
+        params.volume = level.linear();
+        self.play_library_sound(params, paused)?;
+        self.library_level = Some(level);
+        Ok(())
+    }
+
     pub fn play_library_sound(&mut self, params: PlayParams, paused: bool) -> Result<(), String> {
         // Retire the old sound first; the de-click stop keeps it mixing
         // through its fade so the replacement doesn't click.
@@ -316,6 +379,7 @@ impl AudioEngine {
     }
 
     pub fn stop_library_sound(&mut self) {
+        self.library_level = None;
         self.invalidate_preload(LIBRARY_TRACK_ID);
         // Use the sound's own fade_out if it has one, else a small de-click
         // default. The Voice parks the outgoing sound until the fade finishes.
@@ -643,6 +707,82 @@ mod tests {
         audio.engine_for_test().tap_set_enabled(false);
     }
 
+    /// Plays a 0.4 s window of the fixture on a fresh track whose clip has
+    /// `library_volume` and `loudness` and returns the tap's peak, i.e. what
+    /// the broadcast hears.
+    fn tap_peak_of_clip(library_volume: f64, loudness: f64) -> f32 {
+        let mut audio = AudioEngine::new().expect("engine");
+        let mut c = clip("c1", fixture());
+        c.library_volume = library_volume;
+        c.loudness_factor = loudness;
+        c.trim_start = Some(10.0);
+        c.trim_end = Some(10.4);
+        let track = Track {
+            id: "t1".into(),
+            name: "Track".into(),
+            clips: vec![c],
+            volume: 1.0,
+            mode: TrackMode::Sequence { repeat: false, transition: TrackTransition::Gapless },
+            fade_in: 0.0,
+            fade_out: 0.0,
+        };
+        audio.setup_track(&track).expect("setup track");
+        audio.engine_for_test().tap_set_enabled(true);
+        drain_tap(&audio);
+        audio.play_track("t1").expect("play track");
+        std::thread::sleep(Duration::from_millis(700));
+        let p = peak(&drain_tap(&audio));
+        audio.engine_for_test().tap_set_enabled(false);
+        audio.stop_all();
+        p
+    }
+
+    /// The level a clip plays at (and the broadcast hears) is user volume ×
+    /// loudness factor: the same window at factor 0.5 peaks at half.
+    #[test]
+    fn clip_plays_at_user_volume_times_loudness_factor() {
+        let full = tap_peak_of_clip(0.8, 1.0);
+        let reduced = tap_peak_of_clip(0.8, 0.5);
+        assert!(full > 0.01, "fixture window is silent");
+        let ratio = reduced / full;
+        assert!((ratio - 0.5).abs() < 0.05, "expected half the level, got ratio {ratio}");
+    }
+
+    /// New factors reach the loaded tracks' clips and the library preview,
+    /// leaving clips of other entries alone.
+    #[test]
+    fn set_loudness_factors_updates_loaded_clips_and_preview() {
+        let mut audio = AudioEngine::new().expect("engine");
+        audio.setup_track(&three_clip_track()).expect("setup track");
+        audio
+            .play_library_entry("e-lib", super::sound::PlayParams {
+                file_path: fixture(),
+                start_position: 10.0,
+                volume: 0.8,
+                trim_start: None,
+                trim_end: None,
+                loop_region: None,
+                fade_in: None,
+                fade_out: None,
+            }, 1.0, true)
+            .expect("preview");
+        let factors = std::collections::HashMap::from([
+            ("e-c1".to_string(), 0.5),
+            ("e-lib".to_string(), 0.25),
+        ]);
+        audio.set_loudness_factors(&factors);
+        let f: Vec<f64> = audio.tracks["t1"].config.clips.iter().map(|c| c.loudness_factor).collect();
+        assert_eq!(f, vec![0.5, 1.0, 1.0]);
+        let level = audio.library_level.as_ref().expect("preview level");
+        assert_eq!(level.loudness_factor, 0.25);
+        assert!((level.linear() - 0.2).abs() < 1e-6);
+        // The preview's volume slider keeps the factor.
+        audio.set_library_volume(0.4);
+        assert!((audio.library_level.as_ref().unwrap().linear() - 0.1).abs() < 1e-6);
+        audio.stop_all();
+        assert!(audio.library_level.is_none());
+    }
+
     /// Master volume is the operator's local speaker level. The tap sits
     /// before it, so turning master all the way down must not silence the
     /// broadcast.
@@ -659,6 +799,7 @@ mod tests {
                 volume: 1.0,
                 library_entry_id: "e1".into(),
                 library_volume: 1.0,
+                loudness_factor: 1.0,
                 // Start 10 s in, where the fixture is clearly audible.
                 trim_start: Some(10.0),
                 trim_end: None,
@@ -730,6 +871,7 @@ mod tests {
                 volume: 1.0,
                 library_entry_id: "e1".into(),
                 library_volume: 1.0,
+                loudness_factor: 1.0,
                 trim_start: Some(TRIM_START),
                 trim_end: Some(TRIM_END),
             }],
@@ -771,6 +913,7 @@ mod tests {
                 volume: 1.0,
                 library_entry_id: "e1".into(),
                 library_volume: 1.0,
+                loudness_factor: 1.0,
                 trim_start: Some(TRIM_START),
                 trim_end: Some(TRIM_END),
             }],
@@ -826,6 +969,7 @@ mod tests {
             volume: 1.0,
             library_entry_id: format!("e-{id}"),
             library_volume: 1.0,
+            loudness_factor: 1.0,
             trim_start: None,
             trim_end: None,
         }

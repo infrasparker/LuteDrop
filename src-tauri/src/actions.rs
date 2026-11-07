@@ -331,6 +331,7 @@ pub fn import_library_entry(
                 let _ = library::update_library_entry_duration(conn, &entry_id, probed_duration, None);
             }
         }
+        store_replaygain(conn, &entry_id, &file_path);
 
         new_entry_id = Some(entry_id);
         Ok(())
@@ -797,6 +798,14 @@ fn run_bulk_import(container: Arc<AppStateContainer>, paths: Vec<String>, tags: 
                         let _ = library::update_library_entry_duration(&conn, &id, dur, None);
                     }
                 }
+                // ReplayGain tags: read outside the DB lock (the file may be
+                // on a network share), then stored.
+                let rg = read_replaygain_logged(file_path);
+                if let Ok(conn) = container.db.lock() {
+                    if let Err(e) = library::set_replaygain(&conn, &id, &rg) {
+                        log::warn!("ReplayGain for {file_path}: {e}");
+                    }
+                }
                 // Per-file dirty mark: connected remotes see the library grow
                 // as the import proceeds rather than only at the end.
                 container.mark_state_dirty();
@@ -838,6 +847,127 @@ fn emit_progress(
         "library-import-progress",
         BulkImportProgress { processed, imported, skipped, total },
     );
+}
+
+/// Reads a file's ReplayGain tags; a read failure is logged and counts as
+/// "no tags".
+fn read_replaygain_logged(file_path: &str) -> crate::replaygain::ReplayGain {
+    crate::replaygain::read_file(std::path::Path::new(file_path)).unwrap_or_else(|e| {
+        log::warn!("ReplayGain: could not read tags of {file_path}: {e}");
+        Default::default()
+    })
+}
+
+/// Reads a file's ReplayGain tags and stores them on the entry. Never fails:
+/// an entry without them simply plays unchanged.
+fn store_replaygain(conn: &rusqlite::Connection, entry_id: &str, file_path: &str) {
+    let rg = read_replaygain_logged(file_path);
+    if let Err(e) = library::set_replaygain(conn, entry_id, &rg) {
+        log::warn!("ReplayGain for {file_path}: {e}");
+    }
+}
+
+/// Startup backfill: reads the ReplayGain tags of every entry that has no
+/// gain stored yet (all entries, the first time after the v17 upgrade) and
+/// stores them. Runs on its own thread; each file is read without holding
+/// the DB lock, since the library lives on a network share. Entries whose
+/// files have no tag are read again on the next start (NULL means both
+/// "not read" and "no tag"); that only costs a tag read per file.
+///
+/// When anything was stored, the new loudness factors are pushed to the
+/// engine (the library's reference may have moved) and the frontend is told
+/// to reload its state.
+pub fn backfill_replaygain(container: &AppStateContainer) {
+    let todo = match with_db(container, library::entries_without_replaygain) {
+        Ok(rows) => rows,
+        Err(e) => {
+            log::warn!("ReplayGain backfill: {e}");
+            return;
+        }
+    };
+    if todo.is_empty() {
+        return;
+    }
+    let report = backfill_replaygain_rows(&container.db, &todo, |path| {
+        crate::replaygain::read_file(std::path::Path::new(path))
+    });
+    log::info!(
+        "ReplayGain backfill: {} files checked, {} with a track gain, {} without the tag, {} unreadable",
+        todo.len(), report.with_gain, report.without_gain, report.unreadable
+    );
+    if report.with_gain > 0 {
+        refresh_loudness_in_engine(container);
+        container.mark_state_dirty();
+        container.emit("library-loudness-updated", ());
+    }
+}
+
+/// Counts from one backfill pass.
+#[derive(Debug, Default, PartialEq)]
+pub struct BackfillReport {
+    pub with_gain: usize,
+    pub without_gain: usize,
+    pub unreadable: usize,
+}
+
+/// The body of [`backfill_replaygain`], with the tag reader passed in so a
+/// dry run or a test can drive it. Unreadable files (missing, offline share)
+/// are left NULL so a later start tries again.
+pub fn backfill_replaygain_rows(
+    db: &std::sync::Mutex<rusqlite::Connection>,
+    rows: &[(String, String)],
+    read: impl Fn(&str) -> Result<crate::replaygain::ReplayGain, String>,
+) -> BackfillReport {
+    let mut report = BackfillReport::default();
+    for (id, path) in rows {
+        let rg = match read(path) {
+            Ok(rg) => rg,
+            Err(e) => {
+                log::debug!("ReplayGain backfill: {path}: {e}");
+                report.unreadable += 1;
+                continue;
+            }
+        };
+        if rg.track_gain_db.is_some() {
+            report.with_gain += 1;
+        } else {
+            report.without_gain += 1;
+        }
+        if rg == crate::replaygain::ReplayGain::default() {
+            continue; // nothing to store
+        }
+        let stored = db
+            .lock()
+            .map_err(|e| e.to_string())
+            .and_then(|conn| library::set_replaygain(&conn, id, &rg));
+        if let Err(e) = stored {
+            log::warn!("ReplayGain backfill: {path}: {e}");
+        }
+    }
+    report
+}
+
+/// Recomputes every entry's loudness factor and pushes it to the tracks and
+/// preview playing now. Takes the DB lock, releases it, then the audio lock
+/// (see the lock ordering note on `AppStateContainer`).
+fn refresh_loudness_in_engine(container: &AppStateContainer) {
+    match with_db(container, crate::replaygain::all_factors) {
+        Ok(factors) => container.lock_audio().set_loudness_factors(&factors),
+        Err(e) => log::warn!("Loudness factors: {e}"),
+    }
+}
+
+/// Whether "Even out music loudness (ReplayGain)" is on.
+pub fn get_normalize_music_loudness(container: &AppStateContainer) -> Result<bool, String> {
+    with_db(container, broadcast_settings::load_normalize_music_loudness)
+}
+
+/// Turns "Even out music loudness (ReplayGain)" on or off. Takes effect at
+/// once, also for tracks and the preview playing now.
+pub fn set_normalize_music_loudness(container: &AppStateContainer, enabled: bool) -> Result<AppState, String> {
+    with_db(container, |conn| broadcast_settings::save_normalize_music_loudness(conn, enabled))?;
+    refresh_loudness_in_engine(container);
+    load_state(container)
 }
 
 /// True if an import with this entry type creates music entries.
@@ -975,8 +1105,10 @@ pub fn relocate_library_entry(
                 .len() as i64;
             // None (undecodable file) leaves the old duration in place.
             let duration = crate::audio::util::probe_duration(&new_file_path);
+            let rg = read_replaygain_logged(&new_file_path);
             with_db(container, |conn| {
-                library::update_library_entry_file_info(conn, entry_id, &hash, size, duration)
+                library::update_library_entry_file_info(conn, entry_id, &hash, size, duration)?;
+                library::set_replaygain(conn, entry_id, &rg)
             })
         });
         if let Err(e) = refreshed {
@@ -1284,6 +1416,13 @@ pub fn play_library_sound(
     }
     // File is usable — clear stale missing state if any
     container.mark_entry_found(entry_id);
+    // The preview plays the entry at the same level as a track would:
+    // user volume × loudness factor. DB first, then audio (lock ordering).
+    let loudness_factor = with_db(container, |conn| crate::replaygain::factor_for_entry(conn, entry_id))
+        .unwrap_or_else(|e| {
+            log::warn!("Loudness factor for {entry_id}: {e}");
+            1.0
+        });
     let mut audio = container.lock_audio();
     // Volume is linear now; master is applied by the engine node automatically.
     let vol = sanitize_volume(volume)? as f32;
@@ -1292,7 +1431,7 @@ pub fn play_library_sound(
         (None, Some(le)) if le > 0.0 => Some((0.0, le)),
         _ => None,
     };
-    audio.play_library_sound(crate::audio::sound::PlayParams {
+    audio.play_library_entry(entry_id, crate::audio::sound::PlayParams {
         file_path: file_path.to_string(),
         start_position: position,
         volume: vol,
@@ -1301,7 +1440,7 @@ pub fn play_library_sound(
         loop_region,
         fade_in: None,
         fade_out: None,
-    }, paused)
+    }, loudness_factor, paused)
 }
 
 pub fn stop_library_sound(container: &AppStateContainer) -> Result<(), String> {
@@ -1539,7 +1678,8 @@ mod tests {
         find_missing_file_candidates, get_broadcast_status, hash_file, is_file_usable, public_url,
         relocate_library_entry, get_autotag_settings, save_autotag_settings,
         restore_broadcast_on_startup, sanitize_volume, scan_missing_files, set_broadcast_enabled,
-        set_broadcast_settings, with_db,
+        set_broadcast_settings, with_db, backfill_replaygain_rows, BackfillReport, load_data,
+        get_normalize_music_loudness, set_normalize_music_loudness,
     };
     use crate::database::{self, library};
     use crate::state::AppStateContainer;
@@ -1652,6 +1792,68 @@ mod tests {
         let result = hash_file("Z:\\this\\path\\does\\not\\exist\\lutedrop_missing.bin");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Failed to open file for hashing"));
+    }
+
+    /// The backfill stores what each file has, counts files without the tag
+    /// and unreadable files apart, and afterwards only the untagged and
+    /// unreadable entries are left for the next start.
+    #[test]
+    fn replaygain_backfill_stores_tags_and_counts_the_rest() {
+        use crate::replaygain::ReplayGain;
+        let c = test_container();
+        let tagged = add_entry(&c, "/tagged.mp3", "h1", "Tagged", 1);
+        let _plain = add_entry(&c, "/plain.mp3", "h2", "Plain", 1);
+        let _gone = add_entry(&c, "/gone.mp3", "h3", "Gone", 1);
+        let todo = with_db(&c, library::entries_without_replaygain).unwrap();
+        assert_eq!(todo.len(), 3);
+
+        let report = backfill_replaygain_rows(&c.db, &todo, |path| match path {
+            "/tagged.mp3" => Ok(ReplayGain { track_gain_db: Some(-5.5), track_peak: Some(0.97) }),
+            "/plain.mp3" => Ok(ReplayGain::default()),
+            _ => Err("offline".into()),
+        });
+        assert_eq!(report, BackfillReport { with_gain: 1, without_gain: 1, unreadable: 1 });
+
+        let stored: (Option<f64>, Option<f64>) = with_db(&c, |conn| {
+            conn.query_row(
+                "SELECT rg_track_gain_db, rg_track_peak FROM library_entries WHERE id = ?1",
+                [&tagged],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert_eq!(stored, (Some(-5.5), Some(0.97)));
+        let left: Vec<String> = with_db(&c, library::entries_without_replaygain)
+            .unwrap()
+            .into_iter()
+            .map(|(_, path)| path)
+            .collect();
+        assert_eq!(left, vec!["/gone.mp3".to_string(), "/plain.mp3".to_string()]);
+    }
+
+    /// Turning the setting off returns state with every factor at 1 and
+    /// reaches the loaded tracks at once.
+    #[test]
+    fn toggling_loudness_setting_updates_state_and_engine() {
+        use crate::replaygain::ReplayGain;
+        let c = test_container();
+        let loud = add_entry(&c, "/loud.mp3", "h1", "Loud", 1);
+        let typical = add_entry(&c, "/typical.mp3", "h2", "Typical", 1);
+        with_db(&c, |conn| {
+            library::set_replaygain(conn, &loud, &ReplayGain { track_gain_db: Some(-12.0), track_peak: None })?;
+            library::set_replaygain(conn, &typical, &ReplayGain { track_gain_db: Some(-6.0), track_peak: None })
+        })
+        .unwrap();
+        // Median of -12 and -6 is -9: the loud track is 3 dB over it.
+        let state = load_data(&c).unwrap();
+        let f = state.library_entries.iter().find(|e| e.id == loud).unwrap().loudness_factor;
+        assert!((f - 10f64.powf(-3.0 / 20.0)).abs() < 1e-12);
+
+        let state = set_normalize_music_loudness(&c, false).unwrap();
+        assert!(state.library_entries.iter().all(|e| e.loudness_factor == 1.0));
+        assert!(!get_normalize_music_loudness(&c).unwrap());
+        assert!(set_normalize_music_loudness(&c, true).unwrap().library_entries.iter().any(|e| e.loudness_factor < 1.0));
     }
 
     /// Inserts a "music" entry pointing at `path` and returns its id.

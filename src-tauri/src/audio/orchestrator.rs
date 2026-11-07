@@ -326,6 +326,27 @@ pub fn set_clip_volume(
     }
 }
 
+/// Replace the loudness factor of every loaded clip whose library entry is in
+/// `factors`, and re-apply the volume of each track's current sound, so a
+/// change to "Even out music loudness" is heard on tracks already playing.
+pub fn set_loudness_factors(
+    tracks: &mut HashMap<String, ManagedTrack>,
+    factors: &HashMap<String, f64>,
+    mute_state: &MuteState,
+) {
+    let ids: Vec<String> = tracks.keys().cloned().collect();
+    for track_id in ids {
+        if let Some(track) = tracks.get_mut(&track_id) {
+            for clip in &mut track.config.clips {
+                if let Some(f) = factors.get(&clip.library_entry_id) {
+                    clip.loudness_factor = *f;
+                }
+            }
+        }
+        refresh_current_sound_volume(tracks, &track_id, mute_state);
+    }
+}
+
 /// Poll a single track for transition actions and execute them.
 pub fn poll_track(
     tracks: &mut HashMap<String, ManagedTrack>,
@@ -557,7 +578,7 @@ fn start_clip(
         .ok_or_else(|| format!("Clip index {} out of range", clip_index))?.clone();
 
     // Clip-level (sound node) volume. Track/master gain come from group/engine nodes.
-    let volume = levels::clip_sound_volume(clip.volume, clip.library_volume, mute_state.clip_muted(&clip.id));
+    let volume = levels::clip_sound_volume(clip.volume, clip.library_volume, clip.loudness_factor, mute_state.clip_muted(&clip.id));
 
     // Build play params
     let effective_start = start_position.or(clip.trim_start).unwrap_or(0.0);
@@ -673,7 +694,7 @@ pub fn preload_params_for(
     mute_state: &MuteState,
 ) -> Option<PlayParams> {
     let clip = track.config.clips.get(clip_index)?.clone();
-    let volume = levels::clip_sound_volume(clip.volume, clip.library_volume, mute_state.clip_muted(&clip.id));
+    let volume = levels::clip_sound_volume(clip.volume, clip.library_volume, clip.loudness_factor, mute_state.clip_muted(&clip.id));
     let effective_start = clip.trim_start.unwrap_or(0.0);
     let loop_region = match &track.config.mode {
         TrackMode::Seamless { loop_start, loop_end } => {
@@ -719,12 +740,12 @@ fn refresh_current_sound_volume(
     mute_state: &MuteState,
 ) {
     if let Some(track) = tracks.get_mut(track_id) {
-        let (clip_vol, lib_vol, clip_id) = track.current_clip_index
+        let (clip_vol, lib_vol, loudness, clip_id) = track.current_clip_index
             .and_then(|idx| track.config.clips.get(idx))
-            .map(|c| (c.volume, c.library_volume, c.id.clone()))
-            .unwrap_or((1.0, 1.0, String::new()));
+            .map(|c| (c.volume, c.library_volume, c.loudness_factor, c.id.clone()))
+            .unwrap_or((1.0, 1.0, 1.0, String::new()));
 
-        let vol = levels::clip_sound_volume(clip_vol, lib_vol, mute_state.clip_muted(&clip_id));
+        let vol = levels::clip_sound_volume(clip_vol, lib_vol, loudness, mute_state.clip_muted(&clip_id));
         track.voice.set_volume(vol);
     }
 }

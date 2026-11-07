@@ -39,14 +39,17 @@ impl MuteState {
     }
 }
 
-/// Linear volume for a clip's sound node: clip gain × library gain, or 0 if the
-/// clip itself is muted. Master and track mute/volume are applied by the engine
-/// and group nodes respectively, so they are intentionally not folded in here.
-pub fn clip_sound_volume(clip: f64, library: f64, clip_muted: bool) -> f32 {
+/// Linear volume for a clip's sound node: clip gain × library gain × the
+/// entry's loudness factor ("Even out music loudness", ≤ 1, see
+/// `replaygain.rs`), or 0 if the clip itself is muted. The product is clamped
+/// once, at the end, so a user volume above 1 still counts against the
+/// factor. Master and track mute/volume are applied by the engine and group
+/// nodes respectively, so they are intentionally not folded in here.
+pub fn clip_sound_volume(clip: f64, library: f64, loudness: f64, clip_muted: bool) -> f32 {
     if clip_muted {
         0.0
     } else {
-        (clip * library).clamp(0.0, 1.0) as f32
+        (clip * library * loudness).clamp(0.0, 1.0) as f32
     }
 }
 
@@ -56,5 +59,20 @@ pub fn track_group_volume(track: f64, track_muted: bool) -> f32 {
         0.0
     } else {
         track.clamp(0.0, 1.0) as f32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clip_volume_multiplies_user_volume_by_loudness_factor() {
+        assert_eq!(clip_sound_volume(1.0, 0.8, 0.5, false), 0.4);
+        assert_eq!(clip_sound_volume(0.5, 1.0, 1.0, false), 0.5);
+        // A user volume above 1 counts against the factor before the clamp.
+        assert_eq!(clip_sound_volume(1.0, 2.0, 0.4, false), 0.8);
+        assert_eq!(clip_sound_volume(1.0, 2.0, 1.0, false), 1.0);
+        assert_eq!(clip_sound_volume(1.0, 0.8, 0.5, true), 0.0);
     }
 }
