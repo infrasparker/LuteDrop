@@ -1,0 +1,19 @@
+{
+ "autotag": {
+  "enabled": false,
+  "analyzerUrl": "http://analyzer.example:8765",
+  "token": "",
+  "localPrefix": "L:/",
+  "remotePrefix": "/music/"
+ },
+ "broadcast": {
+  "enabled": false,
+  "port": 5883,
+  "key": "preview-key",
+  "publicBase": "",
+  "lanUrl": "http://192.168.0.10:5883/listen/preview-key",
+  "publicUrl": null,
+  "listenerCount": 0,
+  "error": null
+ }
+}
