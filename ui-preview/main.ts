@@ -3,7 +3,8 @@
 // (ui-preview/export_fixtures.py); state changes (flags, levels, accepted
 // lines, the vocabulary) live in memory until the page reloads.
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
-import type { AppState, FlagBand, FlagBound, FlagKind, MoodDef, TuneResult } from '@generated/index';
+import type { AppState, FlagBand, FlagBound, FlagKind, MoodDef, MoodTunePrefs, TuneMode, TuneResult } from '@generated/index';
+import { stubTune } from './stubTune';
 import stateFixture from './fixtures/state.json';
 import tuneFixture from './fixtures/tune.json';
 import settingsFixture from './fixtures/settings.json';
@@ -14,6 +15,7 @@ type Args = Record<string, unknown>;
 const state = structuredClone(stateFixture) as unknown as AppState;
 const tune = tuneFixture as unknown as Record<string, TuneResult>;
 
+let tunePrefs: Record<string, MoodTunePrefs> = {};
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const entry = (id: unknown) => state.libraryEntries.find((e) => e.id === id);
 const moodValue = (entryId: unknown, mood: unknown) => entry(entryId)?.moods.find((m) => m.mood === mood);
@@ -32,11 +34,25 @@ async function handle(cmd: string, a: Args): Promise<unknown> {
 
     // --- Moods ---
     case 'tune_mood': {
-      await sleep(900);
-      const result = tune[`${a.moodId}:${a.mode}`];
-      if (!result) throw `Tune failed: the preview has no fixture for ${a.moodId} in ${a.mode} mode`;
-      return result;
+      // Compare answers fast for any lines; a search takes a moment.
+      await sleep(a.mode === 'compare' ? 120 : 900);
+      return stubTune(
+        state,
+        a.moodId as string,
+        a.mode as TuneMode,
+        (a.candidates as string[][]) ?? [],
+        (a.extraWords as string[]) ?? [],
+        (a.bank as string[]) ?? [],
+        (a.excludeWords as string[]) ?? [],
+        (a.focusEntryId as string | null) ?? null,
+        tune[`${a.moodId}:${a.mode}`],
+      );
     }
+    case 'load_mood_tune_prefs':
+      return tunePrefs;
+    case 'save_mood_tune_prefs':
+      tunePrefs = a.prefs as Record<string, MoodTunePrefs>;
+      return null;
     case 'set_mood_flag': {
       const v = moodValue(a.entryId, a.mood);
       if (v) {
@@ -72,6 +88,9 @@ async function handle(cmd: string, a: Args): Promise<unknown> {
       return state;
     case 'accept_tuned_lines': {
       const m = state.moodVocabulary.moods.find((x) => x.id === a.moodId);
+      if (m && JSON.stringify(a.linesTunedFrom) !== JSON.stringify(m.prompts)) {
+        throw "This mood's lines have changed since Tune ran; run Tune again";
+      }
       if (m) m.prompts = a.lines as string[];
       state.moodsNeedRecalibration = true;
       return state;

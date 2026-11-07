@@ -333,8 +333,10 @@ npm run preview:ui   # http://localhost:1440
 Runs the real frontend in a plain browser with Tauri's IPC mocked (`vite.preview.config.ts`,
 `ui-preview/main.ts`), for looking at and screenshotting screens without the Rust side. Commands
 answer from `ui-preview/fixtures/`, exported from a real library; flags, levels and accepted Tune
-lines change in memory until a reload. `tune_mood` answers with recorded analyzer runs for
-Sorrowful (compare, arrange, suggest) and Horror (suggest); other moods and modes show an error.
+lines change in memory until a reload. `tune_mood` compares any lines through a stub
+(`ui-preview/stubTune.ts`: the library's bars nudged by a hash of the lines), and answers Arrange /
+Suggest with the recorded analyzer runs for Sorrowful and Horror (suggest), or a stub proposal for
+other moods.
 There is no audio. It does not affect `npm run build` or the Tauri build.
 
 To refresh the fixtures from your library (the app may stay open):
