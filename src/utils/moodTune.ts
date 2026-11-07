@@ -115,9 +115,23 @@ export function parseExtraWords(text: string): string[] {
 
 /// The line saying which flag Tune focused on: the newest flag by default,
 /// or the one picked with "Tune around this flag". Null without a focus.
-export function focusNote(songName: string | null, picked: boolean): string | null {
-  if (songName === null) return null;
-  return `Focusing on ${songName} (${picked ? 'the flag you picked' : 'your newest flag'})`;
+/// Null without a focus; a focused song the store does not know reads as "a
+/// flagged song", so the line (and its clear button) still shows.
+export function focusNote(focusEntryId: string | null, songName: string | null, picked: boolean): string | null {
+  if (focusEntryId === null) return null;
+  return `Focusing on ${songName ?? 'a flagged song'} (${picked ? 'the flag you picked' : 'your newest flag'})`;
+}
+
+/// The hint under the focus line: your own words may not reach the focused
+/// flag, and Suggest brings new ones. Null after a Suggest run.
+export function focusHint(mode: TuneMode): string | null {
+  return mode === 'suggest' ? null : "Try Suggest for new words if your words can't reach it";
+}
+
+/// The mode Tune opens in: "Tune around this flag" (a picked focus) opens in
+/// Arrange my words, which searches; otherwise Compare.
+export function initialTuneMode(focusEntryId: string | null | undefined): TuneMode {
+  return focusEntryId ? 'arrange' : DEFAULT_TUNE_MODE;
 }
 
 /// The Tune dialog's modes, in the order of its switch, with each one's run
@@ -138,6 +152,24 @@ export const MAX_VERSIONS = 8;
 
 export function canAddVersion(count: number): boolean {
   return count < MAX_VERSIONS;
+}
+
+/// Most lines in one version, and characters in one line (the analyzer's limits,
+/// as for a mood's prompts).
+export const MAX_VERSION_LINES = 16;
+export const MAX_LINE_CHARS = 300;
+
+/// What keeps the versions from being compared, in plain words, or null.
+export function versionProblem(texts: string[]): string | null {
+  for (const [i, lines] of texts.map((t) => t.split('\n').map((l) => l.trim()).filter((l) => l.length > 0)).entries()) {
+    if (lines.length > MAX_VERSION_LINES) {
+      return `Version ${i + 1} has ${lines.length} lines; a version can have at most ${MAX_VERSION_LINES}.`;
+    }
+    if (lines.some((l) => l.length > MAX_LINE_CHARS)) {
+      return `Version ${i + 1} has a line over ${MAX_LINE_CHARS} characters; shorten it.`;
+    }
+  }
+  return null;
 }
 
 /// The compare-mode versions as line lists: one prompt per line, as in the

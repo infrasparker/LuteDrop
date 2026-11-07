@@ -11,7 +11,9 @@ import {
   canAddVersion,
   DEFAULT_TUNE_MODE,
   flaggedEntries,
+  focusHint,
   focusNote,
+  initialTuneMode,
   holdingEntryIds,
   isChangedSinceTune,
   leaveBand,
@@ -35,6 +37,7 @@ import {
   tuneTargetCount,
   tuneTargetIds,
   versionCandidates,
+  versionProblem,
 } from '../utils/moodTune';
 import { newMoodId, WORD_BANK } from '../utils/moodWords';
 import ConfirmDialog from './ConfirmDialog.vue';
@@ -126,6 +129,8 @@ const runLabel = computed(() => TUNE_MODES.find((m) => m.mode === mode.value)?.r
 /// Compare mode's versions, one textarea each (one prompt per line).
 const versions = ref<string[]>(['']);
 const versionLines = computed(() => versionCandidates(versions.value));
+/// Versions over the analyzer's limits, said plainly before anything is sent.
+const versionError = computed(() => (mode.value === 'compare' ? versionProblem(versions.value) : null));
 function addVersion(): void {
   if (canAddVersion(versions.value.length)) versions.value.push(mood.value?.prompts.join('\n') ?? '');
 }
@@ -156,7 +161,7 @@ const selected = ref(0);
 let runToken = 0;
 
 async function runTune(): Promise<void> {
-  if (props.moodId === null) return;
+  if (props.moodId === null || versionError.value !== null) return;
   const token = ++runToken;
   running.value = true;
   tuneError.value = null;
@@ -185,9 +190,8 @@ async function runTune(): Promise<void> {
 /// "Focusing on <song> (...)" for the last run, or null.
 const focusLine = computed(() => {
   const id = result.value?.focusEntryId ?? null;
-  if (id === null) return null;
-  const name = store.findLibraryEntry(id)?.name ?? null;
-  return focusNote(name, focusRequest.value !== null && focusRequest.value !== '');
+  const name = id === null ? null : (store.findLibraryEntry(id)?.name ?? null);
+  return focusNote(id, name, focusRequest.value !== null && focusRequest.value !== '');
 });
 
 /// Runs again with no focus at all.
@@ -324,7 +328,7 @@ watch(open, async (isOpen) => {
   selected.value = 0;
   touched.clear();
   focusRequest.value = props.focusEntryId ?? null;
-  mode.value = DEFAULT_TUNE_MODE;
+  mode.value = initialTuneMode(props.focusEntryId);
   versions.value = [mood.value?.prompts.join('\n') ?? ''];
   excludeText.value = props.moodId === null ? '' : (excludeByMood.get(props.moodId) ?? '');
   flagsOpen.value = !!props.showFlags;
@@ -480,12 +484,13 @@ watch(open, async (isOpen) => {
               variant="tonal"
               prepend-icon="mdi-tune-vertical"
               :loading="running"
-              :disabled="targets === 0 || (mode === 'compare' && versionLines.length === 0)"
+              :disabled="targets === 0 || (mode === 'compare' && (versionLines.length === 0 || versionError !== null))"
               @click="runTune"
             >
               {{ runLabel }}
             </VBtn>
           </div>
+          <div v-if="versionError" class="text-caption text-error mt-1">{{ versionError }}</div>
           <div v-if="targets === 0" class="text-caption text-medium-emphasis mt-1">
             Flag a few songs on this mood first
           </div>
@@ -510,6 +515,9 @@ watch(open, async (isOpen) => {
               <VIcon size="small">mdi-close</VIcon>
               <VTooltip activator="parent" location="top">Run again without a focus</VTooltip>
             </VBtn>
+            <span v-if="focusHint(result.mode)" class="text-caption text-medium-emphasis">
+              · {{ focusHint(result.mode) }}
+            </span>
           </div>
         </section>
 

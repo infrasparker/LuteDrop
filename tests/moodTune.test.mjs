@@ -13,7 +13,10 @@ import {
   TUNE_MODES,
   versionCandidates,
   flaggedEntries,
+  focusHint,
   focusNote,
+  initialTuneMode,
+  versionProblem,
   flagsLinkLabel,
   handSetCount,
   holdingEntryIds,
@@ -214,9 +217,40 @@ test('a hand-set level counts as high from 0.75, and a flag decides over a level
 });
 
 test('focusNote names the focused song and why it was picked', () => {
-  assert.equal(focusNote('White Orchard', false), 'Focusing on White Orchard (your newest flag)');
-  assert.equal(focusNote('White Orchard', true), 'Focusing on White Orchard (the flag you picked)');
-  assert.equal(focusNote(null, false), null);
+  assert.equal(focusNote('e1', 'White Orchard', false), 'Focusing on White Orchard (your newest flag)');
+  assert.equal(focusNote('e1', 'White Orchard', true), 'Focusing on White Orchard (the flag you picked)');
+  // A focus whose song the store does not know (yet) still shows, so it can be cleared.
+  assert.equal(focusNote('e9', null, true), 'Focusing on a flagged song (the flag you picked)');
+  assert.equal(focusNote(null, 'White Orchard', false), null);
+});
+
+test('focusHint points to Suggest unless the run already was one', () => {
+  assert.equal(focusHint('arrange'), "Try Suggest for new words if your words can't reach it");
+  assert.equal(focusHint('compare'), "Try Suggest for new words if your words can't reach it");
+  assert.equal(focusHint('suggest'), null);
+});
+
+test('Tune opens in Arrange my words when a flag was picked to tune around', () => {
+  assert.equal(initialTuneMode('e1'), 'arrange');
+  assert.equal(initialTuneMode(null), 'compare');
+  assert.equal(initialTuneMode(undefined), 'compare');
+  assert.equal(initialTuneMode(''), 'compare');
+});
+
+test('versionProblem checks versions against the analyzer limits', () => {
+  assert.equal(versionProblem(['a\nb', 'c']), null);
+  const seventeen = Array.from({ length: 17 }, (_, i) => `line ${i}`).join('\n');
+  assert.equal(versionProblem(['ok', seventeen]), 'Version 2 has 17 lines; a version can have at most 16.');
+  assert.equal(
+    versionProblem([`short\n${'x'.repeat(301)}`]),
+    'Version 1 has a line over 300 characters; shorten it.',
+  );
+  // Blank lines do not count.
+  assert.equal(versionProblem([`${'a\n'.repeat(16)}\n\n\n`]), null);
+});
+
+test('sourceCaption reads "from your words" for typed lines in Arrange', () => {
+  assert.equal(sourceCaption(['your words']), 'from your words');
 });
 
 test('sourceCaption says where a proposed line came from', () => {
