@@ -5,13 +5,20 @@ says should read high / mid / low), find combinations of prompt units whose
 mood bars best fit those flags. Bars use the same mapping as the app: z-score
 against a reference distribution, then a logistic curve.
 """
+import itertools
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.stats import rankdata
 
 AIM_MARGIN = 0.03        # aim this far inside a band edge so near-misses still pass
 ORDER_PENALTY = 0.2      # per (high flag, low flag) pair where high <= low
 MAX_UNIT_CHARS = 300
+LOO_MAX_FLAGS = 20       # leave-one-out checks at most this many flags
+SPLIT_MIN_HIGH = 4       # a split needs this many high-side flags
+SPLIT_MAX_RHO = 0.9      # halves ranking the library this alike are one mood
+TOP_N = 15               # songs listed at the top of a report
+MOVERS_N = 10            # risers and fallers listed in a report
 
 
 @dataclass(frozen=True)
@@ -133,3 +140,176 @@ def beam_search(U_lib: np.ndarray, U_ref: np.ndarray | None, units: list[str],
         best += grown
     best.sort()
     return [Combo(tuple(units[i] for i in rows), l) for l, rows in best[:keep]]
+
+
+# --- report pieces -----------------------------------------------------------
+
+
+def spearman(a: np.ndarray, b: np.ndarray) -> float:
+    """Rank correlation (ties share their average rank); 0.0 when either side is flat."""
+    ra = rankdata(a)
+    rb = rankdata(b)
+    ra = ra - ra.mean()
+    rb = rb - rb.mean()
+    denom = float(np.sqrt((ra ** 2).sum() * (rb ** 2).sum()))
+    return 0.0 if denom == 0.0 else float((ra * rb).sum() / denom)
+
+
+def _rows(units: list[str], lines) -> list[int]:
+    return [units.index(line) for line in lines]
+
+
+def combo_raws(U_lib, U_ref, units: list[str], lines) -> tuple[np.ndarray, np.ndarray | None]:
+    """(library raw, reference raw or None) of the combination made of `lines`, each a unit."""
+    rows = _rows(units, lines)
+    return combo_raw(U_lib, rows), None if U_ref is None else combo_raw(U_ref, rows)
+
+
+def _combo_bars(U_lib, U_ref, rows: list[int], m: Mapping) -> np.ndarray:
+    raw = combo_raw(U_lib, rows)
+    return bars(raw, raw if U_ref is None else combo_raw(U_ref, rows), m)
+
+
+def blend_units(U_lib, U_ref, units: list[str], flags: list[FlagTarget], m: Mapping,
+                top: int = 8) -> list[str]:
+    """Comma blends ("a, b" and "a, b, c") of every pair and triple of the `top`
+    best single units. Blends over the line length limit, or already in `units`, are dropped."""
+    solo = sorted((_score([i], U_lib, U_ref, flags, m), i) for i in range(len(units)))
+    best = [i for _, i in solo[:top]]
+    existing = set(units)
+    out: list[str] = []
+    for n in (2, 3):
+        for group in itertools.combinations(best, n):
+            text = ", ".join(units[i] for i in group)
+            if len(text) <= MAX_UNIT_CHARS and text not in existing:
+                out.append(text)
+    return out
+
+
+def name_suggestions(U_lib, units: list[str], candidates: list[str], combo_raw: np.ndarray,
+                     k: int = 3) -> list[tuple[str, float]]:
+    """The `k` candidate words whose own library ranking best matches the combination's
+    (rank correlation, best first). A candidate must also be one of `units`."""
+    index = {u: i for i, u in enumerate(units)}
+    scored = [(w, spearman(U_lib[index[w]], combo_raw)) for w in dict.fromkeys(candidates) if w in index]
+    scored.sort(key=lambda t: -t[1])
+    return scored[:k]
+
+
+def leave_one_out(U_lib, U_ref, units: list[str], flags: list[FlagTarget], m: Mapping,
+                  winner: Combo) -> tuple[int, int]:
+    """(held, total): for each fresh flag (at most 20, lowest song index first), search
+    again without it and see whether the best combination of the winner's size still puts
+    that song inside its band. Shows whether the proposal generalises or only memorises."""
+    fresh = sorted((f for f in flags if f.fresh), key=lambda f: f.index)[:LOO_MAX_FLAGS]
+    held = 0
+    for f in fresh:
+        rest = [g for g in flags if g is not f]
+        best = beam_search(U_lib, U_ref, units, rest, m, beam=4, max_lines=len(winner.lines), keep=1)[0]
+        b = _combo_bars(U_lib, U_ref, _rows(units, best.lines), m)
+        if not broken(b, [f]):
+            held += 1
+    return held, len(fresh)
+
+
+def _two_means(X: np.ndarray, iterations: int = 10) -> np.ndarray:
+    """Group label (0 or 1) per unit-length row: seeded with the least similar pair,
+    then rows go to the nearer group by cosine."""
+    sim = X @ X.T
+    a, b = np.unravel_index(np.argmin(sim), sim.shape)
+    centroids = np.vstack([X[a], X[b]])
+    labels = np.zeros(len(X), dtype=int)
+    for _ in range(iterations):
+        unit = centroids / np.maximum(np.linalg.norm(centroids, axis=1, keepdims=True), 1e-12)
+        labels = np.argmax(X @ unit.T, axis=1)
+        for g in (0, 1):
+            if (labels == g).any():
+                centroids[g] = X[labels == g].mean(axis=0)
+    return labels
+
+
+def try_split(U_lib, U_ref, units: list[str], flags: list[FlagTarget], m: Mapping,
+              X_lib: np.ndarray, best: Combo) -> dict | None:
+    """Offer to split one mood in two when its high-side flags pull apart.
+
+    Only when `best` leaves a fresh flag broken, there are at least 4 high-side flags,
+    each half (its high flags plus every low/mid flag) is fully satisfied by its own best
+    combination, and the halves rank the library differently (rho < 0.9). Returns
+    {"a": Combo, "b": Combo, "a_flags": [...], "b_flags": [...], "rho": float}, the flag
+    lists holding positions in `flags` of each half's high flags; None otherwise. Which
+    half keeps the name of the mood is left to the caller.
+    """
+    best_bars = _combo_bars(U_lib, U_ref, _rows(units, best.lines), m)
+    if not any(flags[p].fresh for p in broken(best_bars, flags)):
+        return None
+    high = [p for p, f in enumerate(flags) if f.side == "high"]
+    if len(high) < SPLIT_MIN_HIGH:
+        return None
+    labels = _two_means(X_lib[[flags[p].index for p in high]])
+    groups = [[p for p, g in zip(high, labels) if g == side] for side in (0, 1)]
+    if not all(groups):
+        return None
+    rest = [p for p, f in enumerate(flags) if f.side != "high"]
+    combos, raws = [], []
+    for group in groups:
+        sub = [flags[p] for p in group + rest]
+        c = beam_search(U_lib, U_ref, units, sub, m, keep=1)[0]
+        rows = _rows(units, c.lines)
+        if any(sub[p].fresh for p in broken(_combo_bars(U_lib, U_ref, rows, m), sub)):
+            return None
+        combos.append(c)
+        raws.append(combo_raw(U_lib, rows))
+    rho = spearman(raws[0], raws[1])
+    if rho >= SPLIT_MAX_RHO:
+        return None
+    return {"a": combos[0], "b": combos[1], "a_flags": groups[0], "b_flags": groups[1], "rho": rho}
+
+
+def _top(b: np.ndarray, hashes: list[str]) -> list[dict]:
+    order = np.argsort(-b, kind="stable")[:TOP_N]
+    return [{"hash": hashes[i], "bar": float(b[i])} for i in order]
+
+
+def build_report(*, lines, after, before, flags: list[FlagTarget], flag_hashes: list[str],
+                 hashes: list[str], m: Mapping, other_raw: dict[str, np.ndarray],
+                 loo: tuple[int, int], names: list[tuple[str, float]]) -> dict:
+    """One review report (the JSON shape /tune returns).
+
+    `after` and `before` are (library raw, reference raw or None) for this combination
+    and for the current lines of the mood; `hashes` names each library row; `other_raw`
+    is each other mood's library raw, for the overlap notes.
+    """
+    b_after = bars(after[0], after[0] if after[1] is None else after[1], m)
+    b_before = bars(before[0], before[0] if before[1] is None else before[1], m)
+    broken_after = set(broken(b_after, flags))
+    flagged = {f.index for f in flags}
+    delta = b_after - b_before
+    loose = [int(i) for i in np.argsort(-delta, kind="stable") if int(i) not in flagged]
+    risers = [i for i in loose if delta[i] > 0][:MOVERS_N]
+    fallers = [i for i in reversed(loose) if delta[i] < 0][:MOVERS_N]
+
+    def mover(i: int) -> dict:
+        return {"hash": hashes[i], "before": float(b_before[i]), "after": float(b_after[i])}
+
+    return {
+        "lines": list(lines),
+        "loss": loss(b_after, flags),
+        "flags": [
+            {"hash": h, "before": float(b_before[f.index]), "after": float(b_after[f.index]),
+             "holds": p not in broken_after, "fresh": f.fresh}
+            for p, (f, h) in enumerate(zip(flags, flag_hashes))
+        ],
+        "top": _top(b_after, hashes),
+        "top_before": _top(b_before, hashes),
+        "risers": [mover(i) for i in risers],
+        "fallers": [mover(i) for i in fallers],
+        "fires_before": int((b_before >= 0.5).sum()),
+        "fires_after": int((b_after >= 0.5).sum()),
+        "overlap": [
+            {"mood_id": mood_id, "before": spearman(before[0], raw), "after": spearman(after[0], raw)}
+            for mood_id, raw in other_raw.items()
+        ],
+        "loo": {"held": loo[0], "total": loo[1]},
+        "names": [{"word": w, "rho": r} for w, r in names],
+        "unsatisfied": [flag_hashes[p] for p in sorted(broken_after) if flags[p].fresh],
+    }

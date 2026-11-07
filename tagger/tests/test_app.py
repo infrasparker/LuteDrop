@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from tagger import app as app_module, moods, rhythm
+from tagger import app as app_module, moods, rhythm, tune
 from tagger.app import create_app
 from tagger.embed import EmbeddingCache
 from tagger.reference import ReferenceSet, reference_stats
@@ -833,3 +833,170 @@ def test_health_reports_reference(ref_client, client):
     got = ref_client.get("/health", headers=HEADERS).json()
     assert got["reference"] == {"set": "test-set", "tracks": 6}
     assert client.get("/health", headers=HEADERS).json()["reference"] is None
+
+
+# --- /tune ---------------------------------------------------------------------
+
+REPORT_KEYS = {
+    "lines", "loss", "flags", "top", "top_before", "risers", "fallers", "fires_before",
+    "fires_after", "overlap", "loo", "names", "unsatisfied",
+}
+
+
+class TuneEmbedder(FakeEmbedder):
+    """Prompt texts mentioning "alpha" point along axis 0 and "beta" along axis 1;
+    every other text gets its own fixed random direction."""
+
+    @staticmethod
+    def vec(text):
+        v = np.random.default_rng(zlib.crc32(text.encode())).normal(size=DIM) * 0.3
+        if "alpha" in text:
+            v[0] += 3.0
+        if "beta" in text:
+            v[1] += 3.0
+        return v / np.linalg.norm(v)
+
+    def embed_text(self, texts):
+        return np.vstack([self.vec(t) for t in texts])
+
+
+def _tune_library(cache):
+    # s0..s2 lean towards axis 0 (alpha songs), s3..s11 towards axis 1 (beta songs); a
+    # minority group, so its z-scored bars can clear the 0.75 floor.
+    rng = np.random.default_rng(5)
+    for i in range(12):
+        v = rng.normal(size=DIM) * 0.3
+        v[0 if i < 3 else 1] += 2.0
+        cache.put(f"s{i}", v[None, :].astype(np.float32))
+
+
+def _tune_body(**over):
+    body = {
+        "mood_id": "sorrowful", "name": "Sad", "current_lines": ["beta"],
+        "flags": [
+            {"hash": "s0", "min": 0.75, "max": None, "weight": 1.0, "fresh": True, "side": "high"},
+            {"hash": "s1", "min": 0.75, "max": None, "weight": 1.0, "fresh": True, "side": "high"},
+            {"hash": "s6", "min": None, "max": 0.5, "weight": 1.0, "fresh": True, "side": "low"},
+            {"hash": "s7", "min": None, "max": 0.5, "weight": 0.5, "fresh": False, "side": "low"},
+        ],
+        "targets": [f"s{i}" for i in range(12)],
+        "bank": ["alpha", "beta", "gamma, delta"],
+        "other_moods": {"grim": ["alpha beta"]},
+        "calibration": {"source": "library", "midpoint_z": 0.5, "slope": 1.5},
+    }
+    body.update(over)
+    return body
+
+
+@pytest.fixture
+def client_tune(tmp_path):
+    cache = EmbeddingCache(tmp_path)
+    _tune_library(cache)
+    app = create_app(TuneEmbedder(), cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2))
+    return TestClient(app)
+
+
+def test_tune_returns_report_shape(client_tune):
+    r = client_tune.post("/tune", json=_tune_body(), headers=HEADERS)
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body) == {"baseline", "proposals", "split", "skipped"}
+    assert body["skipped"] == [] and body["split"] is None
+    for report in [body["baseline"], *body["proposals"]]:
+        assert set(report) == REPORT_KEYS
+        assert [f["hash"] for f in report["flags"]] == ["s0", "s1", "s6", "s7"]
+        assert set(report["flags"][0]) == {"hash", "before", "after", "holds", "fresh"}
+        assert len(report["top"]) == 12 and len(report["top_before"]) == 12   # only 12 songs
+        assert [o["mood_id"] for o in report["overlap"]] == ["grim"]
+        assert set(report["loo"]) == {"held", "total"}
+    assert body["baseline"]["lines"] == ["beta"]
+    assert 1 <= len(body["proposals"]) <= 3
+    assert body["proposals"][0]["loo"]["total"] == 3          # three fresh flags
+
+
+def test_tune_skips_unknown_hashes(client_tune):
+    flags = _tune_body()["flags"] + [
+        {"hash": "nope", "min": 0.75, "max": None, "weight": 1.0, "fresh": True, "side": "high"}
+    ]
+    r = client_tune.post("/tune", json=_tune_body(flags=flags), headers=HEADERS)
+    assert r.status_code == 200
+    assert r.json()["skipped"] == ["nope"]
+    assert "nope" not in [f["hash"] for f in r.json()["baseline"]["flags"]]
+
+
+def test_tune_requires_token(client_tune):
+    assert client_tune.post("/tune", json=_tune_body()).status_code == 401
+
+
+def test_tune_proposes_nothing_worse_than_baseline(client_tune):
+    body = client_tune.post("/tune", json=_tune_body(), headers=HEADERS).json()
+    assert body["proposals"]
+    assert all(p["loss"] < body["baseline"]["loss"] for p in body["proposals"])
+    assert [p["loss"] for p in body["proposals"]] == sorted(p["loss"] for p in body["proposals"])
+    assert any("alpha" in line for line in body["proposals"][0]["lines"])
+
+
+def test_tune_offers_no_proposals_when_the_current_lines_are_already_best(client_tune):
+    body = client_tune.post("/tune", json=_tune_body(current_lines=["alpha"]), headers=HEADERS).json()
+    assert body["baseline"]["unsatisfied"] == []
+    assert body["proposals"] == []
+
+
+def test_tune_reference_source_needs_a_reference_set(client_tune):
+    cal = {"source": "reference", "midpoint_z": 0.5, "slope": 1.5}
+    r = client_tune.post("/tune", json=_tune_body(calibration=cal), headers=HEADERS)
+    assert r.status_code == 409
+    assert r.json()["detail"] == "The analyzer has no reference set"
+
+
+def test_tune_reads_bars_against_the_reference_set(tmp_path):
+    cache = EmbeddingCache(tmp_path)
+    _tune_library(cache)
+    ref = np.random.default_rng(9).normal(size=(20, DIM))
+    ref /= np.linalg.norm(ref, axis=1, keepdims=True)
+    app = create_app(
+        TuneEmbedder(), cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2),
+        reference=ReferenceSet("test-set", "fake@test", ref),
+    )
+    cal = {"source": "reference", "midpoint_z": 0.5, "slope": 1.5}
+    ref_body = TestClient(app).post("/tune", json=_tune_body(calibration=cal), headers=HEADERS).json()
+    lib_body = TestClient(app).post("/tune", json=_tune_body(), headers=HEADERS).json()
+    # Same prompts, different yardstick: the baseline's bars differ.
+    assert ref_body["baseline"]["top_before"] != lib_body["baseline"]["top_before"]
+
+
+def test_tune_without_cached_targets_is_a_conflict(client_tune):
+    r = client_tune.post("/tune", json=_tune_body(targets=["zzz"], flags=[]), headers=HEADERS)
+    assert r.status_code == 409
+
+
+def test_tune_while_model_fails_to_load_answers_503(tmp_path):
+    class Broken(TuneEmbedder):
+        def load(self):
+            raise RuntimeError("no weights")
+
+    cache = EmbeddingCache(tmp_path)
+    _tune_library(cache)
+    app = create_app(Broken(), cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2))
+    r = TestClient(app).post("/tune", json=_tune_body(), headers=HEADERS)
+    assert r.status_code == 503
+
+
+def test_tune_reports_an_offered_split(client_tune, monkeypatch):
+    # try_split's own rules are tested in test_tune.py; this checks the endpoint turns
+    # an offer into two reports, each holding its high flags plus every low/mid flag.
+    offer = {"a": tune.Combo(("alpha",), 0.0), "b": tune.Combo(("beta",), 0.0),
+             "a_flags": [0], "b_flags": [1], "rho": 0.25}
+    monkeypatch.setattr(app_module.tune, "try_split", lambda *a: offer)
+    split = client_tune.post("/tune", json=_tune_body(), headers=HEADERS).json()["split"]
+    assert set(split) == {"keep", "new", "keep_hashes", "new_hashes", "rho"}
+    assert split["rho"] == 0.25
+    # Which half keeps the name is decided by the name ranking; either way each report
+    # belongs with its own group.
+    by_lines = {"alpha": ["s0"], "beta": ["s1"]}
+    assert split["keep_hashes"] == by_lines[split["keep"]["lines"][0]]
+    assert split["new_hashes"] == by_lines[split["new"]["lines"][0]]
+    assert {split["keep"]["lines"][0], split["new"]["lines"][0]} == {"alpha", "beta"}
+    for half in (split["keep"], split["new"]):
+        assert [f["hash"] for f in half["flags"]][1:] == ["s6", "s7"]
+        assert set(half) == REPORT_KEYS

@@ -4,7 +4,7 @@ import multiprocessing
 import os
 import threading
 from collections.abc import Callable
-from typing import Annotated
+from typing import Annotated, Literal
 from concurrent.futures import Executor, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
@@ -13,9 +13,10 @@ import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field, StringConstraints
 
-from . import heads, moods, rhythm, scry
+from . import heads, moods, rhythm, scry, tune
 from .embed import Embedder, EmbeddingCache, MuqEmbedder, decode_track
 from .reference import ReferenceSet, load_reference, reference_stats
+from .tune_phrases import PHRASES
 
 MAX_EMBED_ITEMS = 32
 
@@ -30,6 +31,10 @@ MAX_PROMPT_CHARS = 300
 # Embedded prompt texts kept between requests. Past this the cache starts
 # over; it only grows when the user keeps editing prompts.
 MAX_CACHED_PROMPTS = 2048
+
+# Limits on what a /tune request may carry.
+MAX_TUNE_FLAGS = 500
+MAX_TUNE_BANK = 1000
 
 # How long /embed waits for the model to finish loading before it answers
 # 503. Loading starts when the app is created.
@@ -96,6 +101,32 @@ class SearchRequest(BaseModel):
 
 class MapRequest(BaseModel):
     hashes: list[str] = []
+
+
+class TuneFlag(BaseModel):
+    hash: str
+    min: float | None = None
+    max: float | None = None
+    weight: float = 1.0
+    fresh: bool = True
+    side: Literal["high", "low", "mid"]
+
+
+class TuneCalibration(BaseModel):
+    source: Literal["library", "reference"]
+    midpoint_z: float
+    slope: float
+
+
+class TuneRequest(BaseModel):
+    mood_id: str
+    name: str
+    current_lines: PromptList
+    flags: Annotated[list[TuneFlag], Field(max_length=MAX_TUNE_FLAGS)]
+    targets: list[str] = []
+    bank: Annotated[list[str], Field(max_length=MAX_TUNE_BANK)] = []
+    other_moods: Annotated[dict[MoodKey, PromptList], Field(max_length=MAX_MOODS)] = {}
+    calibration: TuneCalibration
 
 
 def _limit(n: int) -> int:
@@ -370,6 +401,105 @@ def create_app(
         text_vec = embedder.embed_text([req.text])[0]
         ranked = scry.rank_by_text(text_vec, C, _limit(req.limit))
         return {"results": [{"hash": c_hashes[i], "score": s} for i, s in ranked]}
+
+    @app.post("/tune")
+    def tune_mood(req: TuneRequest):
+        """Search for prompt lines that fit a mood's flagged songs, and report on the
+        best ones against the current lines. Bars are read with the calibration the
+        app sent. Waits for the model like /preview."""
+        if req.calibration.source == "reference" and reference is None:
+            raise HTTPException(status_code=409, detail="The analyzer has no reference set")
+        hashes, X = vectors([*req.targets, *(f.hash for f in req.flags)])
+        if not hashes:
+            raise HTTPException(status_code=409, detail="None of the targets has a cached embedding")
+        if not loaded.wait(LOAD_WAIT_SECONDS):
+            raise HTTPException(status_code=503, detail="model is still loading")
+        if load_error:
+            raise HTTPException(status_code=503, detail=f"model failed to load: {load_error[0]}")
+        X = X.astype(np.float64)
+        row = {h: i for i, h in enumerate(hashes)}
+        skipped = [f.hash for f in req.flags if f.hash not in row]
+        kept = [f for f in req.flags if f.hash in row]
+        flags = [tune.FlagTarget(row[f.hash], f.min, f.max, f.weight, f.fresh, f.side) for f in kept]
+        flag_hashes = [f.hash for f in kept]
+        m = tune.Mapping(req.calibration.midpoint_z, req.calibration.slope, req.calibration.source)
+        use_ref = req.calibration.source == "reference"
+
+        # Units: the words and lines in play, then the shipped phrases (kept whole).
+        name = req.name.strip().lower()
+        other_lines = [line for lines in req.other_moods.values() for line in lines]
+        units = tune.split_units([*req.bank, *req.current_lines, *other_lines, name])
+        units += [p.lower() for p in PHRASES if p.lower() not in set(units)]
+        candidates = [u for u in tune.split_units(req.bank) if " " not in u] + [name]
+
+        groups = {"units": units, "current": req.current_lines}
+        groups.update({f"other:{k}": v for k, v in req.other_moods.items()})
+        vecs = prompt_vectors(groups)
+        if vecs is None:
+            raise HTTPException(status_code=503, detail="the prompts could not be embedded")
+        U_lib = vecs["units"] @ X.T
+        U_ref = vecs["units"] @ reference.vectors.T if use_ref else None
+
+        def raws(V: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
+            # The mean cosine with the lines, as /score computes a mood.
+            return (V @ X.T).mean(axis=0), (V @ reference.vectors.T).mean(axis=0) if use_ref else None
+
+        before = raws(vecs["current"])
+        other_raw = {k: raws(vecs[f"other:{k}"])[0] for k in req.other_moods}
+
+        def report(lines, after, sub_flags, sub_hashes, proposed=True):
+            # Leave-one-out and name suggestions only make sense for a proposal.
+            loo, names = (0, 0), []
+            if proposed:
+                loo = tune.leave_one_out(U_lib, U_ref, units, sub_flags, m, tune.Combo(tuple(lines), 0.0))
+                names = tune.name_suggestions(U_lib, units, candidates, after[0])
+            return tune.build_report(
+                lines=lines, after=after, before=before, flags=sub_flags, flag_hashes=sub_hashes,
+                hashes=hashes, m=m, other_raw=other_raw, loo=loo, names=names,
+            )
+
+        baseline = report(req.current_lines, before, flags, flag_hashes, proposed=False)
+        proposals, split = [], None
+        if flags:
+            # Blends of the best single units join the pool as extra units.
+            blends = tune.blend_units(U_lib, U_ref, units, flags, m)
+            if blends:
+                blend_vecs = prompt_vectors({"blends": blends})
+                if blend_vecs is None:
+                    raise HTTPException(status_code=503, detail="the prompts could not be embedded")
+                U_lib = np.vstack([U_lib, blend_vecs["blends"] @ X.T])
+                if use_ref:
+                    U_ref = np.vstack([U_ref, blend_vecs["blends"] @ reference.vectors.T])
+                units = units + blends
+            found = tune.beam_search(U_lib, U_ref, units, flags, m)
+            for c in found:
+                if c.loss < baseline["loss"]:
+                    after = tune.combo_raws(U_lib, U_ref, units, c.lines)
+                    proposals.append(report(list(c.lines), after, flags, flag_hashes))
+            offer = tune.try_split(U_lib, U_ref, units, flags, m, X, found[0])
+            if offer is not None:
+                split = _split_report(offer, flags, flag_hashes, report, U_lib, U_ref, units, candidates, name)
+        return {"baseline": baseline, "proposals": proposals, "split": split, "skipped": skipped}
+
+    def _split_report(offer, flags, flag_hashes, report, U_lib, U_ref, units, candidates, name):
+        rest = [p for p, f in enumerate(flags) if f.side != "high"]
+        halves = []
+        for combo, group in ((offer["a"], offer["a_flags"]), (offer["b"], offer["b_flags"])):
+            after = tune.combo_raws(U_lib, U_ref, units, combo.lines)
+            ranking = [w for w, _ in tune.name_suggestions(U_lib, units, candidates, after[0], k=len(candidates))]
+            # The half whose best-matching words reach the mood's name first keeps it.
+            rank = ranking.index(name) if name in ranking else len(ranking)
+            sub = group + rest
+            halves.append((
+                (rank, -len(group)),
+                report(list(combo.lines), after, [flags[p] for p in sub], [flag_hashes[p] for p in sub]),
+                [flag_hashes[p] for p in group],
+            ))
+        keep, new = sorted(halves, key=lambda h: h[0])
+        return {
+            "keep": keep[1], "new": new[1], "keep_hashes": keep[2], "new_hashes": new[2],
+            "rho": offer["rho"],
+        }
 
     # Layouts keyed by the sorted hash tuple; the oldest entry is dropped first.
     map_cache: dict[tuple[str, ...], list[dict]] = {}
