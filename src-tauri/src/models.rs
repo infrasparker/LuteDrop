@@ -289,7 +289,8 @@ impl MoodVocabulary {
 }
 
 /// When the frozen mood calibration was taken and from how many tracks, for
-/// "Last calibrated: <date>, N tracks" in Settings → Moods.
+/// "Calibrated against the reference set: ..." or "Calibrated against your
+/// library: <date>, N tracks" in Settings → Moods.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
@@ -297,6 +298,11 @@ pub struct MoodCalibrationInfo {
     /// Unix milliseconds as a string, like `created_at`.
     pub calibrated_at: String,
     pub tracks: u32,
+    /// `"library"` (statistics from the user's library) or `"reference"`
+    /// (the analyzer's fixed reference set).
+    pub source: String,
+    /// Id of the reference set when `source` is `"reference"`.
+    pub reference_set: Option<String>,
 }
 
 /// What Reset to defaults (Settings → Moods) would delete: the stored mood

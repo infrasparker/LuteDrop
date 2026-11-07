@@ -108,7 +108,7 @@ function setRole(role: MoodFilters['role']): void {
     >
       Needs recalibration
       <VTooltip activator="parent" location="top" open-delay="300">
-        Some mood prompts changed since the last calibration. Those moods are not scored until you recalibrate.
+        Some mood prompts changed since the last calibration. Those moods are not scored until the next analysis run or a Recalibrate.
       </VTooltip>
     </VBtn>
     <VBtnToggle

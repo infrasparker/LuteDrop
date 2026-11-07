@@ -2,14 +2,16 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 
 import threading
+import zlib
 
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from tagger import app as app_module, rhythm
+from tagger import app as app_module, moods, rhythm
 from tagger.app import create_app
 from tagger.embed import EmbeddingCache
+from tagger.reference import ReferenceSet, reference_stats
 
 TOKEN = "secret"
 HEADERS = {"X-LuteDrop-Token": TOKEN}
@@ -87,7 +89,7 @@ def test_empty_server_token_rejects_empty_header(tmp_path):
 def test_health_reports_model_and_cache_count(client):
     embed(client, [("h1", "hi-1")])
     body = client.get("/health", headers=HEADERS).json()
-    assert body == {"model": "fake@test", "cache_count": 1, "ready": True, "error": None}
+    assert body == {"model": "fake@test", "cache_count": 1, "ready": True, "error": None, "reference": None}
 
 
 class SlowEmbedder(FakeEmbedder):
@@ -728,3 +730,106 @@ def test_score_with_failed_model_omits_mood(tmp_path):
         time.sleep(0.02)
     r = c.post("/score", json={"gate": {}, "targets": ["a"]}, headers=HEADERS)
     assert r.status_code == 200 and "mood" not in r.json()
+
+
+REF_VECTORS = np.random.default_rng(3).normal(size=(6, DIM))
+REF_VECTORS /= np.linalg.norm(REF_VECTORS, axis=1, keepdims=True)
+
+
+@pytest.fixture
+def ref_client(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), FEATS))
+    reference = ReferenceSet("test-set", "fake@test", REF_VECTORS)
+    app = create_app(
+        FakeEmbedder(),
+        EmbeddingCache(tmp_path),
+        TOKEN,
+        executor_factory=lambda: ThreadPoolExecutor(2),
+        reference=reference,
+    )
+    return TestClient(app)
+
+
+class TextVectorEmbedder(FakeEmbedder):
+    """A different unit vector for every prompt text."""
+
+    @staticmethod
+    def vec(text):
+        v = np.random.default_rng(zlib.crc32(text.encode())).normal(size=DIM)
+        return v / np.linalg.norm(v)
+
+    def embed_text(self, texts):
+        return np.vstack([self.vec(t) for t in texts])
+
+
+def _score_reference(tmp_path, monkeypatch, extra):
+    monkeypatch.setattr(app_module, "decode_track", lambda p: (synthetic(1.0, 1), FEATS))
+    reference = ReferenceSet("test-set", "fake@test", REF_VECTORS)
+    app = create_app(
+        TextVectorEmbedder(),
+        EmbeddingCache(tmp_path),
+        TOKEN,
+        executor_factory=lambda: ThreadPoolExecutor(2),
+        reference=reference,
+    )
+    c = TestClient(app)
+    embed(c, [("h1", "hi-1")])
+    body = c.post(
+        "/score", json={"gate": {"positives": [], "negatives": []}, "targets": ["h1"], **extra}, headers=HEADERS
+    ).json()
+    return reference, body["mood_reference"]
+
+
+def _expected(reference, mood_groups, pos, neg):
+    emb = TextVectorEmbedder
+    prompts = {k: np.vstack([emb.vec(t) for t in v]) for k, v in mood_groups.items()}
+    prompts["energy+"] = np.vstack([emb.vec(t) for t in pos])
+    prompts["energy-"] = np.vstack([emb.vec(t) for t in neg])
+    return reference_stats(reference, prompts, list(mood_groups))
+
+
+def _assert_stats(got, expected):
+    assert got["set"] == expected["set"] == "test-set" and got["tracks"] == 6
+    assert set(got["stats"]) == set(expected["stats"])
+    for k, v in expected["stats"].items():
+        assert got["stats"][k]["mean"] == pytest.approx(v["mean"])
+        assert got["stats"][k]["sd"] == pytest.approx(v["sd"])
+        assert v["sd"] > 0
+
+
+def test_score_returns_mood_reference_for_the_prompts_sent(tmp_path, monkeypatch):
+    groups = {"grim": ["a", "b"], "joyful": ["c"]}
+    pos, neg = ["d", "f"], ["e"]
+    reference, got = _score_reference(
+        tmp_path,
+        monkeypatch,
+        {"mood_prompts": groups, "energy_prompts": {"positive": pos, "negative": neg}},
+    )
+    assert set(got["stats"]) == {"grim", "joyful", "energy"}
+    _assert_stats(got, _expected(reference, groups, pos, neg))
+    # Swapped energy sides would give a different mean.
+    swapped = _expected(reference, groups, neg, pos)["stats"]["energy"]["mean"]
+    assert got["stats"]["energy"]["mean"] != pytest.approx(swapped)
+
+
+def test_score_reference_uses_default_prompts_when_none_sent(tmp_path, monkeypatch):
+    reference, got = _score_reference(tmp_path, monkeypatch, {})
+    assert set(got["stats"]) == set(moods.MOODS) | {"energy"}
+    _assert_stats(got, _expected(reference, moods.MOODS, moods.ENERGY_POS, moods.ENERGY_NEG))
+
+
+def test_score_without_reference_has_no_mood_reference(client):
+    embed(client, [("h1", "hi-1")])
+    body = client.post(
+        "/score",
+        json={"gate": {"positives": [], "negatives": []}, "targets": ["h1"]},
+        headers=HEADERS,
+    ).json()
+    assert "mood" in body
+    assert "mood_reference" not in body
+
+
+def test_health_reports_reference(ref_client, client):
+    got = ref_client.get("/health", headers=HEADERS).json()
+    assert got["reference"] == {"set": "test-set", "tracks": 6}
+    assert client.get("/health", headers=HEADERS).json()["reference"] is None

@@ -2281,7 +2281,7 @@ mod tests {
         .unwrap();
         settings::save_mood_calibration(
             &conn,
-            &MoodCalibration { calibrated_at: "1".into(), tracks: 50, prompts: Default::default(), stats: Default::default() },
+            &MoodCalibration { calibrated_at: "1".into(), tracks: 50, prompts: Default::default(), stats: Default::default(), source: Default::default(), reference_set: None },
         )
         .unwrap();
 

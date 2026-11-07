@@ -358,15 +358,18 @@ fn progress_update(phase: &str, processed: u32, total: u32, message: Option<Stri
 /// 3. embed them in batches of 32, marking each `Embedded` or `Failed`;
 /// 4. call `/score` once for every embedded music entry, sending the mood
 ///    vocabulary's prompts;
-/// 5. take the mood calibration if none is stored yet and this response
-///    covers enough music, then decide each scored entry's analyzer layer
-///    (role, moods, tags); only moods whose prompts match the calibration's
-///    are scored;
+/// 5. take the mood calibration: the analyzer's reference set when it offers
+///    one for the current prompts (replacing a stored library calibration or
+///    an older reference, unless identical), else, if none is stored yet and
+///    this response covers enough music, the library's own. Then decide each
+///    scored entry's analyzer layer (role, moods, tags); only moods whose
+///    prompts match the calibration's are scored;
 /// 6. write that layer, the scores and a new calibration in one transaction.
 ///    The user's layer is never written, so the run can't undo an edit made
-///    meanwhile. If the calibration changed while the analyzer worked
-///    (Recalibrate cleared it), no mood is written: the run Recalibrate
-///    queued scores them.
+///    meanwhile. A new calibration (library or reference) is saved in the same
+///    transaction. If the stored calibration changed while the analyzer worked
+///    (Recalibrate cleared it), neither it nor any mood is written: the run
+///    Recalibrate queued does that.
 ///
 /// The database lock is released while the analyzer works, so the app stays
 /// usable. An analyzer or database error stops the run before step 6 commits,
@@ -497,15 +500,32 @@ fn run_steps(
     let response = client.score(&request)?;
 
     // Step 5: decide. Only scored entries appear in `decisions`. The mood
-    // calibration is frozen: taken from the first response that covers
-    // enough music and never recomputed after that (Recalibrate clears it).
-    // Until it exists, no mood is scored; after, only the moods whose
-    // prompts it was taken with.
-    let new_calibration = match stored_calibration {
-        Some(_) => None,
-        None => plan::calibrate(&response.mood, &mood_vocabulary, now_millis()),
+    // calibration is frozen: once stored it is only replaced by a reference
+    // calibration (below), never recomputed from the library (Recalibrate
+    // clears it). Until one exists, no mood is scored; after, only the moods
+    // whose prompts it was taken with.
+    //
+    // `offered` is the reference calibration the analyzer sent for the
+    // prompts of this run, if it sent one we can use. The `match` compares
+    // it with what is stored, and the first arm that fits wins.
+    let offered = response
+        .mood_reference
+        .as_ref()
+        .and_then(|r| plan::reference_calibration(r, &mood_vocabulary, now_millis()));
+    let new_calibration = match (offered, &stored_calibration) {
+        // The reference is what we already have: leave it (and its date).
+        (Some(r), Some(s)) if plan::same_calibration(&r, s) => None,
+        // A reference replaces whatever is stored: a library calibration, or
+        // a reference for older prompts or another set.
+        (Some(r), _) => Some(r),
+        // No reference offered (older analyzer or no prompts match): keep
+        // what is stored, library or reference.
+        (None, Some(_)) => None,
+        // Nothing stored and no reference: take the library's own, if it
+        // covers enough music.
+        (None, None) => plan::calibrate(&response.mood, &mood_vocabulary, now_millis()),
     };
-    let calibration = stored_calibration.as_ref().or(new_calibration.as_ref());
+    let calibration = new_calibration.as_ref().or(stored_calibration.as_ref());
     let mood_ids = calibration.map(|c| plan::scorable_ids(c, &mood_vocabulary)).unwrap_or_default();
     let decisions = plan::decide(&facts, &scene, &response, calibration, &mood_ids);
 
@@ -529,7 +549,13 @@ fn run_steps(
             && same_prompts(&vocabulary_now, &mood_vocabulary);
         if let Some(calibration) = new_calibration.as_ref().filter(|_| moods_current) {
             settings::save_mood_calibration(&conn, calibration)?;
-            log::info!("Mood calibration taken from {} tracks", calibration.tracks);
+            match (&calibration.source, &calibration.reference_set) {
+                (plan::CalibrationSource::Reference, Some(set)) => log::info!(
+                    "Mood calibration taken from the reference set {set} ({} tracks)",
+                    calibration.tracks
+                ),
+                _ => log::info!("Mood calibration taken from {} tracks", calibration.tracks),
+            }
         }
         for entry in &entries {
             let id = &entry.facts.id;
@@ -634,6 +660,8 @@ pub(crate) mod tests {
         pub(crate) last_score: Mutex<Option<ScoreRequest>>,
         /// Raw mood scores per hash; empty omits mood.
         pub(crate) mood: HashMap<String, MoodRaw>,
+        /// The reference-set statistics `score` offers; `None` omits them.
+        pub(crate) mood_reference: Option<plan::MoodReference>,
         /// Runs inside `score`, before it returns.
         pub(crate) on_score: Option<Box<dyn Fn() + Send + Sync>>,
         pub(crate) embedded: Mutex<Vec<String>>,
@@ -706,6 +734,7 @@ pub(crate) mod tests {
                 hook();
             }
             Ok(ScoreResponse {
+                mood_reference: self.mood_reference.clone(),
                 model: "fake".into(),
                 gate: ScoreSet {
                     trusted: !self.untrusted_gate,
@@ -1188,7 +1217,7 @@ pub(crate) mod tests {
         // Every id gets an analyzer value and no user level.
         assert_eq!(mood_row_count(&db, &ids[0]), 10);
         let (auto, user) = mood_of(&db, &ids[0], "heroic").unwrap();
-        assert!((auto.unwrap() - plan::mood_score("heroic", 0.3, heroic)).abs() < 1e-12);
+        assert!((auto.unwrap() - plan::mood_score("heroic", 0.3, heroic, plan::CalibrationSource::Library)).abs() < 1e-12);
         // z 1.69 for heroic, centred half an sd up: clearly in.
         assert!(auto.unwrap() > 0.8);
         assert_eq!(user, None);
@@ -1205,7 +1234,119 @@ pub(crate) mod tests {
         assert_eq!(settings::load_mood_calibration(&db.lock().unwrap()).unwrap().unwrap(), cal);
         // Scored against the frozen calibration, heroic is near the top.
         let (auto, _) = mood_of(&db, &ids[1], "heroic").unwrap();
-        assert!((auto.unwrap() - plan::mood_score("heroic", 0.9, heroic)).abs() < 1e-12);
+        assert!((auto.unwrap() - plan::mood_score("heroic", 0.9, heroic, plan::CalibrationSource::Library)).abs() < 1e-12);
+    }
+
+    /// Reference statistics for every id of the default vocabulary (Energy
+    /// included), all with the same mean and an sd of 0.1.
+    fn reference(set: &str, mean: f64) -> plan::MoodReference {
+        plan::MoodReference {
+            set: set.into(),
+            tracks: 300,
+            stats: MoodVocabulary::defaults()
+                .ids()
+                .into_iter()
+                .map(|id| (id, plan::MoodStat { mean, sd: 0.1 }))
+                .collect(),
+        }
+    }
+
+    fn stored_calibration(db: &Mutex<Connection>) -> plan::MoodCalibration {
+        settings::load_mood_calibration(&db.lock().unwrap()).unwrap().unwrap()
+    }
+
+    #[test]
+    fn run_replaces_a_library_calibration_with_the_reference() {
+        let db = setup();
+        let (ids, gate, mood) = mood_library(&db, plan::CALIBRATION_MIN_TRACKS);
+        let fake = FakeAnalyzer { gate: gate.clone(), mood: mood.clone(), ..Default::default() };
+        run_once(&db, &fake, &ids, &no_progress);
+        assert_eq!(stored_calibration(&db).source, plan::CalibrationSource::Library);
+
+        let fake = FakeAnalyzer { gate, mood, mood_reference: Some(reference("set-1", 0.2)), ..Default::default() };
+        let report = run_once(&db, &fake, &[], &no_progress);
+        assert_eq!(report.error, None);
+        let cal = stored_calibration(&db);
+        assert_eq!(cal.source, plan::CalibrationSource::Reference);
+        assert_eq!(cal.reference_set.as_deref(), Some("set-1"));
+        assert_eq!(cal.tracks, 300);
+        // e0 has heroic raw 0.3; scored with the reference mapping.
+        let (auto, _) = mood_of(&db, &ids[0], "heroic").unwrap();
+        let expected = plan::mood_score("heroic", 0.3, cal.stats["heroic"], plan::CalibrationSource::Reference);
+        assert!((auto.unwrap() - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn run_takes_the_reference_even_with_too_little_music_for_a_library_calibration() {
+        let db = setup();
+        let (ids, gate, mood) = mood_library(&db, 5);
+        let fake = FakeAnalyzer { gate, mood, mood_reference: Some(reference("set-1", 0.2)), ..Default::default() };
+        run_once(&db, &fake, &ids, &no_progress);
+        assert_eq!(stored_calibration(&db).source, plan::CalibrationSource::Reference);
+        assert_eq!(mood_row_count(&db, &ids[0]), 10);
+    }
+
+    #[test]
+    fn run_keeps_a_stored_reference_calibration_when_the_analyzer_sends_none() {
+        let db = setup();
+        let (ids, gate, mood) = mood_library(&db, plan::CALIBRATION_MIN_TRACKS);
+        let fake = FakeAnalyzer {
+            gate: gate.clone(),
+            mood: mood.clone(),
+            mood_reference: Some(reference("set-1", 0.2)),
+            ..Default::default()
+        };
+        run_once(&db, &fake, &ids, &no_progress);
+        let cal = stored_calibration(&db);
+
+        // An older analyzer (no reference) must not swap in a library calibration.
+        let bare = FakeAnalyzer { gate, mood, ..Default::default() };
+        let report = run_once(&db, &bare, &[], &no_progress);
+        assert_eq!(report.error, None);
+        assert_eq!(stored_calibration(&db), cal);
+        let (auto, _) = mood_of(&db, &ids[0], "heroic").unwrap();
+        let expected = plan::mood_score("heroic", 0.3, cal.stats["heroic"], plan::CalibrationSource::Reference);
+        assert!((auto.unwrap() - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn run_rescores_edited_prompts_against_the_reference() {
+        let db = setup();
+        let (ids, gate, mood) = mood_library(&db, plan::CALIBRATION_MIN_TRACKS);
+        let fake = FakeAnalyzer {
+            gate: gate.clone(),
+            mood: mood.clone(),
+            mood_reference: Some(reference("set-1", 0.2)),
+            ..Default::default()
+        };
+        run_once(&db, &fake, &ids, &no_progress);
+
+        let mut edited = MoodVocabulary::defaults();
+        edited.moods[7].prompts = vec!["fanfare".into()];
+        library::save_mood_vocabulary(&db.lock().unwrap(), &edited).unwrap();
+        // The analyzer now computed the reference for the edited prompts.
+        let fake = FakeAnalyzer { gate, mood, mood_reference: Some(reference("set-1", 0.25)), ..Default::default() };
+        run_once(&db, &fake, &[], &no_progress);
+
+        let cal = stored_calibration(&db);
+        assert_eq!(cal.prompts["heroic"], ["fanfare"]);
+        assert_eq!(cal.stats["heroic"].mean, 0.25);
+        let (auto, _) = mood_of(&db, &ids[0], "heroic").unwrap();
+        let expected = plan::mood_score("heroic", 0.3, cal.stats["heroic"], plan::CalibrationSource::Reference);
+        assert!((auto.unwrap() - expected).abs() < 1e-12);
+        assert!(!plan::needs_recalibration(Some(&cal), &edited.normalized().unwrap()));
+    }
+
+    #[test]
+    fn run_with_an_unchanged_reference_does_not_rewrite_the_calibration() {
+        let db = setup();
+        let (ids, gate, mood) = mood_library(&db, plan::CALIBRATION_MIN_TRACKS);
+        let fake = FakeAnalyzer { gate, mood, mood_reference: Some(reference("set-1", 0.2)), ..Default::default() };
+        run_once(&db, &fake, &ids, &no_progress);
+        let first = stored_calibration(&db);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        run_once(&db, &fake, &[], &no_progress);
+        assert_eq!(stored_calibration(&db).calibrated_at, first.calibrated_at);
     }
 
     #[test]
