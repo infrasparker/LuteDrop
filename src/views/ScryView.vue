@@ -183,6 +183,15 @@ function clearSpot(): void {
   if (query.value?.kind === 'spot') clearResults();
 }
 
+// Shift-right-click on the map: drop the spot and every seed.
+function clearSpotAndSeeds(): void {
+  clearSpot();
+  if (seeds.value.length > 0) {
+    seeds.value = [];
+    runSeeds();
+  }
+}
+
 // A spot click returns as many tracks as a seed or vibe search does.
 const SPOT_LIMIT = RESULT_LIMIT;
 
@@ -552,7 +561,7 @@ const showAutoTagging = ref(false);
               @play="onMapPlay"
               @spot="runSpot"
               @seed="toggleSeed"
-              @clear-spot="clearSpot"
+              @clear-search="clearSpotAndSeeds"
               @clear-selection="selectedIds = []"
               @lasso="addToSelection"
               @deselect="removeFromSelection"
