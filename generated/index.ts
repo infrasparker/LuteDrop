@@ -35,6 +35,21 @@ export type { Track } from "./Track";
 export type { TrackMode } from "./TrackMode";
 export type { TrackPlaybackState } from "./TrackPlaybackState";
 export type { TrackTransition } from "./TrackTransition";
+export type { CaseImportReport } from "./CaseImportReport";
+export type { FlagBand } from "./FlagBand";
+export type { FlagBound } from "./FlagBound";
+export type { FlagKind } from "./FlagKind";
+export type { MoodFlag } from "./MoodFlag";
+export type { TuneFlagOutcome } from "./TuneFlagOutcome";
+export type { TuneLeaveOneOut } from "./TuneLeaveOneOut";
+export type { TuneMovedSong } from "./TuneMovedSong";
+export type { TuneNameIdea } from "./TuneNameIdea";
+export type { TuneOverlap } from "./TuneOverlap";
+export type { TuneResult } from "./TuneResult";
+export type { TuneReview } from "./TuneReview";
+export type { TuneSong } from "./TuneSong";
+export type { TuneSplitReview } from "./TuneSplitReview";
+export type { TuneTopSong } from "./TuneTopSong";
 
 /** A mood id of the vocabulary (`AppState.moodVocabulary`), or `"energy"`. */
 export type MoodId = string;

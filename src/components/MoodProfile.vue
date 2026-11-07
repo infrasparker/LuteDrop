@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, reactive } from 'vue';
-import type { LibraryEntry, MoodId } from '@generated/index';
+import type { FlagBand, FlagKind, LibraryEntry, MoodFlag, MoodId } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
+import { flagControlVisible, flagLabel, FLAG_BANDS } from '../utils/moodFlags';
 import { MOOD_LEVELS, moodLayers, moodList, snapLevel, stepLevel } from '../utils/moods';
 
 /// The mood profile of one or more music entries: one row per mood of the
@@ -15,6 +16,9 @@ import { MOOD_LEVELS, moodLayers, moodList, snapLevel, stepLevel } from '../util
 ///   suggestion, as does the ↺ button.
 /// - With several entries (bulk), a click sets the level on every one, and a
 ///   row whose entries differ shows "mixed".
+/// - With one entry, a flag button next to each mood bar says the bar looks
+///   wrong (a band it belongs in, or higher / lower); the analyzer learns
+///   from flags when the moods are tuned. A flagged bar shows a flag marker.
 /// Every change saves at once.
 const props = defineProps<{ entries: LibraryEntry[] }>();
 
@@ -46,6 +50,10 @@ interface Row {
   mixed: boolean;
   setState: SetState;
   hint: string;
+  /// Whether the flag button shows (one song, not Energy).
+  flaggable: boolean;
+  /// The flag on this song and mood, if any.
+  flag: MoodFlag | null;
 }
 
 const fmt = (v: number): string => v.toFixed(2);
@@ -86,7 +94,10 @@ const rows = computed<Row[]>(() =>
     }
     if (mixed) hint = `Mixed: ${range(known)} · ${hint}`;
 
-    return { id, name, value: mixed ? null : min, min, max, mixed, setState, hint };
+    const flaggable = flagControlVisible(music.value.length, id);
+    const flag = flaggable ? (music.value[0]?.moods.find((m) => m.mood === id)?.flag ?? null) : null;
+
+    return { id, name, value: mixed ? null : min, min, max, mixed, setState, hint, flaggable, flag };
   }),
 );
 
@@ -106,6 +117,19 @@ function save(mood: MoodId, level: number | null): void {
       pending.delete(key);
     }
   });
+}
+
+/// Flag, or remove the flag from, the one song shown. A failure (such as a
+/// higher / lower flag on a song with no suggestion yet) shows as a toast.
+function setFlag(mood: MoodId, kind: FlagKind, band: FlagBand | null): void {
+  const entryId = ids.value[0];
+  if (entryId === undefined) return;
+  void store.command('set_mood_flag', { entryId, mood, kind, band });
+}
+function clearFlag(mood: MoodId): void {
+  const entryId = ids.value[0];
+  if (entryId === undefined) return;
+  void store.command('clear_mood_flag', { entryId, mood });
 }
 
 function onBarClick(row: Row, e: MouseEvent): void {
@@ -189,6 +213,36 @@ const pct = (v: number): string => `${Math.round(v * 1000) / 10}%`;
         <VTooltip activator="parent" location="top" open-delay="300">Back to the suggestion</VTooltip>
       </VBtn>
       <span v-else class="reset-placeholder" />
+      <VMenu v-if="row.flaggable" location="bottom end">
+        <template #activator="{ props: menuProps }">
+          <VBtn
+            v-bind="menuProps"
+            icon
+            size="x-small"
+            variant="text"
+            density="comfortable"
+            :color="row.flag ? 'warning' : undefined"
+            :class="{ 'flag-idle': !row.flag, 'flag-stale': row.flag?.stale }"
+            :aria-label="row.flag ? `${row.name}: flagged ${flagLabel(row.flag)}` : `${row.name}: flag this bar`"
+          >
+            <VIcon size="small">{{ row.flag ? 'mdi-flag' : 'mdi-flag-outline' }}</VIcon>
+            <VTooltip activator="parent" location="top" open-delay="300">
+              {{ row.flag ? flagLabel(row.flag) : 'Flag this bar as wrong' }}
+            </VTooltip>
+          </VBtn>
+        </template>
+        <VList density="compact">
+          <VListItem v-for="b in FLAG_BANDS" :key="b.band" :title="b.label" @click="setFlag(row.id, 'band', b.band)" />
+          <VDivider />
+          <VListItem title="Higher" @click="setFlag(row.id, 'higher', null)" />
+          <VListItem title="Lower" @click="setFlag(row.id, 'lower', null)" />
+          <template v-if="row.flag">
+            <VDivider />
+            <VListItem title="Remove flag" @click="clearFlag(row.id)" />
+          </template>
+        </VList>
+      </VMenu>
+      <span v-else class="reset-placeholder" />
     </div>
   </div>
 </template>
@@ -196,7 +250,7 @@ const pct = (v: number): string => `${Math.round(v * 1000) / 10}%`;
 <style scoped>
 .mood-profile {
   display: grid;
-  grid-template-columns: 96px minmax(160px, 1fr) 48px 28px;
+  grid-template-columns: 96px minmax(160px, 1fr) 48px 28px 28px;
   align-items: center;
   column-gap: 12px;
   row-gap: 2px;
@@ -295,6 +349,16 @@ const pct = (v: number): string => `${Math.round(v * 1000) / 10}%`;
   text-align: right;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+.flag-idle {
+  opacity: 0.45;
+}
+.flag-idle:hover,
+.flag-idle:focus-visible {
+  opacity: 1;
+}
+.flag-stale {
+  opacity: 0.5;
 }
 .reset-placeholder {
   display: inline-block;
