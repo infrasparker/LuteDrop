@@ -13,10 +13,35 @@ import type {
   BulkImportProgress,
   MoodCalibrationInfo,
   MoodVocabulary,
+  TuneReview,
+  TuneSplitReview,
 } from '@generated/index';
 import { useToast } from '../composables/useToast';
 import { compStatus, LIBRARY_PLAYBACK_ID } from '../shared/playback';
 import { setMoodVocabulary } from '../utils/moods';
+
+/// One version column on the Moods page: its lines as typed, the review
+/// they were last evaluated to (and the text it was made from), and its
+/// run state.
+export interface MoodDraft {
+  key: number;
+  name: string;
+  /// typed / arranged / suggested / before (the lines Use replaced), or a
+  /// split's column.
+  source: 'typed' | 'arranged' | 'suggested' | 'before' | 'split';
+  text: string;
+  review: TuneReview | null;
+  /// The lines (joined by new lines) `review` was made from.
+  reviewedLines: string | null;
+  /// The Current lines `review` was made against.
+  reviewedAgainst: string | null;
+  evaluating: boolean;
+  /// Arrange / Suggest still searching for this column.
+  running: 'arrange' | 'suggest' | null;
+  error: string | null;
+  /// A suggested column's split offer, or the split column's halves.
+  split: TuneSplitReview | null;
+}
 
 export const useAppStore = defineStore('app', () => {
   const groups = ref<Group[]>([]);
@@ -38,12 +63,17 @@ export const useAppStore = defineStore('app', () => {
   /// The stored vocabulary is unreadable: the defaults are shown and Save is
   /// refused, so it cannot delete the real moods' levels.
   const moodVocabularyUnreadable = ref(false);
-  /// Whether the Moods settings dialog is open (opened from the nav rail and
-  /// from the lens row's marker).
-  const moodSettingsOpen = ref(false);
-  /// Set by "Tune around this flag" on a song's mood bar: the Moods dialog
-  /// opens Tune on `moodId`, focused on that song's flag, then clears it.
-  const tuneRequest = ref<{ moodId: string; focusEntryId: string } | null>(null);
+  // --- The Moods page (MoodsView.vue) ---
+  /// The mood the page shows (a mood id, or "energy"); null picks the first.
+  const moodsSelectedId = ref<string | null>(null);
+  /// The flag the page's Arrange / Suggest focus on, pinned by "Open in
+  /// Moods" on a song's flag; otherwise they focus the newest flag.
+  const moodFocus = ref<{ moodId: string; entryId: string } | null>(null);
+  /// Version columns per mood id. Kept here so they survive leaving the
+  /// page, but not a restart.
+  const moodDrafts = ref<Record<string, MoodDraft[]>>({});
+  /// Current's own review per mood id, with the lines it was made from.
+  const moodBaselines = ref<Record<string, { lines: string[]; review: TuneReview; focusEntryId: string | null }>>({});
 
   /// Non-null while a background library import is active. Drives the
   /// bottom-bar progress indicator and disables the Import menu.
@@ -184,8 +214,10 @@ export const useAppStore = defineStore('app', () => {
     moodCalibration,
     moodsNeedRecalibration,
     moodVocabularyUnreadable,
-    moodSettingsOpen,
-    tuneRequest,
+    moodsSelectedId,
+    moodFocus,
+    moodDrafts,
+    moodBaselines,
     importProgress,
     masterMuted,
     mutedTracks,

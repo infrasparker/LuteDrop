@@ -2,7 +2,9 @@
 import { computed, reactive } from 'vue';
 import type { FlagBand, FlagKind, LibraryEntry, MoodFlag, MoodId } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
-import { flagControlVisible, flagLabel, flagMark, FLAG_BANDS } from '../utils/moodFlags';
+import { useRouter } from 'vue-router';
+import { flagControlVisible, flagLabel, flagMark } from '../utils/moodFlags';
+import MoodFlagMenu from './MoodFlagMenu.vue';
 import { MOOD_LEVELS, moodLayers, moodList, snapLevel, stepLevel } from '../utils/moods';
 
 /// The mood profile of one or more music entries: one row per mood of the
@@ -132,13 +134,16 @@ function clearFlag(mood: MoodId): void {
   void store.command('clear_mood_flag', { entryId, mood });
 }
 
-/// "Tune around this flag": opens the Moods dialog's Tune on this mood,
-/// focused on this song's flag (through the store, see `tuneRequest`).
-function tuneAround(mood: MoodId): void {
+/// "Open in Moods": closes the song editor and opens the Moods page on this
+/// mood, with this song's flag (if any) as the focus for Arrange / Suggest.
+const router = useRouter();
+function openInMoods(mood: MoodId, flagged: boolean): void {
   const entryId = ids.value[0];
   if (entryId === undefined) return;
-  store.tuneRequest = { moodId: mood, focusEntryId: entryId };
-  store.moodSettingsOpen = true;
+  store.moodsSelectedId = mood;
+  store.moodFocus = flagged ? { moodId: mood, entryId } : null;
+  store.editEntryId = null;
+  void router.push('/moods');
 }
 
 function onBarClick(row: Row, e: MouseEvent): void {
@@ -241,17 +246,13 @@ const pct = (v: number): string => `${Math.round(v * 1000) / 10}%`;
             </VTooltip>
           </VBtn>
         </template>
-        <VList density="compact">
-          <VListItem v-for="b in FLAG_BANDS" :key="b.band" :title="b.label" @click="setFlag(row.id, 'band', b.band)" />
-          <VDivider />
-          <VListItem title="Higher" @click="setFlag(row.id, 'higher', null)" />
-          <VListItem title="Lower" @click="setFlag(row.id, 'lower', null)" />
-          <template v-if="row.flag">
-            <VDivider />
-            <VListItem title="Tune around this flag" prepend-icon="mdi-tune-vertical" @click="tuneAround(row.id)" />
-            <VListItem title="Remove flag" @click="clearFlag(row.id)" />
-          </template>
-        </VList>
+        <MoodFlagMenu
+          :flagged="row.flag !== null"
+          open-in-moods
+          @set="(kind, band) => setFlag(row.id, kind, band)"
+          @open="openInMoods(row.id, row.flag !== null)"
+          @remove="clearFlag(row.id)"
+        />
       </VMenu>
       <span v-else class="reset-placeholder" />
     </div>

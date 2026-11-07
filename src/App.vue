@@ -11,7 +11,6 @@ import TransportBar from './components/TransportBar.vue';
 import WaveformEditorDialog from './components/WaveformEditorDialog.vue';
 import RemoteInfoDialog from './components/RemoteInfoDialog.vue';
 import BroadcastDialog from './components/BroadcastDialog.vue';
-import MoodSettingsDialog from './components/MoodSettingsDialog.vue';
 
 const store = useAppStore();
 const toast = useToast();
@@ -38,7 +37,7 @@ const showEditorDialog = computed({
 });
 
 // Views that preview library sounds; leaving one stops the preview.
-const PREVIEW_ROUTES = ['/library', '/scry'];
+const PREVIEW_ROUTES = ['/library', '/scry', '/moods'];
 
 watch(() => router.currentRoute.value.path, (newPath, oldPath) => {
   if (PREVIEW_ROUTES.includes(oldPath) && newPath !== oldPath) {
@@ -81,16 +80,18 @@ onMounted(async () => {
           title="Scry"
           aria-label="Scry"
         />
+        <VListItem
+          prepend-icon="mdi-palette-outline"
+          to="/moods"
+          :active="$route.path === '/moods'"
+          color="primary"
+          title="Moods"
+          aria-label="Moods"
+        />
       </VList>
 
       <template #append>
         <VList nav density="compact">
-          <VListItem
-            prepend-icon="mdi-palette-outline"
-            title="Moods"
-            aria-label="Moods"
-            @click="store.moodSettingsOpen = true"
-          />
           <VListItem
             prepend-icon="mdi-broadcast"
             title="Broadcast"
@@ -125,10 +126,12 @@ onMounted(async () => {
 
     <RemoteInfoDialog v-model="showRemoteInfo" />
     <BroadcastDialog v-model="showBroadcast" />
-    <MoodSettingsDialog v-model="store.moodSettingsOpen" />
 
-    <VSnackbar v-model="toast.visible.value" :color="toast.color.value" :timeout="3000">
+    <VSnackbar v-model="toast.visible.value" :color="toast.color.value || undefined" :timeout="toast.action.value ? 6000 : 3000">
       {{ toast.message.value }}
+      <template v-if="toast.action.value" #actions>
+        <VBtn variant="text" @click="toast.runAction()">{{ toast.action.value.label }}</VBtn>
+      </template>
     </VSnackbar>
   </VApp>
 </template>
