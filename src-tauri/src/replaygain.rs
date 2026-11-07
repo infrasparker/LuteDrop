@@ -165,10 +165,17 @@ pub fn median(values: &mut [f64]) -> Option<f64> {
     })
 }
 
+/// The most a track is ever turned down, in dB. Real tags in the library stop
+/// around −6 dB; the floor only guards against a corrupt tag (say −50 dB)
+/// muting a track.
+pub const MAX_REDUCTION_DB: f64 = 12.0;
+
 /// Attenuation-only factor for a track with gain `gain_db` against the
-/// library's `reference_db`: below 1 for a louder-than-typical track, else 1.
+/// library's `reference_db`: below 1 for a louder-than-typical track, else 1,
+/// and never below −`MAX_REDUCTION_DB`.
 pub fn attenuation_factor(gain_db: f64, reference_db: f64) -> f64 {
-    10f64.powf((gain_db - reference_db) / 20.0).min(1.0)
+    let floor = 10f64.powf(-MAX_REDUCTION_DB / 20.0);
+    10f64.powf((gain_db - reference_db) / 20.0).clamp(floor, 1.0)
 }
 
 /// Everything needed to work out an entry's loudness factor: whether the
@@ -260,6 +267,16 @@ mod tests {
     use super::*;
     use lofty::id3::v2::Id3v2Tag;
     use lofty::ogg::VorbisComments;
+
+    #[test]
+    fn corrupt_gain_never_mutes_a_track() {
+        // A −50 dB tag against a −4 dB reference would be −46 dB: floored at −12 dB.
+        let f = attenuation_factor(-50.0, -4.0);
+        assert!((20.0 * f.log10() + MAX_REDUCTION_DB).abs() < 1e-9, "factor {f}");
+        // Real-world reductions pass through untouched.
+        let real = attenuation_factor(-10.1, -3.8);
+        assert!((20.0 * real.log10() + 6.3).abs() < 1e-9, "factor {real}");
+    }
 
     #[test]
     fn parses_gain_strings() {
