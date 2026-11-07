@@ -127,8 +127,19 @@ onMounted(async () => {
     <BroadcastDialog v-model="showBroadcast" />
     <MoodSettingsDialog v-model="store.moodSettingsOpen" />
 
-    <VSnackbar v-model="toast.visible.value" :color="toast.color.value" :timeout="3000">
+    <!-- Top of the window so it never covers the floating selection bars or
+         the transport. Click anywhere on it, or the x, to dismiss. -->
+    <VSnackbar
+      v-model="toast.visible.value"
+      :color="toast.color.value"
+      :timeout="toast.timeout.value"
+      location="top"
+      @click="toast.hide()"
+    >
       {{ toast.message.value }}
+      <template #actions>
+        <VBtn icon="mdi-close" size="small" variant="text" aria-label="Dismiss" @click.stop="toast.hide()" />
+      </template>
     </VSnackbar>
   </VApp>
 </template>

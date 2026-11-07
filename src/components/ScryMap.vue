@@ -1,6 +1,9 @@
 <script setup lang="ts">
 // Canvas scatter of every analyzed music track. Points are colored by Role;
-// hovering shows the name, a click plays the track, a left-drag lasso adds the
+// hovering shows the name, a click on a point plays the track and pins a small
+// card with a Seed button (shift-click seeds straight away), a shift-click on
+// empty space asks for the tracks nearest that spot (shift-right-click clears
+// it), a right-click on empty space clears the selection, a left-drag lasso adds the
 // enclosed points to the selection, and a right-click or right-drag lasso
 // removes them from it.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
@@ -16,12 +19,22 @@ const props = defineProps<{
   playingId: string | null;
   // Point to emphasize, e.g. the results row under the mouse.
   highlightId?: string | null;
+  // A clicked empty spot, in the same [0, 1] coordinates as the points.
+  spot?: { x: number; y: number } | null;
 }>();
 
 const emit = defineEmits<{
   play: [entryId: string];
   lasso: [entryIds: string[]];
   deselect: [entryIds: string[]];
+  // Empty space was clicked; coordinates are in [0, 1] like the points.
+  spot: [pos: { x: number; y: number }];
+  // Toggle a track in or out of the seeds.
+  seed: [entryId: string];
+  // Empty space was shift-right-clicked: drop the spot search.
+  clearSpot: [];
+  // Empty space was right-clicked: clear the selection.
+  clearSelection: [];
 }>();
 
 // Inset so points on the [0, 1] edges are not clipped.
@@ -33,6 +46,7 @@ const DRAG_THRESHOLD = 4;
 const BASE_RADIUS = 3;
 const SEED_RADIUS = 9;
 const HIGHLIGHT_RADIUS = 12;
+const SPOT_RADIUS = 7;
 
 const theme = useTheme();
 const wrapper = ref<HTMLDivElement | null>(null);
@@ -40,6 +54,8 @@ const canvas = ref<HTMLCanvasElement | null>(null);
 const size = ref({ width: 0, height: 0 });
 
 const hover = ref<{ id: string; x: number; y: number } | null>(null);
+// The point last clicked: it gets a small card with its actions.
+const pinnedId = ref<string | null>(null);
 const lasso = ref<{ x: number; y: number }[]>([]);
 // The mouse button that started the current press: 0 adds, 2 removes.
 let pressButton = -1;
@@ -52,12 +68,27 @@ const selectedSet = computed(() => new Set(props.selectedIds));
 
 interface ScreenPoint { id: string; x: number; y: number }
 
+// Drawable area in CSS pixels, inside the padding.
+const plotSize = computed(() => ({
+  w: Math.max(0, size.value.width - 2 * PAD),
+  h: Math.max(0, size.value.height - 2 * PAD),
+}));
+
+function toScreen(x: number, y: number): { x: number; y: number } {
+  return { x: PAD + x * plotSize.value.w, y: PAD + (1 - y) * plotSize.value.h };
+}
+
+// Inverse of toScreen, clamped to the map.
+function toData(sx: number, sy: number): { x: number; y: number } {
+  const { w, h } = plotSize.value;
+  const clamp = (v: number) => Math.min(1, Math.max(0, v));
+  return { x: clamp(w > 0 ? (sx - PAD) / w : 0), y: clamp(h > 0 ? 1 - (sy - PAD) / h : 0) };
+}
+
 // Points in CSS pixels for the current canvas size.
-const screenPoints = computed<ScreenPoint[]>(() => {
-  const w = Math.max(0, size.value.width - 2 * PAD);
-  const h = Math.max(0, size.value.height - 2 * PAD);
-  return props.points.map((p) => ({ id: p.entryId, x: PAD + p.x * w, y: PAD + (1 - p.y) * h }));
-});
+const screenPoints = computed<ScreenPoint[]>(() =>
+  props.points.map((p) => ({ id: p.entryId, ...toScreen(p.x, p.y) })),
+);
 
 const pointById = computed(() => {
   const map = new Map<string, ScreenPoint>();
@@ -284,6 +315,25 @@ function draw(): void {
     ctx.stroke();
   }
 
+  // Clicked spot: an accent crosshair ring.
+  if (props.spot) {
+    const s = toScreen(props.spot.x, props.spot.y);
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = rgba(p.shade, 0.9);
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, SPOT_RADIUS, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = rgba(p.accent);
+    ctx.stroke();
+    ctx.beginPath();
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      ctx.moveTo(s.x + dx * (SPOT_RADIUS + 2), s.y + dy * (SPOT_RADIUS + 2));
+      ctx.lineTo(s.x + dx * (SPOT_RADIUS + 7), s.y + dy * (SPOT_RADIUS + 7));
+    }
+    ctx.stroke();
+  }
+
   if (props.highlightId) {
     const pt = pointById.value.get(props.highlightId);
     if (pt) drawHighlight(ctx, pt);
@@ -307,7 +357,7 @@ function draw(): void {
 }
 
 watch([screenPoints, () => props.entriesById, seedSet, resultSet, selectedSet, palette], invalidateBase);
-watch([() => props.playingId, () => props.highlightId, hover, lasso], scheduleDraw);
+watch([() => props.playingId, () => props.highlightId, () => props.spot, hover, lasso], scheduleDraw);
 
 // --- Hit testing ---
 
@@ -359,6 +409,7 @@ function onPointerMove(e: PointerEvent): void {
     if (!lassoing && Math.hypot(pos.x - pressStart.x, pos.y - pressStart.y) > DRAG_THRESHOLD) {
       lassoing = true;
       hover.value = null;
+      pinnedId.value = null;
       lasso.value = [pressStart];
     }
     if (lassoing) {
@@ -395,9 +446,22 @@ function onPointerUp(e: PointerEvent): void {
     return;
   }
   const hit = nearest(start.x, start.y);
-  if (!hit) return;
+  if (!hit) {
+    pinnedId.value = null;
+    if (!e.shiftKey) {
+      if (removing) emit('clearSelection');
+      return;
+    }
+    if (removing) emit('clearSpot');
+    else emit('spot', toData(start.x, start.y));
+    return;
+  }
   if (removing) emit('deselect', [hit.id]);
-  else emit('play', hit.id);
+  else if (e.shiftKey) emit('seed', hit.id);
+  else {
+    emit('play', hit.id);
+    pinnedId.value = hit.id;
+  }
 }
 
 // Also runs on lost capture (e.g. alt-tab mid-drag), where no pointerup arrives.
@@ -412,9 +476,38 @@ function onPointerLeave(): void {
 }
 
 const hoverName = computed(() => {
-  if (!hover.value) return '';
+  // The pinned card already names its point.
+  if (!hover.value || hover.value.id === pinnedId.value) return '';
   return props.entriesById.get(hover.value.id)?.name ?? '';
 });
+
+// --- Pinned card ---
+
+const pinned = computed(() => (pinnedId.value ? pointById.value.get(pinnedId.value) ?? null : null));
+const pinnedName = computed(() => (pinnedId.value ? props.entriesById.get(pinnedId.value)?.name ?? '' : ''));
+const pinnedIsSeed = computed(() => !!pinnedId.value && seedSet.value.has(pinnedId.value));
+
+// A point that leaves the map (deleted entry) drops its card.
+watch(pointById, (map) => {
+  if (pinnedId.value && !map.has(pinnedId.value)) pinnedId.value = null;
+});
+
+// Beside the point, flipped below it near the top edge and kept inside the canvas.
+const cardStyle = computed(() => {
+  const pt = pinned.value;
+  if (!pt) return {};
+  const left = Math.min(Math.max(pt.x, 120), Math.max(120, size.value.width - 120));
+  const above = pt.y > 56;
+  return {
+    left: `${left}px`,
+    top: `${above ? pt.y - 14 : pt.y + 14}px`,
+    transform: above ? 'translate(-50%, -100%)' : 'translate(-50%, 0)',
+  };
+});
+
+function onKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Escape') pinnedId.value = null;
+}
 
 // Keep the tooltip inside the canvas horizontally.
 const tooltipStyle = computed(() => {
@@ -458,6 +551,7 @@ function watchPixelRatio(): void {
 }
 
 onMounted(() => {
+  window.addEventListener('keydown', onKeydown);
   observer = new ResizeObserver(measure);
   if (wrapper.value) observer.observe(wrapper.value);
   measure();
@@ -465,6 +559,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown);
   observer?.disconnect();
   dprQuery?.removeEventListener('change', watchPixelRatio);
   if (frame) cancelAnimationFrame(frame);
@@ -490,6 +585,18 @@ onBeforeUnmount(() => {
       <div v-if="hover && hoverName" class="scry-map-tooltip text-caption" :style="tooltipStyle">
         {{ hoverName }}
       </div>
+      <div v-if="pinned" class="scry-map-card d-flex align-center ga-1" :style="cardStyle">
+        <span class="text-caption text-truncate px-1" :title="pinnedName">{{ pinnedName }}</span>
+        <VBtn
+          :icon="pinnedIsSeed ? 'mdi-seed-off-outline' : 'mdi-seed-plus-outline'"
+          size="x-small"
+          variant="text"
+          :title="pinnedIsSeed ? 'Remove seed' : 'Add as seed'"
+          :aria-label="pinnedIsSeed ? 'Remove seed' : 'Add as seed'"
+          @click="emit('seed', pinned.id)"
+        />
+        <VBtn icon="mdi-close" size="x-small" variant="text" aria-label="Close" @click="pinnedId = null" />
+      </div>
     </div>
     <div class="d-flex flex-wrap align-center ga-3 px-2 pt-2 text-caption text-medium-emphasis">
       <span v-for="item in legend" :key="item.label" class="d-inline-flex align-center ga-1">
@@ -499,7 +606,7 @@ onBeforeUnmount(() => {
       <span class="d-inline-flex align-center ga-1"><span class="swatch-ring" />Result</span>
       <span class="d-inline-flex align-center ga-1"><span class="swatch-ring selected" />Selected</span>
       <VSpacer />
-      <span>Click to play · drag to select · right-click/right-drag to deselect</span>
+      <span>Click a dot to play, shift-click to seed · drag to select, right-drag to deselect, right-click empty space to clear · shift-click empty space for nearby tracks, shift-right-click to clear</span>
     </div>
   </div>
 </template>
@@ -544,6 +651,19 @@ onBeforeUnmount(() => {
   background: rgb(var(--v-theme-surface-variant));
   color: rgb(var(--v-theme-on-surface));
   border: 1px solid rgba(var(--v-theme-on-surface), 0.15);
+}
+
+.scry-map-card {
+  position: absolute;
+  max-width: 300px;
+  padding: 2px 2px 2px 6px;
+  border-radius: 6px;
+  white-space: nowrap;
+  background: rgb(var(--v-theme-surface-variant));
+  color: rgb(var(--v-theme-on-surface));
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.15);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  z-index: 1;
 }
 
 .swatch {
