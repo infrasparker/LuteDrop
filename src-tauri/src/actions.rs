@@ -484,15 +484,19 @@ pub fn tune_mood(
     tune::tune(&container.db, &client, mood_id, extra_words, bank)
 }
 
-/// Accepts a Tune proposal: the mood's lines become `lines` (see
-/// `tune::accept_lines`), refused if they changed since Tune ran.
+/// Accepts a Tune proposal: the mood's lines become `lines` and the holding
+/// flags are refreshed (see `tune::accept_lines`), refused if the lines
+/// changed since Tune ran.
 pub fn accept_tuned_lines(
     container: &AppStateContainer,
     mood_id: String,
     lines_tuned_from: Vec<String>,
     lines: Vec<String>,
+    holding_entry_ids: Vec<String>,
 ) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| tune::accept_lines(conn, &mood_id, &lines_tuned_from, &lines))
+    mutate_and_reload(container, |conn| {
+        tune::accept_lines(conn, &mood_id, &lines_tuned_from, &lines, &holding_entry_ids)
+    })
 }
 
 /// Accepts a Tune split: the mood keeps `keep_lines` and a new mood takes
@@ -507,6 +511,8 @@ pub fn accept_tuned_split(
     new_name: String,
     new_lines: Vec<String>,
     move_entry_ids: Vec<String>,
+    keep_holding_entry_ids: Vec<String>,
+    new_holding_entry_ids: Vec<String>,
 ) -> Result<AppState, String> {
     mutate_and_reload(container, |conn| {
         tune::accept_split(
@@ -518,6 +524,8 @@ pub fn accept_tuned_split(
             &new_name,
             &new_lines,
             &move_entry_ids,
+            &keep_holding_entry_ids,
+            &new_holding_entry_ids,
         )
     })
 }

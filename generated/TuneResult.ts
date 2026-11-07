@@ -15,6 +15,7 @@ export type TuneResult = { baseline: TuneReview, proposals: Array<TuneReview>, s
  */
 skipped: Array<TuneSong>, linesTunedFrom: Array<string>, 
 /**
- * Flagged songs left out because they were never analyzed (no hash).
+ * Flags left out of the request: songs never analyzed (no hash), and
+ * flags that cannot be read or ask nothing of the bar.
  */
 skippedFlags: number, };

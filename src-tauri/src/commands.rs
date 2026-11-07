@@ -373,8 +373,9 @@ pub fn accept_tuned_lines(
     mood_id: String,
     lines_tuned_from: Vec<String>,
     lines: Vec<String>,
+    holding_entry_ids: Vec<String>,
 ) -> Result<AppState, String> {
-    actions::accept_tuned_lines(&state, mood_id, lines_tuned_from, lines)
+    actions::accept_tuned_lines(&state, mood_id, lines_tuned_from, lines, holding_entry_ids)
 }
 
 #[tauri::command]
@@ -388,8 +389,21 @@ pub fn accept_tuned_split(
     new_name: String,
     new_lines: Vec<String>,
     move_entry_ids: Vec<String>,
+    keep_holding_entry_ids: Vec<String>,
+    new_holding_entry_ids: Vec<String>,
 ) -> Result<AppState, String> {
-    actions::accept_tuned_split(&state, mood_id, lines_tuned_from, keep_lines, new_id, new_name, new_lines, move_entry_ids)
+    actions::accept_tuned_split(
+        &state,
+        mood_id,
+        lines_tuned_from,
+        keep_lines,
+        new_id,
+        new_name,
+        new_lines,
+        move_entry_ids,
+        keep_holding_entry_ids,
+        new_holding_entry_ids,
+    )
 }
 
 #[tauri::command]

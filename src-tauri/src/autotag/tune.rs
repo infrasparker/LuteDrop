@@ -145,6 +145,8 @@ pub struct TuneResponse {
 const DIRECTION_MARGIN: f64 = 0.1;
 /// How much a stale flag (older wording or calibration) counts.
 const STALE_WEIGHT: f64 = 0.5;
+/// Most bank entries the analyzer accepts (its `MAX_TUNE_BANK`).
+const MAX_BANK: usize = 1000;
 
 /// Where a band starts. No has no floor.
 fn band_floor(band: FlagBand) -> Option<f64> {
@@ -209,8 +211,10 @@ fn level_band(level: f64) -> FlagBand {
     }
 }
 
-/// Builds the `/tune` request for one mood, and counts the flags left out
-/// because their song was never analyzed (no content hash).
+/// Builds the `/tune` request for one mood, and counts the flags left out:
+/// those whose song was never analyzed (no content hash), those that cannot
+/// be read (see `flag_target`), and those that ask nothing of the bar (no
+/// min and no max, such as No / at least).
 ///
 /// The flags are the mood's stored flags plus, for each song with a hand-set
 /// level and no flag, a fresh band flag for that level (`level_band`, with
@@ -218,7 +222,9 @@ fn level_band(level: f64) -> FlagBand {
 /// asks of the bar. A flag made under other lines, or a direction flag made
 /// under another calibration, is stale: it counts `STALE_WEIGHT`, and a
 /// stale direction flag aims past the song's current bar instead of the bar
-/// it was made at. `extra_words` (typed in the Tune dialog) join `bank`.
+/// it was made at. `extra_words` (typed in the Tune dialog) join `bank`;
+/// the bank is trimmed, repeats dropped ignoring case (the first spelling
+/// stays), and capped at the analyzer's `MAX_BANK`.
 pub fn build_tune_request(
     conn: &Connection,
     mood_id: &str,
@@ -258,20 +264,25 @@ pub fn build_tune_request(
     }
 
     let mut out = Vec::new();
-    let mut skipped = 0;
+    let mut unanalyzed = 0;
+    let mut unusable = 0;
     for f in &flags {
         let (hash, bar_now) = hash_and_bar(conn, &f.entry_id, mood_id)?;
         let Some(hash) = hash else {
-            skipped += 1;
+            unanalyzed += 1;
             continue;
         };
         let direction = matches!(f.kind, FlagKind::Higher | FlagKind::Lower);
         let stale = f.lines_sig != current_sig
             || (direction && f.calibrated_at.as_deref() != Some(calibration.calibrated_at.as_str()));
         let bar = if stale { bar_now.or(f.bar_at_flag) } else { f.bar_at_flag };
-        // A flag that cannot be read (see `flag_target`) is not sent; the
-        // flag commands never store one.
-        let Some((min, max, side)) = flag_target(f, bar) else { continue };
+        let (min, max, side) = match flag_target(f, bar) {
+            Some((None, None, _)) | None => {
+                unusable += 1;
+                continue;
+            }
+            Some(target) => target,
+        };
         out.push(TuneFlag {
             hash,
             min,
@@ -282,16 +293,21 @@ pub fn build_tune_request(
         });
     }
     if out.is_empty() {
-        return Err("None of the songs flagged on this mood have been analyzed yet".to_string());
+        return Err(if unusable == 0 {
+            "None of the songs flagged on this mood have been analyzed yet".to_string()
+        } else {
+            "None of this mood's flags can be used for tuning".to_string()
+        });
     }
 
-    // Typed words after the bank, trimmed, blanks and repeats dropped.
+    // Typed words after the bank.
     let mut seen = HashSet::new();
     let bank: Vec<String> = bank
         .iter()
         .chain(extra_words)
         .map(|w| w.trim().to_string())
-        .filter(|w| !w.is_empty() && seen.insert(w.clone()))
+        .filter(|w| !w.is_empty() && seen.insert(w.to_lowercase()))
+        .take(MAX_BANK)
         .collect();
 
     let music = MusicIndex::read(conn)?;
@@ -314,7 +330,7 @@ pub fn build_tune_request(
             slope: slope(mood_id, calibration.source),
         },
     };
-    Ok((request, skipped))
+    Ok((request, unanalyzed + unusable))
 }
 
 /// Songs with a hand-set level for the mood, by entry id.
@@ -504,19 +520,47 @@ fn tuned_mood(conn: &Connection, mood_id: &str, lines_tuned_from: &[String]) -> 
     Ok((vocabulary, i))
 }
 
-/// Accepts a proposal: the mood's lines become `lines`, saved the way an
-/// edit in Settings → Moods is (`library::save_mood_vocabulary`), so the
-/// mood then needs a recalibration just as after a manual edit.
-pub fn accept_lines(conn: &Connection, mood_id: &str, lines_tuned_from: &[String], lines: &[String]) -> Result<(), String> {
+/// Marks the flags of `entry_ids` on `mood` as made against the mood's
+/// saved lines, so they are fresh under the new wording.
+fn refresh_holding(conn: &Connection, saved: &MoodVocabulary, mood: &str, entry_ids: &[String]) -> Result<(), String> {
+    let lines = saved.prompt_signature(mood).ok_or_else(|| format!("The mood \"{mood}\" was not saved"))?;
+    let sig = lines_sig(&lines);
+    for id in entry_ids {
+        mood_flags::refresh_flag(conn, id, mood, &sig)?;
+    }
+    Ok(())
+}
+
+/// Accepts a proposal, in one transaction: the mood's lines become `lines`,
+/// written the way an edit in Settings → Moods is
+/// (`library::write_mood_vocabulary`, the body of `save_mood_vocabulary`), so
+/// the mood then needs a recalibration just as after a manual edit. The flags
+/// of `holding_entry_ids` (fresh flags that hold under `lines`) are refreshed
+/// to the new lines; every other flag on the mood now reads as stale.
+pub fn accept_lines(
+    conn: &Connection,
+    mood_id: &str,
+    lines_tuned_from: &[String],
+    lines: &[String],
+    holding_entry_ids: &[String],
+) -> Result<(), String> {
     let (mut vocabulary, i) = tuned_mood(conn, mood_id, lines_tuned_from)?;
     vocabulary.moods[i].prompts = lines.to_vec();
-    library::save_mood_vocabulary(conn, &vocabulary).map(|_| ())
+    // Dropped without a commit (any error below), the transaction rolls back.
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin accept transaction: {e}"))?;
+    let saved = library::write_mood_vocabulary(conn, &vocabulary)?;
+    refresh_holding(conn, &saved, mood_id, holding_entry_ids)?;
+    tx.commit().map_err(|e| format!("Failed to commit accept transaction: {e}"))
 }
 
 /// Accepts a split, in one transaction: the mood keeps `keep_lines`, a new
 /// mood is added after the others, the listed songs' flags move to it, and
 /// the mood's "not this mood" flags are copied to it (they hold for both
-/// halves). The vocabulary is saved as `accept_lines` saves it.
+/// halves). The vocabulary is saved as `accept_lines` saves it. Then the
+/// holding flags of each half are refreshed to that half's lines; the rest
+/// read as stale. Hand-set levels stay on the mood they were set on.
 #[allow(clippy::too_many_arguments)]
 pub fn accept_split(
     conn: &Connection,
@@ -527,6 +571,8 @@ pub fn accept_split(
     new_name: &str,
     new_lines: &[String],
     move_entry_ids: &[String],
+    keep_holding_entry_ids: &[String],
+    new_holding_entry_ids: &[String],
 ) -> Result<(), String> {
     let (mut vocabulary, i) = tuned_mood(conn, mood_id, lines_tuned_from)?;
     vocabulary.moods[i].prompts = keep_lines.to_vec();
@@ -544,6 +590,8 @@ pub fn accept_split(
     let new_id = &saved.moods.last().ok_or("The split mood was not saved")?.id;
     mood_flags::move_flags(conn, mood_id, new_id, move_entry_ids)?;
     mood_flags::copy_low_flags(conn, mood_id, new_id)?;
+    refresh_holding(conn, &saved, mood_id, keep_holding_entry_ids)?;
+    refresh_holding(conn, &saved, new_id, new_holding_entry_ids)?;
     tx.commit().map_err(|e| format!("Failed to commit split transaction: {e}"))
 }
 
@@ -937,11 +985,11 @@ mod tests {
         let conn = db.lock().unwrap();
         let before = settings::load_mood_vocabulary(&conn).unwrap();
         let stale = vec!["not the current line".to_string()];
-        let err = accept_lines(&conn, MOOD, &stale, &["new".to_string()]).unwrap_err();
+        let err = accept_lines(&conn, MOOD, &stale, &["new".to_string()], &[]).unwrap_err();
         assert!(err.contains("changed since Tune ran"), "{err}");
-        let err = accept_split(&conn, MOOD, &stale, &["k".into()], "fresh", "Fresh", &["n".into()], &[]).unwrap_err();
+        let err = accept_split(&conn, MOOD, &stale, &["k".into()], "fresh", "Fresh", &["n".into()], &[], &[], &[]).unwrap_err();
         assert!(err.contains("changed since Tune ran"), "{err}");
-        let err = accept_lines(&conn, "nosuchmood", &stale, &["new".to_string()]).unwrap_err();
+        let err = accept_lines(&conn, "nosuchmood", &stale, &["new".to_string()], &[]).unwrap_err();
         assert!(err.contains("no longer"), "{err}");
         assert_eq!(settings::load_mood_vocabulary(&conn).unwrap(), before);
     }
@@ -955,7 +1003,7 @@ mod tests {
         assert!(!needs_recalibration(settings::load_mood_calibration(&conn).unwrap().as_ref(), &settings::load_mood_vocabulary(&conn).unwrap()));
 
         let lines = vec!["the calmest music".to_string(), "a quiet lake".to_string()];
-        accept_lines(&conn, MOOD, &current, &lines).unwrap();
+        accept_lines(&conn, MOOD, &current, &lines, &[]).unwrap();
 
         assert_eq!(prompts_of(&conn, MOOD).unwrap(), lines);
         assert!(needs_recalibration(settings::load_mood_calibration(&conn).unwrap().as_ref(), &settings::load_mood_vocabulary(&conn).unwrap()));
@@ -982,6 +1030,8 @@ mod tests {
             "Pastoral",
             &["rolling fields".into(), "shepherd's pipe".into()],
             std::slice::from_ref(&moved),
+            &[],
+            &[],
         )
         .unwrap();
 
@@ -1005,6 +1055,143 @@ mod tests {
         assert_eq!(ids("pastoral"), sorted(vec![moved, low]));
     }
 
+    /// Each flagged entry on `mood` with whether its flag is fresh against the mood's lines.
+    fn freshness(conn: &Connection, mood: &str) -> Vec<(String, bool)> {
+        let sig = lines_sig(&prompts_of(conn, mood).unwrap());
+        let mut v: Vec<(String, bool)> =
+            flags_for_mood(conn, mood).unwrap().into_iter().map(|f| (f.entry_id, f.lines_sig == sig)).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn accept_refreshes_only_holding_flags() {
+        let db = setup();
+        let sig = current_sig(&db);
+        let (holds, breaks) = (add(&db, "holds", "music"), add(&db, "breaks", "music"));
+        band(&db, &holds, FlagBand::Definitely, FlagBound::AtLeast, &sig);
+        band(&db, &breaks, FlagBand::No, FlagBound::In, &sig);
+        let conn = db.lock().unwrap();
+        let current = prompts_of(&conn, MOOD).unwrap();
+
+        let lines = vec!["the calmest music".to_string()];
+        accept_lines(&conn, MOOD, &current, &lines, std::slice::from_ref(&holds)).unwrap();
+
+        let mut want = vec![(holds, true), (breaks, false)];
+        want.sort();
+        assert_eq!(freshness(&conn, MOOD), want);
+    }
+
+    #[test]
+    fn accept_split_refreshes_holding_flags() {
+        let db = setup();
+        let sig = current_sig(&db);
+        let ids: Vec<String> = ["keepholds", "keepbreaks", "newholds", "newbreaks", "low"]
+            .iter()
+            .map(|n| add(&db, n, "music"))
+            .collect();
+        band(&db, &ids[0], FlagBand::Definitely, FlagBound::AtLeast, &sig);
+        band(&db, &ids[1], FlagBand::Definitely, FlagBound::AtLeast, &sig);
+        band(&db, &ids[2], FlagBand::Understandable, FlagBound::AtLeast, &sig);
+        band(&db, &ids[3], FlagBand::Understandable, FlagBound::AtLeast, &sig);
+        band(&db, &ids[4], FlagBand::No, FlagBound::In, &sig);
+        // A hand-set level stays on the mood it was set on.
+        set_level(&db, &ids[2], 1.0);
+        let conn = db.lock().unwrap();
+        let current = prompts_of(&conn, MOOD).unwrap();
+
+        accept_split(
+            &conn,
+            MOOD,
+            &current,
+            &["serene".into()],
+            "pastoral",
+            "Pastoral",
+            &["rolling fields".into()],
+            &[ids[2].clone(), ids[3].clone()],
+            &[ids[0].clone(), ids[4].clone()],
+            &[ids[2].clone(), ids[4].clone()],
+        )
+        .unwrap();
+
+        let sorted = |mut v: Vec<(String, bool)>| {
+            v.sort();
+            v
+        };
+        assert_eq!(
+            freshness(&conn, MOOD),
+            sorted(vec![(ids[0].clone(), true), (ids[1].clone(), false), (ids[4].clone(), true)])
+        );
+        assert_eq!(
+            freshness(&conn, "pastoral"),
+            sorted(vec![(ids[2].clone(), true), (ids[3].clone(), false), (ids[4].clone(), true)])
+        );
+        let level_moods: Vec<String> = conn
+            .prepare("SELECT mood FROM library_entry_moods WHERE library_entry_id = ?1 AND user_level IS NOT NULL")
+            .unwrap()
+            .query_map(params![ids[2]], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(level_moods, vec![MOOD.to_string()]);
+    }
+
+    #[test]
+    fn request_skips_flags_that_constrain_nothing_or_cannot_be_read() {
+        let db = setup();
+        calibrate(&db, CalibrationSource::Library);
+        let sig = current_sig(&db);
+        let used = add(&db, "used", "music");
+        band(&db, &used, FlagBand::Stretch, FlagBound::In, &sig);
+        let no_floor = add(&db, "nofloor", "music");
+        band(&db, &no_floor, FlagBand::No, FlagBound::AtLeast, &sig);
+        let no_ceiling = add(&db, "noceiling", "music");
+        band(&db, &no_ceiling, FlagBand::Definitely, FlagBound::AtMost, &sig);
+        // A direction flag with no bar, then or now.
+        let no_bar = add(&db, "nobar", "music");
+        set_flag(&db.lock().unwrap(), &no_bar, MOOD, FlagKind::Higher, None, FlagBound::AtLeast, None, Some("cal-1"), &sig)
+            .unwrap();
+
+        let (req, skipped) = request(&db);
+        assert_eq!(skipped, 3);
+        assert_eq!(req.flags.iter().map(|f| f.hash.as_str()).collect::<Vec<_>>(), vec!["h-used"]);
+    }
+
+    #[test]
+    fn request_error_names_why_no_flag_is_usable() {
+        let db = setup();
+        calibrate(&db, CalibrationSource::Library);
+        let sig = current_sig(&db);
+        let unhashed = library::insert_library_entry(
+            &db.lock().unwrap(), "Z:\\media\\audio\\u.opus", None, "u", None, None, None, "music",
+        )
+        .unwrap();
+        band(&db, &unhashed, FlagBand::Definitely, FlagBound::AtLeast, &sig);
+        let err = build_tune_request(&db.lock().unwrap(), MOOD, &[], &[]).unwrap_err();
+        assert_eq!(err, "None of the songs flagged on this mood have been analyzed yet");
+
+        let no_floor = add(&db, "nofloor", "music");
+        band(&db, &no_floor, FlagBand::No, FlagBound::AtLeast, &sig);
+        let err = build_tune_request(&db.lock().unwrap(), MOOD, &[], &[]).unwrap_err();
+        assert_eq!(err, "None of this mood's flags can be used for tuning");
+    }
+
+    #[test]
+    fn request_bank_ignores_case_repeats_and_is_capped() {
+        let db = setup();
+        calibrate(&db, CalibrationSource::Library);
+        let a = add(&db, "a", "music");
+        band(&db, &a, FlagBand::No, FlagBound::In, "x");
+        let mut bank: Vec<String> = vec!["Calm".into(), "calm".into(), "CALM ".into()];
+        bank.extend((0..1100).map(|i| format!("word{i}")));
+        let extra = vec!["calm".to_string(), "late".to_string()];
+        let (req, _) = build_tune_request(&db.lock().unwrap(), MOOD, &extra, &bank).unwrap();
+        assert_eq!(req.bank.len(), 1000);
+        assert_eq!(req.bank[0], "Calm");
+        assert_eq!(req.bank[1], "word0");
+        assert!(!req.bank.contains(&"late".to_string()), "words past the cap are dropped");
+    }
+
     #[test]
     fn accept_split_refuses_an_invalid_new_mood() {
         let db = setup();
@@ -1012,7 +1199,7 @@ mod tests {
         let current = prompts_of(&conn, MOOD).unwrap();
         let before = settings::load_mood_vocabulary(&conn).unwrap();
         // An id that is not lowercase letters fails validation: nothing is written.
-        let err = accept_split(&conn, MOOD, &current, &["k".into()], "Bad Id", "Bad", &["n".into()], &[]);
+        let err = accept_split(&conn, MOOD, &current, &["k".into()], "Bad Id", "Bad", &["n".into()], &[], &[], &[]);
         assert!(err.is_err());
         assert_eq!(settings::load_mood_vocabulary(&conn).unwrap(), before);
     }

@@ -527,7 +527,8 @@ pub struct TuneResult {
     /// Flagged songs the analyzer has no embedding for.
     pub skipped: Vec<TuneSong>,
     pub lines_tuned_from: Vec<String>,
-    /// Flagged songs left out because they were never analyzed (no hash).
+    /// Flags left out of the request: songs never analyzed (no hash), and
+    /// flags that cannot be read or ask nothing of the bar.
     pub skipped_flags: usize,
 }
 
