@@ -53,6 +53,12 @@ pub struct LibraryEntry {
     /// When the user last set a mood level on the entry
     /// (Unix milliseconds as a string, like `created_at`); `None` until then.
     pub mood_reviewed_at: Option<String>,
+    /// The file's `REPLAYGAIN_TRACK_GAIN` in dB; `None` if it has none or it
+    /// was not read yet.
+    pub rg_track_gain_db: Option<f64>,
+    /// What "Even out music loudness" multiplies this entry's volume by on
+    /// playback (0 < f ≤ 1; 1 = unchanged). See `replaygain.rs`.
+    pub loudness_factor: f64,
 }
 
 /// Whether a music entry is meant for combat scenes.
@@ -751,6 +757,9 @@ pub struct Clip {
     pub volume: f64,
     pub library_entry_id: String,
     pub library_volume: f64,
+    /// The entry's loudness factor ("Even out music loudness"), 1 when off
+    /// or not applicable. Playback volume = clip × library volume × this.
+    pub loudness_factor: f64,
     pub trim_start: Option<f64>,
     pub trim_end: Option<f64>,
 }

@@ -629,6 +629,19 @@ pub fn set_broadcast_enabled(state: State<'_, Arc<AppStateContainer>>, enabled: 
 }
 
 #[tauri::command]
+pub fn get_normalize_music_loudness(state: State<'_, Arc<AppStateContainer>>) -> Result<bool, String> {
+    actions::get_normalize_music_loudness(&state)
+}
+
+#[tauri::command]
+pub fn set_normalize_music_loudness(
+    state: State<'_, Arc<AppStateContainer>>,
+    enabled: bool,
+) -> Result<AppState, String> {
+    actions::set_normalize_music_loudness(&state, enabled)
+}
+
+#[tauri::command]
 pub fn set_broadcast_settings(
     state: State<'_, Arc<AppStateContainer>>,
     port: u16,

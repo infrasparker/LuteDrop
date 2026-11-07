@@ -33,4 +33,14 @@ moods: Array<MoodValue>,
  * When the user last set a mood level on the entry
  * (Unix milliseconds as a string, like `created_at`); `None` until then.
  */
-moodReviewedAt: string | null, };
+moodReviewedAt: string | null, 
+/**
+ * The file's `REPLAYGAIN_TRACK_GAIN` in dB; `None` if it has none or it
+ * was not read yet.
+ */
+rgTrackGainDb: number | null, 
+/**
+ * What "Even out music loudness" multiplies this entry's volume by on
+ * playback (0 < f ≤ 1; 1 = unchanged). See `replaygain.rs`.
+ */
+loudnessFactor: number, };

@@ -21,7 +21,7 @@ use crate::models::{
 
 /// Current schema version. Bump when adding a migration below; fresh
 /// databases are stamped with this directly.
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 17;
 
 /// Spacing between sibling `sort_order` values, leaving room for insertions
 /// between neighbours without renumbering. Shared by hierarchy + configurations.
@@ -722,6 +722,19 @@ fn migrate_v15_to_v16(conn: &Connection) -> SqlResult<()> {
     Ok(())
 }
 
+/// v16 → v17: ReplayGain. Two nullable columns on `library_entries` hold the
+/// file's `REPLAYGAIN_TRACK_GAIN` (dB) and `REPLAYGAIN_TRACK_PEAK` (linear).
+/// They start NULL; the startup backfill reads the files and fills them in.
+/// Nothing existing changes.
+fn migrate_v16_to_v17(conn: &Connection) -> SqlResult<()> {
+    for column in ["rg_track_gain_db", "rg_track_peak"] {
+        if !column_exists(conn, "library_entries", column)? {
+            conn.execute_batch(&format!("ALTER TABLE library_entries ADD COLUMN {column} REAL"))?;
+        }
+    }
+    Ok(())
+}
+
 // Ordered migrations: entry `(n, f)` upgrades version n → n+1.
 const MIGRATIONS: &[(i64, Migration)] = &[
     (3, migrate_v3_to_v4),
@@ -737,6 +750,7 @@ const MIGRATIONS: &[(i64, Migration)] = &[
     (13, migrate_v13_to_v14),
     (14, migrate_v14_to_v15),
     (15, migrate_v15_to_v16),
+    (16, migrate_v16_to_v17),
 ];
 
 fn read_schema_version(conn: &Connection) -> i64 {
@@ -876,7 +890,9 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
             created_at   TEXT NOT NULL,
             entry_type   TEXT NOT NULL DEFAULT 'music',
             role_user        TEXT,
-            mood_reviewed_at TEXT
+            mood_reviewed_at TEXT,
+            rg_track_gain_db REAL,
+            rg_track_peak    REAL
         );
 
         CREATE TABLE IF NOT EXISTS tags (
@@ -1067,7 +1083,7 @@ fn load_library_entries(conn: &Connection, vocabulary: &MoodVocabulary) -> Resul
         .prepare(
             "SELECT id, file_path, content_hash, name, duration, sample_rate, file_size,
                     volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type,
-                    role_user, mood_reviewed_at
+                    role_user, mood_reviewed_at, rg_track_gain_db
              FROM library_entries
              ORDER BY name ASC",
         )
@@ -1092,6 +1108,7 @@ fn load_library_entries(conn: &Connection, vocabulary: &MoodVocabulary) -> Resul
                 row.get::<_, String>(13)?,          // entry_type
                 row.get::<_, Option<String>>(14)?,  // role_user
                 row.get::<_, Option<String>>(15)?,  // mood_reviewed_at
+                row.get::<_, Option<f64>>(16)?,     // rg_track_gain_db
             ))
         })
         .map_err(|e| format!("Failed to query library_entries: {e}"))?
@@ -1170,17 +1187,26 @@ fn load_library_entries(conn: &Connection, vocabulary: &MoodVocabulary) -> Resul
 
     let mut flags = mood_flags::load_flags(conn, vocabulary)?;
 
+    // The library's typical music loudness, recomputed on every load (cheap).
+    let loudness = crate::replaygain::Loudness::new(
+        settings::load_normalize_music_loudness(conn)?,
+        rows.iter()
+            .filter(|r| matches!(EntryType::from_str(&r.13), EntryType::Music))
+            .filter_map(|r| r.16),
+    );
+
     let mood_ids = vocabulary.ids();
     let mut entries = Vec::with_capacity(rows.len());
     for (id, file_path, content_hash, name, duration, sample_rate, file_size,
          volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type,
-         role_user, mood_reviewed_at)
+         role_user, mood_reviewed_at, rg_track_gain_db)
         in rows
     {
         let tags = tag_map.remove(&id).unwrap_or_default();
         let analysis = analysis_map.remove(&id);
         let role_user = role_user.as_deref().and_then(Role::from_db_str);
         let entry_type = EntryType::from_str(&entry_type);
+        let loudness_factor = loudness.factor(&entry_type, rg_track_gain_db);
         let stored = mood_map.remove(&id).unwrap_or_default();
         let moods = mood_ids
             .iter()
@@ -1211,6 +1237,8 @@ fn load_library_entries(conn: &Connection, vocabulary: &MoodVocabulary) -> Resul
             role_user,
             moods,
             mood_reviewed_at,
+            rg_track_gain_db,
+            loudness_factor,
         });
     }
 
@@ -1337,12 +1365,12 @@ fn load_groups(
                 let clips: Vec<Clip> = clip_rows
                     .into_iter()
                     .map(|(id, library_entry_id, volume)| {
-                        let (name, file_path, library_volume, trim_start, trim_end) =
+                        let (name, file_path, library_volume, loudness_factor, trim_start, trim_end) =
                             match entry_map.get(&library_entry_id) {
-                                Some(entry) => (entry.name.clone(), entry.file_path.clone(), entry.volume, entry.trim_start, entry.trim_end),
-                                None => ("[missing]".to_string(), String::new(), 1.0, None, None),
+                                Some(entry) => (entry.name.clone(), entry.file_path.clone(), entry.volume, entry.loudness_factor, entry.trim_start, entry.trim_end),
+                                None => ("[missing]".to_string(), String::new(), 1.0, 1.0, None, None),
                             };
-                        Clip { id, name, file_path, volume, library_entry_id, library_volume, trim_start, trim_end }
+                        Clip { id, name, file_path, volume, library_entry_id, library_volume, loudness_factor, trim_start, trim_end }
                     })
                     .collect();
                 let repeat = repeat_int.map(|v| v != 0).unwrap_or(false);
@@ -1428,7 +1456,7 @@ fn load_clips_resolved(
     let sql = format!(
         "SELECT cl.id, cl.track_id, cl.library_entry_id, cl.volume,
                 le.name, le.file_path, le.volume, le.trim_start, le.trim_end,
-                le.loop_start, le.loop_end
+                le.loop_start, le.loop_end, le.entry_type, le.rg_track_gain_db
          FROM clips cl
          LEFT JOIN library_entries le ON le.id = cl.library_entry_id
          WHERE {where_sql}
@@ -1451,15 +1479,22 @@ fn load_clips_resolved(
                 row.get::<_, Option<f64>>(8)?,     // trim_end
                 row.get::<_, Option<f64>>(9)?,     // loop_start
                 row.get::<_, Option<f64>>(10)?,    // loop_end
+                row.get::<_, Option<String>>(11)?, // entry_type
+                row.get::<_, Option<f64>>(12)?,    // rg_track_gain_db
             ))
         })
         .map_err(|e| format!("Failed to query resolved clips: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to collect resolved clips: {e}"))?;
 
+    let loudness = crate::replaygain::Loudness::load(conn)?;
     Ok(rows
         .into_iter()
-        .map(|(id, track_id, library_entry_id, volume, name, file_path, lib_vol, ts, te, ls, le)| {
+        .map(|(id, track_id, library_entry_id, volume, name, file_path, lib_vol, ts, te, ls, le, ty, gain)| {
+            let loudness_factor = match ty {
+                Some(ty) => loudness.factor(&EntryType::from_str(&ty), gain),
+                None => 1.0, // entry missing
+            };
             let clip = Clip {
                 id,
                 name: name.unwrap_or_else(|| "[missing]".to_string()),
@@ -1467,6 +1502,7 @@ fn load_clips_resolved(
                 volume,
                 library_entry_id,
                 library_volume: lib_vol.unwrap_or(1.0),
+                loudness_factor,
                 trim_start: ts,
                 trim_end: te,
             };
@@ -1965,9 +2001,20 @@ mod tests {
     /// The mood scale columns schema v12 drops from `library_entries`.
     const V11_MOOD_COLUMNS: [&str; 6] = V11_SCALE_COLUMNS;
 
+    /// Turns a database `init_schema` just built into the v16 shape: no
+    /// ReplayGain columns.
+    fn make_v16_shape(conn: &Connection) {
+        conn.execute_batch(
+            "ALTER TABLE library_entries DROP COLUMN rg_track_gain_db;
+             ALTER TABLE library_entries DROP COLUMN rg_track_peak;",
+        )
+        .unwrap();
+    }
+
     /// Turns a database `init_schema` just built into the v15 shape: the
     /// analyzer's role columns, the two-layer tag table, and stored scores.
     fn make_v15_shape(conn: &Connection) {
+        make_v16_shape(conn);
         conn.execute_batch(&format!(
             "ALTER TABLE library_entries ADD COLUMN role_auto TEXT;
              ALTER TABLE library_entries ADD COLUMN role_auto_score REAL;
@@ -3711,6 +3758,128 @@ mod tests {
     }
 
 
+    /// Column names of `table`, in order.
+    fn columns_of(conn: &Connection, table: &str) -> Vec<String> {
+        conn.prepare("SELECT name FROM pragma_table_info(?1) ORDER BY cid")
+            .unwrap()
+            .query_map([table], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    /// A v16 database (no ReplayGain columns) with entries, a user volume,
+    /// a tag, a mood level and a clip. v17 adds the two columns, NULL, and
+    /// leaves every existing value as it was; the result has the same
+    /// `library_entries` columns as a fresh database.
+    #[test]
+    fn v17_adds_null_replaygain_columns_and_keeps_everything() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lutedrop.db");
+        drop(open_db(&path).unwrap());
+        {
+            let conn = Connection::open(&path).unwrap();
+            make_v16_shape(&conn);
+            conn.execute_batch(
+                "UPDATE meta SET value = '16' WHERE key = 'schema_version';
+                 INSERT INTO library_entries (id, file_path, name, created_at, entry_type, volume, role_user, mood_reviewed_at) VALUES
+                   ('M', '/m.mp3', 'M', '1', 'music', 1.5, 'combat', '9'),
+                   ('R', '/r.ogg', 'R', '2', 'ambiance', 0.4, NULL, NULL);
+                 INSERT INTO tags (id, name) VALUES ('t-folk', 'folk');
+                 INSERT INTO library_entry_tags (library_entry_id, tag_id) VALUES ('M', 't-folk');
+                 INSERT INTO library_entry_moods (library_entry_id, mood, auto_score, user_level) VALUES ('M', 'grim', 0.4, 0.75);",
+            )
+            .unwrap();
+        }
+        let before: Vec<(String, f64, Option<String>)> = {
+            let conn = Connection::open(&path).unwrap();
+            assert!(!has_column(&conn, "library_entries", "rg_track_gain_db"));
+            let rows = conn
+                .prepare("SELECT id, volume, role_user FROM library_entries ORDER BY id")
+                .unwrap()
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            rows
+        };
+
+        let conn = open_db(&path).unwrap();
+        assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
+        assert_eq!(pre_migration_backups(dir.path(), 16).len(), 1, "a v16 database is backed up first");
+
+        let after: Vec<(String, f64, Option<String>)> = conn
+            .prepare("SELECT id, volume, role_user FROM library_entries ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(after, before);
+        let rg: Vec<(Option<f64>, Option<f64>)> = conn
+            .prepare("SELECT rg_track_gain_db, rg_track_peak FROM library_entries")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rg, vec![(None, None), (None, None)]);
+        assert_eq!(entry_tags(&conn, "M"), pairs(&[("folk", "user")]));
+        assert_eq!(mood_rows(&conn).len(), 1);
+
+        let fresh = open_memory_db();
+        assert_eq!(columns_of(&conn, "library_entries"), columns_of(&fresh, "library_entries"));
+
+        // Untagged entries load with a factor of 1.
+        ensure_default_configuration(&conn).unwrap();
+        let state = load_full_state(&conn).unwrap();
+        assert!(state.library_entries.iter().all(|e| e.loudness_factor == 1.0 && e.rg_track_gain_db.is_none()));
+    }
+
+    /// The factor reaches both loaders: the full state (library entries and
+    /// the clips in the hierarchy) and the targeted play-path lookup.
+    #[test]
+    fn loaders_carry_the_loudness_factor() {
+        use crate::replaygain::ReplayGain;
+        let conn = open_memory_db();
+        let config = ensure_test_config(&conn);
+        let lib = library::insert_library_entry;
+        let loud = lib(&conn, "/loud.mp3", None, "Loud", None, None, None, "music").unwrap();
+        let mid = lib(&conn, "/mid.mp3", None, "Mid", None, None, None, "music").unwrap();
+        let quiet = lib(&conn, "/quiet.mp3", None, "Quiet", None, None, None, "music").unwrap();
+        let bed = lib(&conn, "/bed.ogg", None, "Bed", None, None, None, "ambiance").unwrap();
+        for (id, g) in [(&loud, -10.0), (&mid, -4.0), (&quiet, 2.0), (&bed, -20.0)] {
+            library::set_replaygain(&conn, id, &ReplayGain { track_gain_db: Some(g), track_peak: Some(0.9) }).unwrap();
+        }
+        let group = hierarchy::insert_group(&conn, "G", &config).unwrap();
+        let comp = hierarchy::insert_comp(&conn, &group, "C").unwrap();
+        let track = hierarchy::insert_track(&conn, &comp, "T").unwrap();
+        for id in [&loud, &mid, &bed] {
+            hierarchy::insert_clip(&conn, &track, id).unwrap();
+        }
+
+        let expected_loud = 10f64.powf(-6.0 / 20.0);
+        let state = load_full_state(&conn).unwrap();
+        let factor = |id: &str| state.library_entries.iter().find(|e| e.id == id).unwrap().loudness_factor;
+        assert!((factor(&loud) - expected_loud).abs() < 1e-12);
+        assert_eq!(factor(&mid), 1.0);
+        assert_eq!(factor(&quiet), 1.0);
+        assert_eq!(factor(&bed), 1.0);
+
+        let clips = &state.groups[0].comps[0].tracks[0].clips;
+        let targeted = load_track_by_id(&conn, &track).unwrap();
+        for list in [clips, &targeted.clips] {
+            let f: Vec<f64> = list.iter().map(|c| c.loudness_factor).collect();
+            assert!((f[0] - expected_loud).abs() < 1e-12);
+            assert_eq!(&f[1..], &[1.0, 1.0]);
+        }
+
+        settings::save_normalize_music_loudness(&conn, false).unwrap();
+        let state = load_full_state(&conn).unwrap();
+        assert!(state.library_entries.iter().all(|e| e.loudness_factor == 1.0));
+        assert!(load_track_by_id(&conn, &track).unwrap().clips.iter().all(|c| c.loudness_factor == 1.0));
+    }
+
     /// A v15 library: auto-only tags, no votes, yes votes (some beside an
     /// analyzer score), analyzer roles beside user roles, the scene
     /// vocabulary, stored scores, moods (both layers), mood flags and the
@@ -3787,7 +3956,6 @@ mod tests {
 
         let conn = open_db(&path).unwrap();
         assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
-        assert_eq!(SCHEMA_VERSION, 16);
 
         // Only the yes votes are left, as plain tags.
         assert_eq!(entry_tags(&conn, "M"), pairs(&[("boss", "user"), ("folk", "user")]));

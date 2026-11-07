@@ -5,7 +5,7 @@
 //! - **Actions**: Business logic orchestrating state mutations and notifications.
 //! - **Persistence & Audio**: SQLite database and audio engine.
 //!
-//! ## Background Threads Spawned in Setup (6)
+//! ## Background Threads Spawned in Setup (7)
 //! 1. **Peak preload**: Precomputes waveform peaks for the library on startup.
 //! 2. **Backup loop**: Automatic database snapshots every 30 minutes.
 //! 3. **WebSocket server**: Axum HTTP + WS for remote control (with tokio runtime).
@@ -15,6 +15,8 @@
 //!    until it is turned off).
 //! 6. **Analyzer worker** (`autotag`): Sleeps until imports or "Analyze
 //!    library" give it work, then has the analyzer embed tracks and score moods.
+//! 7. **ReplayGain backfill**: Short-lived; reads the loudness tags of
+//!    entries that have none stored yet (see `replaygain.rs`).
 //!
 //! ## Tauri Events Emitted to Frontend
 //! - `playback-state-update`: Per-track playback position and state (every 50ms; listened: useAudio.ts).
@@ -25,6 +27,7 @@
 //! - `library-import-complete`: Bulk import finished (listened: useLibraryImport.ts).
 //! - `autotag-progress`: Auto-tag run progress, `AutoTagProgress` (listened: useAutoTagEvents.ts).
 //! - `autotag-complete`: Auto-tag run finished, carrying its `AutoTagReport`; the frontend reloads state with `load_data` (listened: useAutoTagEvents.ts).
+//! - `library-loudness-updated`: The startup ReplayGain backfill stored new values; the frontend reloads state with `load_data` (listened: App.vue).
 //! - `broadcast-listeners`: Live-stream listener count, `null` when off; sent only on change (listened: useBroadcast.ts).
 //!
 //! ## WebSocket Message Types to Remote Clients
@@ -39,6 +42,7 @@ mod commands;
 mod database;
 mod models;
 mod relink;
+mod replaygain;
 mod server;
 mod state;
 mod waveform;
@@ -163,6 +167,14 @@ pub fn run() {
                 rt.block_on(server::start_server(server_container, remote_dist));
             });
 
+            // Read ReplayGain tags for entries that have none stored yet (all
+            // of them after the v17 upgrade). The files are on a network
+            // share, so this runs on its own thread and never blocks the UI.
+            let replaygain_container = container.clone();
+            std::thread::spawn(move || {
+                actions::backfill_replaygain(&replaygain_container);
+            });
+
             // Turn the live broadcast back on if it was on at last exit. On its
             // own thread so a slow start never delays the window opening.
             let broadcast_container = container.clone();
@@ -249,6 +261,8 @@ pub fn run() {
             commands::get_broadcast_status,
             commands::set_broadcast_enabled,
             commands::set_broadcast_settings,
+            commands::get_normalize_music_loudness,
+            commands::set_normalize_music_loudness,
             commands::regenerate_broadcast_key,
             commands::get_autotag_settings,
             commands::save_autotag_settings,

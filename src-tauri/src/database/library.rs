@@ -267,6 +267,35 @@ pub fn update_library_entry_file_path(
     Ok(())
 }
 
+/// Stores the ReplayGain values read from an entry's file (NULL for a value
+/// the file does not have).
+pub fn set_replaygain(
+    conn: &Connection,
+    id: &str,
+    rg: &crate::replaygain::ReplayGain,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE library_entries SET rg_track_gain_db = ?1, rg_track_peak = ?2 WHERE id = ?3",
+        params![rg.track_gain_db, rg.track_peak, id],
+    )
+    .map_err(|e| format!("Failed to store ReplayGain: {e}"))?;
+    Ok(())
+}
+
+/// `(id, file_path)` of every entry with no ReplayGain gain stored yet: new
+/// since v17, or a file without the tag (those are read again each start).
+pub fn entries_without_replaygain(conn: &Connection) -> Result<Vec<(String, String)>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id, file_path FROM library_entries WHERE rg_track_gain_db IS NULL ORDER BY name")
+        .map_err(|e| format!("Failed to prepare ReplayGain backfill query: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|e| format!("Failed to query ReplayGain backfill: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to read ReplayGain backfill rows: {e}"))?;
+    Ok(rows)
+}
+
 /// Finds the entry (if any) that already owns `file_path`. Returns (id, name).
 /// `file_path` is UNIQUE, so at most one entry can match.
 pub fn find_entry_name_by_file_path(

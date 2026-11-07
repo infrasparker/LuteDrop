@@ -1,7 +1,8 @@
 //! Persisted app settings, stored as plain key/value rows in the `meta`
 //! table. This covers the Broadcast (live stream) settings, the folder
 //! the "Fix missing files" search starts in, the analyzer settings, the
-//! mood vocabulary and the frozen mood calibration.
+//! mood vocabulary, the frozen mood calibration and "Even out music
+//! loudness".
 
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
@@ -25,6 +26,7 @@ pub(crate) const KEY_MOOD_CALIBRATION: &str = "mood_calibration";
 pub(crate) const KEY_MOOD_VOCABULARY: &str = "mood_vocabulary";
 const KEY_MOOD_TUNE_PREFS: &str = "mood_tune_prefs";
 const KEY_MOOD_TUNE_PREFS_BAD: &str = "mood_tune_prefs_bad";
+const KEY_NORMALIZE_MUSIC_LOUDNESS: &str = "normalize_music_loudness";
 
 /// Where the analyzer host mounts the audio folder until the user says otherwise.
 pub const DEFAULT_REMOTE_PREFIX: &str = "/media/audio";
@@ -133,6 +135,17 @@ pub fn load_fix_missing_root(conn: &Connection) -> Result<Option<String>, String
 /// empty string clears it, so the next load returns `None`.
 pub fn save_fix_missing_root(conn: &Connection, root: &str) -> Result<(), String> {
     write_meta(conn, KEY_FIX_MISSING_ROOT, root)
+}
+
+/// Loads "Even out music loudness (ReplayGain)". On unless the user turned
+/// it off: a missing row counts as on.
+pub fn load_normalize_music_loudness(conn: &Connection) -> Result<bool, String> {
+    Ok(read_meta(conn, KEY_NORMALIZE_MUSIC_LOUDNESS)?.as_deref() != Some("0"))
+}
+
+/// Saves "Even out music loudness (ReplayGain)".
+pub fn save_normalize_music_loudness(conn: &Connection, enabled: bool) -> Result<(), String> {
+    write_meta(conn, KEY_NORMALIZE_MUSIC_LOUDNESS, if enabled { "1" } else { "0" })
 }
 
 /// Loads the analyzer settings. Missing values fall back to: disabled, empty
@@ -312,6 +325,17 @@ mod tests {
     use super::*;
     use crate::database::init_schema;
     use rusqlite::Connection;
+
+    #[test]
+    fn normalize_music_loudness_defaults_on_and_round_trips() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        assert!(load_normalize_music_loudness(&conn).unwrap());
+        save_normalize_music_loudness(&conn, false).unwrap();
+        assert!(!load_normalize_music_loudness(&conn).unwrap());
+        save_normalize_music_loudness(&conn, true).unwrap();
+        assert!(load_normalize_music_loudness(&conn).unwrap());
+    }
 
     #[test]
     fn mood_calibration_is_none_until_saved_then_round_trips() {
