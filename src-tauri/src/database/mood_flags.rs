@@ -5,13 +5,22 @@
 //! Each flag remembers the mood's prompt lines (`lines_sig`) from when it was
 //! set or last kept. If the wording changes later the flag is `stale`: it
 //! was made against different lines, and the user can keep or drop it.
+//!
+//! A higher / lower flag also remembers its mood's calibration (the mean and
+//! sd its bar was read with) in the `calibrated_at` column, as "mean|sd" (see
+//! `calibration_mark`; the column name predates this and once held the
+//! calibration's timestamp). Once that mood is recalibrated, the bar the flag
+//! was made at is on another scale, so the flag is stale by calibration and
+//! Tune reads "higher" / "lower" against the song's current bar instead.
+//! Recalibrating other moods does not touch it.
 
 use std::collections::HashMap;
 
 use rusqlite::{params, Connection};
 
 use super::settings;
-use crate::models::{FlagBand, FlagBound, FlagKind, MoodFlag, MoodVocabulary, ENERGY_ID};
+use crate::autotag::plan::MoodStat;
+use crate::models::{FlagBand, FlagBound, FlagKind, MoodFlag, MoodVocabulary, StaleReason, ENERGY_ID};
 
 impl FlagKind {
     fn as_db_str(self) -> &'static str {
@@ -89,6 +98,44 @@ pub struct StoredFlag {
 /// A mood's prompt lines as one string, what `lines_sig` stores.
 pub fn lines_sig(prompts: &[String]) -> String {
     prompts.join("\n")
+}
+
+/// What a direction flag stores in `calibrated_at`: its mood's calibration
+/// statistics as "mean|sd". Rust prints the shortest text that reads back as
+/// the same f64, so the mark round-trips exactly.
+pub fn calibration_mark(stat: MoodStat) -> String {
+    format!("{}|{}", stat.mean, stat.sd)
+}
+
+fn read_mark(mark: &str) -> Option<MoodStat> {
+    let (mean, sd) = mark.split_once('|')?;
+    Some(MoodStat { mean: mean.parse().ok()?, sd: sd.parse().ok()? })
+}
+
+/// Statistics closer than this are the same calibration (float noise, not a
+/// recalibration; a real one moves the mean by far more).
+const MARK_TOLERANCE: f64 = 1e-9;
+
+/// One mood's current calibration statistics, if it has been calibrated.
+pub fn current_stat(conn: &Connection, mood: &str) -> Result<Option<MoodStat>, String> {
+    Ok(settings::load_mood_calibration(conn)?.and_then(|c| c.stats.get(mood).copied()))
+}
+
+/// Why a flag is stale, if it is, against the mood's current lines
+/// (`current_sig`) and calibration (`current_stat`). Only a higher / lower
+/// flag can be stale by calibration: when its mood has a calibration now and
+/// the flag's mark is missing, unreadable (an old timestamp) or differs.
+pub fn stale_reason(f: &StoredFlag, current_sig: &str, current_stat: Option<MoodStat>) -> Option<StaleReason> {
+    let direction = matches!(f.kind, FlagKind::Higher | FlagKind::Lower);
+    if let (true, Some(now)) = (direction, current_stat) {
+        let same = f.calibrated_at.as_deref().and_then(read_mark).is_some_and(|then| {
+            (then.mean - now.mean).abs() <= MARK_TOLERANCE && (then.sd - now.sd).abs() <= MARK_TOLERANCE
+        });
+        if !same {
+            return Some(StaleReason::Calibration);
+        }
+    }
+    (f.lines_sig != current_sig).then_some(StaleReason::Wording)
 }
 
 fn now_millis_i64() -> i64 {
@@ -197,8 +244,8 @@ pub fn flags_for_mood(conn: &Connection, mood: &str) -> Result<Vec<StoredFlag>, 
 }
 
 /// All flags keyed by (entry id, mood), with `stale` worked out against the
-/// vocabulary's current lines. Flags on moods no longer in the vocabulary
-/// are left out.
+/// vocabulary's current lines and each mood's current calibration (see
+/// `stale_reason`). Flags on moods no longer in the vocabulary are left out.
 pub fn load_flags(
     conn: &Connection,
     vocabulary: &MoodVocabulary,
@@ -209,10 +256,12 @@ pub fn load_flags(
     let rows = stmt
         .query_map([], read_row)
         .map_err(|e| format!("Failed to query flags: {e}"))?;
+    let stats = settings::load_mood_calibration(conn)?.map(|c| c.stats).unwrap_or_default();
     let mut out = HashMap::new();
     for row in rows {
         let f = row.map_err(|e| format!("Failed to read flag: {e}"))?;
         let Some(current) = vocabulary.prompt_signature(&f.mood) else { continue };
+        let reason = stale_reason(&f, &lines_sig(&current), stats.get(&f.mood).copied());
         out.insert(
             (f.entry_id, f.mood),
             MoodFlag {
@@ -221,7 +270,8 @@ pub fn load_flags(
                 bound: f.bound,
                 bar_at_flag: f.bar_at_flag,
                 calibrated_at: f.calibrated_at,
-                stale: f.lines_sig != lines_sig(&current),
+                stale: reason.is_some(),
+                stale_reason: reason,
             },
         );
     }
@@ -243,8 +293,8 @@ pub fn app_bound(band: FlagBand) -> FlagBound {
 /// A `band` flag needs a band (Definitely and Understandable mean "at least"
 /// that band, Stretch and No mean "in" it). `higher` and `lower` carry no band
 /// and record the song's suggested bar for the mood (the analyzer's value, not
-/// the user's level) and when the calibration was taken, so the tuner can read
-/// them against the bar as it was.
+/// the user's level) and the mood's calibration (`calibration_mark`), so the
+/// tuner can read them against the bar as it was.
 pub fn set_flag_for_entry(
     conn: &Connection,
     entry_id: &str,
@@ -278,7 +328,7 @@ pub fn set_flag_for_entry(
                 })
                 .map_err(|e| format!("Failed to read the suggested value: {e}"))?;
             let bar = bar.ok_or("This song has no suggested value for that mood yet")?;
-            let calibrated_at = settings::load_mood_calibration(conn)?.map(|c| c.calibrated_at);
+            let calibrated_at = current_stat(conn, mood)?.map(calibration_mark);
             let bound = if kind == FlagKind::Higher { FlagBound::AtLeast } else { FlagBound::AtMost };
             set_flag(conn, entry_id, mood, kind, None, bound, Some(bar), calibrated_at.as_deref(), &lines)
         }
@@ -286,12 +336,22 @@ pub fn set_flag_for_entry(
 }
 
 /// "Keep" on a stale flag: it now counts as made against the mood's current
-/// lines. A mood no longer in the vocabulary is refused.
+/// lines and, for a higher / lower flag, its current calibration (the bar it
+/// was made at stays). A mood no longer in the vocabulary is refused.
 pub fn keep_flag(conn: &Connection, entry_id: &str, mood: &str) -> Result<(), String> {
     let lines = settings::load_mood_vocabulary(conn)?
         .prompt_signature(mood)
         .ok_or_else(|| format!("There is no mood \"{mood}\""))?;
-    refresh_flag(conn, entry_id, mood, &lines_sig(&lines))
+    refresh_flag(conn, entry_id, mood, &lines_sig(&lines))?;
+    if let Some(stat) = current_stat(conn, mood)? {
+        conn.execute(
+            "UPDATE mood_flags SET calibrated_at = ?3
+             WHERE library_entry_id = ?1 AND mood = ?2 AND kind IN ('higher', 'lower')",
+            params![entry_id, mood, calibration_mark(stat)],
+        )
+        .map_err(|e| format!("Failed to refresh flag: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Moves the listed songs' flags from one mood to another (for a mood split
@@ -326,7 +386,9 @@ pub fn copy_low_flags(conn: &Connection, from: &str, to: &str) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::autotag::plan::{MoodCalibration, MoodStat};
     use crate::database::{library, open_memory_db};
+    use crate::models::StaleReason;
 
     fn entry(conn: &Connection, name: &str) -> String {
         library::insert_library_entry(conn, &format!("/{name}.mp3"), None, name, None, None, None, "music").unwrap()
@@ -476,9 +538,76 @@ mod tests {
         assert_eq!(flags_for_mood(&conn, "peaceful").unwrap()[0].lines_sig, sig);
     }
 
+    fn calibrate(conn: &Connection, stats: &[(&str, f64, f64)]) {
+        settings::save_mood_calibration(
+            conn,
+            &MoodCalibration {
+                calibrated_at: "1".into(),
+                tracks: 50,
+                prompts: Default::default(),
+                stats: stats.iter().map(|(id, mean, sd)| (id.to_string(), MoodStat { mean: *mean, sd: *sd })).collect(),
+                source: Default::default(),
+                reference_set: None,
+            },
+        )
+        .unwrap();
+    }
+
+    fn reason(conn: &Connection, id: &str, mood: &str) -> Option<StaleReason> {
+        let flags = load_flags(conn, &settings::load_mood_vocabulary(conn).unwrap()).unwrap();
+        let f = &flags[&(id.to_string(), mood.to_string())];
+        assert_eq!(f.stale, f.stale_reason.is_some());
+        f.stale_reason
+    }
+
+    #[test]
+    fn direction_flag_goes_stale_only_when_its_own_moods_calibration_changes() {
+        let conn = open_memory_db();
+        let a = entry(&conn, "a");
+        set_auto(&conn, &a, "peaceful", 0.4);
+        calibrate(&conn, &[("peaceful", 0.3, 0.05), ("grim", 0.2, 0.04)]);
+        set_flag_for_entry(&conn, &a, "peaceful", FlagKind::Higher, None).unwrap();
+        assert_eq!(reason(&conn, &a, "peaceful"), None);
+
+        // Another mood recalibrated: this flag still reads against the same yardstick.
+        calibrate(&conn, &[("peaceful", 0.3, 0.05), ("grim", 0.25, 0.03)]);
+        assert_eq!(reason(&conn, &a, "peaceful"), None);
+        // Float noise from a JSON round trip is not a new calibration.
+        calibrate(&conn, &[("peaceful", 0.3 + 1e-13, 0.05), ("grim", 0.25, 0.03)]);
+        assert_eq!(reason(&conn, &a, "peaceful"), None);
+        // Its own mood recalibrated: the bar it was made at means something else now.
+        calibrate(&conn, &[("peaceful", 0.31, 0.05), ("grim", 0.25, 0.03)]);
+        assert_eq!(reason(&conn, &a, "peaceful"), Some(StaleReason::Calibration));
+    }
+
+    #[test]
+    fn band_flags_go_stale_only_by_wording() {
+        let conn = open_memory_db();
+        let a = entry(&conn, "a");
+        calibrate(&conn, &[("peaceful", 0.3, 0.05)]);
+        set_flag_for_entry(&conn, &a, "peaceful", FlagKind::Band, Some(FlagBand::Stretch)).unwrap();
+        calibrate(&conn, &[("peaceful", 0.5, 0.05)]);
+        assert_eq!(reason(&conn, &a, "peaceful"), None);
+        band_flag(&conn, &a, "peaceful", FlagBand::Stretch, "older lines");
+        assert_eq!(reason(&conn, &a, "peaceful"), Some(StaleReason::Wording));
+    }
+
+    #[test]
+    fn keep_flag_refreshes_wording_and_calibration() {
+        let conn = open_memory_db();
+        let a = entry(&conn, "a");
+        calibrate(&conn, &[("peaceful", 0.3, 0.05)]);
+        set_flag(&conn, &a, "peaceful", FlagKind::Lower, None, FlagBound::AtMost, Some(0.7), Some("0.2|0.05"), "old")
+            .unwrap();
+        assert_eq!(reason(&conn, &a, "peaceful"), Some(StaleReason::Calibration));
+        keep_flag(&conn, &a, "peaceful").unwrap();
+        assert_eq!(reason(&conn, &a, "peaceful"), None);
+        let f = &flags_for_mood(&conn, "peaceful").unwrap()[0];
+        assert_eq!((f.calibrated_at.as_deref(), f.bar_at_flag), (Some("0.3|0.05"), Some(0.7)));
+    }
+
     #[test]
     fn set_mood_flag_higher_records_bar_and_calibration() {
-        use crate::autotag::plan::MoodCalibration;
         let conn = open_memory_db();
         let a = entry(&conn, "a");
         settings::save_mood_calibration(
@@ -487,7 +616,7 @@ mod tests {
                 calibrated_at: "123".into(),
                 tracks: 50,
                 prompts: Default::default(),
-                stats: Default::default(),
+                stats: [("peaceful".to_string(), MoodStat { mean: 0.3, sd: 0.05 })].into_iter().collect(),
                 source: Default::default(),
                 reference_set: None,
             },
@@ -503,7 +632,7 @@ mod tests {
         let f = &flags_for_mood(&conn, "peaceful").unwrap()[0];
         assert_eq!(
             (f.kind, f.band, f.bound, f.bar_at_flag, f.calibrated_at.as_deref()),
-            (FlagKind::Higher, None, FlagBound::AtLeast, Some(0.62), Some("123"))
+            (FlagKind::Higher, None, FlagBound::AtLeast, Some(0.62), Some("0.3|0.05"))
         );
         set_flag_for_entry(&conn, &a, "peaceful", FlagKind::Lower, None).unwrap();
         assert_eq!(flags_for_mood(&conn, "peaceful").unwrap()[0].bound, FlagBound::AtMost);

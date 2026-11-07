@@ -2,13 +2,18 @@
 import type { FlagBand } from "./FlagBand";
 import type { FlagBound } from "./FlagBound";
 import type { FlagKind } from "./FlagKind";
+import type { StaleReason } from "./StaleReason";
 
 /**
- * A flag on one song and mood. `stale` is true when the mood's prompt
- * lines have changed since the flag was set or last kept.
+ * A flag on one song and mood. `stale` is true when `stale_reason` is set.
  */
 export type MoodFlag = { kind: FlagKind, band: FlagBand | null, bound: FlagBound, 
 /**
  * The bar the song showed when flagged.
  */
-barAtFlag: number | null, calibratedAt: string | null, stale: boolean, };
+barAtFlag: number | null, 
+/**
+ * For a higher / lower flag, its mood's calibration when flagged or last
+ * kept, as "mean|sd" (see `mood_flags::calibration_mark`).
+ */
+calibratedAt: string | null, stale: boolean, staleReason: StaleReason | null, };

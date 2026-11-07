@@ -19,7 +19,7 @@ use super::scry::MusicIndex;
 use crate::database::mood_flags::{self, lines_sig, StoredFlag};
 use crate::database::{library, settings};
 use crate::models::{
-    FlagBand, FlagBound, FlagKind, MoodDef, MoodVocabulary, TuneFlagOutcome, TuneLeaveOneOut, TuneMovedSong,
+    FlagBand, FlagBound, FlagKind, MoodDef, MoodVocabulary, StaleReason, TuneFlagOutcome, TuneLeaveOneOut, TuneMovedSong,
     TuneNameIdea, TuneOverlap, TuneResult, TuneReview, TuneSong, TuneSplitReview, TuneTopSong,
 };
 
@@ -220,9 +220,10 @@ fn level_band(level: f64) -> FlagBand {
 /// level and no flag, a fresh band flag for that level (`level_band`, with
 /// the bound a flag set in the app gets). See `flag_target` for what each
 /// asks of the bar. A flag made under other lines, or a direction flag made
-/// under another calibration, is stale: it counts `STALE_WEIGHT`, and a
-/// stale direction flag aims past the song's current bar instead of the bar
-/// it was made at. `extra_words` (typed in the Tune dialog) join `bank`;
+/// under another calibration of this mood, is stale (`mood_flags::stale_reason`):
+/// it counts `STALE_WEIGHT`. A direction flag stale by calibration aims past
+/// the song's current bar, since the bar it was made at is on another scale;
+/// one stale only by wording keeps the bar it was made at. `extra_words` (typed in the Tune dialog) join `bank`;
 /// the bank is trimmed, repeats dropped ignoring case (the first spelling
 /// stays), and capped at the analyzer's `MAX_BANK`.
 pub fn build_tune_request(
@@ -240,6 +241,7 @@ pub fn build_tune_request(
     let calibration = settings::load_mood_calibration(conn)?
         .ok_or("Run an analysis first so the moods are calibrated")?;
     let current_sig = lines_sig(&mood.prompts);
+    let current_stat = calibration.stats.get(mood_id).copied();
 
     let mut flags = mood_flags::flags_for_mood(conn, mood_id)?;
     let flagged: HashSet<String> = flags.iter().map(|f| f.entry_id.clone()).collect();
@@ -272,10 +274,9 @@ pub fn build_tune_request(
             unanalyzed += 1;
             continue;
         };
-        let direction = matches!(f.kind, FlagKind::Higher | FlagKind::Lower);
-        let stale = f.lines_sig != current_sig
-            || (direction && f.calibrated_at.as_deref() != Some(calibration.calibrated_at.as_str()));
-        let bar = if stale { bar_now.or(f.bar_at_flag) } else { f.bar_at_flag };
+        let reason = mood_flags::stale_reason(f, &current_sig, current_stat);
+        let stale = reason.is_some();
+        let bar = if reason == Some(StaleReason::Calibration) { bar_now.or(f.bar_at_flag) } else { f.bar_at_flag };
         let (min, max, side) = match flag_target(f, bar) {
             Some((None, None, _)) | None => {
                 unusable += 1;
@@ -607,6 +608,8 @@ mod tests {
     use std::sync::Mutex;
 
     const MOOD: &str = "peaceful";
+    /// The calibration mark a direction flag made under `calibrate` records.
+    const NOW: &str = "0|1";
 
     fn calibrate(db: &Mutex<Connection>, source: CalibrationSource) {
         let conn = db.lock().unwrap();
@@ -700,7 +703,7 @@ mod tests {
         ];
         for (name, kind, bar, _) in &directions {
             let id = add(&db, name, "music");
-            direction(&db, &id, *kind, *bar, "cal-1", &sig);
+            direction(&db, &id, *kind, *bar, NOW, &sig);
         }
 
         let (req, skipped) = request(&db);
@@ -745,25 +748,26 @@ mod tests {
         let db = setup();
         calibrate(&db, CalibrationSource::Library);
         let sig = current_sig(&db);
-        // Made under an older calibration: read against today's bar, half weight.
+        // Made under an older calibration of this mood: read against today's bar, half weight.
         let old_cal = add(&db, "oldcal", "music");
-        direction(&db, &old_cal, FlagKind::Higher, 0.3, "cal-0", &sig);
+        direction(&db, &old_cal, FlagKind::Higher, 0.3, "0.1|1", &sig);
         set_bar(&db, &old_cal, 0.6);
-        // Made under older wording.
+        // Made under older wording but the same calibration: the bar it was made at
+        // still means what it did, so it stays the target (at half weight).
         let old_words = add(&db, "oldwords", "music");
-        direction(&db, &old_words, FlagKind::Lower, 0.8, "cal-1", "older lines");
+        direction(&db, &old_words, FlagKind::Lower, 0.8, NOW, "older lines");
         set_bar(&db, &old_words, 0.4);
         // A stale band flag keeps its band, at half weight.
         let old_band = add(&db, "oldband", "music");
         band(&db, &old_band, FlagBand::Definitely, FlagBound::AtLeast, "older lines");
         // A fresh one keeps the bar it was made at, whatever the bar is now.
         let fresh = add(&db, "fresh", "music");
-        direction(&db, &fresh, FlagKind::Higher, 0.5, "cal-1", &sig);
+        direction(&db, &fresh, FlagKind::Higher, 0.5, NOW, &sig);
         set_bar(&db, &fresh, 0.9);
 
         let (req, _) = request(&db);
         assert_eq!(target(&req, "h-oldcal"), (Some(0.7), None, 0.5, false, High));
-        assert_eq!(target(&req, "h-oldwords"), (None, Some(0.3), 0.5, false, Low));
+        assert_eq!(target(&req, "h-oldwords"), (None, Some(0.7), 0.5, false, Low));
         assert_eq!(target(&req, "h-oldband"), (Some(0.9), None, 0.5, false, High));
         assert_eq!(target(&req, "h-fresh"), (Some(0.6), None, 1.0, true, High));
     }
@@ -1149,7 +1153,7 @@ mod tests {
         band(&db, &no_ceiling, FlagBand::Definitely, FlagBound::AtMost, &sig);
         // A direction flag with no bar, then or now.
         let no_bar = add(&db, "nobar", "music");
-        set_flag(&db.lock().unwrap(), &no_bar, MOOD, FlagKind::Higher, None, FlagBound::AtLeast, None, Some("cal-1"), &sig)
+        set_flag(&db.lock().unwrap(), &no_bar, MOOD, FlagKind::Higher, None, FlagBound::AtLeast, None, Some(NOW), &sig)
             .unwrap();
 
         let (req, skipped) = request(&db);

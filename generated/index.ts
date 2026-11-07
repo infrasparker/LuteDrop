@@ -40,6 +40,7 @@ export type { FlagBand } from "./FlagBand";
 export type { FlagBound } from "./FlagBound";
 export type { FlagKind } from "./FlagKind";
 export type { MoodFlag } from "./MoodFlag";
+export type { StaleReason } from "./StaleReason";
 export type { TuneFlagOutcome } from "./TuneFlagOutcome";
 export type { TuneLeaveOneOut } from "./TuneLeaveOneOut";
 export type { TuneMovedSong } from "./TuneMovedSong";

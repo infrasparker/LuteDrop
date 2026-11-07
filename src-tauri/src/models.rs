@@ -373,8 +373,20 @@ pub enum FlagBound {
     AtMost,
 }
 
-/// A flag on one song and mood. `stale` is true when the mood's prompt
-/// lines have changed since the flag was set or last kept.
+/// Why a flag is stale. `Wording`: the mood's prompt lines changed since the
+/// flag was set or last kept. `Calibration`: a higher / lower flag whose
+/// mood has been recalibrated since, so the bar it was made at is on another
+/// scale. A flag stale both ways reads as `Calibration`, the one that changes
+/// how Tune reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "snake_case")]
+pub enum StaleReason {
+    Wording,
+    Calibration,
+}
+
+/// A flag on one song and mood. `stale` is true when `stale_reason` is set.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
@@ -384,8 +396,11 @@ pub struct MoodFlag {
     pub bound: FlagBound,
     /// The bar the song showed when flagged.
     pub bar_at_flag: Option<f64>,
+    /// For a higher / lower flag, its mood's calibration when flagged or last
+    /// kept, as "mean|sd" (see `mood_flags::calibration_mark`).
     pub calibrated_at: Option<String>,
     pub stale: bool,
+    pub stale_reason: Option<StaleReason>,
 }
 
 /// What the one-off case-study import did: how many flags it wrote, the

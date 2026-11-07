@@ -438,6 +438,8 @@ const LIBRARY_ENTRY_MOODS_DDL: &str = "
 /// The mood flag table (schema v15), shared by init_schema (fresh DBs) and
 /// the v14→v15 migration. One flag per (entry, mood); `lines_sig` is the
 /// mood's prompt lines joined with newlines when the flag was set or kept.
+/// `calibrated_at` holds, for a higher / lower flag, the mood's calibration
+/// statistics as "mean|sd" (`mood_flags::calibration_mark`), despite its name.
 const MOOD_FLAGS_DDL: &str = "
     CREATE TABLE IF NOT EXISTS mood_flags (
         library_entry_id TEXT NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,
