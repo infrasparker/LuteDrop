@@ -78,6 +78,10 @@ function clearFlag(): void {
 .song-name:focus-visible {
   text-decoration: underline;
 }
+.song-actions :deep(.v-btn) {
+  min-width: 28px;
+  min-height: 28px;
+}
 .song-actions {
   display: inline-flex;
   flex: 0 0 auto;

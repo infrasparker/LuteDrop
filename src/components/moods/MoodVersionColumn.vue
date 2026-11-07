@@ -11,7 +11,10 @@ const props = defineProps<{
   currentLines: string[];
   moodName: string;
   moodNameOf: (id: string) => string;
+  /// Every other mood's name, for "Reads like".
+  otherMoodNames: string[];
   busy: boolean;
+  neverSuggestOff?: boolean;
 }>();
 const emit = defineEmits<{
   select: [];
@@ -34,13 +37,12 @@ const SOURCE: Record<string, { icon: string; label: string }> = {
 };
 
 const isCurrent = computed(() => props.col.kind === 'current');
-const chips = computed(() =>
-  props.col.review && !isCurrent.value && props.col.source
-    ? columnChips(props.col.review, props.moodName, props.col.source)
-    : props.col.review && isCurrent.value
-      ? { ...columnChips(props.col.review, props.moodName, 'typed'), overlaps: [] }
-      : null,
-);
+const chips = computed(() => {
+  if (!props.col.review) return null;
+  const c = columnChips(props.col.review, props.moodName, props.otherMoodNames);
+  // Current has nothing to compare with: only Shaky applies.
+  return isCurrent.value ? { ...c, overlaps: [], readsLike: null } : c;
+});
 const verdict = computed(() => (props.col.review ? verdictText(props.col.review, isCurrent.value) : null));
 const fmt = (v: number): string => v.toFixed(2);
 
@@ -141,6 +143,7 @@ const splitNewVerdict = computed(() => (props.col.split ? verdictText(props.col.
         :fork="isCurrent"
         :label="col.name"
         :disabled="busy"
+        :never-suggest-off="neverSuggestOff"
         @update:text="(t) => emit('update:text', t)"
         @commit="emit('commit')"
         @fork="(t, l, c) => emit('fork', t, l, c)"
@@ -152,7 +155,7 @@ const splitNewVerdict = computed(() => (props.col.split ? verdictText(props.col.
       <template v-if="col.kind === 'split' && col.split">
         <VBtn
           size="small"
-          variant="tonal"
+          :variant="col.regressionCount > 0 ? 'flat' : 'tonal'"
           :color="col.regressionCount > 0 ? 'error' : 'primary'"
           :disabled="busy"
           @click="emit('use')"
@@ -182,7 +185,7 @@ const splitNewVerdict = computed(() => (props.col.split ? verdictText(props.col.
               <VTooltip activator="parent" location="top" open-on-focus>{{ fmt(o.before) }} → {{ fmt(o.after) }}</VTooltip>
             </span>
             <span v-if="chips.readsLike" class="chip" tabindex="0">
-              Reads like: {{ chips.readsLike }}
+              Reads like {{ chips.readsLike }}
               <VTooltip activator="parent" location="top" open-on-focus>
                 Name ideas: {{ col.review.names.slice(0, 3).map((n) => n.word).join(', ') }}
               </VTooltip>
@@ -196,7 +199,7 @@ const splitNewVerdict = computed(() => (props.col.split ? verdictText(props.col.
         <VBtn
           v-if="!isCurrent && col.text.trim() !== ''"
           size="small"
-          variant="tonal"
+          :variant="col.regressionCount > 0 ? 'flat' : 'tonal'"
           class="mt-1"
           :color="col.regressionCount > 0 ? 'error' : 'primary'"
           :disabled="busy || col.error !== null"
@@ -217,6 +220,7 @@ const splitNewVerdict = computed(() => (props.col.split ? verdictText(props.col.
   flex-direction: column;
   min-height: 0;
   max-height: 100%;
+  overflow: hidden;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
   border-top: 3px solid transparent;
   border-radius: 6px;
@@ -225,12 +229,23 @@ const splitNewVerdict = computed(() => (props.col.split ? verdictText(props.col.
 .version-col.selected {
   border-top-color: rgb(var(--v-theme-primary));
 }
+.version-col {
+  scroll-snap-align: start;
+}
+/* Sticky Current casts a shadow on its right edge, so a version scrolled
+   under it never reads as part of it. */
 .version-col.current {
   position: sticky;
   left: 0;
   z-index: 2;
+  box-shadow: 8px 0 10px -4px rgba(0, 0, 0, 0.75);
+}
+.col-head :deep(.v-btn) {
+  min-width: 28px;
+  min-height: 28px;
 }
 .col-head {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -274,6 +289,7 @@ const splitNewVerdict = computed(() => (props.col.split ? verdictText(props.col.
   padding: 2px 6px;
 }
 .col-foot {
+  flex: 0 0 auto;
   padding: 6px 10px 8px;
   border-top: 1px solid rgba(var(--v-theme-on-surface), 0.08);
   min-height: 44px;

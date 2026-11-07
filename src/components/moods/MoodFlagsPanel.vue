@@ -4,7 +4,8 @@ import type { FlagBand, FlagKind, MoodFlag, TuneFlagOutcome, TuneReview } from '
 import { useAppStore } from '../../stores/appStore';
 import { useLibraryPreview } from '../../composables/useLibraryPreview';
 import { FLAG_BANDS } from '../../utils/moodFlags';
-import { bandWord, cellState, flagBounds, sortAndCollapse, type CellModel, type RowModel } from '../../utils/moodPage';
+import { useFlagRemoval } from '../../composables/useFlagRemoval';
+import { bandWord, cellState, flagBounds, sortAndCollapse, useShortBands, type CellModel, type RowModel } from '../../utils/moodPage';
 import MoodSong from './MoodSong.vue';
 
 /// The Flags panel: one row per flagged song (and per hand-set level) of the
@@ -12,17 +13,22 @@ import MoodSong from './MoodSong.vue';
 /// first) with a state glyph. Sorted focus, regressed, broken, changed,
 /// holding; rows that hold and do not move anywhere collapse into
 /// "+n holding". Rows are focusable: Enter plays, F opens the flag menu,
-/// Delete removes the flag.
+/// Delete removes the flag (with Undo on the toast). A flag broken under
+/// Current shows an amber ✗ ("Broken now"); a cell that Use would break is
+/// bold, so a column's "n breaks" counts its bold cells.
 const props = defineProps<{
   moodId: string;
-  /// Current first (its review is Current's own), then each version.
-  columns: { key: number | 'current'; name: string; review: TuneReview | null; stale: boolean }[];
+  /// Current first (its review is Current's own), then each version, with
+  /// the songs Use would break (`regressions`).
+  columns: { key: number | 'current'; name: string; review: TuneReview | null; stale: boolean; regressionIds: Set<string> }[];
   focusEntryId: string | null;
   narrow: boolean;
 }>();
 
 const store = useAppStore();
 const preview = useLibraryPreview();
+const { removeFlag } = useFlagRemoval();
+const short = computed(() => useShortBands(props.narrow, props.columns.length - 1));
 
 interface Row extends RowModel {
   name: string;
@@ -50,7 +56,7 @@ const rows = computed<Row[]>(() => {
     const cells = props.columns.map((col, i) => {
       if (i === 0) {
         return {
-          state: base ? cellState({ holds: curHolds, after: curValue ?? 0 }, null, bounds) : ('plain' as const),
+          state: base ? cellState({ holds: curHolds, after: curValue ?? 0 }, null, bounds) : ('holds' as const),
           value: curValue,
           regression: false,
           missing: baseline !== null && !base,
@@ -64,7 +70,7 @@ const rows = computed<Row[]>(() => {
       return {
         state: cellState(o, { holds: curHolds, after: base.before }, bounds),
         value: o.after,
-        regression: o.fresh && curHolds && !o.holds,
+        regression: col.regressionIds.has(e.id),
         missing: false,
         pending: false,
       };
@@ -86,8 +92,8 @@ const rows = computed<Row[]>(() => {
 const expanded = ref(false);
 const view = computed(() => sortAndCollapse(rows.value, expanded.value));
 
-const GLYPH: Record<string, string> = { holds: '✓', closer: '↗', worse: '✗', plain: '' };
-const STATE_LABEL: Record<string, string> = { holds: 'holds', closer: 'closer', worse: 'worse', plain: 'outside its band' };
+const GLYPH: Record<string, string> = { holds: '✓', closer: '↗', worse: '✗', broken: '✗' };
+const STATE_LABEL: Record<string, string> = { holds: 'holds', closer: 'closer', worse: 'worse', broken: 'broken now' };
 const fmt = (v: number): string => v.toFixed(2);
 
 const menus = reactive<Record<string, boolean>>({});
@@ -102,7 +108,7 @@ function onRowKey(r: Row, e: KeyboardEvent): void {
     menus[r.entryId] = true;
   } else if (e.key === 'Delete' && r.flag) {
     e.preventDefault();
-    void store.command('clear_mood_flag', { entryId: r.entryId, mood: props.moodId });
+    void removeFlag(r.entryId, props.moodId);
   }
 }
 
@@ -111,7 +117,7 @@ function setFlag(entryId: string, kind: FlagKind, band: FlagBand | null): void {
 }
 
 const gridColumns = computed(
-  () => `minmax(120px, 1.6fr) ${props.narrow ? '56px' : 'minmax(96px, 0.9fr)'} repeat(${props.columns.length}, 72px)`,
+  () => `minmax(120px, 1.6fr) ${short.value ? '56px' : 'minmax(96px, 0.9fr)'} repeat(${props.columns.length}, 72px)`,
 );
 </script>
 
@@ -143,8 +149,8 @@ const gridColumns = computed(
           <VTooltip v-if="r.flag?.stale" activator="parent" location="top" open-delay="300">Older wording</VTooltip>
         </span>
         <span class="band-cell" role="cell" :aria-label="r.bandLong">
-          {{ narrow ? r.bandShort : r.bandLong }}
-          <VTooltip v-if="narrow" activator="parent" location="top">{{ r.bandLong }}</VTooltip>
+          {{ short ? r.bandShort : r.bandLong }}
+          <VTooltip v-if="short" activator="parent" location="top">{{ r.bandLong }}</VTooltip>
           <span v-if="r.flag?.stale" class="stale-actions">
             <button type="button" @click="store.command('keep_mood_flag', { entryId: r.entryId, mood: moodId })">Keep</button>
             <VMenu location="bottom end">
@@ -158,7 +164,7 @@ const gridColumns = computed(
                 <VListItem title="Lower" @click="setFlag(r.entryId, 'lower', null)" />
               </VList>
             </VMenu>
-            <button type="button" @click="store.command('clear_mood_flag', { entryId: r.entryId, mood: moodId })">Remove</button>
+            <button type="button" @click="removeFlag(r.entryId, moodId)">Remove</button>
           </span>
         </span>
         <span
@@ -169,7 +175,10 @@ const gridColumns = computed(
           :class="[`is-${c.state}`, { regression: c.regression, dim: columns[i]?.stale }]"
           :aria-label="c.value === null ? (c.missing ? 'Not analyzed' : '') : `${fmt(c.value)} ${c.regression ? 'newly broken' : STATE_LABEL[c.state]}`"
         >
-          <template v-if="c.value !== null">{{ fmt(c.value) }} <span class="glyph">{{ GLYPH[c.state] }}</span></template>
+          <template v-if="c.value !== null">
+            {{ fmt(c.value) }} <span class="glyph">{{ GLYPH[c.state] }}</span>
+            <VTooltip v-if="c.state === 'broken'" activator="parent" location="top">Broken now</VTooltip>
+          </template>
           <template v-else-if="c.missing">—<VTooltip activator="parent" location="top">Not analyzed</VTooltip></template>
         </span>
       </div>
@@ -296,6 +305,9 @@ const gridColumns = computed(
 }
 .value.is-worse {
   color: #ef5350;
+}
+.value.is-broken .glyph {
+  color: rgb(var(--v-theme-primary));
 }
 .value.regression {
   font-weight: 700;

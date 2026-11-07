@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { invoke } from '@tauri-apps/api/core';
 import { open as openFile } from '@tauri-apps/plugin-dialog';
 import { useDisplay } from 'vuetify';
-import type { AppState, CaseImportReport, MoodDef, MoodTunePrefs, MoodVocabulary, TuneResult, TuneReview } from '@generated/index';
+import type { AcceptedLines, AppState, CaseImportReport, MoodDef, MoodFlagRow, MoodTunePrefs, MoodVocabulary, TuneResult } from '@generated/index';
 import { useAppStore, type MoodDraft } from '../stores/appStore';
 import { useToast } from '../composables/useToast';
 import { useAutoTagEvents } from '../composables/useAutoTagEvents';
@@ -18,12 +18,12 @@ import {
   reachedBars,
   regressions,
   type ColumnModel,
+  type Regression,
 } from '../utils/moodPage';
 import {
   flaggedEntries,
   holdingEntryIds,
   reviewTargetIsHigh,
-  splitBrokenFresh,
   splitName,
   tuneTargetIds,
   versionProblem,
@@ -144,6 +144,24 @@ const selectedDraft = computed(() => drafts.value.find((d) => d.key === selected
 const pinnedFocus = computed(() =>
   store.moodFocus && store.moodFocus.moodId === selectedId.value ? store.moodFocus.entryId : null,
 );
+const focusName = computed(() => (pinnedFocus.value ? (store.findLibraryEntry(pinnedFocus.value)?.name ?? null) : null));
+function clearFocus(): void {
+  store.moodFocus = null;
+  refreshAll();
+}
+// The pinned focus goes with its flag.
+watch(
+  () => {
+    const f = store.moodFocus;
+    if (!f) return true;
+    return store.findLibraryEntry(f.entryId)?.moods.some((m) => m.mood === f.moodId && m.flag !== null) ?? false;
+  },
+  (stillFlagged) => {
+    if (!stillFlagged) store.moodFocus = null;
+  },
+);
+const otherMoodNames = computed(() => moods.value.filter((m) => m.id !== selectedId.value).map((m) => m.name));
+
 const baseline = computed(() => {
   const b = store.moodBaselines[selectedId.value];
   return b && mood.value && b.lines.join('\n') === currentText.value ? b : null;
@@ -295,11 +313,14 @@ const currentColumn = computed<ColumnModel>(() => ({
   split: null,
 }));
 
-function regressionsOf(d: MoodDraft): TuneReview['flags'] {
+function regressionsOf(d: MoodDraft): Regression[] {
   const base = baseline.value?.review;
   if (!d.review || !base) return [];
   return regressions(d.review, base, highIds.value);
 }
+/// Fresh flags a split breaks, over both halves.
+const splitRegressions = (d: MoodDraft): Regression[] =>
+  d.split ? [...d.split.keep.flags, ...d.split.new.flags].filter((f) => f.fresh && !f.holds).map((outcome) => ({ outcome, leftTop: false })) : [];
 
 const columns = computed<ColumnModel[]>(() => [
   currentColumn.value,
@@ -315,7 +336,7 @@ const columns = computed<ColumnModel[]>(() => [
       evaluating: d.evaluating,
       running: d.running,
       error: d.error,
-      regressionCount: d.source === 'split' && d.split ? splitBrokenFresh(d.split) : regressionsOf(d).length,
+      regressionCount: d.source === 'split' ? splitRegressions(d).length : regressionsOf(d).length,
       splitOffer: d.source === 'suggested' && d.split !== null,
       split: d.source === 'split' ? d.split : null,
     }),
@@ -326,7 +347,11 @@ const columns = computed<ColumnModel[]>(() => [
 const flagColumns = computed(() =>
   columns.value
     .filter((c) => c.kind !== 'split')
-    .map((c) => ({ key: c.key, name: c.name, review: c.review, stale: c.stale })),
+    .map((c) => {
+      const d = drafts.value.find((x) => x.key === c.key);
+      const ids = new Set(d ? regressionsOf(d).map((r) => r.outcome.song.entryId) : []);
+      return { key: c.key, name: c.name, review: c.review, stale: c.stale, regressionIds: ids };
+    }),
 );
 const selectedColumn = computed(() => columns.value.find((c) => c.key === selectedKey.value) ?? currentColumn.value);
 const topReview = computed(() => {
@@ -363,12 +388,28 @@ async function onFork(text: string, line: number, caret: number): Promise<void> 
   colRefs.get(d.key)?.focusLine(line, caret);
 }
 
+/// Typing into the ghost column starts a new version.
+const ghostText = ref('');
+async function onGhostInput(e: Event): Promise<void> {
+  const el = e.target as HTMLTextAreaElement;
+  const text = el.value;
+  el.value = '';
+  ghostText.value = '';
+  if (!canAdd.value || text.trim() === '') return;
+  const d = addDraft(selectedId.value, { source: 'typed', text });
+  selectedKey.value = d.key;
+  schedule(d);
+  await nextTick();
+  colRefs.get(d.key)?.focusLine(0, text.length);
+}
+
 function copySelected(): void {
   if (!canAdd.value || isEnergy.value) return;
   const c = selectedColumn.value;
   const text = c.kind === 'split' ? (c.split?.keep.lines.join('\n') ?? '') : c.text;
   const d = addDraft(selectedId.value, { source: 'typed', text, review: c.review, reviewedLines: c.review ? parseLines(text).join('\n') : null, reviewedAgainst: c.review ? currentText.value : null });
   selectedKey.value = d.key;
+  void scrollToColumn(d.key);
 }
 
 function discard(key: number | 'current'): void {
@@ -382,14 +423,25 @@ function rename(d: MoodDraft, name: string): void {
 
 // --- Arrange / Suggest ---
 
+/// Arrange and Suggest search against flags: with none they are off.
+const canSearch = computed(() => canAdd.value && flaggedIds.value.size > 0);
+
+async function scrollToColumn(key: number): Promise<void> {
+  await nextTick();
+  document.querySelector(`[data-col="${key}"]`)?.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
+}
+
 async function search(kind: 'arrange' | 'suggest'): Promise<void> {
   const m = mood.value;
-  if (!m || !canAdd.value) return;
+  if (!m || !canSearch.value) return;
   const from = selectedColumn.value;
   const extra = from.kind === 'version' || from.kind === 'before' ? parseLines(from.text) : [];
   const d = addDraft(m.id, { source: kind === 'arrange' ? 'arranged' : 'suggested', running: kind });
   selectedKey.value = d.key;
+  void scrollToColumn(d.key);
   const t = bump(d.key);
+  // Flags may change while the search runs; then its review is out of date.
+  const sigAtStart = flagSig.value;
   try {
     const r = await invoke<TuneResult>('tune_mood', {
       moodId: m.id,
@@ -413,7 +465,8 @@ async function search(kind: 'arrange' | 'suggest'): Promise<void> {
     d.reviewedAgainst = r.linesTunedFrom.join('\n');
     d.split = r.split;
     d.running = null;
-    keepBaseline(m.id, r);
+    if (flagSig.value === sigAtStart) keepBaseline(m.id, r);
+    else void evaluate(m.id, d);
   } catch (e) {
     if (tokens.get(d.key) !== t) return;
     d.running = null;
@@ -441,13 +494,15 @@ function openSplit(d: MoodDraft): void {
 const confirm = reactive({ open: false, title: '', lines: [] as string[], action: null as null | (() => void) });
 const using = ref(false);
 
-function askBreak(broken: TuneReview['flags'], action: () => void): void {
+function askBreak(broken: Regression[], action: () => void): void {
   if (broken.length === 0) {
     action();
     return;
   }
   confirm.title = confirmTitle(broken.length);
-  confirm.lines = broken.map((o) => confirmLine(o.song.name, o.before, o.after, bandOf(o.song.entryId)));
+  confirm.lines = broken.map((r) =>
+    confirmLine(r.outcome.song.name, r.outcome.before, r.outcome.after, bandOf(r.outcome.song.entryId), r.leftTop),
+  );
   confirm.action = action;
   confirm.open = true;
 }
@@ -458,15 +513,15 @@ async function onUse(key: number | 'current'): Promise<void> {
   if (!d || !m || using.value) return;
   if (d.source === 'split') {
     if (!d.split) return;
-    const broken = [...d.split.keep.flags, ...d.split.new.flags].filter((f) => f.fresh && !f.holds);
-    askBreak(broken, () => {
+    askBreak(splitRegressions(d), () => {
       splitDraft.value = d;
       askSplitNameOpen.value = true;
     });
     return;
   }
   if (!d.review || isStale(d)) await evaluate(m.id, d);
-  if (!d.review || d.error) return;
+  // Typed into (or Current changed) while it evaluated: not what was asked.
+  if (!d.review || d.error || isStale(d)) return;
   askBreak(regressionsOf(d), () => void useLines(m.id, d));
 }
 
@@ -477,45 +532,65 @@ async function useLines(moodId: string, d: MoodDraft): Promise<void> {
   const oldLines = [...m.prompts];
   const freshBefore = (store.moodBaselines[moodId]?.review.flags ?? []).filter((f) => f.fresh).map((f) => f.song.entryId);
   using.value = true;
+  let converted: MoodFlagRow[] = [];
   try {
-    const state = await invoke<AppState>('accept_tuned_lines', {
+    const out = await invoke<AcceptedLines>('accept_tuned_lines', {
       moodId,
       linesTunedFrom: oldLines,
       lines: review.lines,
       holdingEntryIds: holdingEntryIds(review),
       reachedBars: reachedBars(review),
     });
-    store.hydrate(state);
+    store.hydrate(out.state);
+    converted = out.converted;
   } catch (e) {
     toast.showError(String(e));
     return;
   } finally {
     using.value = false;
   }
+  const used = { name: d.name, source: d.source, text: d.text };
+  const at = draftList(moodId).findIndex((x) => x.key === d.key);
   removeDraft(moodId, d.key);
   for (const b of draftList(moodId).filter((x) => x.source === 'before')) removeDraft(moodId, b.key);
   addDraft(moodId, { source: 'before', name: 'Before', text: oldLines.join('\n') }, 0);
   selectedKeyByMood[moodId] = 'current';
-  toast.showSuccess(`${m.name} updated`, { label: 'Undo', run: () => void undo(moodId, review.lines, oldLines, freshBefore) });
-  void rescore();
+  toast.showSuccess(`${m.name} updated`, {
+    label: 'Undo',
+    run: () => void undo(moodId, review.lines, oldLines, freshBefore, converted, used, at),
+  });
+  void rescore(moodId);
 }
 
-async function undo(moodId: string, newLines: string[], oldLines: string[], freshBefore: string[]): Promise<void> {
+/// Undo of Use: the old lines back, the flags the ratchet converted back as
+/// they were, and the used column back where it was.
+async function undo(
+  moodId: string,
+  newLines: string[],
+  oldLines: string[],
+  freshBefore: string[],
+  converted: MoodFlagRow[],
+  used: Pick<MoodDraft, 'name' | 'source' | 'text'>,
+  at: number,
+): Promise<void> {
   try {
-    const state = await invoke<AppState>('accept_tuned_lines', {
+    const out = await invoke<AcceptedLines>('accept_tuned_lines', {
       moodId,
       linesTunedFrom: newLines,
       lines: oldLines,
       holdingEntryIds: freshBefore,
       reachedBars: {},
     });
-    store.hydrate(state);
+    store.hydrate(out.state);
+    if (converted.length > 0) store.hydrate(await invoke<AppState>('restore_mood_flags', { rows: converted }));
   } catch (e) {
     toast.showError(String(e));
     return;
   }
   for (const b of draftList(moodId).filter((x) => x.source === 'before')) removeDraft(moodId, b.key);
-  void rescore();
+  const back = addDraft(moodId, { ...used }, Math.max(0, Math.min(at, draftList(moodId).length)));
+  if (selectedId.value === moodId) selectedKey.value = back.key;
+  void rescore(moodId);
 }
 
 const splitDraft = ref<MoodDraft | null>(null);
@@ -552,61 +627,92 @@ async function useSplit(newName: string): Promise<void> {
   }
   for (const x of draftList(m.id).filter((x) => x.source === 'split' || x.split === split)) removeDraft(m.id, x.key);
   toast.showSuccess(`${m.name} split`);
-  void rescore();
+  void rescore(m.id);
 }
 
 // --- Rescoring ---
 
-const updating = ref(false);
+/// The mood whose bars are being rescored (after Use), and the one whose
+/// rescore failed ("Bars not updated" in its header; never a toast, which
+/// could replace one with an Undo).
+const rescoringId = ref<string | null>(null);
+const notUpdatedId = ref<string | null>(null);
+const updating = computed(() => rescoringId.value !== null && rescoringId.value === selectedId.value);
 let sawProgress = false;
 let updatingTimer: number | undefined;
-async function rescore(): Promise<void> {
-  updating.value = true;
+async function rescore(moodId: string): Promise<void> {
+  rescoringId.value = moodId;
+  notUpdatedId.value = null;
   sawProgress = false;
-  const ok = await store.command('recalibrate_moods');
-  if (!ok) {
-    updating.value = false;
+  try {
+    await invoke('rescore_moods');
+  } catch {
+    rescoringId.value = null;
+    notUpdatedId.value = moodId;
     return;
   }
   // Without a run starting soon (no analyzer), stop saying so.
   window.clearTimeout(updatingTimer);
   updatingTimer = window.setTimeout(() => {
-    if (!sawProgress) updating.value = false;
+    if (!sawProgress) rescoringId.value = null;
   }, 5000);
 }
 watch(autotag.progress, (p) => {
-  if (!updating.value) return;
-  if (p) sawProgress = true;
-  else if (sawProgress) updating.value = false;
+  if (rescoringId.value === null) return;
+  if (p?.phase === 'error') {
+    notUpdatedId.value = rescoringId.value;
+    rescoringId.value = null;
+  } else if (p) sawProgress = true;
+  else if (sawProgress) rescoringId.value = null;
 });
 watch(autotag.completedRuns, () => {
-  updating.value = false;
+  rescoringId.value = null;
 });
+
+/// The full Recalibrate (⋯ menu): clears and rescores every mood.
+async function recalibrateAll(): Promise<void> {
+  await store.command('recalibrate_moods');
+}
 
 // --- Never suggest (per-mood prefs) ---
 
 const prefs = ref<Record<string, MoodTunePrefs>>({});
+/// The preferences could be read; until then (or after a failure) Never
+/// suggest is off, so nothing overwrites what is stored.
+const prefsOk = ref(false);
 onMounted(async () => {
   try {
     prefs.value = (await invoke<Record<string, MoodTunePrefs>>('load_mood_tune_prefs')) ?? {};
+    prefsOk.value = true;
   } catch {
-    prefs.value = {};
+    prefsOk.value = false;
   }
 });
+const neverList = computed(() => prefs.value[selectedId.value]?.neverSuggest ?? []);
 async function neverSuggest(line: string): Promise<void> {
+  if (!prefsOk.value) return;
   const id = selectedId.value;
-  const words = neverSuggestWords(line);
-  const have = prefs.value[id]?.neverSuggest ?? [];
-  const lower = new Set(have.map((w) => w.toLowerCase()));
-  const next = { ...prefs.value, [id]: { neverSuggest: [...have, ...words.filter((w) => !lower.has(w.toLowerCase()))] } };
+  const have = new Set(neverList.value.map((w) => w.toLowerCase()));
+  const words = neverSuggestWords(line).filter((w) => !have.has(w.toLowerCase()));
+  if (words.length === 0) return;
   try {
-    await invoke('save_mood_tune_prefs', { prefs: next });
-    prefs.value = next;
-    toast.showInfo(`Never suggest: ${words.join(', ')}`);
+    prefs.value = await invoke<Record<string, MoodTunePrefs>>('add_never_suggest', { mood: id, words });
+    toast.showInfo(`Never suggest: ${words.join(', ')}`, {
+      label: 'Undo',
+      run: () => void Promise.all(words.map((w) => removeNeverSuggest(id, w))),
+    });
   } catch (e) {
     toast.showError(String(e));
   }
 }
+async function removeNeverSuggest(id: string, word: string): Promise<void> {
+  try {
+    prefs.value = await invoke<Record<string, MoodTunePrefs>>('remove_never_suggest', { mood: id, word });
+  } catch (e) {
+    toast.showError(String(e));
+  }
+}
+const neverOpen = ref(false);
 
 // --- The mood list and the ⋯ menu ---
 
@@ -625,14 +731,11 @@ function nameProblem(name: string, exceptId: string | null): string | null {
 }
 
 const renameOpen = ref(false);
+const renameProblem = (name: string): string | null => nameProblem(name, mood.value?.id ?? null);
+const addProblem = (name: string): string | null => nameProblem(name, null);
 async function renameMood(name: string): Promise<void> {
   const m = mood.value;
-  if (!m) return;
-  const problem = nameProblem(name, m.id);
-  if (problem) {
-    toast.showError(problem);
-    return;
-  }
+  if (!m || nameProblem(name, m.id)) return;
   await saveVocabulary(moods.value.map((x) => (x.id === m.id ? { ...x, name: name.trim() } : x)));
 }
 
@@ -647,6 +750,12 @@ async function moveMood(step: -1 | 1): Promise<void> {
 }
 
 const deleteOpen = ref(false);
+const deleteFlags = computed(() => flagCount(selectedId.value));
+const deleteMessage = computed(() => {
+  const f = deleteFlags.value;
+  const n = deleteLevels.value;
+  return `Removes its bars, ${f} flag${f === 1 ? '' : 's'} and ${n} level${n === 1 ? '' : 's'} you set.`;
+});
 const deleteLevels = computed(
   () => store.libraryEntries.filter((e) => e.moods.some((m) => m.mood === selectedId.value && m.user !== null)).length,
 );
@@ -663,18 +772,14 @@ async function deleteMood(): Promise<void> {
 
 const addOpen = ref(false);
 async function addMood(name: string): Promise<void> {
-  const problem = nameProblem(name, null);
-  if (problem) {
-    toast.showError(problem);
-    return;
-  }
+  if (nameProblem(name, null)) return;
   const taken = new Set(moods.value.map((m) => m.id));
   let id = newMoodId();
   while (taken.has(id)) id = newMoodId();
   const ok = await saveVocabulary([...moods.value, { id, name: name.trim(), prompts: [name.trim().toLowerCase()] }]);
   if (!ok) return;
   selectedId.value = id;
-  void rescore();
+  void rescore(id);
 }
 
 const recalibrateOpen = ref(false);
@@ -684,7 +789,7 @@ async function resetAll(): Promise<void> {
   if (!ok) return;
   store.moodDrafts = {};
   store.moodBaselines = {};
-  if (store.moodsNeedRecalibration) void rescore();
+  if (store.moodsNeedRecalibration) void rescore(selectedId.value);
 }
 
 const importing = ref(false);
@@ -725,7 +830,7 @@ async function saveEnergy(): Promise<void> {
     positive: parseLines(energyPositive.value),
     negative: parseLines(energyNegative.value),
   });
-  if (ok) void rescore();
+  if (ok) void rescore(ENERGY);
 }
 
 // --- Keyboard ---
@@ -819,6 +924,14 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
         <span v-if="updating" class="updating text-caption text-medium-emphasis">
           <VProgressCircular indeterminate size="12" width="2" class="mr-1" />Updating bars…
         </span>
+        <span v-else-if="notUpdatedId === selectedId" class="updating text-caption text-error">Bars not updated</span>
+        <span v-if="focusName && !isEnergy" class="focus-pin text-body-2">
+          Focus: {{ focusName }}
+          <VBtn icon size="x-small" variant="text" aria-label="Clear focus" class="hit" @click="clearFocus">
+            <VIcon size="small">mdi-close</VIcon>
+            <VTooltip activator="parent" location="top" open-on-focus>Clear focus</VTooltip>
+          </VBtn>
+        </span>
         <VSpacer />
         <VBtn v-if="narrow" size="small" variant="text" @click="addOpen = true">+ Mood</VBtn>
         <VMenu location="bottom end">
@@ -833,6 +946,7 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
               <VListItem title="Move up" :disabled="moods[0]?.id === selectedId" @click="moveMood(-1)" />
               <VListItem title="Move down" :disabled="moods[moods.length - 1]?.id === selectedId" @click="moveMood(1)" />
               <VListItem title="Delete mood" :disabled="moods.length <= 1" @click="deleteOpen = true" />
+              <VListItem :title="`Never suggest (${neverList.length})`" :disabled="!prefsOk" @click="neverOpen = true" />
               <VDivider />
             </template>
             <VListItem title="Import case studies" :disabled="importing" @click="importCaseStudies" />
@@ -849,7 +963,7 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
       <section v-if="isEnergy" class="energy">
         <VTextarea v-model="energyPositive" label="Energetic" variant="outlined" density="compact" auto-grow rows="4" hide-details />
         <VTextarea v-model="energyNegative" label="Calm" variant="outlined" density="compact" auto-grow rows="4" hide-details />
-        <div>
+        <div class="energy-save">
           <VBtn color="primary" variant="tonal" :disabled="!energyChanged || !energyValid" @click="saveEnergy">Save</VBtn>
         </div>
       </section>
@@ -867,6 +981,8 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
               :current-lines="mood.prompts"
               :mood-name="mood.name"
               :mood-name-of="moodNameOf"
+              :other-mood-names="otherMoodNames"
+              :never-suggest-off="!prefsOk"
               :busy="using"
               @select="selectedKey = c.key"
               @rename="(n) => { const d = drafts.find((x) => x.key === c.key); if (d) rename(d, n); }"
@@ -879,24 +995,38 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
               @never-suggest="neverSuggest"
               @open-split="() => { const d = drafts.find((x) => x.key === c.key); if (d) openSplit(d); }"
             />
-          </div>
-          <div class="version-actions">
-            <VBtn size="small" variant="tonal" :disabled="!canAdd" @click="copySelected">
-              Copy
-              <VTooltip activator="parent" location="start" open-on-focus>
-                {{ canAdd ? 'Copy the selected column (Ctrl+D)' : `${MAX_PAGE_VERSIONS} versions at most` }}
-              </VTooltip>
-            </VBtn>
-            <VBtn size="small" variant="tonal" :disabled="!canAdd" @click="search('arrange')">
-              Arrange
-              <VTooltip activator="parent" location="start" open-on-focus>
-                Search the selected column's words and Current's
-              </VTooltip>
-            </VBtn>
-            <VBtn size="small" variant="tonal" :disabled="!canAdd" @click="search('suggest')">
-              Suggest
-              <VTooltip activator="parent" location="start" open-on-focus>Search new words too</VTooltip>
-            </VBtn>
+            <!-- Ghost last column: type a new version, or make one -->
+            <section class="ghost-col" aria-label="New version">
+              <textarea
+                class="ghost-input"
+                rows="2"
+                placeholder="Type a version"
+                :disabled="!canAdd"
+                aria-label="Type a version"
+                @input="onGhostInput"
+              />
+              <div class="ghost-actions">
+                <span class="ghost-btn">
+                  <VBtn size="small" variant="tonal" :disabled="!canAdd" @click="copySelected">Copy</VBtn>
+                  <VTooltip activator="parent" location="top" open-on-focus>
+                    {{ canAdd ? 'Copy the selected column (Ctrl+D)' : `${MAX_PAGE_VERSIONS} versions at most` }}
+                  </VTooltip>
+                </span>
+                <span class="ghost-btn">
+                  <VBtn size="small" variant="tonal" :disabled="!canSearch" @click="search('arrange')">Arrange</VBtn>
+                  <VTooltip activator="parent" location="top" open-on-focus>
+                    {{ flaggedIds.size === 0 ? 'Flag a few songs first' : "Search the selected column's words and Current's" }}
+                  </VTooltip>
+                </span>
+                <span class="ghost-btn">
+                  <VBtn size="small" variant="tonal" :disabled="!canSearch" @click="search('suggest')">Suggest</VBtn>
+                  <VTooltip activator="parent" location="top" open-on-focus>
+                    {{ flaggedIds.size === 0 ? 'Flag a few songs first' : 'Search new words too' }}
+                  </VTooltip>
+                </span>
+              </div>
+              <div v-if="!canAdd" class="ghost-cap text-caption text-medium-emphasis">{{ versionCount }}/{{ MAX_PAGE_VERSIONS }}</div>
+            </section>
           </div>
         </div>
 
@@ -931,7 +1061,7 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
         <VCardActions>
           <VSpacer />
           <VBtn variant="plain" @click="confirm.open = false">Cancel</VBtn>
-          <VBtn color="error" variant="tonal" @click="confirm.open = false; confirm.action?.()">Use anyway</VBtn>
+          <VBtn color="error" variant="flat" @click="confirm.open = false; confirm.action?.()">Use anyway</VBtn>
         </VCardActions>
       </VCard>
     </VDialog>
@@ -943,12 +1073,35 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
       confirm-label="Use split"
       @submit="useSplit"
     />
-    <PromptDialog v-model="renameOpen" title="Rename" label="Name" :initial="mood?.name ?? ''" @submit="renameMood" />
-    <PromptDialog v-model="addOpen" title="New mood" label="Name" confirm-label="Add" @submit="addMood" />
+    <PromptDialog
+      v-model="renameOpen"
+      title="Rename"
+      label="Name"
+      :initial="mood?.name ?? ''"
+      :validate="renameProblem"
+      @submit="renameMood"
+    />
+    <PromptDialog v-model="addOpen" title="New mood" label="Name" confirm-label="Add" :validate="addProblem" @submit="addMood" />
+    <VDialog v-model="neverOpen" max-width="440">
+      <VCard :title="`Never suggest (${neverList.length})`">
+        <VCardText>
+          <div v-if="neverList.length === 0" class="text-body-2 text-medium-emphasis">None</div>
+          <div class="d-flex flex-wrap ga-2">
+            <VChip v-for="w in neverList" :key="w" closable size="small" @click:close="removeNeverSuggest(selectedId, w)">
+              {{ w }}
+            </VChip>
+          </div>
+        </VCardText>
+        <VCardActions>
+          <VSpacer />
+          <VBtn variant="plain" @click="neverOpen = false">Close</VBtn>
+        </VCardActions>
+      </VCard>
+    </VDialog>
     <ConfirmDialog
       v-model="deleteOpen"
       :title="`Delete ${mood?.name ?? 'mood'}?`"
-      :message="`Removes its bars and ${deleteLevels} level${deleteLevels === 1 ? '' : 's'} you set.`"
+      :message="deleteMessage"
       confirm-label="Delete"
       confirm-color="error"
       @confirm="deleteMood"
@@ -966,7 +1119,7 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
       title="Recalibrate?"
       message="Rescores every mood. Your levels stay."
       confirm-label="Recalibrate"
-      @confirm="rescore"
+      @confirm="recalibrateAll"
     />
     <VDialog v-model="importReportOpen" max-width="480">
       <VCard v-if="importReport" title="Case studies imported">
@@ -1000,7 +1153,8 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
   height: calc(100vh - var(--v-layout-top, 0px) - var(--v-layout-bottom, 0px));
   display: grid;
   grid-template-columns: 200px minmax(0, 1fr);
-  overflow: hidden;
+  /* clip, not hidden: nothing (such as scrollIntoView) may scroll the page itself. */
+  overflow: clip;
 }
 .moods-page.narrow {
   grid-template-columns: minmax(0, 1fr);
@@ -1086,22 +1240,57 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
   gap: 8px;
   flex: 0 1 auto;
   min-height: 180px;
-  max-height: 48%;
+  height: 36%;
 }
 .versions-scroll {
   display: flex;
   gap: 8px;
   overflow-x: auto;
+  overflow-y: hidden;
   min-width: 0;
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   align-items: stretch;
   padding-bottom: 4px;
+  scroll-snap-type: x mandatory;
+  /* Snapped and scrolled-to columns land right of the sticky Current. */
+  scroll-padding-left: 288px;
 }
-.version-actions {
+.ghost-col {
+  flex: 0 0 270px;
   display: flex;
   flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px dashed rgba(var(--v-theme-on-surface), 0.2);
+  border-radius: 6px;
+  scroll-snap-align: start;
+}
+.ghost-input {
+  resize: none;
+  font: inherit;
+  font-size: 0.875rem;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  outline: none;
+  min-height: 44px;
+}
+.ghost-input::placeholder {
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.ghost-actions {
+  display: flex;
+  flex-wrap: wrap;
   gap: 6px;
-  flex: 0 0 auto;
+}
+.focus-pin {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.hit {
+  min-width: 28px;
+  min-height: 28px;
 }
 .bottom {
   flex: 1 1 0;
@@ -1136,7 +1325,7 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
   gap: 12px;
   max-width: 900px;
 }
-.energy > div {
+.energy-save {
   grid-column: 1 / -1;
 }
 .import-list {

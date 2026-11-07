@@ -17,6 +17,8 @@ const props = defineProps<{
   current: string[];
   fork?: boolean;
   disabled?: boolean;
+  /// Never suggest is off (the preferences could not be read).
+  neverSuggestOff?: boolean;
   label: string;
 }>();
 const emit = defineEmits<{
@@ -159,7 +161,7 @@ function onFocusOut(e: FocusEvent): void {
         </template>
         <VList density="compact">
           <VListItem v-if="!fork" title="Remove" @click="removeLine(i)" />
-          <VListItem title="Never suggest" @click="emit('neverSuggest', line.trim())">
+          <VListItem title="Never suggest" :disabled="neverSuggestOff" @click="emit('neverSuggest', line.trim())">
             <VTooltip activator="parent" location="end" open-delay="300">Arrange and Suggest leave these words out</VTooltip>
           </VListItem>
         </VList>
@@ -228,6 +230,8 @@ function onFocusOut(e: FocusEvent): void {
   color: rgba(var(--v-theme-on-surface), 0.38);
 }
 .line-menu {
+  min-width: 28px;
+  min-height: 28px;
   opacity: 0;
   flex: 0 0 auto;
 }
