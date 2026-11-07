@@ -52,9 +52,14 @@ jitter.
 
 Most of that is a cushion of audio the player keeps in hand so a late network packet
 does not cause a gap. It starts at 0.2 s, grows by 0.1 s each time the stream runs dry
-(up to 0.6 s on a bad link), and jumps forward if it ever falls more than 0.4 s behind.
-The cushion shrinks back by 0.1 s after each quiet minute without a gap, so one bad
-moment (such as a slow scene load) does not leave the stream late for the whole night.
+(up to 0.6 s on a bad link). The cushion shrinks back by 0.1 s after each quiet minute
+without a gap, so one bad moment (such as a slow scene load) does not leave the stream
+late for the whole night. To hold the cushion steady, the player plays up to 0.3 % faster
+or slower (far too little to hear); that absorbs the small speed difference between
+LuteDrop's sound card and yours, which would otherwise slowly pile up or drain the
+cushion. Only after a long network stall that delivers seconds of audio at once does it
+skip ahead, dropping incoming audio until it is back near live, without cutting what is
+already playing.
 
 ### How players should join
 
