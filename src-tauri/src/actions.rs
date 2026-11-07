@@ -1832,6 +1832,57 @@ mod tests {
         assert_eq!(left, vec!["/gone.mp3".to_string(), "/plain.mp3".to_string()]);
     }
 
+    /// Dry run against a COPY of a real database: upgrades it to the
+    /// current schema, backfills ReplayGain from the real files and prints
+    /// the numbers. Never point it at the live database.
+    ///
+    /// LUTEDROP_DRY_RUN_DB=<copy.db> LUTEDROP_SILENT_AUDIO=1 \
+    ///   cargo test replaygain_dry_run -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn replaygain_dry_run() {
+        let path = std::env::var("LUTEDROP_DRY_RUN_DB").expect("set LUTEDROP_DRY_RUN_DB to a database copy");
+        let conn = crate::database::open_db(std::path::Path::new(&path)).unwrap();
+        let db = std::sync::Mutex::new(conn);
+        let todo = library::entries_without_replaygain(&db.lock().unwrap()).unwrap();
+        let report = backfill_replaygain_rows(&db, &todo, |p| crate::replaygain::read_file(std::path::Path::new(p)));
+        println!("checked {} files: {:?}", todo.len(), report);
+
+        let conn = db.lock().unwrap();
+        let rows: Vec<(String, String, Option<f64>, Option<f64>)> = conn
+            .prepare("SELECT name, entry_type, rg_track_gain_db, rg_track_peak FROM library_entries")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for ty in ["music", "ambiance"] {
+            let of_type: Vec<_> = rows.iter().filter(|r| r.1 == ty).collect();
+            let gains = of_type.iter().filter(|r| r.2.is_some()).count();
+            let peaks = of_type.iter().filter(|r| r.3.is_some()).count();
+            println!("{ty}: {} entries, {gains} with a gain, {peaks} with a peak", of_type.len());
+        }
+        let loudness = crate::replaygain::Loudness::load(&conn).unwrap();
+        println!("reference (median music gain): {:?} dB", loudness.reference_db);
+        let mut reductions: Vec<(f64, &str)> = rows
+            .iter()
+            .filter_map(|(name, ty, g, _)| {
+                let f = loudness.factor(&crate::models::EntryType::from_str(ty), *g);
+                (f < 1.0).then(|| (20.0 * f.log10(), name.as_str()))
+            })
+            .collect();
+        reductions.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let music_tagged = rows.iter().filter(|r| r.1 == "music" && r.2.is_some()).count();
+        println!("music reduced: {} of {music_tagged} tagged", reductions.len());
+        for (lo, hi) in [(0.0, 1.0), (1.0, 2.0), (2.0, 3.0), (3.0, 4.0), (4.0, 6.0), (6.0, 99.0)] {
+            let n = reductions.iter().filter(|(db, _)| -db > lo && -db <= hi).count();
+            println!("  reduced by ({lo}, {hi}] dB: {n}");
+        }
+        for (db, name) in reductions.iter().take(5) {
+            println!("  {db:.1} dB  {name}");
+        }
+    }
+
     /// Turning the setting off returns state with every factor at 1 and
     /// reaches the loaded tracks at once.
     #[test]
