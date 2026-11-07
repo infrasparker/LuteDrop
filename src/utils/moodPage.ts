@@ -11,6 +11,7 @@ import type {
   TuneNameIdea,
   TuneOverlap,
   TuneReview,
+  TuneSplitReview,
   TuneTopSong,
 } from '@generated/index';
 import { MIN_FLAGS, nameNote, overlapRises } from './moodTune.ts';
@@ -25,6 +26,25 @@ export const SHAKY_LOO = 0.7;
 
 /// How a version column's lines came about.
 export type VersionSource = 'typed' | 'arranged' | 'suggested' | 'before';
+
+/// What a version column shows (MoodVersionColumn.vue).
+export interface ColumnModel {
+  key: number | 'current';
+  name: string;
+  kind: 'current' | 'version' | 'before' | 'split';
+  source: VersionSource | null;
+  text: string;
+  review: TuneReview | null;
+  /// The verdict was made from other lines (or another Current): greyed.
+  stale: boolean;
+  evaluating: boolean;
+  running: 'arrange' | 'suggest' | null;
+  error: string | null;
+  regressionCount: number;
+  /// A suggested column whose search found a split.
+  splitOffer: boolean;
+  split: TuneSplitReview | null;
+}
 
 // --- Band words ---
 
@@ -98,7 +118,8 @@ export function bandDistance(v: number, b: Bounds): number {
 
 /// One cell of the flags table. `holds`: inside the band. `closer`:
 /// outside, but nearer than under Current. `worse`: outside and no nearer,
-/// or newly broken (Current held). The Current column (`current` null) is
+/// or newly broken (Current held); `plain` when broken under Current
+/// already and no farther. The Current column (`current` null) is
 /// `holds` or `plain`, never an alarm.
 export type CellState = 'holds' | 'closer' | 'worse' | 'plain';
 
@@ -110,8 +131,12 @@ export function cellState(
   if (cell.holds) return 'holds';
   if (current === null) return 'plain';
   if (current.holds) return 'worse';
-  if (bounds && bandDistance(cell.after, bounds) < bandDistance(current.after, bounds) - 1e-9) return 'closer';
-  return 'worse';
+  if (!bounds) return 'worse';
+  const now = bandDistance(cell.after, bounds);
+  const before = bandDistance(current.after, bounds);
+  if (now < before - 1e-9) return 'closer';
+  // Broken under Current already and no farther: no alarm.
+  return now > before + 1e-9 ? 'worse' : 'plain';
 }
 
 // --- Regressions ---
@@ -163,17 +188,16 @@ export const breaksLabel = (n: number): string => `${n} break${n === 1 ? '' : 's
 
 // --- Verdict and chips ---
 
-/// A column's verdict: "{held}/{total} · {n} songs ({±d})". Current shows
-/// its own song count with no change; with no flags only the songs show.
+/// A column's verdict: "{held}/{total} · {n} songs ({±d})"; with no flags
+/// only the songs show. Current shows only "{held}/{total}" (its song count
+/// is in the page header), or nothing without flags.
 export function verdictText(r: Outcomes & Pick<TuneReview, 'firesBefore' | 'firesAfter'>, isCurrent: boolean): string {
-  const n = isCurrent ? r.firesBefore : r.firesAfter;
-  let songs = `${n} song${n === 1 ? '' : 's'}`;
-  if (!isCurrent) {
-    const d = r.firesAfter - r.firesBefore;
-    songs += ` (${d > 0 ? `+${d}` : d < 0 ? `−${-d}` : '±0'})`;
-  }
-  if (r.flags.length === 0) return songs;
-  return `${r.flags.filter((f) => f.holds).length}/${r.flags.length} · ${songs}`;
+  const held = r.flags.length === 0 ? '' : `${r.flags.filter((f) => f.holds).length}/${r.flags.length}`;
+  if (isCurrent) return held;
+  const n = r.firesAfter;
+  const d = r.firesAfter - r.firesBefore;
+  const songs = `${n} song${n === 1 ? '' : 's'} (${d > 0 ? `+${d}` : d < 0 ? `−${-d}` : '±0'})`;
+  return held ? `${held} · ${songs}` : songs;
 }
 
 export interface ColumnChips {

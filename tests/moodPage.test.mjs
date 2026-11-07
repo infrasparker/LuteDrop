@@ -75,7 +75,8 @@ test('cell state: holds, closer, worse, and a newly broken flag is worse', () =>
   assert.equal(cellState({ holds: false, after: 0.7 }, { holds: false, after: 0.6 }, b), 'closer');
   assert.equal(cellState({ holds: false, after: 0.5 }, { holds: false, after: 0.6 }, b), 'worse');
   assert.equal(cellState({ holds: false, after: 0.74 }, { holds: true, after: 0.8 }, b), 'worse');
-  assert.equal(cellState({ holds: false, after: 0.6 }, { holds: false, after: 0.6 }, b), 'worse');
+  // Broken under Current and no farther: shown plain, not as worse.
+  assert.equal(cellState({ holds: false, after: 0.6 }, { holds: false, after: 0.6 }, b), 'plain');
   // The Current column itself never alarms.
   assert.equal(cellState({ holds: false, after: 0.6 }, null, b), 'plain');
   assert.equal(cellState({ holds: true, after: 0.8 }, null, b), 'holds');
@@ -107,12 +108,14 @@ test('confirm copy', () => {
 
 // --- Verdict and chips ---
 
-test('verdict: held / total and songs with the change', () => {
+test('verdict: held / total and songs with the change; Current shows held / total only', () => {
   const r = { flags: [outcome('a', 0, 0, true), outcome('b', 0, 0, false)], firesBefore: 35, firesAfter: 38 };
   assert.equal(verdictText(r, false), '1/2 · 38 songs (+3)');
   assert.equal(verdictText({ ...r, firesAfter: 33 }, false), '1/2 · 33 songs (−2)');
   assert.equal(verdictText({ ...r, firesAfter: 35 }, false), '1/2 · 35 songs (±0)');
-  assert.equal(verdictText(r, true), '1/2 · 35 songs');
+  // Current: only how many flags hold (its song count is in the header).
+  assert.equal(verdictText(r, true), '1/2');
+  assert.equal(verdictText({ flags: [], firesBefore: 4, firesAfter: 4 }, true), '');
   assert.equal(verdictText({ flags: [], firesBefore: 4, firesAfter: 5 }, false), '5 songs (+1)');
   assert.equal(verdictText({ flags: [outcome('a', 0, 0, true)], firesBefore: 1, firesAfter: 1 }, false), '1/1 · 1 song (±0)');
 });
