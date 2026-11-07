@@ -70,8 +70,12 @@ async function handle(cmd: string, a: Args): Promise<unknown> {
     }
     case 'clear_mood_flag': {
       const v = moodValue(a.entryId, a.mood);
+      const f = v?.flag ?? null;
       if (v) v.flag = null;
-      return state;
+      const removed = f
+        ? { entryId: a.entryId, mood: a.mood, kind: f.kind, band: f.band, bound: f.bound, barAtFlag: f.barAtFlag, calibratedAt: f.calibratedAt, linesSig: '', createdAt: null, stale: f.stale }
+        : null;
+      return { state, removed };
     }
     case 'keep_mood_flag': {
       const v = moodValue(a.entryId, a.mood);
@@ -102,7 +106,16 @@ async function handle(cmd: string, a: Args): Promise<unknown> {
       return { state, converted: [] };
     }
     case 'restore_mood_flags':
+      for (const r of a.rows as { entryId: string; mood: string; kind: FlagKind; band: FlagBand | null; bound: FlagBound; barAtFlag: number | null; calibratedAt: string | null; stale?: boolean }[]) {
+        const v = moodValue(r.entryId, r.mood);
+        if (v) v.flag = { kind: r.kind, band: r.band, bound: r.bound, barAtFlag: r.barAtFlag, calibratedAt: r.calibratedAt, stale: r.stale ?? false, staleReason: r.stale ? 'wording' : null };
+      }
       return state;
+    case 'undo_tuned_lines': {
+      const m = state.moodVocabulary.moods.find((x) => x.id === a.moodId);
+      if (m) m.prompts = a.lines as string[];
+      return state;
+    }
     case 'rescore_moods':
       await sleep(300);
       return null;

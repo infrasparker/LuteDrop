@@ -5,6 +5,7 @@ import { useAppStore } from '../../stores/appStore';
 import { useLibraryPreview } from '../../composables/useLibraryPreview';
 import { albumOf } from '../../utils/moodTune';
 import MoodFlagMenu from '../MoodFlagMenu.vue';
+import { useFlagRemoval } from '../../composables/useFlagRemoval';
 
 /// A song on the Moods page: its name (click opens the song editor; artist
 /// and album in the tooltip), with play and flag buttons that show on hover
@@ -13,6 +14,7 @@ const props = defineProps<{ entryId: string; moodId: string; name: string }>();
 const menuOpen = defineModel<boolean>('menu', { default: false });
 
 const store = useAppStore();
+const { removeFlag } = useFlagRemoval();
 const preview = useLibraryPreview();
 const entry = computed(() => store.findLibraryEntry(props.entryId));
 const album = computed(() => (entry.value ? albumOf(entry.value.filePath) : ''));
@@ -23,7 +25,7 @@ function setFlag(kind: FlagKind, band: FlagBand | null): void {
   void store.command('set_mood_flag', { entryId: props.entryId, mood: props.moodId, kind, band });
 }
 function clearFlag(): void {
-  void store.command('clear_mood_flag', { entryId: props.entryId, mood: props.moodId });
+  void removeFlag(props.entryId, props.moodId);
 }
 </script>
 

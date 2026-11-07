@@ -17,6 +17,9 @@ import {
   parseLines,
   reachedBars,
   regressions,
+  draftStale,
+  rescoreProblem,
+  splitRegressions,
   type ColumnModel,
   type Regression,
 } from '../utils/moodPage';
@@ -105,6 +108,7 @@ function addDraft(moodId: string, part: Partial<MoodDraft> & Pick<MoodDraft, 'so
     review: null,
     reviewedLines: null,
     reviewedAgainst: null,
+    reviewedFlags: null,
     evaluating: false,
     running: null,
     error: null,
@@ -231,12 +235,15 @@ async function evaluate(moodId: string, d: MoodDraft): Promise<void> {
   d.error = null;
   d.evaluating = true;
   const t = bump(d.key);
+  // The flags this review is made against (they may change meanwhile).
+  const sig = flagSig.value;
   try {
     const r = await compare(moodId, lines);
     if (tokens.get(d.key) !== t) return;
     d.review = r.proposals[0] ?? null;
     d.reviewedLines = lines.join('\n');
     d.reviewedAgainst = r.linesTunedFrom.join('\n');
+    d.reviewedFlags = sig;
     keepBaseline(moodId, r);
   } catch (e) {
     if (tokens.get(d.key) === t) d.error = String(e);
@@ -252,7 +259,7 @@ function schedule(d: MoodDraft): void {
 }
 
 const isStale = (d: MoodDraft): boolean =>
-  d.review !== null && (d.reviewedLines !== parseLines(d.text).join('\n') || d.reviewedAgainst !== currentText.value);
+  draftStale(d, { text: d.text, current: currentText.value, flags: flagSig.value });
 
 /// Everything the selected mood shows, evaluated again: on opening a mood,
 /// after its lines change, and after its flags change.
@@ -319,9 +326,8 @@ function regressionsOf(d: MoodDraft): Regression[] {
   return regressions(d.review, base, highIds.value);
 }
 /// Fresh flags a split breaks, over both halves.
-const splitRegressions = (d: MoodDraft): Regression[] =>
-  d.split ? [...d.split.keep.flags, ...d.split.new.flags].filter((f) => f.fresh && !f.holds).map((outcome) => ({ outcome, leftTop: false })) : [];
-
+const splitRegressionsOf = (d: MoodDraft): Regression[] =>
+  d.split && baseline.value ? splitRegressions(d.split, baseline.value.review) : [];
 const columns = computed<ColumnModel[]>(() => [
   currentColumn.value,
   ...drafts.value.map(
@@ -336,7 +342,7 @@ const columns = computed<ColumnModel[]>(() => [
       evaluating: d.evaluating,
       running: d.running,
       error: d.error,
-      regressionCount: d.source === 'split' ? splitRegressions(d).length : regressionsOf(d).length,
+      regressionCount: d.source === 'split' ? splitRegressionsOf(d).length : regressionsOf(d).length,
       splitOffer: d.source === 'suggested' && d.split !== null,
       split: d.source === 'split' ? d.split : null,
     }),
@@ -407,7 +413,7 @@ function copySelected(): void {
   if (!canAdd.value || isEnergy.value) return;
   const c = selectedColumn.value;
   const text = c.kind === 'split' ? (c.split?.keep.lines.join('\n') ?? '') : c.text;
-  const d = addDraft(selectedId.value, { source: 'typed', text, review: c.review, reviewedLines: c.review ? parseLines(text).join('\n') : null, reviewedAgainst: c.review ? currentText.value : null });
+  const d = addDraft(selectedId.value, { source: 'typed', text, review: c.review, reviewedLines: c.review ? parseLines(text).join('\n') : null, reviewedAgainst: c.review ? currentText.value : null, reviewedFlags: c.review ? flagSig.value : null });
   selectedKey.value = d.key;
   void scrollToColumn(d.key);
 }
@@ -463,6 +469,7 @@ async function search(kind: 'arrange' | 'suggest'): Promise<void> {
     d.review = p;
     d.reviewedLines = p.lines.join('\n');
     d.reviewedAgainst = r.linesTunedFrom.join('\n');
+    d.reviewedFlags = sigAtStart;
     d.split = r.split;
     d.running = null;
     if (flagSig.value === sigAtStart) keepBaseline(m.id, r);
@@ -513,7 +520,7 @@ async function onUse(key: number | 'current'): Promise<void> {
   if (!d || !m || using.value) return;
   if (d.source === 'split') {
     if (!d.split) return;
-    askBreak(splitRegressions(d), () => {
+    askBreak(splitRegressionsOf(d), () => {
       splitDraft.value = d;
       askSplitNameOpen.value = true;
     });
@@ -574,15 +581,16 @@ async function undo(
   at: number,
 ): Promise<void> {
   try {
-    const out = await invoke<AcceptedLines>('accept_tuned_lines', {
-      moodId,
-      linesTunedFrom: newLines,
-      lines: oldLines,
-      holdingEntryIds: freshBefore,
-      reachedBars: {},
-    });
-    store.hydrate(out.state);
-    if (converted.length > 0) store.hydrate(await invoke<AppState>('restore_mood_flags', { rows: converted }));
+    // One transaction: the lines go back and the converted flags with them.
+    store.hydrate(
+      await invoke<AppState>('undo_tuned_lines', {
+        moodId,
+        linesTunedFrom: newLines,
+        lines: oldLines,
+        holdingEntryIds: freshBefore,
+        restore: converted,
+      }),
+    );
   } catch (e) {
     toast.showError(String(e));
     return;
@@ -636,19 +644,30 @@ async function useSplit(newName: string): Promise<void> {
 /// rescore failed ("Bars not updated" in its header; never a toast, which
 /// could replace one with an Undo).
 const rescoringId = ref<string | null>(null);
-const notUpdatedId = ref<string | null>(null);
+/// Why the last rescore left a mood's bars as they were.
+const notUpdated = ref<{ moodId: string; text: string } | null>(null);
+let rescoreLines = '';
+const linesOf = (id: string): string =>
+  id === ENERGY
+    ? JSON.stringify(store.moodVocabulary.energy)
+    : (moods.value.find((m) => m.id === id)?.prompts.join('\n') ?? '');
+function failRescore(moodId: string, error: string | null): void {
+  rescoringId.value = null;
+  const text = rescoreProblem({ error, needsRecalibration: true, linesAtStart: rescoreLines, linesNow: linesOf(moodId) });
+  if (text) notUpdated.value = { moodId, text };
+}
 const updating = computed(() => rescoringId.value !== null && rescoringId.value === selectedId.value);
 let sawProgress = false;
 let updatingTimer: number | undefined;
 async function rescore(moodId: string): Promise<void> {
   rescoringId.value = moodId;
-  notUpdatedId.value = null;
+  notUpdated.value = null;
+  rescoreLines = linesOf(moodId);
   sawProgress = false;
   try {
     await invoke('rescore_moods');
-  } catch {
-    rescoringId.value = null;
-    notUpdatedId.value = moodId;
+  } catch (e) {
+    failRescore(moodId, String(e));
     return;
   }
   // Without a run starting soon (no analyzer), stop saying so.
@@ -659,14 +678,28 @@ async function rescore(moodId: string): Promise<void> {
 }
 watch(autotag.progress, (p) => {
   if (rescoringId.value === null) return;
-  if (p?.phase === 'error') {
-    notUpdatedId.value = rescoringId.value;
-    rescoringId.value = null;
-  } else if (p) sawProgress = true;
-  else if (sawProgress) rescoringId.value = null;
+  if (p?.phase === 'error') failRescore(rescoringId.value, p.message ?? 'the analysis failed');
+  else if (p) sawProgress = true;
 });
-watch(autotag.completedRuns, () => {
+/// After the run: the state again, then whether the mood got its bars (the
+/// run skips a mood whose words changed meanwhile, or that it cannot
+/// calibrate yet).
+watch(autotag.completedRuns, async () => {
+  const id = rescoringId.value;
+  if (id === null) return;
+  try {
+    store.hydrate(await invoke<AppState>('load_data'));
+  } catch {
+    // The events composable reloads too; judge on what the store has.
+  }
   rescoringId.value = null;
+  const text = rescoreProblem({
+    error: null,
+    needsRecalibration: store.moodsNeedRecalibration,
+    linesAtStart: rescoreLines,
+    linesNow: linesOf(id),
+  });
+  notUpdated.value = text ? { moodId: id, text } : null;
 });
 
 /// The full Recalibrate (⋯ menu): clears and rescores every mood.
@@ -699,7 +732,9 @@ async function neverSuggest(line: string): Promise<void> {
     prefs.value = await invoke<Record<string, MoodTunePrefs>>('add_never_suggest', { mood: id, words });
     toast.showInfo(`Never suggest: ${words.join(', ')}`, {
       label: 'Undo',
-      run: () => void Promise.all(words.map((w) => removeNeverSuggest(id, w))),
+      run: async () => {
+        for (const w of words) await removeNeverSuggest(id, w);
+      },
     });
   } catch (e) {
     toast.showError(String(e));
@@ -924,7 +959,7 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
         <span v-if="updating" class="updating text-caption text-medium-emphasis">
           <VProgressCircular indeterminate size="12" width="2" class="mr-1" />Updating bars…
         </span>
-        <span v-else-if="notUpdatedId === selectedId" class="updating text-caption text-error">Bars not updated</span>
+        <span v-else-if="notUpdated?.moodId === selectedId" class="updating text-caption text-error">{{ notUpdated.text }}</span>
         <span v-if="focusName && !isEnergy" class="focus-pin text-body-2">
           Focus: {{ focusName }}
           <VBtn icon size="x-small" variant="text" aria-label="Clear focus" class="hit" @click="clearFocus">
@@ -1251,7 +1286,7 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
   flex: 1 1 auto;
   align-items: stretch;
   padding-bottom: 4px;
-  scroll-snap-type: x mandatory;
+  scroll-snap-type: x proximity;
   /* Snapped and scrolled-to columns land right of the sticky Current. */
   scroll-padding-left: 288px;
 }

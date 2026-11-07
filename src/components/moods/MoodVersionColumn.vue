@@ -202,7 +202,7 @@ const splitNewVerdict = computed(() => (props.col.split ? verdictText(props.col.
           :variant="col.regressionCount > 0 ? 'flat' : 'tonal'"
           class="mt-1"
           :color="col.regressionCount > 0 ? 'error' : 'primary'"
-          :disabled="busy || col.error !== null"
+          :disabled="busy || col.evaluating || col.error !== null"
           @click="emit('use')"
         >
           {{ useLabel(col.regressionCount) }}

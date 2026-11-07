@@ -35,6 +35,8 @@ export interface MoodDraft {
   reviewedLines: string | null;
   /// The Current lines `review` was made against.
   reviewedAgainst: string | null;
+  /// The mood's flag signature when `review` was made.
+  reviewedFlags: string | null;
   evaluating: boolean;
   /// Arrange / Suggest still searching for this column.
   running: 'arrange' | 'suggest' | null;

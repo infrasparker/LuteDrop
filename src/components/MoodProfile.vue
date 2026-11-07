@@ -5,6 +5,7 @@ import { useAppStore } from '../stores/appStore';
 import { useRouter } from 'vue-router';
 import { flagControlVisible, flagLabel, flagMark } from '../utils/moodFlags';
 import MoodFlagMenu from './MoodFlagMenu.vue';
+import { useFlagRemoval } from '../composables/useFlagRemoval';
 import { MOOD_LEVELS, moodLayers, moodList, snapLevel, stepLevel } from '../utils/moods';
 
 /// The mood profile of one or more music entries: one row per mood of the
@@ -25,6 +26,7 @@ import { MOOD_LEVELS, moodLayers, moodList, snapLevel, stepLevel } from '../util
 const props = defineProps<{ entries: LibraryEntry[] }>();
 
 const store = useAppStore();
+const { removeFlag } = useFlagRemoval();
 
 // Moods only exist on music; ambiance in a bulk selection is left out.
 const music = computed(() => props.entries.filter((e) => e.entryType === 'music'));
@@ -131,7 +133,7 @@ function setFlag(mood: MoodId, kind: FlagKind, band: FlagBand | null): void {
 function clearFlag(mood: MoodId): void {
   const entryId = ids.value[0];
   if (entryId === undefined) return;
-  void store.command('clear_mood_flag', { entryId, mood });
+  void removeFlag(entryId, mood);
 }
 
 /// "Open in Moods": closes the song editor and opens the Moods page on this
