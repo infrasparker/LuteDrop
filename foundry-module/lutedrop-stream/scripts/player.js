@@ -270,31 +270,40 @@ export class OggOpusMuxer {
 // Second piece: LiveClock.
 //
 // The decoder hands us chunks of PCM audio; Web Audio plays a chunk at a time
-// we choose. LiveClock is the pure policy for choosing that time. It knows
-// nothing about Web Audio: it is given a function that returns "now" in
+// and speed we choose. LiveClock is the pure policy for choosing both. It
+// knows nothing about Web Audio: it is given a function that returns "now" in
 // seconds (AudioContext.currentTime in production) so tests can use a fake.
 //
 // Why a cushion (TARGET_LEAD_S = 0.2 s): we never start a chunk exactly "now",
 // because by the time the call reaches the speaker it would already be late.
 // 0.2 s covers one 40 ms Ogg page (we cannot decode half a page), the decoder's
 // own latency, and roughly 100 ms of network jitter. Smaller is lower latency
-// but more gaps; larger is safer but laggier.
+// but more gaps; larger is safer but laggier. "Pending" below means how much
+// audio is queued ahead of now; the goal is to keep it at the cushion.
 //
 // Why chunks go back to back: TCP cannot lose or reorder packets, so every
 // chunk that arrives belongs directly after the previous one. We schedule each
-// at the previous chunk's end, computed from its decoded length, which keeps
-// the audio gapless with no timestamps needed.
+// at the previous chunk's end, which keeps the audio gapless with no
+// timestamps needed. A chunk of d seconds played at speed r lasts d / r
+// seconds, so the next one starts at at + d / r.
+//
+// Speed control (drift): LuteDrop's sound card and the listener's sound card
+// each keep their own time, and no two run at exactly the same speed; a
+// difference of 200-1000 parts per million is normal. If the sender's runs
+// fast, audio piles up a little every minute; if it runs slow, the queue
+// slowly empties. Instead of ever jumping, every chunk gets a playback speed
+// just off 1: rate = 1 + RATE_GAIN_PER_S * error, where error is pending minus
+// the cushion, smoothed over about ERROR_SMOOTHING_S so one late page does
+// not make the pitch wobble. Too much queued plays a hair faster, too little a
+// hair slower. The speed never moves more than MAX_RATE_DEV (0.3 %, about 5
+// cents of pitch) from 1, which nobody can hear. With these numbers a 1000 ppm
+// mismatch settles with the queue about 10 ms off the cushion, and the
+// smoothing is gentle enough that the speed never overshoots and swings.
 //
 // Underruns: if a chunk would have to start in the past, the stream stalled
 // and we ran out of audio. Playing a gap is the honest outcome. We restart at
 // now + lead, and raise the cushion by LEAD_STEP_S (up to MAX_LEAD_S) so a bad
 // link ends up with a bigger cushion rather than repeated gaps.
-//
-// Catch-up: after a burst of pages (a stall that then delivers everything at
-// once) we can end up far ahead of "now", i.e. permanently behind live. When
-// the pending position is more than lead + CATCHUP_SLACK_S ahead, we report
-// catchUp so the caller stops everything already scheduled, and we place this
-// chunk at now + lead. One jump back to live beats staying late forever.
 //
 // Shrinking back (decay): underruns are not always the network's fault.
 // Foundry itself freezes the page for a moment when it loads a scene, and
@@ -302,25 +311,28 @@ export class OggOpusMuxer {
 // bigger cushion (more delay) for the rest of the night. So after
 // LEAD_DECAY_AFTER_S (60 s) with no underrun, the cushion drops by
 // LEAD_STEP_S, and again after every further quiet minute, never below
-// TARGET_LEAD_S. A link that really needs the bigger cushion will underrun
-// again and grow it back; one that does not stays fast.
+// TARGET_LEAD_S. Lowering the cushion does not move audio already queued; the
+// speed control simply sees too much queued and drains it (0.1 s takes about
+// half a minute at 0.3 % faster). A link that really needs the bigger cushion
+// will underrun again and grow it back; one that does not stays fast.
 //
-// Slow drift: LuteDrop's sound card and the listener's sound card each keep
-// their own time, and no two run at exactly the same speed. If ours runs a
-// touch slow, audio piles up a few milliseconds per minute: never enough for
-// the big catch-up above, but enough to leave us late for good. Lowering the
-// cushion (decay) has the same effect: the audio already queued stays where
-// it is. So if the pending audio has stayed more than DRIFT_SLACK_S (0.1 s)
-// above the cushion for DRIFT_AFTER_S (5 s) in a row, we report catchUp just
-// like the big jump. The 5 s wait means a brief burst (which drains by
-// itself) never causes a jump; only lateness that sticks does.
+// Big bursts (skip): after a long stall the network can deliver seconds of
+// audio at once, leaving us far behind live; draining that at 0.3 % would
+// take many minutes. So when pending is more than lead + SKIP_SLACK_S ahead,
+// we report skip: the caller drops the incoming chunk instead of playing it.
+// We keep dropping until pending is back within SKIP_RESUME_SLACK_S of the
+// cushion, then continue gaplessly where the queue ends. Audio already
+// playing or scheduled is never stopped, so there is no silence: you hear a
+// jump forward in the music, once, instead.
 export const TARGET_LEAD_S = 0.2;
 export const LEAD_STEP_S = 0.1;
 export const MAX_LEAD_S = 0.6;
-export const CATCHUP_SLACK_S = 0.4;
 export const LEAD_DECAY_AFTER_S = 60;
-export const DRIFT_SLACK_S = 0.1;
-export const DRIFT_AFTER_S = 5;
+export const MAX_RATE_DEV = 0.003;
+export const RATE_GAIN_PER_S = 0.1;
+export const ERROR_SMOOTHING_S = 1;
+export const SKIP_SLACK_S = 1.5;
+export const SKIP_RESUME_SLACK_S = 0.05;
 
 export class LiveClock {
   /** @param {() => number} now seconds (AudioContext.currentTime in production) */
@@ -334,15 +346,18 @@ export class LiveClock {
     return this._lead;
   }
 
+  /** Seconds of audio queued ahead of now (0 when nothing is queued). */
+  get pending() {
+    return this._next === null ? 0 : Math.max(0, this._next - this._now());
+  }
+
   /**
-   * Decide when a chunk of `durationS` seconds should start.
-   * @returns {{ at: number, restart: boolean, catchUp: boolean }}
+   * Decide when and how fast a chunk of `durationS` seconds should play.
+   * With `skip` true the caller must drop the chunk (`at` is null).
+   * @returns {{ at: number | null, rate: number, restart: boolean, skip: boolean }}
    */
   place(durationS) {
     const now = this._now();
-    let at;
-    let restart = false;
-    let catchUp = false;
     if (this._next === null || this._next < now) {
       // First chunk, or an underrun: start fresh. Only a genuine underrun
       // (we had a position and missed it) grows the cushion.
@@ -350,22 +365,38 @@ export class LiveClock {
         this._lead = Math.min(this._lead + LEAD_STEP_S, MAX_LEAD_S);
       }
       this._quietSince = now; // the quiet minute (decay) counts from here
-      this._driftSince = null;
-      restart = true;
-      at = now + this._lead;
-    } else {
-      this.#decay(now);
-      const pending = this._next - now;
-      if (pending > this._lead + CATCHUP_SLACK_S || this.#driftedLongEnough(pending, now)) {
-        catchUp = true;
-        this._driftSince = null;
-        at = now + this._lead;
-      } else {
-        at = this._next;
-      }
+      this._skipping = false;
+      this._error = 0; // pending is exactly the cushion now
+      this._errorAt = now;
+      const at = now + this._lead;
+      this._next = at + durationS;
+      return { at, rate: 1, restart: true, skip: false };
     }
-    this._next = at + durationS;
-    return { at, restart, catchUp };
+    this.#decay(now);
+    const error = this._next - now - this._lead;
+    if (error > SKIP_SLACK_S) this._skipping = true;
+    if (this._skipping) {
+      if (error > SKIP_RESUME_SLACK_S) return { at: null, rate: 1, restart: false, skip: true };
+      this._skipping = false;
+      this._error = error; // the average from before the burst means nothing now
+      this._errorAt = now;
+    }
+    const rate = this.#rate(error, now);
+    const at = this._next;
+    this._next = at + durationS / rate;
+    return { at, rate, restart: false, skip: false };
+  }
+
+  /** Smooth the error, then turn it into a playback speed near 1. */
+  #rate(error, now) {
+    // Exponential moving average with time constant ERROR_SMOOTHING_S: the
+    // longer since the last update, the more the new reading counts. Chunks
+    // that arrive together (no time between them) leave it unchanged.
+    const weight = 1 - Math.exp(-(now - this._errorAt) / ERROR_SMOOTHING_S);
+    this._error += (error - this._error) * weight;
+    this._errorAt = now;
+    const dev = Math.min(MAX_RATE_DEV, Math.max(-MAX_RATE_DEV, RATE_GAIN_PER_S * this._error));
+    return 1 + dev;
   }
 
   /** After a quiet minute, lower the cushion one step (not below the target). */
@@ -375,22 +406,14 @@ export class LiveClock {
     this._lead = Math.max(this._lead - LEAD_STEP_S, TARGET_LEAD_S);
   }
 
-  /** True once `pending` has sat above lead + DRIFT_SLACK_S for DRIFT_AFTER_S. */
-  #driftedLongEnough(pending, now) {
-    if (pending <= this._lead + DRIFT_SLACK_S) {
-      this._driftSince = null; // back within the slack: the clock starts over
-      return false;
-    }
-    this._driftSince ??= now;
-    return now - this._driftSince >= DRIFT_AFTER_S;
-  }
-
   /** New connection: cushion back to the target, nothing pending. */
   reset() {
     this._lead = TARGET_LEAD_S;
     this._next = null; // where the next chunk starts; null means nothing pending
     this._quietSince = 0; // `now` of the last underrun (or the first chunk)
-    this._driftSince = null; // `now` when pending first went above lead + slack
+    this._error = 0; // smoothed (pending - lead), in seconds
+    this._errorAt = 0; // `now` when _error was last updated
+    this._skipping = false; // dropping incoming chunks to get back near live
   }
 }
 
@@ -841,6 +864,7 @@ class StreamPlayerBase {
   #headerState = "head"; // "head" (want OpusHead) | "tags" (want OpusTags) | "audio"
   #opusHead = null;
   #scheduledAny = false; // has this connection scheduled a chunk yet?
+  #skippedS = 0; // audio dropped so far in the current catch-up (0 when not skipping)
   #generation = 0;
   #onGiveUp;
   #url = "";
@@ -953,6 +977,7 @@ class StreamPlayerBase {
     this.#headerState = "head";
     this.#opusHead = null;
     this.#scheduledAny = false;
+    this.#skippedS = 0;
     if (!this.#url) {
       console.info(`${MODULE_ID} | no stream URL set; staying silent`);
       return;
@@ -1051,24 +1076,38 @@ class StreamPlayerBase {
     if (gen !== this.#generation) return;
     const frames = planes[0]?.length ?? 0;
     if (frames === 0) return;
-    const buffer = this.#ctx.createBuffer(planes.length, frames, sampleRate);
-    planes.forEach((plane, ch) => buffer.copyToChannel(plane, ch));
-    const { at, restart, catchUp } = this.#clock.place(frames / sampleRate);
+    const durationS = frames / sampleRate;
+    const behindMs = Math.round(this.#clock.pending * 1000); // before this chunk, for the log
+    const { at, rate, restart, skip } = this.#clock.place(durationS);
     const leadMs = Math.round(this.#clock.lead * 1000);
     if (restart && this.#scheduledAny) {
       console.info(`${MODULE_ID} | ran out of audio (underrun); restarting with a ${leadMs} ms cushion`);
     }
-    if (catchUp) {
-      // Far behind live: drop what is queued and jump back to the live edge.
-      // Stopping mid-chunk can click once; a catch-up is rare (a burst after
-      // a stall, or slow drift every few minutes at most), so we accept that
-      // rather than fade the gain around it.
-      this.#stopSources();
-      console.info(`${MODULE_ID} | fell behind live; jumped ahead (cushion ${leadMs} ms)`);
+    if (skip) {
+      // Far behind live after a burst: drop this chunk instead of queueing
+      // it. What is already playing keeps playing, so there is no silence.
+      if (this.#skippedS === 0) {
+        console.info(
+          `${MODULE_ID} | ${behindMs} ms of audio queued (far behind live); skipping incoming audio to catch up`,
+        );
+      }
+      this.#skippedS += durationS;
+      return;
+    }
+    if (this.#skippedS > 0) {
+      console.info(
+        `${MODULE_ID} | back near live; skipped ${Math.round(this.#skippedS * 1000)} ms of audio (cushion ${leadMs} ms)`,
+      );
+      this.#skippedS = 0;
     }
     this.#scheduledAny = true;
+    const buffer = this.#ctx.createBuffer(planes.length, frames, sampleRate);
+    planes.forEach((plane, ch) => buffer.copyToChannel(plane, ch));
     const source = this.#ctx.createBufferSource();
     source.buffer = buffer;
+    // A hair off 1 to absorb clock drift (see LiveClock). LiveClock already
+    // placed the next chunk at at + duration / rate, so playback stays gapless.
+    source.playbackRate.value = rate;
     source.connect(this.#gain);
     source.addEventListener("ended", () => {
       this.#sources.delete(source);
