@@ -4,7 +4,7 @@
 // lines, the vocabulary) live in memory until the page reloads.
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import type { AppState, FlagBand, FlagBound, FlagKind, MoodDef, MoodTunePrefs, TuneMode, TuneResult } from '@generated/index';
-import { stubTune } from './stubTune';
+import { stubBars, stubTune } from './stubTune';
 import stateFixture from './fixtures/state.json';
 import tuneFixture from './fixtures/tune.json';
 import settingsFixture from './fixtures/settings.json';
@@ -50,9 +50,7 @@ async function handle(cmd: string, a: Args): Promise<unknown> {
     }
     case 'load_mood_tune_prefs':
       return tunePrefs;
-    case 'save_mood_tune_prefs':
-      tunePrefs = a.prefs as Record<string, MoodTunePrefs>;
-      return null;
+
     case 'set_mood_flag': {
       const v = moodValue(a.entryId, a.mood);
       if (v) {
@@ -91,9 +89,32 @@ async function handle(cmd: string, a: Args): Promise<unknown> {
       if (m && JSON.stringify(a.linesTunedFrom) !== JSON.stringify(m.prompts)) {
         throw "This mood's lines have changed since Tune ran; run Tune again";
       }
-      if (m) m.prompts = a.lines as string[];
-      state.moodsNeedRecalibration = true;
+      if (m) {
+        // The bars follow the lines used, as a rescore would.
+        const bars = stubBars(state, m.id, a.lines as string[]);
+        for (const e of state.libraryEntries) {
+          const v = e.moods.find((x) => x.mood === m.id);
+          const b = bars.get(e.id);
+          if (v && b !== undefined) v.auto = b;
+        }
+        m.prompts = a.lines as string[];
+      }
+      return { state, converted: [] };
+    }
+    case 'restore_mood_flags':
       return state;
+    case 'rescore_moods':
+      await sleep(300);
+      return null;
+    case 'add_never_suggest': {
+      const list = tunePrefs[a.mood as string]?.neverSuggest ?? [];
+      tunePrefs = { ...tunePrefs, [a.mood as string]: { neverSuggest: [...list, ...(a.words as string[])] } };
+      return tunePrefs;
+    }
+    case 'remove_never_suggest': {
+      const list = (tunePrefs[a.mood as string]?.neverSuggest ?? []).filter((w) => w.toLowerCase() !== (a.word as string).toLowerCase());
+      tunePrefs = { ...tunePrefs, [a.mood as string]: { neverSuggest: list } };
+      return tunePrefs;
     }
     case 'accept_tuned_split': {
       const m = state.moodVocabulary.moods.find((x) => x.id === a.moodId);

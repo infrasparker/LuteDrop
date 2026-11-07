@@ -27,17 +27,8 @@ interface Target {
   fresh: boolean;
 }
 
-export function stubTune(
-  state: AppState,
-  moodId: string,
-  mode: TuneMode,
-  candidates: string[][],
-  extraWords: string[],
-  bank: string[],
-  exclude: string[],
-  focusEntryId: string | null,
-  recorded: TuneResult | undefined,
-): TuneResult {
+/// The mood's songs and the stub's bar for any lines.
+function model(state: AppState, moodId: string) {
   const mood = state.moodVocabulary.moods.find((m) => m.id === moodId);
   if (!mood) throw `There is no mood "${moodId}" to tune`;
   const current = mood.prompts;
@@ -55,8 +46,6 @@ export function stubTune(
     });
   }
   const targets = songs.filter((s) => s.flagged && s.bounds);
-  const focus =
-    focusEntryId === '' ? null : (focusEntryId ?? [...targets].sort((a, b) => b.entry.name.localeCompare(a.entry.name))[0]?.entry.id ?? null);
 
   const currentWords = words(current);
   const newWords = (lines: string[]) => new Set([...words(lines)].filter((w) => !currentWords.has(w)));
@@ -82,6 +71,30 @@ export function stubTune(
     }
     return clamp(s.before + delta);
   };
+  return { current, songs, targets, bar };
+}
+
+/// Every song's stub bar under `lines` (after Use, the preview's bars follow).
+export function stubBars(state: AppState, moodId: string, lines: string[]): Map<string, number> {
+  const { songs, bar } = model(state, moodId);
+  return new Map(songs.map((s) => [s.entry.id, bar(s, lines)]));
+}
+
+export function stubTune(
+  state: AppState,
+  moodId: string,
+  mode: TuneMode,
+  candidates: string[][],
+  extraWords: string[],
+  bank: string[],
+  exclude: string[],
+  focusEntryId: string | null,
+  recorded: TuneResult | undefined,
+): TuneResult {
+  const { current, songs, targets, bar } = model(state, moodId);
+  const focus =
+    focusEntryId === '' ? null : (focusEntryId ?? [...targets].sort((a, b) => b.entry.name.localeCompare(a.entry.name))[0]?.entry.id ?? null);
+  const currentWords = words(current);
 
   const review = (lines: string[], source: string, proposed: boolean): TuneReview => {
     const after = new Map(songs.map((s) => [s.entry.id, bar(s, lines)]));
@@ -102,8 +115,7 @@ export function stubTune(
       .filter((s) => !s.flagged)
       .map((s) => ({ song: { entryId: s.entry.id, name: s.entry.name, album: '' }, before: s.before, after: after.get(s.entry.id)! }))
       .filter((m) => Math.abs(m.after - m.before) > 0.005);
-    const curWords = words(current);
-    const mine = new Set([...words(lines)].filter((w) => !curWords.has(w)));
+    const mine = new Set([...words(lines)].filter((w) => !currentWords.has(w)));
     const overlap = state.moodVocabulary.moods
       .filter((m) => m.id !== moodId)
       .map((m) => {
@@ -131,6 +143,15 @@ export function stubTune(
         ? [...mine].slice(0, 3).map((word, i) => ({ word, rho: 0.9 - i * 0.07 }))
         : [],
       unsatisfied: flags.filter((f) => f.fresh && !f.holds).map((f) => f.song),
+      outRanks: (() => {
+        const order = [...songs].sort((x, y) => after.get(y.entry.id)! - after.get(x.entry.id)!).map((x) => x.entry.id);
+        const now = new Set(order.slice(0, 15));
+        return [...songs]
+          .sort((x, y) => y.before - x.before)
+          .slice(0, 15)
+          .filter((x) => !now.has(x.entry.id))
+          .map((x) => ({ song: { entryId: x.entry.id, name: x.entry.name, album: '' }, rank: order.indexOf(x.entry.id) + 1 }));
+      })(),
     };
   };
 
