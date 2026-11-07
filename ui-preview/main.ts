@@ -147,7 +147,15 @@ async function handle(cmd: string, a: Args): Promise<unknown> {
 }
 
 mockWindows('main');
-mockIPC((cmd, payload) => handle(cmd, (payload ?? {}) as Args), { shouldMockEvents: true });
+// Answers go through JSON like real IPC, so the store never shares objects
+// with the mock's state (an in-place change there would bypass reactivity).
+mockIPC(
+  async (cmd, payload) => {
+    const result = await handle(cmd, (payload ?? {}) as Args);
+    return result === undefined ? null : JSON.parse(JSON.stringify(result));
+  },
+  { shouldMockEvents: true },
+);
 
 // Loaded after the mocks are in place, so nothing reaches for Tauri first.
 const [{ createApp }, { createPinia }, { default: App }, { vuetify }, { default: router }] = await Promise.all([
