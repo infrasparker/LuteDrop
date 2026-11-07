@@ -294,19 +294,20 @@ def _combo_bars(U_lib, U_ref, rows: list[int], m: Mapping) -> np.ndarray:
 
 
 def blend_units(U_lib, U_ref, units: list[str], flags: list[FlagTarget], m: Mapping,
-                top: int = 8) -> list[str]:
+                top: int = 8, *, before: np.ndarray | None = None) -> list[str]:
     """The texts of `blend_groups`."""
-    return [text for text, _ in blend_groups(U_lib, U_ref, units, flags, m, top)]
+    return [text for text, _ in blend_groups(U_lib, U_ref, units, flags, m, top, before=before)]
 
 
 def blend_groups(U_lib, U_ref, units: list[str], flags: list[FlagTarget], m: Mapping,
-                 top: int = 8) -> list[tuple[str, tuple[int, ...]]]:
+                 top: int = 8, *, before: np.ndarray | None = None) -> list[tuple[str, tuple[int, ...]]]:
     """Comma blends ("a, b" and "a, b, c") of every pair and triple of the `top`
-    best single units, each with the rows of the units it is made of. A unit that
-    is itself a comma list adds its parts, and a part that repeats, or whose words
-    (`words_of`) are all in the parts before it, is left out. Blends with fewer than two distinct parts, over the line length
-    limit, or already in `units` are dropped."""
-    loss_fn = _loss_fn(flags)
+    best single units (by the search's loss, so with `stability` against `before`
+    when given), each with the rows of the units it is made of. A unit that is itself
+    a comma list adds its parts, and a part that repeats, or whose words (`words_of`)
+    are all in the parts before it, is left out. Blends with fewer than two distinct
+    parts, over the line length limit, or already in `units` are dropped."""
+    loss_fn = _search_loss_fn(flags, before)
     solo = sorted((_score((i,), U_lib, U_ref, loss_fn, m), i) for i in range(len(units)))
     best = [i for _, i in solo[:top]]
     taken = set(units)
@@ -379,8 +380,9 @@ def _two_means(X: np.ndarray, iterations: int = 10) -> np.ndarray:
 
 
 def try_split(U_lib, U_ref, units: list[str], flags: list[FlagTarget], m: Mapping,
-              X_lib: np.ndarray, best: Combo) -> dict | None:
-    """Offer to split one mood in two when its high-side flags pull apart.
+              X_lib: np.ndarray, best: Combo, *, before: np.ndarray | None = None) -> dict | None:
+    """Offer to split one mood in two when its high-side flags pull apart. Each half's
+    search pays `stability` against `before` (the current lines' bars) when given.
 
     Only when `best` leaves a fresh flag broken, there are at least 4 high-side flags,
     each half (its high flags plus every low/mid flag) is fully satisfied by its own best
@@ -403,7 +405,7 @@ def try_split(U_lib, U_ref, units: list[str], flags: list[FlagTarget], m: Mappin
     combos, raws = [], []
     for group in groups:
         sub = [flags[p] for p in group + rest]
-        c = beam_search(U_lib, U_ref, units, sub, m, keep=1)[0]
+        c = beam_search(U_lib, U_ref, units, sub, m, keep=1, before=before)[0]
         rows = _rows(units, c.lines)
         if any(sub[p].fresh for p in broken(_combo_bars(U_lib, U_ref, rows, m), sub)):
             return None

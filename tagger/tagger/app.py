@@ -564,7 +564,7 @@ def create_app(
         elif flags and units:
             # Blends of the best single units join the pool as extra units. A blend's
             # sources are "blend" and then its members'.
-            groups_ = tune.blend_groups(U_lib, U_ref, units, flags, m)
+            groups_ = tune.blend_groups(U_lib, U_ref, units, flags, m, before=b_before)
             blends = [text for text, _ in groups_]
             for text, members in groups_:
                 sources[text] = list(dict.fromkeys(["blend", *(s for i in members for s in sources.get(units[i], []))]))
@@ -588,7 +588,7 @@ def create_app(
             # or the current lines' when nothing beats them.
             shown = proposals[0] if proposals else baseline
             if any(f["fresh"] and not f["holds"] for f in shown["flags"]):
-                offer = tune.try_split(U_lib, U_ref, units, flags, m, X, found[0])
+                offer = tune.try_split(U_lib, U_ref, units, flags, m, X, found[0], before=b_before)
                 if offer is not None:
                     split = _split_report(offer, flags, flag_hashes, report, U_lib, U_ref, units,
                                           candidates, name)

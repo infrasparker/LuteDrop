@@ -461,3 +461,46 @@ def test_blends_leave_out_a_part_whose_words_are_already_there():
     out = blend_units(U, None, units, flags, M_LIB, top=3)
     # "a haunted house" adds no word to the first unit, so that pair is the unit itself (dropped).
     assert out == ["horror, haunted house, terror, dark", "a haunted house, dark"]
+
+
+def _leaky_split_world():
+    # _split_world plus "a leaks", listed first: it lifts songs 0-2 like "a" and also
+    # lifts every unflagged song (8-19). On the flags alone it ties "a" and wins by row order.
+    units, U, X = _split_world()
+    leak = U[0].copy()
+    leak[:3] = 2.0
+    leak[8:20] = 1.2
+    flags = [FlagTarget(i, 0.75, None, 1.0, True, "high") for i in range(6)]
+    flags += [FlagTarget(i, None, 0.5, 1.0, True, "low") for i in (6, 7)]
+    return ["a leaks", *units], np.vstack([leak, U]), X, flags
+
+
+def test_split_halves_pay_for_reshaping_unflagged_songs():
+    units, U, X, flags = _leaky_split_world()
+    before = _bars_of(U, units.index("noise 1"))         # the current lines
+    best = beam_search(U, None, units, flags, M_LIB, before=before)[0]
+    plain = try_split(U, None, units, flags, M_LIB, X, best)
+    assert plain is not None and "a leaks" in plain["a"].lines + plain["b"].lines
+    steady = try_split(U, None, units, flags, M_LIB, X, best, before=before)
+    assert steady is not None
+    halves = steady["a"].lines + steady["b"].lines
+    assert "a leaks" not in halves and "a" in halves and "b" in halves
+
+
+def test_blend_slots_go_to_units_that_do_not_leak():
+    # 30 songs; song 0 is flagged high. "leaky" (listed first, so it wins ties) lifts song 0
+    # and ten unflagged songs; "clean one" and "clean two" lift song 0 alone. On the flags
+    # alone all three tie and "leaky" takes a blend slot; with stability it does not.
+    base = np.random.default_rng(7).normal(size=30) * 0.2
+    base[0] = 0.0
+    leaky, clean1, clean2 = base.copy(), base.copy(), base.copy()
+    leaky[0] = clean1[0] = clean2[0] = 3.0
+    leaky[1:11] = 1.5
+    units = ["leaky", "clean one", "clean two", "current"]
+    U = np.vstack([leaky, clean1, clean2, base])
+    flags = [FlagTarget(0, 0.75, None, 1.0, True, "high")]
+    before = _bars_of(U, 3)
+    plain = [t for t, _ in tune.blend_groups(U, None, units, flags, M_LIB, top=2)]
+    assert any("leaky" in t for t in plain), plain
+    steady = [t for t, _ in tune.blend_groups(U, None, units, flags, M_LIB, top=2, before=before)]
+    assert steady and not any("leaky" in t for t in steady), steady
