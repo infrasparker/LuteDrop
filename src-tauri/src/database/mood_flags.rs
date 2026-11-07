@@ -186,8 +186,6 @@ const SELECT_FLAGS: &str =
     "SELECT library_entry_id, mood, kind, band, bound, bar_at_flag, calibrated_at, lines_sig FROM mood_flags";
 
 /// Every flag of one mood.
-// Read by the Tune request in Task 5.
-#[allow(dead_code)]
 pub fn flags_for_mood(conn: &Connection, mood: &str) -> Result<Vec<StoredFlag>, String> {
     let mut stmt = conn
         .prepare(&format!("{SELECT_FLAGS} WHERE mood = ?1 ORDER BY created_at, library_entry_id"))
@@ -230,6 +228,15 @@ pub fn load_flags(
     Ok(out)
 }
 
+/// The bound a band flag set in the app gets: Definitely and Understandable
+/// mean "at least" that band, Stretch and No mean "in" it.
+pub fn app_bound(band: FlagBand) -> FlagBound {
+    match band {
+        FlagBand::Definitely | FlagBand::Understandable => FlagBound::AtLeast,
+        FlagBand::Stretch | FlagBand::No => FlagBound::In,
+    }
+}
+
 /// The flag command's work: validates and stores one flag the user made on a
 /// song, against the current vocabulary and calibration.
 ///
@@ -256,11 +263,7 @@ pub fn set_flag_for_entry(
             Err("A higher or lower flag does not take a band".to_string())
         }
         (FlagKind::Band, Some(band)) => {
-            let bound = match band {
-                FlagBand::Definitely | FlagBand::Understandable => FlagBound::AtLeast,
-                FlagBand::Stretch | FlagBand::No => FlagBound::In,
-            };
-            set_flag(conn, entry_id, mood, kind, Some(band), bound, None, None, &lines)
+            set_flag(conn, entry_id, mood, kind, Some(band), app_bound(band), None, None, &lines)
         }
         (FlagKind::Higher | FlagKind::Lower, None) => {
             let bar: Option<f64> = conn
@@ -293,8 +296,6 @@ pub fn keep_flag(conn: &Connection, entry_id: &str, mood: &str) -> Result<(), St
 
 /// Moves the listed songs' flags from one mood to another (for a mood split
 /// or merge). A flag already on the target mood is replaced.
-// Called by the mood split and merge in Task 5.
-#[allow(dead_code)]
 pub fn move_flags(conn: &Connection, from: &str, to: &str, entry_ids: &[String]) -> Result<(), String> {
     for id in entry_ids {
         conn.execute(
@@ -309,8 +310,6 @@ pub fn move_flags(conn: &Connection, from: &str, to: &str, entry_ids: &[String])
 /// Copies the "not this mood" flags (band `no`, bound `at_most`, kind
 /// `lower`) from one mood to another, leaving any flag the target already
 /// has alone.
-// Called by the mood split in Task 5.
-#[allow(dead_code)]
 pub fn copy_low_flags(conn: &Connection, from: &str, to: &str) -> Result<(), String> {
     conn.execute(
         "INSERT OR IGNORE INTO mood_flags

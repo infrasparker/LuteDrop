@@ -194,7 +194,7 @@ pub fn midpoint_z(id: &str, source: CalibrationSource) -> f64 {
 
 /// The logistic slope for a calibration of `source`. Energy uses the library
 /// slope either way: it has no reference percentile lines of its own.
-fn slope(id: &str, source: CalibrationSource) -> f64 {
+pub(crate) fn slope(id: &str, source: CalibrationSource) -> f64 {
     if id != ENERGY_ID && source == CalibrationSource::Reference {
         reference_slope()
     } else {

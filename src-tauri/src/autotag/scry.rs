@@ -25,9 +25,9 @@ const MAX_LIMIT: u32 = 500;
 const NOT_CONFIGURED: &str = "Auto-tagging analyzer is not configured";
 
 /// The music entries that have a content hash.
-struct MusicIndex {
+pub(crate) struct MusicIndex {
     /// Each distinct hash once, in entry-name order.
-    hashes: Vec<String>,
+    pub(crate) hashes: Vec<String>,
     /// Entry ids per hash, in entry-name order.
     entries_by_hash: HashMap<String, Vec<String>>,
     /// Hash per entry id.
@@ -38,8 +38,14 @@ impl MusicIndex {
     /// Reads the music entries that have a hash. The lock is released before
     /// this returns.
     fn load(db: &Mutex<Connection>) -> Result<Self, String> {
+        let conn = db.lock().map_err(|e| format!("Database lock poisoned: {e}"))?;
+        Self::read(&conn)
+    }
+
+    /// Reads the music entries that have a hash, for a caller that already
+    /// holds the connection.
+    pub(crate) fn read(conn: &Connection) -> Result<Self, String> {
         let rows: Vec<(String, String)> = {
-            let conn = db.lock().map_err(|e| format!("Database lock poisoned: {e}"))?;
             let mut stmt = conn
                 .prepare(
                     "SELECT id, content_hash FROM library_entries
@@ -72,7 +78,7 @@ impl MusicIndex {
     }
 
     /// The entry ids that have this hash, or none if it is not a music hash.
-    fn entries(&self, hash: &str) -> &[String] {
+    pub(crate) fn entries(&self, hash: &str) -> &[String] {
         self.entries_by_hash.get(hash).map(Vec::as_slice).unwrap_or(&[])
     }
 

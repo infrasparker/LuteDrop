@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::actions;
 use crate::models::{
     AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodResetImpact, MoodVocabulary,
-    Role, SceneConfig, TrackUpdates, ScryHit, ScryPoint, EnergyPreview};
+    Role, SceneConfig, TrackUpdates, ScryHit, ScryPoint, EnergyPreview, TuneResult};
 use crate::state::AppStateContainer;
 use crate::waveform;
 
@@ -350,6 +350,46 @@ pub fn set_mood_vocabulary(
     vocabulary: MoodVocabulary,
 ) -> Result<AppState, String> {
     actions::set_mood_vocabulary(&state, vocabulary)
+}
+
+/// Runs Tune on a mood. The analyzer's search can take tens of seconds, so it
+/// runs on a worker thread like the previews.
+#[tauri::command]
+pub async fn tune_mood(
+    state: State<'_, Arc<AppStateContainer>>,
+    mood_id: String,
+    extra_words: Vec<String>,
+    bank: Vec<String>,
+) -> Result<TuneResult, String> {
+    let container = state.inner().clone();
+    tokio::task::spawn_blocking(move || actions::tune_mood(&container, &mood_id, &extra_words, &bank))
+        .await
+        .map_err(|e| format!("Tune failed: {e}"))?
+}
+
+#[tauri::command]
+pub fn accept_tuned_lines(
+    state: State<'_, Arc<AppStateContainer>>,
+    mood_id: String,
+    lines_tuned_from: Vec<String>,
+    lines: Vec<String>,
+) -> Result<AppState, String> {
+    actions::accept_tuned_lines(&state, mood_id, lines_tuned_from, lines)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn accept_tuned_split(
+    state: State<'_, Arc<AppStateContainer>>,
+    mood_id: String,
+    lines_tuned_from: Vec<String>,
+    keep_lines: Vec<String>,
+    new_id: String,
+    new_name: String,
+    new_lines: Vec<String>,
+    move_entry_ids: Vec<String>,
+) -> Result<AppState, String> {
+    actions::accept_tuned_split(&state, mood_id, lines_tuned_from, keep_lines, new_id, new_name, new_lines, move_entry_ids)
 }
 
 #[tauri::command]

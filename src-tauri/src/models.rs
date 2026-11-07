@@ -400,6 +400,137 @@ pub struct CaseImportReport {
     pub skipped_moods: Vec<String>,
 }
 
+/// A song in a Tune review: the analyzer's content hash resolved to a
+/// library entry. `album` is "Artist / Album" from the file's two parent
+/// folders, as the Moods panel previews show it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneSong {
+    pub entry_id: String,
+    pub name: String,
+    pub album: String,
+}
+
+/// A flagged song's bar under the mood's current lines (`before`) and under
+/// the reviewed lines (`after`), and whether its flag holds under them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneFlagOutcome {
+    pub song: TuneSong,
+    pub before: f64,
+    pub after: f64,
+    pub holds: bool,
+    /// False for a flag made under older wording or calibration.
+    pub fresh: bool,
+}
+
+/// One of the songs a set of lines ranks highest, with its bar.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneTopSong {
+    pub song: TuneSong,
+    pub bar: f64,
+}
+
+/// An unflagged song whose bar moves the most between the current and the
+/// reviewed lines.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneMovedSong {
+    pub song: TuneSong,
+    pub before: f64,
+    pub after: f64,
+}
+
+/// How alike another mood's ranking is to this one's (rank correlation),
+/// under the current and under the reviewed lines.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneOverlap {
+    pub mood_id: String,
+    pub before: f64,
+    pub after: f64,
+}
+
+/// Leave-one-out: how many flags still hold when each is left out of the
+/// search in turn. `0 / 0` on the baseline.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneLeaveOneOut {
+    pub held: u32,
+    pub total: u32,
+}
+
+/// A suggested name word, with how closely its own ranking follows the lines'.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneNameIdea {
+    pub word: String,
+    pub rho: f64,
+}
+
+/// The review of one set of lines (the mood's current ones, a proposal, or a
+/// split half). Lower `loss` is better.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneReview {
+    pub lines: Vec<String>,
+    pub loss: f64,
+    pub flags: Vec<TuneFlagOutcome>,
+    pub top: Vec<TuneTopSong>,
+    pub top_before: Vec<TuneTopSong>,
+    pub risers: Vec<TuneMovedSong>,
+    pub fallers: Vec<TuneMovedSong>,
+    /// How many songs reach 0.5 under the current and the reviewed lines.
+    pub fires_before: u32,
+    pub fires_after: u32,
+    pub overlap: Vec<TuneOverlap>,
+    pub loo: TuneLeaveOneOut,
+    pub names: Vec<TuneNameIdea>,
+    /// Fresh flags that do not hold under the reviewed lines.
+    pub unsatisfied: Vec<TuneSong>,
+}
+
+/// A suggested split of the mood in two: `keep` stays the mood, `new` becomes
+/// a new one, each with the flagged songs that go with it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneSplitReview {
+    pub keep: TuneReview,
+    pub new: TuneReview,
+    pub keep_songs: Vec<TuneSong>,
+    pub new_songs: Vec<TuneSong>,
+    /// Rank correlation between the two halves' rankings.
+    pub rho: f64,
+}
+
+/// What Tune found for a mood: the current lines' review, the proposals
+/// that beat it (best first), an optional split, and the flagged songs
+/// left out. `lines_tuned_from` goes back with an accept, which is refused
+/// if the mood's lines have changed since.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneResult {
+    pub baseline: TuneReview,
+    pub proposals: Vec<TuneReview>,
+    pub split: Option<TuneSplitReview>,
+    /// Flagged songs the analyzer has no embedding for.
+    pub skipped: Vec<TuneSong>,
+    pub lines_tuned_from: Vec<String>,
+    /// Flagged songs left out because they were never analyzed (no hash).
+    pub skipped_flags: usize,
+}
+
 /// Which layer a shown value comes from: the user's, or the analyzer's.
 /// Used by `TagScore::applied`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

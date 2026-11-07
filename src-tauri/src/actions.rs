@@ -6,6 +6,7 @@ use crate::database;
 use crate::database::{configurations, hierarchy, library, DbError};
 use crate::autotag::client::{AnalyzerClient, HttpAnalyzer};
 use crate::autotag::scry;
+use crate::autotag::tune;
 use crate::autotag::case_import;
 use crate::database::mood_flags;
 use crate::database::autotag_db;
@@ -14,7 +15,7 @@ use crate::database::settings as autotag_settings;
 use crate::models::{
     AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
     FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodResetImpact, MoodVocabulary, Role, SceneConfig, Track, TrackUpdates, ScryHit,
-    ScryPoint, EnergyPreview};
+    ScryPoint, EnergyPreview, TuneResult};
 use crate::relink;
 use crate::state::AppStateContainer;
 use rusqlite::params;
@@ -469,6 +470,56 @@ pub fn import_case_studies(container: &AppStateContainer, path: String) -> Resul
 /// prompts wait for Recalibrate.
 pub fn set_mood_vocabulary(container: &AppStateContainer, vocabulary: MoodVocabulary) -> Result<AppState, String> {
     mutate_and_reload(container, |conn| library::save_mood_vocabulary(conn, &vocabulary).map(|_| ()))
+}
+
+/// Runs Tune on a mood (see `tune::tune`): saves nothing. Blocks while the
+/// analyzer searches, which can take tens of seconds.
+pub fn tune_mood(
+    container: &AppStateContainer,
+    mood_id: &str,
+    extra_words: &[String],
+    bank: &[String],
+) -> Result<TuneResult, String> {
+    let client = scry::client_for(&container.db)?;
+    tune::tune(&container.db, &client, mood_id, extra_words, bank)
+}
+
+/// Accepts a Tune proposal: the mood's lines become `lines` (see
+/// `tune::accept_lines`), refused if they changed since Tune ran.
+pub fn accept_tuned_lines(
+    container: &AppStateContainer,
+    mood_id: String,
+    lines_tuned_from: Vec<String>,
+    lines: Vec<String>,
+) -> Result<AppState, String> {
+    mutate_and_reload(container, |conn| tune::accept_lines(conn, &mood_id, &lines_tuned_from, &lines))
+}
+
+/// Accepts a Tune split: the mood keeps `keep_lines` and a new mood takes
+/// the rest (see `tune::accept_split`).
+#[allow(clippy::too_many_arguments)]
+pub fn accept_tuned_split(
+    container: &AppStateContainer,
+    mood_id: String,
+    lines_tuned_from: Vec<String>,
+    keep_lines: Vec<String>,
+    new_id: String,
+    new_name: String,
+    new_lines: Vec<String>,
+    move_entry_ids: Vec<String>,
+) -> Result<AppState, String> {
+    mutate_and_reload(container, |conn| {
+        tune::accept_split(
+            conn,
+            &mood_id,
+            &lines_tuned_from,
+            &keep_lines,
+            &new_id,
+            &new_name,
+            &new_lines,
+            &move_entry_ids,
+        )
+    })
 }
 
 /// What Reset to defaults would delete, for its confirm dialog.
