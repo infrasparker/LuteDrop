@@ -106,16 +106,15 @@ pub fn plan_import(
         moods.dedup();
         let before = moods.len();
         moods.retain(|m| !settled.contains(m));
-        let settled_here = before - moods.len();
+        // Counted whether or not the track is found below.
+        settled_skipped += before - moods.len();
         if moods.is_empty() {
-            settled_skipped += settled_here;
             continue;
         }
         let Some(entry_id) = find_entry(track, names) else {
             unmatched.push(track.to_string());
             continue;
         };
-        settled_skipped += settled_here;
         for mood in moods {
             if !mood_ids.contains(mood) {
                 skipped.insert(mood.clone());
@@ -221,6 +220,19 @@ mod tests {
         assert_eq!(report.settled_skipped, 3);
         assert!(report.unmatched.is_empty());
         assert!(report.skipped_moods.is_empty(), "a settled mood is not reported as unknown");
+    }
+
+    #[test]
+    fn import_counts_settled_moods_whether_or_not_the_track_is_found() {
+        let json = r#"{"cases":[
+            {"track":"Missing A","high":["sorrowful"],"settled":["sorrowful"]},
+            {"track":"Missing B","high":["sorrowful","peaceful"],"settled":["peaceful"]},
+            {"track":"Here","high":["peaceful"],"settled":["peaceful"]}]}"#;
+        let (flags, report) = plan_import(json, &names(&["Here"]), &ids(&["peaceful", "sorrowful"])).unwrap();
+        assert!(flags.is_empty());
+        assert_eq!(report.settled_skipped, 3);
+        // Missing B still had a mood to flag, so it is reported as not found; Missing A had none.
+        assert_eq!(report.unmatched, vec!["Missing B".to_string()]);
     }
 
     #[test]

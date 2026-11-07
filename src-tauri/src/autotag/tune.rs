@@ -293,9 +293,10 @@ pub struct BuiltRequest {
 ///
 /// One flag can be the focus, the one the search favours: `focus_entry_id`
 /// names its song (a flagged or levelled one); `None` picks the song whose
-/// flag was set or changed last (`mood_flags::newest_flag`), and `Some("")`
-/// focuses nothing. A focus whose flag is not in the request (unanalyzed,
-/// unusable, or no flag at all) is dropped.
+/// flag was set or changed last (`mood_flags::flags_newest_first`), passing
+/// over flags that cannot go in the request (song not analyzed, flag unusable);
+/// and `Some("")` focuses nothing. A picked focus whose flag is not in the
+/// request (unanalyzed, unusable, or no flag at all) is dropped.
 pub fn build_tune_request(
     conn: &Connection,
     mood_id: &str,
@@ -354,14 +355,9 @@ pub fn build_tune_request(
         return Err("Flag a few songs on this mood first: Tune needs to know which songs belong".to_string());
     }
 
-    let focus = match focus_entry_id {
-        Some("") => None,
-        Some(id) => Some(id.to_string()),
-        None => mood_flags::newest_flag(conn, mood_id)?,
-    };
-    let mut focus_used = None;
-
     let mut out = Vec::new();
+    // Entry id of each flag in `out`, by position.
+    let mut out_ids: Vec<&str> = Vec::new();
     let mut unanalyzed = 0;
     let mut unusable = 0;
     for f in &flags {
@@ -380,10 +376,7 @@ pub fn build_tune_request(
             }
             Some(target) => target,
         };
-        let is_focus = focus.as_deref() == Some(f.entry_id.as_str());
-        if is_focus {
-            focus_used = Some(f.entry_id.clone());
-        }
+        out_ids.push(&f.entry_id);
         out.push(TuneFlag {
             hash,
             min,
@@ -391,9 +384,20 @@ pub fn build_tune_request(
             weight: if stale { STALE_WEIGHT } else { 1.0 },
             fresh: !stale,
             side,
-            focus: is_focus,
+            focus: false,
         });
     }
+
+    let position = |id: &str| out_ids.iter().position(|o| *o == id);
+    let focus_at = match focus_entry_id {
+        Some("") => None,
+        Some(id) => position(id),
+        None => mood_flags::flags_newest_first(conn, mood_id)?.iter().find_map(|id| position(id)),
+    };
+    let focus_used = focus_at.map(|i| {
+        out[i].focus = true;
+        out_ids[i].to_string()
+    });
     if out.is_empty() {
         return Err(if unusable == 0 {
             "None of the songs flagged on this mood have been analyzed yet".to_string()
@@ -989,6 +993,32 @@ mod tests {
     }
 
     #[test]
+    fn request_default_focus_skips_flags_that_cannot_be_used() {
+        let db = setup();
+        calibrate(&db, CalibrationSource::Library);
+        let sig = current_sig(&db);
+        let (older, usable) = (add(&db, "older", "music"), add(&db, "usable", "music"));
+        band(&db, &older, FlagBand::No, FlagBound::In, &sig);
+        band(&db, &usable, FlagBand::Understandable, FlagBound::AtLeast, &sig);
+        // Newer than both: one song never analyzed, one flag that asks nothing of the bar.
+        let unhashed = library::insert_library_entry(
+            &db.lock().unwrap(), "Z:\\media\\audio\\u.opus", None, "u", None, None, None, "music",
+        )
+        .unwrap();
+        band(&db, &unhashed, FlagBand::Definitely, FlagBound::AtLeast, &sig);
+        let asks_nothing = add(&db, "nothing", "music");
+        band(&db, &asks_nothing, FlagBand::No, FlagBound::AtLeast, &sig);
+        set_created(&db, &older, 1_000);
+        set_created(&db, &usable, 2_000);
+        set_created(&db, &unhashed, 3_000);
+        set_created(&db, &asks_nothing, 4_000);
+
+        let built = build_tune_request(&db.lock().unwrap(), MOOD, &inputs(&[], &[], None, &[])).unwrap();
+        assert_eq!(built.focus_entry_id, Some(usable));
+        assert_eq!(focused(&built.request), vec!["h-usable"]);
+    }
+
+    #[test]
     fn request_focus_can_be_picked_or_turned_off() {
         let db = setup();
         calibrate(&db, CalibrationSource::Library);
@@ -1205,8 +1235,9 @@ mod tests {
         let result = tune(&db, &fake, MOOD, &inputs(&[], &[], None, &[])).unwrap();
         let sent = fake.last_tune.lock().unwrap().clone().unwrap();
         assert_eq!(sent.flags.len(), 1);
-        // The newest flag is the unhashed song's, which never reaches the request: no focus.
-        assert_eq!(result.focus_entry_id, None);
+        // The newest flag is the unhashed song's, which never reaches the request: the
+        // focus falls back to the next-newest flag that does.
+        assert_eq!(result.focus_entry_id, Some(a.clone()));
         assert_eq!(result.lines_tuned_from, sent.current_lines);
         assert_eq!(result.skipped_flags, 1);
         let song = |id: &str, name: &str| TuneSong { entry_id: id.to_string(), name: name.to_string(), album: "media / audio".into() };
