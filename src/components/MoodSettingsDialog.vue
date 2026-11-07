@@ -6,7 +6,7 @@ import type { AppState, CaseImportReport, EnergyPreview, MoodResetImpact, MoodVo
 import { useAppStore } from '../stores/appStore';
 import { useToast } from '../composables/useToast';
 import { calibrationLabel } from '../utils/moods';
-import { albumOf, flaggedEntries } from '../utils/moodTune';
+import { albumOf, tuneTargetCount } from '../utils/moodTune';
 import { newMoodId, WORD_BANK } from '../utils/moodWords';
 import ConfirmDialog from './ConfirmDialog.vue';
 import MoodTuneDialog from './MoodTuneDialog.vue';
@@ -363,8 +363,9 @@ const tuneOpen = ref(false);
 const tuneMoodId = ref<string | null>(null);
 const tuneShowFlags = ref(false);
 
-/// Flags per saved mood, for each row's "N flags" link.
-const flagCount = (id: string): number => flaggedEntries(store.libraryEntries, id).length;
+/// Tune targets per saved mood, for each row's "N flags" link: flags plus
+/// hand-set levels without a flag (Tune reads those as flags too).
+const flagCount = (id: string): number => tuneTargetCount(store.libraryEntries, id);
 
 /// The saved prompts of a row's mood, or null for a mood not saved yet.
 const savedPrompts = (row: DraftRow): string[] | null =>
@@ -383,14 +384,17 @@ function openTune(row: DraftRow, showFlags: boolean): void {
   tuneOpen.value = true;
 }
 
-/// After an accept: the tuned mood's row takes its new saved lines, and a
-/// mood a split added gets a row; other unsaved edits stay. Then the same
-/// "Recalibrate now?" offer as a manual save.
-function onTuneAccepted(): void {
-  for (const m of store.moodVocabulary.moods) {
-    const row = rows.value.find((r) => r.id === m.id);
-    if (!row) rows.value.push({ key: nextKey++, id: m.id, name: m.name, prompts: m.prompts.join('\n') });
-    else if (m.id === tuneMoodId.value) row.prompts = m.prompts.join('\n');
+/// After an accept: the tuned mood's row takes its new saved lines, and the
+/// mood a split added (`newMoodId`) gets a row; other unsaved edits, removed
+/// rows included, stay as they are. Then the same "Recalibrate now?" offer as
+/// a manual save.
+function onTuneAccepted(newMoodId: string | null): void {
+  const tuned = store.moodVocabulary.moods.find((m) => m.id === tuneMoodId.value);
+  const row = rows.value.find((r) => r.id === tuneMoodId.value);
+  if (tuned && row) row.prompts = tuned.prompts.join('\n');
+  const added = newMoodId === null ? undefined : store.moodVocabulary.moods.find((m) => m.id === newMoodId);
+  if (added && !rows.value.some((r) => r.id === added.id)) {
+    rows.value.push({ key: nextKey++, id: added.id, name: added.name, prompts: added.prompts.join('\n') });
   }
   askRecalibrate.value = true;
 }

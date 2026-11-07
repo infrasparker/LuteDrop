@@ -28,9 +28,24 @@ export function brokenFresh(report: FlagOutcomes): number {
 /// The Accept button's label: plain "Accept", or the explicit confirm wording
 /// when fresh flags would leave their band.
 export function acceptLabel(report: FlagOutcomes): string {
-  const n = brokenFresh(report);
-  if (n === 0) return 'Accept';
+  return anywayLabel(brokenFresh(report), 'Accept');
+}
+
+function anywayLabel(n: number, plain: string): string {
+  if (n === 0) return plain;
   return `Accept anyway: ${n} flagged song${n === 1 ? '' : 's'} leave${n === 1 ? 's' : ''} their band`;
+}
+
+/// Broken fresh flags over both halves of a split: like a proposal's, they
+/// ask for the "Accept anyway" confirm.
+export function splitBrokenFresh(split: { keep: FlagOutcomes; new: FlagOutcomes }): number {
+  return brokenFresh(split.keep) + brokenFresh(split.new);
+}
+
+/// The split's accept button: "Accept split", or the confirm wording over
+/// both halves.
+export function splitAcceptLabel(split: { keep: FlagOutcomes; new: FlagOutcomes }): string {
+  return anywayLabel(splitBrokenFresh(split), 'Accept split');
 }
 
 /// The warning shown beside the flag count when there are few flags.
@@ -102,6 +117,44 @@ export function flaggedEntries<E extends Pick<LibraryEntry, 'id' | 'moods'>>(
     if (flag) out.push({ entry, flag });
   }
   return out;
+}
+
+/// What Tune grades a mood against: songs with a flag on it, plus songs with
+/// a hand-set level and no flag (the backend reads those as band flags).
+export function tuneTargetCount(entries: Pick<LibraryEntry, 'moods'>[], moodId: string): number {
+  return entries.filter((e) => e.moods.some((m) => m.mood === moodId && (m.flag !== null || m.user !== null))).length;
+}
+
+/// Whether a flag asks for a high bar (Definitely, Understandable, any
+/// "at least", or "higher"): such a song dropping out of the top list
+/// matters.
+export function targetIsHigh(flag: Pick<MoodFlag, 'kind' | 'band' | 'bound'>): boolean {
+  if (flag.kind === 'higher') return true;
+  if (flag.kind === 'lower') return false;
+  return flag.bound === 'at_least' || (flag.bound === 'in' && (flag.band === 'definitely' || flag.band === 'understandable'));
+}
+
+/// Each top-list song's 1-based rank before and after (null when outside
+/// that list).
+export function topRanks(
+  report: Pick<TuneReview, 'top' | 'topBefore'>,
+): Map<string, { before: number | null; after: number | null }> {
+  const ranks = new Map<string, { before: number | null; after: number | null }>();
+  report.topBefore.forEach((t, i) => ranks.set(t.song.entryId, { before: i + 1, after: null }));
+  report.top.forEach((t, i) => {
+    const r = ranks.get(t.song.entryId);
+    if (r) r.after = i + 1;
+    else ranks.set(t.song.entryId, { before: null, after: i + 1 });
+  });
+  return ranks;
+}
+
+/// A rank change in words: "#12 → #2", "new", "drops out" or "same".
+export function rankLabel(rank: { before: number | null; after: number | null } | undefined): string {
+  if (!rank) return '';
+  if (rank.before === null) return 'new';
+  if (rank.after === null) return 'drops out';
+  return rank.before === rank.after ? 'same' : `#${rank.before} → #${rank.after}`;
 }
 
 /// "Artist / Album" from the file's two parent folders, as the Moods panel

@@ -14,8 +14,14 @@ import {
   overlapRises,
   parseExtraWords,
   shakyNote,
+  rankLabel,
+  splitAcceptLabel,
+  splitBrokenFresh,
   splitName,
+  targetIsHigh,
   topChanges,
+  topRanks,
+  tuneTargetCount,
 } from '../src/utils/moodTune.ts';
 
 const song = (entryId) => ({ entryId, name: entryId, album: '' });
@@ -112,4 +118,55 @@ test('split name capitalises the top name suggestion', () => {
 test('changed since Tune ran is recognised in an accept error', () => {
   assert.equal(isChangedSinceTune('The lines of Sad changed since Tune ran; run Tune again'), true);
   assert.equal(isChangedSinceTune('Database is locked'), false);
+});
+
+test('split broken-fresh counts both halves and labels the split accept', () => {
+  const half = (flags) => ({ flags });
+  const split = {
+    keep: half([{ holds: false, fresh: true }, { holds: false, fresh: false }]),
+    new: half([{ holds: false, fresh: true }, { holds: true, fresh: true }]),
+  };
+  assert.equal(splitBrokenFresh(split), 2);
+  assert.equal(splitAcceptLabel(split), 'Accept anyway: 2 flagged songs leave their band');
+  assert.equal(splitAcceptLabel({ keep: half([]), new: half([{ holds: true, fresh: true }]) }), 'Accept split');
+});
+
+test('tune targets count flags and hand-set levels without a flag, once per song', () => {
+  const flag = { kind: 'band', band: 'no', bound: 'in', barAtFlag: null, calibratedAt: null, stale: false };
+  const entries = [
+    { id: '1', moods: [{ mood: 'sad', auto: 0.5, user: null, flag }] },
+    { id: '2', moods: [{ mood: 'sad', auto: 0.5, user: 0.75, flag: null }] },
+    { id: '3', moods: [{ mood: 'sad', auto: 0.5, user: 1, flag }] },
+    { id: '4', moods: [{ mood: 'sad', auto: 0.5, user: null, flag: null }] },
+    { id: '5', moods: [{ mood: 'calm', auto: 0.5, user: 1, flag: null }] },
+  ];
+  assert.equal(tuneTargetCount(entries, 'sad'), 3);
+  assert.equal(tuneTargetCount(entries, 'calm'), 1);
+  assert.equal(tuneTargetCount(entries, 'grim'), 0);
+});
+
+test('a flag targets high for Definitely, Understandable, at least, and higher', () => {
+  const f = (kind, band, bound) => ({ kind, band, bound });
+  assert.equal(targetIsHigh(f('band', 'definitely', 'in')), true);
+  assert.equal(targetIsHigh(f('band', 'understandable', 'at_least')), true);
+  assert.equal(targetIsHigh(f('band', 'stretch', 'at_least')), true);
+  assert.equal(targetIsHigh(f('higher', null, 'in')), true);
+  assert.equal(targetIsHigh(f('band', 'stretch', 'in')), false);
+  assert.equal(targetIsHigh(f('band', 'stretch', 'at_most')), false);
+  assert.equal(targetIsHigh(f('band', 'no', 'in')), false);
+  assert.equal(targetIsHigh(f('lower', null, 'in')), false);
+});
+
+test('top ranks and their labels', () => {
+  const r = {
+    top: [{ song: song('a'), bar: 0.9 }, { song: song('n'), bar: 0.8 }, { song: song('b'), bar: 0.7 }],
+    topBefore: [{ song: song('b'), bar: 0.9 }, { song: song('a'), bar: 0.85 }, { song: song('d'), bar: 0.8 }],
+  };
+  const ranks = topRanks(r);
+  assert.deepEqual(ranks.get('a'), { before: 2, after: 1 });
+  assert.deepEqual(ranks.get('d'), { before: 3, after: null });
+  assert.equal(rankLabel(ranks.get('a')), '#2 → #1');
+  assert.equal(rankLabel(ranks.get('n')), 'new');
+  assert.equal(rankLabel(ranks.get('d')), 'drops out');
+  assert.equal(rankLabel({ before: 4, after: 4 }), 'same');
 });

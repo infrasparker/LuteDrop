@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, reactive, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { AppState, FlagBand, FlagKind, MoodFlag, TuneResult, TuneReview, TuneSong } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
@@ -16,9 +16,15 @@ import {
   orderedFlags,
   overlapRises,
   parseExtraWords,
+  rankLabel,
   shakyNote,
+  splitAcceptLabel,
+  splitBrokenFresh,
   splitName,
+  targetIsHigh,
   topChanges,
+  topRanks,
+  tuneTargetCount,
 } from '../utils/moodTune';
 import { newMoodId, WORD_BANK } from '../utils/moodWords';
 import ConfirmDialog from './ConfirmDialog.vue';
@@ -40,14 +46,15 @@ import PromptDialog from './PromptDialog.vue';
 /// 7. Reject / Accept. Accept asks once when fresh flags leave their band.
 ///
 /// Nothing is saved until Accept. After an accept the dialog closes and
-/// emits `accepted` so the Moods panel can offer "Recalibrate now?".
+/// emits `accepted` (with the new mood's id after a split) so the Moods panel
+/// can offer "Recalibrate now?".
 const open = defineModel<boolean>({ required: true });
 const props = defineProps<{
   moodId: string | null;
   /// Open with the Flags list expanded and scrolled into view.
   showFlags?: boolean;
 }>();
-const emit = defineEmits<{ accepted: [] }>();
+const emit = defineEmits<{ accepted: [newMoodId: string | null] }>();
 
 const store = useAppStore();
 
@@ -61,6 +68,9 @@ const flags = computed(() =>
     ? []
     : flaggedEntries(store.libraryEntries, props.moodId).sort((a, b) => a.entry.name.localeCompare(b.entry.name)),
 );
+/// Songs Tune grades against: flags plus hand-set levels without a flag.
+const targets = computed(() => (props.moodId === null ? 0 : tuneTargetCount(store.libraryEntries, props.moodId)));
+const handSet = computed(() => targets.value - flags.value.length);
 const flagsOpen = ref(false);
 const flagsSection = ref<HTMLElement | null>(null);
 
@@ -69,13 +79,20 @@ const flagsSection = ref<HTMLElement | null>(null);
 const currentFlag = (entryId: string): MoodFlag | null =>
   store.findLibraryEntry(entryId)?.moods.find((m) => m.mood === props.moodId)?.flag ?? null;
 
+/// Stale flags acted on (Keep / Update / Delete) since the review was made:
+/// the review no longer reflects them until Tune runs again.
+const touched = reactive(new Set<string>());
+
 function setFlag(entryId: string, kind: FlagKind, band: FlagBand | null): void {
+  touched.add(entryId);
   void store.command('set_mood_flag', { entryId, mood: props.moodId, kind, band });
 }
 function clearFlag(entryId: string): void {
+  touched.add(entryId);
   void store.command('clear_mood_flag', { entryId, mood: props.moodId });
 }
 function keepFlag(entryId: string): void {
+  touched.add(entryId);
   void store.command('keep_mood_flag', { entryId, mood: props.moodId });
 }
 
@@ -106,6 +123,7 @@ async function runTune(): Promise<void> {
     if (token !== runToken) return;
     result.value = r;
     selected.value = 0;
+    touched.clear();
   } catch (e) {
     if (token === runToken) tuneError.value = String(e);
   } finally {
@@ -126,7 +144,14 @@ const hasProposal = computed(() => (result.value?.proposals.length ?? 0) > 0);
 
 const shownFlags = computed(() => (review.value ? orderedFlags(review.value) : []));
 const changes = computed(() => (review.value ? topChanges(review.value) : { joined: new Set<string>(), dropped: new Set<string>() }));
+const ranks = computed(() => (review.value ? topRanks(review.value) : new Map<string, { before: number | null; after: number | null }>()));
 const flaggedIds = computed(() => new Set(flags.value.map((f) => f.entry.id)));
+/// A song that drops out of the top while flagged to sit high: shown in red.
+function droppedHigh(entryId: string): boolean {
+  if (!changes.value.dropped.has(entryId)) return false;
+  const f = currentFlag(entryId);
+  return f !== null && targetIsHigh(f);
+}
 const rises = computed(() => (review.value ? overlapRises(review.value.overlap) : []));
 const songNames = (songs: TuneSong[]): string => songs.map((s) => s.name).join(', ');
 
@@ -146,7 +171,7 @@ const confirmAccept = ref(false);
 const changedSinceTune = computed(() => acceptError.value !== null && isChangedSinceTune(acceptError.value));
 
 function onAccept(): void {
-  if (!review.value || !hasProposal.value) return;
+  if (!review.value || !hasProposal.value || running.value) return;
   if (brokenFresh(review.value) > 0) confirmAccept.value = true;
   else void accept(() => acceptLinesArgs(review.value!), 'accept_tuned_lines');
 }
@@ -163,14 +188,18 @@ function acceptLinesArgs(r: TuneReview): Record<string, unknown> {
 /// Runs an accept command; on success the store takes the new state and the
 /// dialog closes, on failure the error stays on screen (with "Run Tune
 /// again" when the lines changed meanwhile).
-async function accept(args: () => Record<string, unknown>, cmd: string): Promise<void> {
+async function accept(
+  args: () => Record<string, unknown>,
+  cmd: string,
+  newMoodId: string | null = null,
+): Promise<void> {
   accepting.value = true;
   acceptError.value = null;
   try {
     const state = await invoke<AppState>(cmd, args());
     store.hydrate(state);
     open.value = false;
-    emit('accepted');
+    emit('accepted', newMoodId);
   } catch (e) {
     acceptError.value = String(e);
   } finally {
@@ -181,6 +210,16 @@ async function accept(args: () => Record<string, unknown>, cmd: string): Promise
 // --- Split ---
 
 const askSplitName = ref(false);
+const confirmSplit = ref(false);
+
+/// The split's own accept: like a proposal's, it asks once when fresh flags
+/// leave their band (over both halves), then asks for the new mood's name.
+function onAcceptSplit(): void {
+  const split = result.value?.split;
+  if (!split || running.value) return;
+  if (splitBrokenFresh(split) > 0) confirmSplit.value = true;
+  else askSplitName.value = true;
+}
 const splitNameInitial = computed(() => (result.value?.split ? splitName(result.value.split.new.names) : ''));
 
 function acceptSplit(newName: string): void {
@@ -203,6 +242,7 @@ function acceptSplit(newName: string): void {
       newHoldingEntryIds: holdingEntryIds(split.new),
     }),
     'accept_tuned_split',
+    newId,
   );
 }
 
@@ -215,6 +255,7 @@ watch(open, async (isOpen) => {
   tuneError.value = null;
   acceptError.value = null;
   selected.value = 0;
+  touched.clear();
   flagsOpen.value = !!props.showFlags;
   if (props.showFlags) {
     await nextTick();
@@ -276,7 +317,10 @@ watch(open, async (isOpen) => {
         <section class="mb-4">
           <div class="text-body-2 mb-1">
             {{ flags.length }} flag{{ flags.length === 1 ? '' : 's' }} on {{ mood.name }}
-            <span v-if="shakyNote(flags.length)" class="text-warning"> · {{ shakyNote(flags.length) }}</span>
+            <template v-if="handSet > 0">
+              and {{ handSet }} hand-set level{{ handSet === 1 ? '' : 's' }} (they count as flags)
+            </template>
+            <span v-if="shakyNote(targets)" class="text-warning"> · {{ shakyNote(targets) }}</span>
           </div>
           <div class="d-flex align-center ga-3">
             <VTextField
@@ -292,13 +336,13 @@ watch(open, async (isOpen) => {
               variant="tonal"
               prepend-icon="mdi-tune-vertical"
               :loading="running"
-              :disabled="flags.length === 0"
+              :disabled="targets === 0"
               @click="runTune"
             >
               Tune
             </VBtn>
           </div>
-          <div v-if="flags.length === 0" class="text-caption text-medium-emphasis mt-1">
+          <div v-if="targets === 0" class="text-caption text-medium-emphasis mt-1">
             Flag a few songs on this mood first
           </div>
           <div v-if="running" class="mt-2">
@@ -371,7 +415,13 @@ watch(open, async (isOpen) => {
                 <template v-if="o.holds">holds</template>
                 <template v-else>leaves its band</template>
               </span>
-              <div v-if="!o.holds && !o.fresh" class="d-flex ga-1 stale-actions">
+              <div
+                v-if="!o.holds && !o.fresh && touched.has(o.song.entryId)"
+                class="stale-actions text-caption text-medium-emphasis"
+              >
+                changed: run Tune again to include
+              </div>
+              <div v-else-if="!o.holds && !o.fresh" class="d-flex ga-1 stale-actions">
                 <VBtn size="x-small" variant="tonal" @click="keepFlag(o.song.entryId)">Keep</VBtn>
                 <VMenu location="bottom end">
                   <template #activator="{ props: menuProps }">
@@ -407,7 +457,7 @@ watch(open, async (isOpen) => {
                     <li
                       v-for="t in review.topBefore"
                       :key="t.song.entryId"
-                      :class="{ dropped: changes.dropped.has(t.song.entryId), 'dropped-flagged': changes.dropped.has(t.song.entryId) && flaggedIds.has(t.song.entryId) }"
+                      :class="{ dropped: changes.dropped.has(t.song.entryId), 'dropped-high': droppedHigh(t.song.entryId) }"
                     >
                       <span class="bars">{{ fmt(t.bar) }}</span>
                       {{ t.song.name }}
@@ -423,7 +473,9 @@ watch(open, async (isOpen) => {
                       <span class="bars">{{ fmt(t.bar) }}</span>
                       {{ t.song.name }}
                       <VIcon v-if="flaggedIds.has(t.song.entryId)" size="x-small" color="warning">mdi-flag</VIcon>
-                      <span v-if="changes.joined.has(t.song.entryId)" class="tag">new</span>
+                      <span v-if="rankLabel(ranks.get(t.song.entryId)) !== 'same'" class="tag">
+                        {{ rankLabel(ranks.get(t.song.entryId)) }}
+                      </span>
                     </li>
                   </ol>
                 </div>
@@ -513,7 +565,15 @@ watch(open, async (isOpen) => {
               </div>
               <div class="d-flex mt-2">
                 <VSpacer />
-                <VBtn size="small" variant="tonal" :loading="accepting" @click="askSplitName = true">Accept split</VBtn>
+                <VBtn
+                  size="small"
+                  variant="tonal"
+                  :color="splitBrokenFresh(result.split) > 0 ? 'error' : undefined"
+                  :text="splitAcceptLabel(result.split)"
+                  :loading="accepting"
+                  :disabled="running"
+                  @click="onAcceptSplit"
+                />
               </div>
             </VCard>
           </section>
@@ -539,6 +599,7 @@ watch(open, async (isOpen) => {
           :color="brokenFresh(review) > 0 ? 'error' : 'primary'"
           variant="tonal"
           :loading="accepting"
+          :disabled="running"
           @click="onAccept"
         />
       </VCardActions>
@@ -551,6 +612,14 @@ watch(open, async (isOpen) => {
       confirm-label="Accept anyway"
       confirm-color="error"
       @confirm="accept(() => acceptLinesArgs(review!), 'accept_tuned_lines')"
+    />
+    <ConfirmDialog
+      v-model="confirmSplit"
+      title="Accept the split?"
+      :message="result?.split ? `${splitAcceptLabel(result.split)}. Their flags stay and will read as made under older wording.` : ''"
+      confirm-label="Accept anyway"
+      confirm-color="error"
+      @confirm="askSplitName = true"
     />
     <PromptDialog
       v-model="askSplitName"
@@ -639,7 +708,7 @@ watch(open, async (isOpen) => {
   opacity: 0.6;
 }
 
-.top-list li.dropped-flagged {
+.top-list li.dropped-high {
   opacity: 1;
   color: rgb(var(--v-theme-error));
   font-weight: 600;
