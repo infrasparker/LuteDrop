@@ -173,6 +173,17 @@ function moreLikeThis(entryId: string): void {
   router.push({ name: 'scry', query: { seed: entryId } });
 }
 
+// Selected entries Scry can use as seeds: analyzed music only.
+const selectedSeeds = computed(() =>
+  libraryEntries.value
+    .filter((e) => selectedIds.value.includes(e.id) && e.entryType === 'music' && e.analysis?.status === 'embedded')
+    .map((e) => e.id),
+);
+
+function scrySelection(): void {
+  router.push({ name: 'scry', query: { seed: selectedSeeds.value } });
+}
+
 // --- Multi-select + bulk tagging ---
 
 const selectedIds = ref<string[]>([]);
@@ -630,6 +641,16 @@ async function relocateEntry(entryId: string): Promise<void> {
           @click="showMoodDialog = true"
         >
           Set mood levels…
+        </VBtn>
+        <VBtn
+          prepend-icon="mdi-compass-outline"
+          variant="tonal"
+          size="small"
+          :disabled="bulkBusy || selectedSeeds.length === 0"
+          :title="selectedSeeds.length === 0 ? 'No analyzed music selected' : 'Open Scry with the selection as seeds'"
+          @click="scrySelection"
+        >
+          Find similar
         </VBtn>
         <VBtn
           prepend-icon="mdi-check"

@@ -117,7 +117,7 @@ async function createPlaylist(): Promise<void> {
   }
 
   const groupName = store.groups.find((g) => g.id === gid)?.name ?? '';
-  toast.showSuccess(`Created "${playlistName}" in ${groupName} with ${props.entryIds.length} track${props.entryIds.length === 1 ? '' : 's'}`);
+  toast.showSuccess(`Created comp "${playlistName}" in ${groupName} with ${props.entryIds.length} clip${props.entryIds.length === 1 ? '' : 's'}`);
 }
 
 async function addToTrack(): Promise<void> {
@@ -130,7 +130,7 @@ async function addToTrack(): Promise<void> {
     await run('add_clips', { trackId: track.id, libraryEntryIds: toAdd });
   }
   const skippedNote = skipped > 0 ? ` (${skipped} already there)` : '';
-  toast.showSuccess(`Added ${toAdd.length} to "${track.name}"${skippedNote}`);
+  toast.showSuccess(`Added ${toAdd.length} clip${toAdd.length === 1 ? '' : 's'} to "${track.name}"${skippedNote}`);
 }
 
 async function submit(): Promise<void> {
@@ -154,11 +154,11 @@ async function submit(): Promise<void> {
   <VDialog :model-value="modelValue" max-width="480" :persistent="busy" @update:model-value="(v) => emit('update:modelValue', v)">
     <VCard>
       <VCardTitle class="pt-4">
-        {{ entryIds.length }} selected track{{ entryIds.length === 1 ? '' : 's' }}
+        Add {{ entryIds.length }} as clip{{ entryIds.length === 1 ? '' : 's' }}
       </VCardTitle>
       <VTabs v-model="tab" density="compact" color="primary" class="px-2">
-        <VTab value="new" prepend-icon="mdi-playlist-plus">New playlist</VTab>
-        <VTab value="existing" prepend-icon="mdi-playlist-music">Add to existing track</VTab>
+        <VTab value="new" prepend-icon="mdi-playlist-plus">New comp</VTab>
+        <VTab value="existing" prepend-icon="mdi-playlist-music">Existing track</VTab>
       </VTabs>
       <VDivider />
       <VCardText>
@@ -181,14 +181,14 @@ async function submit(): Promise<void> {
             />
             <VTextField
               v-model="name"
-              label="Name"
+              label="Comp name"
               variant="outlined"
               density="compact"
               autofocus
               @keydown.enter="submit"
             />
             <div class="text-caption text-medium-emphasis">
-              Creates a comp with one shuffle track holding the selected tracks as clips.
+              Makes a comp with one shuffle track; each selection becomes a clip on it.
             </div>
           </template>
         </template>
@@ -204,6 +204,8 @@ async function submit(): Promise<void> {
             item-title="title"
             item-value="value"
             label="Track"
+            hint="Already-present clips are skipped"
+            persistent-hint
             variant="outlined"
             density="compact"
           >
@@ -222,7 +224,7 @@ async function submit(): Promise<void> {
         <VSpacer />
         <VBtn text="Cancel" variant="plain" :disabled="busy" @click="emit('update:modelValue', false)" />
         <VBtn
-          :text="tab === 'new' ? 'Create' : 'Add'"
+          :text="tab === 'new' ? 'Create comp' : 'Add clips'"
           color="primary"
           variant="tonal"
           :loading="busy"
