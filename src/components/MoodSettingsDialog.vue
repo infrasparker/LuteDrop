@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { EnergyPreview, MoodResetImpact, MoodVocabulary, ScryHit } from '@generated/index';
+import { open as openFile } from '@tauri-apps/plugin-dialog';
+import type { AppState, CaseImportReport, EnergyPreview, MoodResetImpact, MoodVocabulary, ScryHit } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useToast } from '../composables/useToast';
 import { calibrationLabel } from '../utils/moods';
+import { albumOf, flaggedEntries } from '../utils/moodTune';
+import { newMoodId, WORD_BANK } from '../utils/moodWords';
 import ConfirmDialog from './ConfirmDialog.vue';
+import MoodTuneDialog from './MoodTuneDialog.vue';
 
 /// Settings → Moods: the mood vocabulary the analyzer scores, and its
 /// calibration.
@@ -30,29 +34,14 @@ import ConfirmDialog from './ConfirmDialog.vue';
 /// - Preview on a row lists the 15 tracks its current prompts (saved or not)
 ///   rank highest, by raw similarity, without saving or recalibrating, so a
 ///   prompt set can be checked before committing to it.
+/// - Tune on a saved row opens the Tune dialog for that mood; "N flags" opens
+///   it at the mood's Flags list. Accepting there offers "Recalibrate now?"
+///   as a manual save does.
+/// - Import case studies reads a case-study JSON file the user picks and
+///   adds its cases as flags (one-off; see `import_case_studies`).
 const open = defineModel<boolean>({ required: true });
 
 const store = useAppStore();
-
-/// Tag words the analyzer's text model knows well (MTG-Jamendo moods and
-/// themes).
-const WORD_BANK = [
-  'action', 'adventure', 'ambiental', 'calm', 'dark', 'deep', 'dramatic', 'dream', 'emotional',
-  'energetic', 'epic', 'fast', 'fun', 'funny', 'groovy', 'happy', 'heavy', 'hopeful', 'horror',
-  'inspiring', 'meditative', 'melancholic', 'mellow', 'melodic', 'motivational', 'nature', 'party',
-  'positive', 'powerful', 'relaxing', 'sad', 'slow', 'soft', 'soundscape', 'space', 'travel',
-  'upbeat', 'uplifting',
-];
-
-/// A fresh internal id for a new mood: "m" and 16 random lowercase letters
-/// (about 75 bits, so collisions are not a concern). It stays within the
-/// a-z, at most 32 characters rule that the backend and the analyzer check,
-/// so random ids need no change on either side; the shipped moods keep their
-/// readable ids (peaceful, sorrowful, ...).
-function newMoodId(): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  return 'm' + Array.from(bytes, (b) => String.fromCharCode(97 + (b % 26))).join('');
-}
 
 interface DraftRow {
   /// Stable key for the list rendering.
@@ -221,12 +210,6 @@ interface PreviewState {
 /// Preview results per row key; a row without an entry shows none.
 const previews = reactive(new Map<number, PreviewState>());
 
-/// "Artist / Album" from the file's two parent folders.
-function albumOf(filePath: string): string {
-  const parts = filePath.split(/[\\/]/).filter((p) => p.length > 0 && !/^[A-Za-z]:$/.test(p));
-  return [parts[parts.length - 3], parts[parts.length - 2]].filter(Boolean).join(' / ');
-}
-
 async function preview(row: DraftRow): Promise<void> {
   const prompts = lines(row.prompts);
   if (prompts.length === 0) return;
@@ -373,6 +356,66 @@ const removeMessage = computed(() => {
 });
 
 const calibratedLabel = computed(() => calibrationLabel(store.moodCalibration));
+
+// --- Tune ---
+
+const tuneOpen = ref(false);
+const tuneMoodId = ref<string | null>(null);
+const tuneShowFlags = ref(false);
+
+/// Flags per saved mood, for each row's "N flags" link.
+const flagCount = (id: string): number => flaggedEntries(store.libraryEntries, id).length;
+
+/// The saved prompts of a row's mood, or null for a mood not saved yet.
+const savedPrompts = (row: DraftRow): string[] | null =>
+  store.moodVocabulary.moods.find((m) => m.id === row.id)?.prompts ?? null;
+
+/// Tune works on the saved lines, so a row with unsaved prompts must be
+/// saved (or discarded) first.
+const tuneBlocked = (row: DraftRow): boolean => {
+  const saved = savedPrompts(row);
+  return saved !== null && !sameList(saved, lines(row.prompts));
+};
+
+function openTune(row: DraftRow, showFlags: boolean): void {
+  tuneMoodId.value = row.id;
+  tuneShowFlags.value = showFlags;
+  tuneOpen.value = true;
+}
+
+/// After an accept: the tuned mood's row takes its new saved lines, and a
+/// mood a split added gets a row; other unsaved edits stay. Then the same
+/// "Recalibrate now?" offer as a manual save.
+function onTuneAccepted(): void {
+  for (const m of store.moodVocabulary.moods) {
+    const row = rows.value.find((r) => r.id === m.id);
+    if (!row) rows.value.push({ key: nextKey++, id: m.id, name: m.name, prompts: m.prompts.join('\n') });
+    else if (m.id === tuneMoodId.value) row.prompts = m.prompts.join('\n');
+  }
+  askRecalibrate.value = true;
+}
+
+// --- Case-study import ---
+
+const importing = ref(false);
+const importReport = ref<CaseImportReport | null>(null);
+const importReportOpen = ref(false);
+
+async function importCaseStudies(): Promise<void> {
+  const path = await openFile({ multiple: false, filters: [{ name: 'Case studies', extensions: ['json'] }] });
+  if (!path || Array.isArray(path)) return;
+  importing.value = true;
+  try {
+    importReport.value = await invoke<CaseImportReport>('import_case_studies', { path });
+    importReportOpen.value = true;
+    // The import does not return the app state: reload it so the new flags show.
+    store.hydrate(await invoke<AppState>('load_data'));
+  } catch (e) {
+    useToast().showError(String(e));
+  } finally {
+    importing.value = false;
+  }
+}
 </script>
 
 <template>
@@ -383,6 +426,15 @@ const calibratedLabel = computed(() => calibrationLabel(store.moodCalibration));
         <div class="d-flex align-center ga-3 mb-2">
           <div class="text-body-2">{{ calibratedLabel }}</div>
           <VSpacer />
+          <VBtn
+            variant="text"
+            size="small"
+            prepend-icon="mdi-file-import-outline"
+            :loading="importing"
+            @click="importCaseStudies"
+          >
+            Import case studies…
+          </VBtn>
           <VBtn
             variant="tonal"
             size="small"
@@ -482,6 +534,21 @@ const calibratedLabel = computed(() => calibrationLabel(store.moodCalibration));
                 >
                   Preview
                 </VBtn>
+                <template v-if="savedPrompts(row) !== null">
+                  <VBtn
+                    size="x-small"
+                    variant="tonal"
+                    prepend-icon="mdi-tune-vertical"
+                    :disabled="tuneBlocked(row)"
+                    @click="openTune(row, false)"
+                  >
+                    Tune
+                  </VBtn>
+                  <a href="#" class="text-caption flags-link" @click.prevent="openTune(row, true)">
+                    {{ flagCount(row.id) }} flag{{ flagCount(row.id) === 1 ? '' : 's' }}
+                  </a>
+                  <span v-if="tuneBlocked(row)" class="text-caption text-medium-emphasis">Save the prompts to tune</span>
+                </template>
                 <span v-if="previews.get(row.key)" class="text-caption text-medium-emphasis">
                   <template v-if="previewStale(row, previews.get(row.key)!)">Prompts changed since this preview</template>
                   <template v-else>Top tracks for these prompts, raw similarity (not saved)</template>
@@ -662,6 +729,36 @@ const calibratedLabel = computed(() => calibrationLabel(store.moodCalibration));
       confirm-label="Recalibrate"
       @confirm="recalibrate"
     />
+    <MoodTuneDialog
+      v-model="tuneOpen"
+      :mood-id="tuneMoodId"
+      :show-flags="tuneShowFlags"
+      @accepted="onTuneAccepted"
+    />
+    <VDialog v-model="importReportOpen" max-width="520">
+      <VCard v-if="importReport" title="Case studies imported">
+        <VCardText>
+          <div class="mb-2">
+            {{ importReport.imported }} flag{{ importReport.imported === 1 ? '' : 's' }} imported.
+          </div>
+          <div v-if="importReport.unmatched.length > 0" class="mb-2">
+            <div class="text-subtitle-2">Not found in the library ({{ importReport.unmatched.length }})</div>
+            <ul class="text-caption import-list">
+              <li v-for="name in importReport.unmatched" :key="name">{{ name }}</li>
+            </ul>
+          </div>
+          <div v-if="importReport.skippedMoods.length > 0">
+            <div class="text-subtitle-2">Moods not in the list, skipped</div>
+            <div class="text-caption">{{ importReport.skippedMoods.join(', ') }}</div>
+          </div>
+        </VCardText>
+        <VDivider />
+        <VCardActions>
+          <VSpacer />
+          <VBtn text="Close" variant="plain" @click="importReportOpen = false" />
+        </VCardActions>
+      </VCard>
+    </VDialog>
   </VDialog>
 </template>
 
@@ -705,6 +802,16 @@ const calibratedLabel = computed(() => calibrationLabel(store.moodCalibration));
   min-width: 3.2em;
   font-variant-numeric: tabular-nums;
   opacity: 0.7;
+}
+
+.flags-link {
+  color: inherit;
+  opacity: 0.8;
+}
+
+.import-list {
+  padding-left: 20px;
+  margin: 0;
 }
 
 .word-bank .v-chip {
