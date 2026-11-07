@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from './stores/appStore';
 import { useAudio } from './composables/useAudio';
 import { useToast } from './composables/useToast';
@@ -11,11 +12,13 @@ import TransportBar from './components/TransportBar.vue';
 import WaveformEditorDialog from './components/WaveformEditorDialog.vue';
 import RemoteInfoDialog from './components/RemoteInfoDialog.vue';
 import BroadcastDialog from './components/BroadcastDialog.vue';
+import SettingsDialog from './components/SettingsDialog.vue';
 
 const store = useAppStore();
 const toast = useToast();
 const showRemoteInfo = ref(false);
 const showBroadcast = ref(false);
+const showSettings = ref(false);
 
 // Initialize audio early to register event listeners
 const audio = useAudio();
@@ -42,6 +45,16 @@ const PREVIEW_ROUTES = ['/library', '/scry', '/moods'];
 watch(() => router.currentRoute.value.path, (newPath, oldPath) => {
   if (PREVIEW_ROUTES.includes(oldPath) && newPath !== oldPath) {
     audio.stopLibrarySound();
+  }
+});
+
+// The startup ReplayGain backfill stored new loudness values: reload state so
+// the entries carry their new loudness factors.
+listen('library-loudness-updated', async () => {
+  try {
+    store.hydrate(await invoke<AppState>('load_data'));
+  } catch (e) {
+    console.warn('Reload after loudness update failed', e);
   }
 });
 
@@ -93,6 +106,12 @@ onMounted(async () => {
       <template #append>
         <VList nav density="compact">
           <VListItem
+            prepend-icon="mdi-cog-outline"
+            title="Settings"
+            aria-label="Settings"
+            @click="showSettings = true"
+          />
+          <VListItem
             prepend-icon="mdi-broadcast"
             title="Broadcast"
             aria-label="Broadcast"
@@ -126,6 +145,7 @@ onMounted(async () => {
 
     <RemoteInfoDialog v-model="showRemoteInfo" />
     <BroadcastDialog v-model="showBroadcast" />
+    <SettingsDialog v-model="showSettings" />
 
     <!-- Top of the window so it never covers the floating selection bars or
          the transport. Click anywhere on it, or the x, to dismiss; an action

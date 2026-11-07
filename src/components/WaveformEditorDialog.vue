@@ -135,6 +135,13 @@ async function saveEntryType(v: string): Promise<void> {
   });
 }
 
+// --- Loudness: what "Even out music loudness" takes off this entry, e.g. "−2.4 dB" ---
+const loudnessReduction = computed(() => {
+  const factor = entry.value?.loudnessFactor ?? 1;
+  if (factor >= 1) return null;
+  return `−${Math.abs(20 * Math.log10(factor)).toFixed(1)} dB`;
+});
+
 // --- Volume (local ref for smooth slider, persist on change) ---
 function setGain(v: number): void {
   localGain.value = v;
@@ -354,6 +361,9 @@ async function relocateFile(): Promise<void> {
             {{ localGain.toFixed(2) }}
           </span>
           <VBtn icon="mdi-restore" variant="text" size="x-small" title="Reset to 1.0" @click="setGain(1.0); persistGain();" />
+        </div>
+        <div v-if="loudnessReduction" class="text-caption text-medium-emphasis mb-4" style="margin-top: -12px; padding-left: 102px;">
+          Evened out by {{ loudnessReduction }} (ReplayGain): louder than the library's typical music.
         </div>
 
         <!-- Loop toggle -->
