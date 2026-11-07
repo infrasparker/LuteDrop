@@ -1,3 +1,11 @@
+<script lang="ts">
+import { ref as moduleRef } from 'vue';
+
+// The Seed view / Map choice, kept for the session (module scope outlives the
+// component when the user leaves Scry and comes back). Seed view by default.
+const preferSeedView = moduleRef(true);
+</script>
+
 <script setup lang="ts">
 // Canvas scatter of every analyzed music track. Points are colored by Role;
 // hovering shows the name, a click on a point plays the track and pins a small
@@ -6,9 +14,18 @@
 // the spot and any seeds), a right-click on empty space clears the selection, a left-drag lasso adds the
 // enclosed points to the selection, and a right-click or right-drag lasso
 // removes them from it.
+//
+// With seeds set, the map can switch to a seed view (src/utils/seedView.ts):
+// the seeds sit at the centre and each track's distance from them is its exact
+// similarity rank, the same order as the results list, while its direction
+// still comes from the map. Every interaction works there too, except the
+// spot search: a spot's neighbours on the radial layout mean nothing new (they
+// are just similar to the seeds), so shift-clicking empty space there only
+// shows a note pointing to the Map view.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useTheme } from 'vuetify';
 import type { LibraryEntry, ScryPoint } from '@generated/index';
+import { seedViewLayout } from '../utils/seedView';
 
 const props = defineProps<{
   points: ScryPoint[];
@@ -21,6 +38,9 @@ const props = defineProps<{
   highlightId?: string | null;
   // A clicked empty spot, in the same [0, 1] coordinates as the points.
   spot?: { x: number; y: number } | null;
+  // Every scored track's similarity to the seeds, and the seeds it is for;
+  // when set, the seed view is available.
+  seedScores?: { seedIds: string[]; scores: Map<string, number> } | null;
 }>();
 
 const emit = defineEmits<{
@@ -47,6 +67,8 @@ const BASE_RADIUS = 3;
 const SEED_RADIUS = 9;
 const HIGHLIGHT_RADIUS = 12;
 const SPOT_RADIUS = 7;
+// Seed view <-> map transition length.
+const TWEEN_MS = 350;
 
 const theme = useTheme();
 const wrapper = ref<HTMLDivElement | null>(null);
@@ -68,6 +90,29 @@ const selectedSet = computed(() => new Set(props.selectedIds));
 
 interface ScreenPoint { id: string; x: number; y: number }
 
+// --- Seed view ---
+
+const layout = computed(() =>
+  props.seedScores ? seedViewLayout(props.points, props.seedScores.seedIds, props.seedScores.scores) : null,
+);
+const seedViewOn = computed(() => layout.value !== null && preferSeedView.value);
+
+const view = computed({
+  get: () => (seedViewOn.value ? 'seed' : 'map'),
+  set: (v: 'seed' | 'map') => {
+    preferSeedView.value = v === 'seed';
+  },
+});
+
+// Shown briefly over the map, e.g. when a spot search is not available.
+const notice = ref('');
+let noticeTimer = 0;
+function showNotice(text: string): void {
+  notice.value = text;
+  clearTimeout(noticeTimer);
+  noticeTimer = window.setTimeout(() => (notice.value = ''), 3000);
+}
+
 // Drawable area in CSS pixels, inside the padding.
 const plotSize = computed(() => ({
   w: Math.max(0, size.value.width - 2 * PAD),
@@ -85,10 +130,79 @@ function toData(sx: number, sy: number): { x: number; y: number } {
   return { x: clamp(w > 0 ? (sx - PAD) / w : 0), y: clamp(h > 0 ? 1 - (sy - PAD) / h : 0) };
 }
 
-// Points in CSS pixels for the current canvas size.
-const screenPoints = computed<ScreenPoint[]>(() =>
-  props.points.map((p) => ({ id: p.entryId, ...toScreen(p.x, p.y) })),
+// The seed view's unit disc on screen: centred, scaled the same on both axes
+// so its rings stay circles.
+const disc = computed(() => {
+  const { w, h } = plotSize.value;
+  return { cx: PAD + w / 2, cy: PAD + h / 2, scale: Math.min(w, h) / 2 };
+});
+
+// Where each point belongs in the current view, in CSS pixels.
+const targetPoints = computed<ScreenPoint[]>(() => {
+  const positions = seedViewOn.value ? layout.value?.positions : null;
+  const { cx, cy, scale } = disc.value;
+  return props.points.map((p) => {
+    const q = positions?.get(p.entryId);
+    return q ? { id: p.entryId, x: cx + q.x * scale, y: cy - q.y * scale } : { id: p.entryId, ...toScreen(p.x, p.y) };
+  });
+});
+
+// A short tween when the view or the seed layout changes; resizes and the
+// first render jump straight to place.
+const tween = ref(1);
+let tweenFrom: Map<string, { x: number; y: number }> | null = null;
+let tweenFrame = 0;
+let animateNext = false;
+
+const ease = (t: number) => 1 - (1 - t) ** 3;
+
+// Points in CSS pixels as drawn right now.
+const screenPoints = computed<ScreenPoint[]>(() => {
+  const target = targetPoints.value;
+  const from = tweenFrom;
+  if (tween.value >= 1 || !from) return target;
+  const e = ease(tween.value);
+  return target.map((p) => {
+    const f = from.get(p.id);
+    return f ? { id: p.id, x: f.x + (p.x - f.x) * e, y: f.y + (p.y - f.y) * e } : p;
+  });
+});
+
+// Animate switching views, and new seed scores while in the seed view.
+watch(
+  [seedViewOn, layout],
+  ([on], [wasOn]) => {
+    animateNext = on || wasOn;
+  },
+  { flush: 'sync' },
 );
+watch(targetPoints, (_now, before) => {
+  const animate = animateNext;
+  animateNext = false;
+  if (!animate || before.length === 0 || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+    cancelAnimationFrame(tweenFrame);
+    tweenFrom = null;
+    tween.value = 1;
+    return;
+  }
+  // Start from where the points are drawn now (mid-tween included).
+  const shown = new Map<string, { x: number; y: number }>();
+  const e = ease(tween.value);
+  for (const p of before) {
+    const f = tween.value < 1 ? tweenFrom?.get(p.id) : undefined;
+    shown.set(p.id, f ? { x: f.x + (p.x - f.x) * e, y: f.y + (p.y - f.y) * e } : { x: p.x, y: p.y });
+  }
+  tweenFrom = shown;
+  tween.value = 0;
+  const start = performance.now();
+  cancelAnimationFrame(tweenFrame);
+  const step = (now: number) => {
+    tween.value = Math.min(1, (now - start) / TWEEN_MS);
+    if (tween.value < 1) tweenFrame = requestAnimationFrame(step);
+    else tweenFrom = null;
+  };
+  tweenFrame = requestAnimationFrame(step);
+});
 
 const pointById = computed(() => {
   const map = new Map<string, ScreenPoint>();
@@ -197,7 +311,41 @@ function drawSeed(ctx: CanvasRenderingContext2D, pt: ScreenPoint): void {
   ctx.fill();
 }
 
+// Seed view guides: faint rings around the seeds, each labelled with the
+// similarity a track on it has, plus a dashed rim for unscored tracks.
+function drawRings(ctx: CanvasRenderingContext2D): void {
+  const l = layout.value;
+  if (!seedViewOn.value || !l) return;
+  const p = palette.value;
+  const { cx, cy, scale } = disc.value;
+  ctx.font = '10px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  const rings: { radius: number; label: string; dashed: boolean }[] = l.rings.map((r) => ({
+    radius: r.radius,
+    label: r.score.toFixed(2),
+    dashed: false,
+  }));
+  if (l.unrankedRadius !== null) rings.push({ radius: l.unrankedRadius, label: 'unranked', dashed: true });
+  for (const ring of rings) {
+    const r = ring.radius * scale;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.setLineDash(ring.dashed ? [3, 4] : []);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = rgba(p.ink, 0.13);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = rgba(p.shade, 0.9);
+    ctx.strokeText(ring.label, cx, cy - r - 1);
+    ctx.fillStyle = rgba(p.ink, 0.5);
+    ctx.fillText(ring.label, cx, cy - r - 1);
+  }
+}
+
 function drawBase(ctx: CanvasRenderingContext2D): void {
+  drawRings(ctx);
   const p = palette.value;
   const focused = seedSet.value.size > 0 || resultSet.value.size > 0;
   const pts = screenPoints.value;
@@ -315,8 +463,8 @@ function draw(): void {
     ctx.stroke();
   }
 
-  // Clicked spot: an accent crosshair ring.
-  if (props.spot) {
+  // Clicked spot: an accent crosshair ring (map coordinates, so map view only).
+  if (props.spot && !seedViewOn.value) {
     const s = toScreen(props.spot.x, props.spot.y);
     ctx.lineWidth = 4;
     ctx.strokeStyle = rgba(p.shade, 0.9);
@@ -356,7 +504,7 @@ function draw(): void {
   }
 }
 
-watch([screenPoints, () => props.entriesById, seedSet, resultSet, selectedSet, palette], invalidateBase);
+watch([screenPoints, () => props.entriesById, seedSet, resultSet, selectedSet, palette, seedViewOn], invalidateBase);
 watch([() => props.playingId, () => props.highlightId, () => props.spot, hover, lasso], scheduleDraw);
 
 // --- Hit testing ---
@@ -453,6 +601,7 @@ function onPointerUp(e: PointerEvent): void {
       return;
     }
     if (removing) emit('clearSearch');
+    else if (seedViewOn.value) showNotice('Spot search works on the Map view');
     else emit('spot', toData(start.x, start.y));
     return;
   }
@@ -522,7 +671,11 @@ const tooltipStyle = computed(() => {
 });
 
 const ariaLabel = computed(() => {
-  const parts = [`Map of ${props.points.length} analyzed tracks by sound`];
+  const parts = [
+    seedViewOn.value
+      ? `Seed view of ${props.points.length} analyzed tracks: distance from the centre is similarity to the seeds`
+      : `Map of ${props.points.length} analyzed tracks by sound`,
+  ];
   if (props.seedIds.length > 0) parts.push(`${props.seedIds.length} seeds`);
   if (props.resultIds.length > 0) parts.push(`${props.resultIds.length} results`);
   if (props.selectedIds.length > 0) parts.push(`${props.selectedIds.length} selected`);
@@ -561,6 +714,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown);
   observer?.disconnect();
+  clearTimeout(noticeTimer);
+  cancelAnimationFrame(tweenFrame);
   dprQuery?.removeEventListener('change', watchPixelRatio);
   if (frame) cancelAnimationFrame(frame);
 });
@@ -585,6 +740,24 @@ onBeforeUnmount(() => {
       <div v-if="hover && hoverName" class="scry-map-tooltip text-caption" :style="tooltipStyle">
         {{ hoverName }}
       </div>
+      <VBtnToggle
+        v-if="layout"
+        v-model="view"
+        class="scry-map-toggle"
+        density="compact"
+        mandatory
+        divided
+        variant="outlined"
+        rounded="lg"
+      >
+        <VBtn value="seed" size="x-small" prepend-icon="mdi-target" title="Distance from the centre is similarity to the seeds">
+          Seed view
+        </VBtn>
+        <VBtn value="map" size="x-small" prepend-icon="mdi-scatter-plot-outline" title="Every track by sound (approximate neighbours)">
+          Map
+        </VBtn>
+      </VBtnToggle>
+      <div v-if="notice" class="scry-map-notice text-caption">{{ notice }}</div>
       <div v-if="pinned" class="scry-map-card d-flex align-center ga-1" :style="cardStyle">
         <span class="text-caption text-truncate px-1" :title="pinnedName">{{ pinnedName }}</span>
         <VBtn
@@ -605,8 +778,12 @@ onBeforeUnmount(() => {
       <span class="d-inline-flex align-center ga-1"><span class="swatch-diamond" />Seed</span>
       <span class="d-inline-flex align-center ga-1"><span class="swatch-ring" />Result</span>
       <span class="d-inline-flex align-center ga-1"><span class="swatch-ring selected" />Selected</span>
+      <span v-if="seedViewOn" class="d-inline-flex align-center ga-1">
+        <span class="swatch-ring guide" />Similarity to the seeds (closer is more similar)
+      </span>
       <VSpacer />
-      <span>Click a dot to play, shift-click to seed · drag to select, right-drag to deselect, right-click empty space to clear · shift-click empty space for nearby tracks, shift-right-click to clear spot and seeds</span>
+      <span v-if="seedViewOn">Click a dot to play, shift-click to seed · drag to select, right-drag to deselect, right-click empty space to clear · shift-right-click to clear seeds · switch to Map for spot search</span>
+      <span v-else>Click a dot to play, shift-click to seed · drag to select, right-drag to deselect, right-click empty space to clear · shift-click empty space for nearby tracks, shift-right-click to clear spot and seeds</span>
     </div>
   </div>
 </template>
@@ -689,6 +866,32 @@ onBeforeUnmount(() => {
   height: 11px;
   border-radius: 50%;
   border: 1.5px solid rgb(var(--v-theme-on-surface));
+}
+
+.swatch-ring.guide {
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.35);
+}
+
+.scry-map-toggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  background: rgb(var(--v-theme-surface));
+}
+
+.scry-map-notice {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 2px 10px;
+  border-radius: 4px;
+  pointer-events: none;
+  background: rgb(var(--v-theme-surface-variant));
+  color: rgb(var(--v-theme-on-surface));
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.15);
+  z-index: 1;
 }
 
 .swatch-ring.selected {

@@ -5,6 +5,7 @@
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import type { AppState, FlagBand, FlagBound, FlagKind, MoodDef, MoodTunePrefs, TuneMode, TuneResult } from '@generated/index';
 import { stubBars, stubTune } from './stubTune';
+import { stubScryMap, stubSimilar } from './stubScry';
 import stateFixture from './fixtures/state.json';
 import tuneFixture from './fixtures/tune.json';
 import settingsFixture from './fixtures/settings.json';
@@ -159,8 +160,12 @@ async function handle(cmd: string, a: Args): Promise<unknown> {
       const e = state.libraryEntries.find((x) => x.filePath === a.filePath);
       return { peaks: peaks((a.width as number) ?? 1200), duration: e?.duration ?? 120 };
     }
-    case 'get_library_entry_usage':
     case 'scry_map':
+      return stubScryMap(state);
+    case 'similar_entries':
+      await sleep(200);
+      return stubSimilar(state, a.entryIds as string[], a.limit as number);
+    case 'get_library_entry_usage':
     case 'scan_folder_for_audio':
       return [];
     case 'get_autotag_settings':
