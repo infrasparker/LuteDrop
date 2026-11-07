@@ -142,8 +142,9 @@ const gridColumns = computed(
         @keydown="onRowKey(r, $event)"
       >
         <span class="song-cell" role="cell">
-          <span v-if="r.focus" class="focus-dot" aria-label="Focus">●
-            <VTooltip activator="parent" location="top">Focus</VTooltip>
+          <!-- Fixed-width slot on every row, so the focus dot never shifts a row out of line. -->
+          <span class="focus-dot" :aria-label="r.focus ? 'Focus' : undefined">
+            <template v-if="r.focus">●<VTooltip activator="parent" location="top">Focus</VTooltip></template>
           </span>
           <MoodSong v-model:menu="menus[r.entryId]" :entry-id="r.entryId" :mood-id="moodId" :name="r.name" />
           <VTooltip v-if="r.flag?.stale" activator="parent" location="top" open-delay="300">Older wording</VTooltip>
@@ -262,6 +263,8 @@ const gridColumns = computed(
 .focus-dot {
   color: rgb(var(--v-theme-primary));
   font-size: 0.75rem;
+  flex: 0 0 10px;
+  width: 10px;
 }
 .band-cell {
   white-space: nowrap;

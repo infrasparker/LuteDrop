@@ -31,10 +31,7 @@ function clearFlag(): void {
 
 <template>
   <span class="mood-song">
-    <button type="button" class="song-name text-truncate" @click="store.editEntryId = entryId">
-      {{ name }}
-      <VTooltip v-if="album" activator="parent" location="top" open-delay="400">{{ album }}</VTooltip>
-    </button>
+    <!-- Actions sit first, so they line up in a column and are always visible (dimmed until hover). -->
     <span class="song-actions" :class="{ 'is-on': playing || menuOpen }">
       <VBtn
         icon
@@ -47,13 +44,25 @@ function clearFlag(): void {
       </VBtn>
       <VMenu v-model="menuOpen" location="bottom end">
         <template #activator="{ props: menuProps }">
-          <VBtn v-bind="menuProps" icon size="x-small" variant="text" :aria-label="`Flag ${name}`">
+          <VBtn
+            v-bind="menuProps"
+            icon
+            size="x-small"
+            variant="text"
+            :class="{ 'is-flagged': flagged }"
+            :color="flagged ? 'warning' : undefined"
+            :aria-label="flagged ? `${name} is flagged; change flag` : `Flag ${name}`"
+          >
             <VIcon size="small">{{ flagged ? 'mdi-flag' : 'mdi-flag-outline' }}</VIcon>
           </VBtn>
         </template>
         <MoodFlagMenu :flagged="flagged" @set="setFlag" @remove="clearFlag" />
       </VMenu>
     </span>
+    <button type="button" class="song-name text-truncate" @click="store.editEntryId = entryId">
+      {{ name }}
+      <VTooltip v-if="album" activator="parent" location="top" open-delay="400">{{ album }}</VTooltip>
+    </button>
   </span>
 </template>
 
@@ -80,18 +89,23 @@ function clearFlag(): void {
 .song-name:focus-visible {
   text-decoration: underline;
 }
-.song-actions :deep(.v-btn) {
-  min-width: 28px;
-  min-height: 28px;
-}
 .song-actions {
   display: inline-flex;
   flex: 0 0 auto;
-  opacity: 0;
 }
-.song-actions.is-on,
-:global(.song-row:hover) .song-actions,
-:global(.song-row:focus-within) .song-actions {
+/* Always visible, dimmed until the row is hovered or focused. Dimming sits on
+   each button (not the group) so a flagged song's flag can stay fully lit: it
+   doubles as the "flagged" marker. */
+.song-actions :deep(.v-btn) {
+  min-width: 28px;
+  min-height: 28px;
+  opacity: 0.4;
+  transition: opacity 120ms;
+}
+.song-actions :deep(.v-btn.is-flagged),
+.song-actions.is-on :deep(.v-btn),
+:global(.song-row:hover) .song-actions :deep(.v-btn),
+:global(.song-row:focus-within) .song-actions :deep(.v-btn) {
   opacity: 1;
 }
 </style>

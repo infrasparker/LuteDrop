@@ -102,7 +102,8 @@ function onRowKey(entryId: string, e: KeyboardEvent): void {
         >
           <span class="rank">{{ r.rank }}</span>
           <MoodSong v-model:menu="menus[r.entryId]" :entry-id="r.entryId" :mood-id="moodId" :name="r.name" />
-          <span class="flag-slot"><VIcon v-if="flaggedIds.has(r.entryId)" size="x-small" color="warning" aria-label="Flagged">mdi-flag</VIcon></span>
+          <!-- Empty grid cell: the song's own flag button now shows that it is flagged. -->
+          <span class="flag-slot" />
           <span class="tag-slot">
             <span v-if="!isCurrent && r.isNew" class="new-tag">
               New<template v-if="otherMood(r.entryId)"> · {{ otherMood(r.entryId) }}</template>
