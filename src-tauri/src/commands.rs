@@ -4,7 +4,8 @@ use std::sync::Arc;
 use crate::actions;
 use crate::models::{
     AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodResetImpact, MoodVocabulary,
-    Role, SceneConfig, TrackUpdates, ScryHit, ScryPoint, EnergyPreview, TuneResult};
+    Role, SceneConfig, TrackUpdates, ScryHit, ScryPoint, EnergyPreview, TuneMode, TuneResult};
+use crate::autotag::tune::TuneInputs;
 use crate::state::AppStateContainer;
 use crate::waveform;
 
@@ -352,9 +353,11 @@ pub fn set_mood_vocabulary(
     actions::set_mood_vocabulary(&state, vocabulary)
 }
 
-/// Runs Tune on a mood. The analyzer's search can take tens of seconds, so it
-/// runs on a worker thread like the previews.
+/// Runs Tune on a mood in one of its modes (see `TuneMode`). The analyzer's
+/// search can take tens of seconds, so it runs on a worker thread like the
+/// previews.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn tune_mood(
     state: State<'_, Arc<AppStateContainer>>,
     mood_id: String,
@@ -362,11 +365,12 @@ pub async fn tune_mood(
     bank: Vec<String>,
     focus_entry_id: Option<String>,
     exclude_words: Vec<String>,
+    mode: TuneMode,
+    candidates: Vec<Vec<String>>,
 ) -> Result<TuneResult, String> {
     let container = state.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        actions::tune_mood(&container, &mood_id, &extra_words, &bank, focus_entry_id.as_deref(), &exclude_words)
-    })
+    let inputs = TuneInputs { extra_words, bank, focus_entry_id, exclude_words, mode, candidates };
+    tokio::task::spawn_blocking(move || actions::tune_mood(&container, &mood_id, &inputs))
         .await
         .map_err(|e| format!("Tune failed: {e}"))?
 }

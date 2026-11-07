@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, reactive, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { AppState, FlagBand, FlagKind, MoodFlag, TuneResult, TuneReview, TuneSong } from '@generated/index';
+import type { AppState, FlagBand, FlagKind, MoodFlag, TuneMode, TuneResult, TuneReview, TuneSong } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { flagLabel, FLAG_BANDS, reviewTargetLabel } from '../utils/moodFlags';
 import {
   acceptLabel,
   albumOf,
   brokenFresh,
+  canAddVersion,
+  DEFAULT_TUNE_MODE,
   flaggedEntries,
   focusNote,
   holdingEntryIds,
@@ -18,6 +20,8 @@ import {
   orderedFlags,
   overlapRises,
   parseExtraWords,
+  parseTypedLines,
+  proposalLabel,
   rankLabel,
   reviewTargetIsHigh,
   shakyNote,
@@ -27,20 +31,27 @@ import {
   splitName,
   topChanges,
   topRanks,
+  TUNE_MODES,
   tuneTargetCount,
   tuneTargetIds,
+  versionCandidates,
 } from '../utils/moodTune';
 import { newMoodId, WORD_BANK } from '../utils/moodWords';
 import ConfirmDialog from './ConfirmDialog.vue';
 import PromptDialog from './PromptDialog.vue';
 
-/// Tune one mood: search for word lines that satisfy the songs flagged on
-/// it, then review what would move before accepting. Top to bottom:
+/// Tune one mood: review word lines against the songs flagged on it before
+/// accepting. Three modes (the switch at the top): Compare (the default)
+/// reviews your own versions of the lines as written; Arrange my words
+/// searches combinations of only the words you type and the current lines;
+/// Suggest also searches the word bank, other moods' words, the phrase list
+/// and the analyzer's built-in vocabulary. Top to bottom:
 ///
 /// 0. The mood's Flags list (collapsible): change or remove each flag.
-/// 1. Flag count, "Extra words to try" and the Tune button.
-/// 2. Proposed lines beside the current ones, with a switcher between
-///    proposals.
+/// 1. Mode switch, flag count, the mode's inputs (versions, or words to try
+///    and words to leave out) and the run button.
+/// 2. Proposed lines (or versions) beside the current ones, each line with
+///    where its words came from, and a switcher between them.
 /// 3. The flagged songs before → after against their band; broken fresh
 ///    flags first and loudest, broken stale flags with Keep / Update / Delete.
 /// 4. The old top 15 beside the new one.
@@ -109,6 +120,22 @@ function keepFlag(entryId: string): void {
 
 // --- Running Tune ---
 
+const mode = ref<TuneMode>(DEFAULT_TUNE_MODE);
+/// The run button's label for the current mode.
+const runLabel = computed(() => TUNE_MODES.find((m) => m.mode === mode.value)?.run ?? 'Tune');
+/// Compare mode's versions, one textarea each (one prompt per line).
+const versions = ref<string[]>(['']);
+const versionLines = computed(() => versionCandidates(versions.value));
+function addVersion(): void {
+  if (canAddVersion(versions.value.length)) versions.value.push(mood.value?.prompts.join('\n') ?? '');
+}
+function removeVersion(i: number): void {
+  versions.value.splice(i, 1);
+  if (versions.value.length === 0) versions.value.push('');
+}
+/// Arrange mode's typed words and lines, one per line, kept whole.
+const typedText = ref('');
+/// Suggest mode's "Extra words to try".
 const extraText = ref('');
 /// "Words to leave out", remembered per mood while the app runs.
 const excludeText = ref('');
@@ -137,10 +164,12 @@ async function runTune(): Promise<void> {
   try {
     const r = await invoke<TuneResult>('tune_mood', {
       moodId: props.moodId,
-      extraWords: parseExtraWords(extraText.value),
-      bank: WORD_BANK,
+      mode: mode.value,
+      extraWords: mode.value === 'arrange' ? parseTypedLines(typedText.value) : parseExtraWords(extraText.value),
+      bank: mode.value === 'suggest' ? WORD_BANK : [],
       focusEntryId: focusRequest.value,
-      excludeWords: parseExtraWords(excludeText.value),
+      excludeWords: mode.value === 'compare' ? [] : parseExtraWords(excludeText.value),
+      candidates: mode.value === 'compare' ? versionLines.value : [],
     });
     if (token !== runToken) return;
     result.value = r;
@@ -295,6 +324,8 @@ watch(open, async (isOpen) => {
   selected.value = 0;
   touched.clear();
   focusRequest.value = props.focusEntryId ?? null;
+  mode.value = DEFAULT_TUNE_MODE;
+  versions.value = [mood.value?.prompts.join('\n') ?? ''];
   excludeText.value = props.moodId === null ? '' : (excludeByMood.get(props.moodId) ?? '');
   flagsOpen.value = !!props.showFlags;
   if (props.showFlags) {
@@ -362,8 +393,71 @@ watch(open, async (isOpen) => {
             </template>
             <span v-if="shakyNote(targets)" class="text-warning"> · {{ shakyNote(targets) }}</span>
           </div>
-          <div class="d-flex align-center ga-3">
+          <VBtnToggle
+            v-model="mode"
+            mandatory
+            density="compact"
+            variant="outlined"
+            divided
+            color="primary"
+            class="mb-2"
+            :disabled="running"
+          >
+            <VBtn v-for="m in TUNE_MODES" :key="m.mode" :value="m.mode" size="small">{{ m.label }}</VBtn>
+          </VBtnToggle>
+          <div v-if="mode === 'compare'">
+            <div class="text-caption text-medium-emphasis mb-1">
+              Write versions of the lines, one prompt per line, and see how each does on your flags.
+            </div>
+            <div class="versions">
+              <div v-for="(_, i) in versions" :key="i" class="version">
+                <VTextarea
+                  v-model="versions[i]"
+                  :label="`Version ${i + 1}`"
+                  variant="outlined"
+                  density="compact"
+                  rows="3"
+                  auto-grow
+                  hide-details
+                  :disabled="running"
+                />
+                <VBtn
+                  v-if="versions.length > 1"
+                  size="x-small"
+                  variant="text"
+                  :disabled="running"
+                  @click="removeVersion(i)"
+                >
+                  Remove
+                </VBtn>
+              </div>
+            </div>
+            <VBtn
+              v-if="canAddVersion(versions.length)"
+              size="small"
+              variant="text"
+              prepend-icon="mdi-plus"
+              class="mt-1"
+              :disabled="running"
+              @click="addVersion"
+            >
+              Add version
+            </VBtn>
+          </div>
+          <div class="d-flex align-center ga-3 mt-1">
+            <VTextarea
+              v-if="mode === 'arrange'"
+              v-model="typedText"
+              label="Your words and lines (one per line; commas join words in a line)"
+              variant="outlined"
+              density="compact"
+              rows="2"
+              auto-grow
+              hide-details
+              :disabled="running"
+            />
             <VTextField
+              v-if="mode === 'suggest'"
               v-model="extraText"
               label="Extra words to try (comma-separated, optional)"
               variant="outlined"
@@ -372,6 +466,7 @@ watch(open, async (isOpen) => {
               :disabled="running"
             />
             <VTextField
+              v-if="mode !== 'compare'"
               v-model="excludeText"
               label="Words to leave out (comma-separated)"
               variant="outlined"
@@ -379,15 +474,16 @@ watch(open, async (isOpen) => {
               hide-details
               :disabled="running"
             />
+            <VSpacer v-if="mode === 'compare'" />
             <VBtn
               color="primary"
               variant="tonal"
               prepend-icon="mdi-tune-vertical"
               :loading="running"
-              :disabled="targets === 0"
+              :disabled="targets === 0 || (mode === 'compare' && versionLines.length === 0)"
               @click="runTune"
             >
-              Tune
+              {{ runLabel }}
             </VBtn>
           </div>
           <div v-if="targets === 0" class="text-caption text-medium-emphasis mt-1">
@@ -395,7 +491,9 @@ watch(open, async (isOpen) => {
           </div>
           <div v-if="running" class="mt-2">
             <VProgressLinear indeterminate color="primary" />
-            <div class="text-caption text-medium-emphasis mt-1">Searching word lines; this can take a minute.</div>
+            <div class="text-caption text-medium-emphasis mt-1">
+              {{ mode === 'compare' ? 'Reviewing your versions.' : 'Searching word lines; this can take a minute.' }}
+            </div>
           </div>
           <VAlert v-if="tuneError" type="error" variant="tonal" density="compact" class="mt-2">{{ tuneError }}</VAlert>
           <div v-if="result && focusLine" class="d-flex align-center ga-1 mt-2 text-body-2">
@@ -432,7 +530,9 @@ watch(open, async (isOpen) => {
               divided
               class="mb-2"
             >
-              <VBtn v-for="(_, i) in result.proposals" :key="i" :value="i" size="small">Proposal {{ i + 1 }}</VBtn>
+              <VBtn v-for="(_, i) in result.proposals" :key="i" :value="i" size="small">
+                {{ proposalLabel(result.mode, i) }}
+              </VBtn>
             </VBtnToggle>
             <div class="two-col">
               <div>
@@ -440,7 +540,9 @@ watch(open, async (isOpen) => {
                 <pre class="lines">{{ result.linesTunedFrom.join('\n') }}</pre>
               </div>
               <div v-if="hasProposal">
-                <div class="text-subtitle-2">Proposed lines</div>
+                <div class="text-subtitle-2">
+                  {{ result.mode === 'compare' ? proposalLabel('compare', selected) : 'Proposed lines' }}
+                </div>
                 <div class="lines">
                   <div v-for="(line, i) in review.lines" :key="i" class="proposed-line">
                     {{ line }}
@@ -556,6 +658,7 @@ watch(open, async (isOpen) => {
             <section class="mb-4">
               <div class="text-body-2 mb-1">
                 Fires on (bar 0.5 or more): {{ review.firesBefore }} → {{ review.firesAfter }} songs
+                · reshaping of unflagged songs {{ fmt(review.stability) }} (0 is none)
               </div>
               <div class="two-col">
                 <div>
@@ -584,7 +687,7 @@ watch(open, async (isOpen) => {
           <section class="mb-2">
             <div class="text-subtitle-2 mb-1">Notes</div>
             <ul class="notes text-body-2">
-              <li v-if="looNote(review.loo)">{{ looNote(review.loo) }}</li>
+              <li v-if="result.mode !== 'compare' && looNote(review.loo)">{{ looNote(review.loo) }}</li>
               <li v-if="review.names.length > 0">
                 Name ideas: {{ review.names.slice(0, 3).map((n) => `${n.word} (${fmt(n.rho)})`).join(', ') }}
               </li>
@@ -747,6 +850,12 @@ watch(open, async (isOpen) => {
   margin: 2px 0 0;
   border-radius: 4px;
   background: rgba(var(--v-theme-on-surface), 0.05);
+}
+
+.versions {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 8px;
 }
 
 .proposed-line + .proposed-line {

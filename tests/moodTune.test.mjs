@@ -5,6 +5,13 @@ import {
   acceptLabel,
   albumOf,
   brokenFresh,
+  canAddVersion,
+  DEFAULT_TUNE_MODE,
+  MAX_VERSIONS,
+  parseTypedLines,
+  proposalLabel,
+  TUNE_MODES,
+  versionCandidates,
   flaggedEntries,
   focusNote,
   flagsLinkLabel,
@@ -219,4 +226,35 @@ test('sourceCaption says where a proposed line came from', () => {
   assert.equal(sourceCaption(['blend']), 'blend');
   assert.equal(sourceCaption([]), '');
   assert.equal(sourceCaption(undefined), '');
+});
+
+test('Tune opens in compare mode, with three modes to pick from', () => {
+  assert.equal(DEFAULT_TUNE_MODE, 'compare');
+  assert.deepEqual(TUNE_MODES.map((m) => m.mode), ['compare', 'arrange', 'suggest']);
+  assert.deepEqual(TUNE_MODES.map((m) => m.label), ['Compare', 'Arrange my words', 'Suggest']);
+  assert.equal(TUNE_MODES.find((m) => m.mode === 'suggest').run, 'Suggest words');
+});
+
+test('versionCandidates turns the version editors into line lists', () => {
+  assert.deepEqual(versionCandidates([' sad\n\n grief ', '  \n', 'melancholic']), [['sad', 'grief'], ['melancholic']]);
+  assert.deepEqual(versionCandidates([]), []);
+});
+
+test('canAddVersion stops at the most versions a compare can take', () => {
+  assert.equal(MAX_VERSIONS, 8);
+  assert.equal(canAddVersion(7), true);
+  assert.equal(canAddVersion(8), false);
+});
+
+test('parseTypedLines keeps each typed line whole, commas and all', () => {
+  assert.deepEqual(parseTypedLines('grief, funeral, dark sadness, cello\n sad piano \n\nsad piano'), [
+    'grief, funeral, dark sadness, cello',
+    'sad piano',
+  ]);
+});
+
+test('proposalLabel names versions in compare mode and proposals otherwise', () => {
+  assert.equal(proposalLabel('compare', 0), 'Version 1');
+  assert.equal(proposalLabel('arrange', 1), 'Proposal 2');
+  assert.equal(proposalLabel('suggest', 2), 'Proposal 3');
 });

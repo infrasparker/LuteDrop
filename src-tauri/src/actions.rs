@@ -472,19 +472,13 @@ pub fn set_mood_vocabulary(container: &AppStateContainer, vocabulary: MoodVocabu
     mutate_and_reload(container, |conn| library::save_mood_vocabulary(conn, &vocabulary).map(|_| ()))
 }
 
-/// Runs Tune on a mood (see `tune::tune`; `focus_entry_id` `None` focuses
-/// the newest flag, `Some("")` nothing): saves nothing. Blocks while the
-/// analyzer searches, which can take tens of seconds.
-pub fn tune_mood(
-    container: &AppStateContainer,
-    mood_id: &str,
-    extra_words: &[String],
-    bank: &[String],
-    focus_entry_id: Option<&str>,
-    exclude_words: &[String],
-) -> Result<TuneResult, String> {
+/// Runs Tune on a mood (see `tune::tune` and `tune::build_tune_request`;
+/// `focus_entry_id` `None` focuses the newest flag, `Some("")` nothing):
+/// saves nothing. Blocks while the analyzer searches, which can take tens
+/// of seconds.
+pub fn tune_mood(container: &AppStateContainer, mood_id: &str, inputs: &tune::TuneInputs) -> Result<TuneResult, String> {
     let client = scry::client_for(&container.db)?;
-    tune::tune(&container.db, &client, mood_id, extra_words, bank, focus_entry_id, exclude_words)
+    tune::tune(&container.db, &client, mood_id, inputs)
 }
 
 /// Accepts a Tune proposal: the mood's lines become `lines` and the holding

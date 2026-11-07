@@ -43,6 +43,7 @@ export type { MoodFlag } from "./MoodFlag";
 export type { StaleReason } from "./StaleReason";
 export type { TuneFlagOutcome } from "./TuneFlagOutcome";
 export type { TuneLeaveOneOut } from "./TuneLeaveOneOut";
+export type { TuneMode } from "./TuneMode";
 export type { TuneMovedSong } from "./TuneMovedSong";
 export type { TuneNameIdea } from "./TuneNameIdea";
 export type { TuneOverlap } from "./TuneOverlap";

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field, StringConstraints
+from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from . import heads, moods, rhythm, scry, tune, tune_vocab
 from .embed import Embedder, EmbeddingCache, MuqEmbedder, decode_track
@@ -36,6 +36,7 @@ MAX_CACHED_PROMPTS = 4096
 # Limits on what a /tune request may carry.
 MAX_TUNE_FLAGS = 500
 MAX_TUNE_BANK = 1000
+MAX_TUNE_VERSIONS = 8     # versions a compare-mode request may carry
 # The built-in vocabulary (tune_vocab) is large; only its this many best words alone, by
 # the search's own loss, join the search, which keeps /tune within a few seconds.
 VOCAB_KEEP = 120
@@ -143,6 +144,19 @@ class TuneRequest(BaseModel):
     # Words to leave out: no unit (or blend) holding one as a whole word is used.
     exclude: Annotated[list[str], Field(max_length=MAX_TUNE_BANK)] = []
     calibration: TuneCalibration
+    # compare: review each of `candidates` (the user's own versions of the lines) as
+    #   written; no search.
+    # arrange: search only the user's typed words and lines (`extra_words`) and the
+    #   current lines, split into words and kept whole.
+    # suggest: search the bank, other moods' words, PHRASES and the built-in vocabulary too.
+    mode: Literal["compare", "arrange", "suggest"] = "suggest"
+    candidates: Annotated[list[PromptList], Field(max_length=MAX_TUNE_VERSIONS)] = []
+
+    @model_validator(mode="after")
+    def _compare_needs_versions(self):
+        if self.mode == "compare" and not self.candidates:
+            raise ValueError("compare mode needs at least one version in candidates")
+        return self
 
     def other(self) -> dict[str, OtherMood]:
         """`other_moods` with a name for each (its id when the app sent lines alone)."""
@@ -447,36 +461,55 @@ def create_app(
         m = tune.Mapping(req.calibration.midpoint_z, req.calibration.slope, req.calibration.source)
         use_ref = req.calibration.source == "reference"
 
-        # Units: the words and lines in play, then the shipped phrases (kept whole), each
-        # with where it came from, less any holding a word the user left out.
+        # Units: the words and lines in play, each with where it came from, less any
+        # holding a word the user left out. Arrange mode takes only the user's typed
+        # words and lines and the current lines; suggest mode adds the bank, other
+        # moods' words, the mood's name, the shipped phrases and the built-in vocabulary.
+        # (Compare mode searches nothing; its units only serve the reports.)
         name = req.name.strip().lower()
         others = req.other()
+        suggest = req.mode == "suggest"
         typed = {w.strip().lower() for w in req.extra_words}
         sources = tune.unit_sources([
-            ("word bank", [t for t in req.bank if t.strip().lower() not in typed]),
+            ("word bank", [t for t in req.bank if t.strip().lower() not in typed] if suggest else []),
             ("your extra words", req.extra_words),
             ("current lines", req.current_lines),
-            *((f"{o.name} words", o.lines) for o in others.values()),
-            ("mood name", [name]),
+            *((f"{o.name} words", o.lines) for o in others.values() if suggest),
+            ("mood name", [name] if suggest else []),
         ])
-        # Current lines and phrases are also units whole.
-        for line in req.current_lines:
-            sources.setdefault(line, ["current lines"])
-        for label, texts in (("phrase list", PHRASES), ("built-in vocabulary", tune_vocab.VOCAB)):
+        # Current and typed lines are also units whole, as are phrases.
+        whole = [("current lines", req.current_lines)]
+        if req.mode == "arrange":
+            whole.append(("your extra words", req.extra_words))
+        if suggest:
+            whole += [("phrase list", PHRASES), ("built-in vocabulary", tune_vocab.VOCAB)]
+        for label, texts in whole:
             for text in texts:
-                labels = sources.setdefault(text.lower(), [])
+                key = text if label == "current lines" else text.strip().lower()
+                labels = sources.setdefault(key, [])
                 if label not in labels:
                     labels.append(label)
-        other_lines = [line for o in others.values() for line in o.lines]
-        units = tune.split_units([*req.bank, *req.current_lines, *other_lines, name])
+        if suggest:
+            other_lines = [line for o in others.values() for line in o.lines]
+            units = tune.split_units([*req.bank, *req.current_lines, *other_lines, name])
+        else:
+            units = tune.split_units([*req.extra_words, *req.current_lines])
         # Each current line as written, so the search can start from (and keep) them whole.
         units += [line for line in dict.fromkeys(req.current_lines) if line not in set(units)]
-        units += [p.lower() for p in PHRASES if p.lower() not in set(units)]
-        vocab = [v.lower() for v in tune_vocab.VOCAB if v.lower() not in set(units)]
+        if req.mode == "arrange":
+            units += [
+                w for w in dict.fromkeys(t.strip().lower() for t in req.extra_words)
+                if w and len(w) <= tune.MAX_UNIT_CHARS and w not in set(units)
+            ]
+        vocab: list[str] = []
+        if suggest:
+            units += [p.lower() for p in PHRASES if p.lower() not in set(units)]
+            vocab = [v.lower() for v in tune_vocab.VOCAB if v.lower() not in set(units)]
         units = [u for u in units + vocab if not tune.excluded(u, req.exclude)]
 
         groups = {"units": units, "current": req.current_lines}
         groups.update({f"other:{k}": o.lines for k, o in others.items()})
+        groups.update({f"version:{i}": lines for i, lines in enumerate(req.candidates)})
         vecs = prompt_vectors(groups)
         if vecs is None:
             raise HTTPException(status_code=503, detail="the prompts could not be embedded")
@@ -501,7 +534,8 @@ def create_app(
             U_lib = U_lib[keep]
             U_ref = None if U_ref is None else U_ref[keep]
         current_rows = tuple(units.index(line) for line in dict.fromkeys(req.current_lines) if line in units)
-        candidates = [u for u in tune.split_units(req.bank) if " " not in u and u in units]
+        candidates = [u for u in tune.split_units(req.bank if suggest else req.extra_words)
+                      if " " not in u and u in units]
         candidates += [name] if name in units else []
 
         loo_memo: dict = {}
@@ -520,7 +554,14 @@ def create_app(
 
         baseline = report(req.current_lines, before, flags, flag_hashes, proposed=False)
         proposals, split = [], None
-        if flags and units:
+        if req.mode == "compare":
+            # Each version as written, in order, whether or not it beats the current lines.
+            for i, lines in enumerate(req.candidates):
+                for line in lines:
+                    sources[line] = ["your version"]
+                proposals.append(report(list(lines), raws(vecs[f"version:{i}"]), flags, flag_hashes,
+                                        proposed=False))
+        elif flags and units:
             # Blends of the best single units join the pool as extra units. A blend's
             # sources are "blend" and then its members'.
             groups_ = tune.blend_groups(U_lib, U_ref, units, flags, m)

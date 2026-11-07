@@ -1018,6 +1018,56 @@ def test_tune_vocabulary_respects_exclude_and_keeps_only_its_best(client_tune, m
     assert "alpha vocab" in kept          # the flagged high songs are alpha songs
 
 
+def test_tune_compare_reports_each_version_in_order_without_searching(client_tune, monkeypatch):
+    searched = _spy_search(monkeypatch)
+    calls = []
+    monkeypatch.setattr(app_module.tune, "leave_one_out", lambda *a, **k: calls.append("loo") or (0, 0))
+    monkeypatch.setattr(app_module.tune, "try_split", lambda *a, **k: calls.append("split"))
+    versions = [["beta"], ["zeta", "gamma"], ["alpha"]]
+    r = client_tune.post("/tune", json=_tune_body(mode="compare", candidates=versions), headers=HEADERS)
+    assert r.status_code == 200
+    out = r.json()
+    assert searched == [] and calls == []
+    # In input order, even the ones no better than the current lines.
+    assert [p["lines"] for p in out["proposals"]] == versions
+    assert out["proposals"][0]["loss"] == pytest.approx(out["baseline"]["loss"])
+    assert out["split"] is None
+    for p in out["proposals"]:
+        assert set(p) == REPORT_KEYS
+        assert p["line_sources"] == [["your version"]] * len(p["lines"])
+        assert p["loo"] == {"held": 0, "total": 0}
+    assert out["proposals"][2]["unsatisfied"] == []       # the alpha version lifts the alpha songs
+
+
+def test_tune_compare_needs_a_version_and_at_most_eight(client_tune):
+    assert client_tune.post("/tune", json=_tune_body(mode="compare"), headers=HEADERS).status_code == 422
+    nine = [["beta"]] * 9
+    r = client_tune.post("/tune", json=_tune_body(mode="compare", candidates=nine), headers=HEADERS)
+    assert r.status_code == 422
+
+
+def test_tune_arrange_searches_only_the_typed_words_and_current_lines(client_tune, monkeypatch):
+    monkeypatch.setattr(tune_vocab, "VOCAB", ["alpha vocab"])
+    searched = _spy_search(monkeypatch)
+    body = _tune_body(mode="arrange", extra_words=["alpha, zeta", "eta"], current_lines=["beta, theta"])
+    out = client_tune.post("/tune", json=body, headers=HEADERS).json()
+    pool = {u for u in searched[0] if not u.count(",") or u in {"alpha, zeta", "beta, theta"}}
+    assert {"alpha", "zeta", "eta", "beta", "theta", "alpha, zeta", "beta, theta"} <= set(searched[0])
+    assert pool <= {"alpha", "zeta", "eta", "beta", "theta", "alpha, zeta", "beta, theta"}, pool
+    # Nothing from the bank, other moods, the phrase list or the vocabulary; blends are of the pool.
+    for u in searched[0]:
+        assert set(p.strip() for p in u.split(",")) <= {"alpha", "zeta", "eta", "beta", "theta"}, u
+    labels = {s for p in out["proposals"] for line in p["line_sources"] for s in line}
+    assert labels <= {"your extra words", "current lines", "blend"}
+
+
+def test_tune_mode_defaults_to_suggest(client_tune, monkeypatch):
+    monkeypatch.setattr(tune_vocab, "VOCAB", ["alpha vocab"])
+    searched = _spy_search(monkeypatch)
+    client_tune.post("/tune", json=_tune_body(), headers=HEADERS)
+    assert "alpha vocab" in searched[0] and "gamma" in searched[0]
+
+
 def test_tune_skips_unknown_hashes(client_tune):
     flags = _tune_body()["flags"] + [
         {"hash": "nope", "min": 0.75, "max": None, "weight": 1.0, "fresh": True, "side": "high"}

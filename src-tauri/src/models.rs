@@ -537,6 +537,20 @@ pub struct TuneSplitReview {
     pub rho: f64,
 }
 
+/// How Tune works: compare reviews the user's own versions of the lines as
+/// written; arrange searches only the words the user typed and the current
+/// lines; suggest also searches the word bank, other moods' words, the
+/// phrase list and the analyzer's built-in vocabulary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "lowercase")]
+pub enum TuneMode {
+    Compare,
+    Arrange,
+    #[default]
+    Suggest,
+}
+
 /// What Tune found for a mood: the current lines' review, the proposals
 /// that beat it (best first), an optional split, and the flagged songs
 /// left out. `lines_tuned_from` goes back with an accept, which is refused
@@ -556,6 +570,9 @@ pub struct TuneResult {
     pub skipped_flags: usize,
     /// The song whose flag the search focused on, if any.
     pub focus_entry_id: Option<String>,
+    /// The mode Tune ran in; in compare mode `proposals` are the user's
+    /// versions, in order, whether or not they beat the current lines.
+    pub mode: TuneMode,
 }
 
 /// Which layer a shown value comes from: the user's, or the analyzer's.

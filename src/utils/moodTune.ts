@@ -5,6 +5,7 @@ import type {
   MoodFlag,
   TuneFlagOutcome,
   TuneLeaveOneOut,
+  TuneMode,
   TuneNameIdea,
   TuneOverlap,
   TuneReview,
@@ -117,6 +118,45 @@ export function parseExtraWords(text: string): string[] {
 export function focusNote(songName: string | null, picked: boolean): string | null {
   if (songName === null) return null;
   return `Focusing on ${songName} (${picked ? 'the flag you picked' : 'your newest flag'})`;
+}
+
+/// The Tune dialog's modes, in the order of its switch, with each one's run
+/// button: Compare reviews your own versions of the lines, Arrange my words
+/// searches only the words you type (and the current lines), Suggest also
+/// tries the word bank, other moods' words and the analyzer's vocabulary.
+export const TUNE_MODES: { mode: TuneMode; label: string; run: string }[] = [
+  { mode: 'compare', label: 'Compare', run: 'Compare' },
+  { mode: 'arrange', label: 'Arrange my words', run: 'Arrange' },
+  { mode: 'suggest', label: 'Suggest', run: 'Suggest words' },
+];
+
+/// Tune works with only your own words unless you ask for suggestions.
+export const DEFAULT_TUNE_MODE: TuneMode = 'compare';
+
+/// Most versions one compare run takes (the analyzer's limit).
+export const MAX_VERSIONS = 8;
+
+export function canAddVersion(count: number): boolean {
+  return count < MAX_VERSIONS;
+}
+
+/// The compare-mode versions as line lists: one prompt per line, as in the
+/// Moods panel; blank lines and empty versions dropped.
+export function versionCandidates(texts: string[]): string[][] {
+  return texts
+    .map((t) => t.split('\n').map((l) => l.trim()).filter((l) => l.length > 0))
+    .filter((v) => v.length > 0);
+}
+
+/// Arrange mode's typed words and lines: one per line, kept whole (a line
+/// of comma-joined words stays one line), without blanks or repeats.
+export function parseTypedLines(text: string): string[] {
+  return [...new Set(text.split('\n').map((l) => l.trim()).filter((l) => l.length > 0))];
+}
+
+/// The switcher label of one result: a version in compare mode, a proposal otherwise.
+export function proposalLabel(mode: TuneMode, i: number): string {
+  return `${mode === 'compare' ? 'Version' : 'Proposal'} ${i + 1}`;
 }
 
 /// The caption under a proposed line: where its words came from ("from
