@@ -15,6 +15,9 @@ import {
   movedMost,
   neverSuggestWords,
   nextVersionName,
+  outRankLabel,
+  topTitle,
+  useShortBands,
   parseLines,
   reachedBars,
   regressions,
@@ -69,37 +72,57 @@ test('flag bounds mirror the tuner: bands by bound, directions past the bar, lev
   assert.equal(flagBounds(null, null, 0.5), null);
 });
 
-test('cell state: holds, closer, worse, and a newly broken flag is worse', () => {
+test('cell state: holds, closer, worse, broken now; a newly broken flag is worse', () => {
   const b = { min: 0.75, max: null };
   assert.equal(cellState({ holds: true, after: 0.8 }, { holds: false, after: 0.6 }, b), 'holds');
   assert.equal(cellState({ holds: false, after: 0.7 }, { holds: false, after: 0.6 }, b), 'closer');
   assert.equal(cellState({ holds: false, after: 0.5 }, { holds: false, after: 0.6 }, b), 'worse');
   assert.equal(cellState({ holds: false, after: 0.74 }, { holds: true, after: 0.8 }, b), 'worse');
-  // Broken under Current and no farther: shown plain, not as worse.
-  assert.equal(cellState({ holds: false, after: 0.6 }, { holds: false, after: 0.6 }, b), 'plain');
-  // The Current column itself never alarms.
-  assert.equal(cellState({ holds: false, after: 0.6 }, null, b), 'plain');
+  // Broken under Current and no farther: still broken, but no worse.
+  assert.equal(cellState({ holds: false, after: 0.6 }, { holds: false, after: 0.6 }, b), 'broken');
+  // The Current column shows a flag broken now (never as "worse").
+  assert.equal(cellState({ holds: false, after: 0.6 }, null, b), 'broken');
   assert.equal(cellState({ holds: true, after: 0.8 }, null, b), 'holds');
 });
 
 // --- Regressions and the confirm ---
 
-test('regressions: fresh flags that hold under Current and break, plus flagged high songs that leave the top', () => {
-  const base = { flags: [outcome('a', 0.8, 0.8, true), outcome('b', 0.6, 0.6, false), outcome('c', 0.9, 0.9, true), outcome('s', 0.8, 0.8, true, { fresh: false })] };
-  const v = {
-    flags: [outcome('a', 0.8, 0.72, false), outcome('b', 0.6, 0.55, false), outcome('c', 0.9, 0.91, true), outcome('s', 0.8, 0.4, false, { fresh: false })],
-    top: [{ song: song('x'), bar: 0.9 }],
-    topBefore: [{ song: song('c'), bar: 0.9 }, { song: song('x'), bar: 0.8 }],
+test('regressions: flags that hold under Current and break, plus held high songs that leave the top', () => {
+  const base = {
+    flags: [
+      outcome('a', 0.8, 0.8, true),
+      outcome('b', 0.6, 0.6, false),
+      outcome('c', 0.9, 0.9, true),
+      outcome('w', 0.69, 0.69, false),
+      outcome('s', 0.8, 0.8, true, { fresh: false }),
+    ],
   };
-  const high = new Set(['c']);
-  assert.deepEqual(regressions(v, base, high).map((o) => o.song.entryId), ['a', 'c']);
-  assert.deepEqual(regressions(v, base, new Set()).map((o) => o.song.entryId), ['a']);
+  const v = {
+    flags: [
+      outcome('a', 0.8, 0.72, false),
+      outcome('b', 0.6, 0.55, false),
+      outcome('c', 0.9, 0.91, true),
+      outcome('w', 0.69, 0.54, false),
+      outcome('s', 0.8, 0.4, false, { fresh: false }),
+    ],
+    top: [{ song: song('x'), bar: 0.9 }],
+    topBefore: [{ song: song('c'), bar: 0.9 }, { song: song('w'), bar: 0.85 }, { song: song('x'), bar: 0.8 }],
+  };
+  const high = new Set(['c', 'w']);
+  // w was already broken under Current: it never counts, not even for leaving the top.
+  const r = regressions(v, base, high);
+  assert.deepEqual(r.map((x) => [x.outcome.song.entryId, x.leftTop]), [['a', false], ['c', true]]);
+  assert.deepEqual(regressions(v, base, new Set()).map((x) => x.outcome.song.entryId), ['a']);
 });
 
 test('confirm copy', () => {
   assert.equal(confirmTitle(1), 'Break 1 flag?');
   assert.equal(confirmTitle(3), 'Break 3 flags?');
   assert.equal(confirmLine('White Orchard', 0.81, 0.72, 'Understandable'), 'White Orchard: 0.81 → 0.72 (Understandable)');
+  assert.equal(
+    confirmLine('Burial Isle', 0.78, 0.74, 'Understandable', true),
+    'Burial Isle: 0.78 → 0.74 (Understandable, out of top 15)',
+  );
   assert.equal(useLabel(0), 'Use');
   assert.equal(useLabel(2), 'Use anyway');
   assert.equal(breaksLabel(1), '1 break');
@@ -108,30 +131,39 @@ test('confirm copy', () => {
 
 // --- Verdict and chips ---
 
-test('verdict: held / total and songs with the change; Current shows held / total only', () => {
+test('verdict: "hold" with songs and change; Current says how many are broken now', () => {
   const r = { flags: [outcome('a', 0, 0, true), outcome('b', 0, 0, false)], firesBefore: 35, firesAfter: 38 };
-  assert.equal(verdictText(r, false), '1/2 · 38 songs (+3)');
-  assert.equal(verdictText({ ...r, firesAfter: 33 }, false), '1/2 · 33 songs (−2)');
-  assert.equal(verdictText({ ...r, firesAfter: 35 }, false), '1/2 · 35 songs (±0)');
-  // Current: only how many flags hold (its song count is in the header).
-  assert.equal(verdictText(r, true), '1/2');
+  assert.equal(verdictText(r, false), '1/2 hold · 38 songs (+3)');
+  assert.equal(verdictText({ ...r, firesAfter: 33 }, false), '1/2 hold · 33 songs (−2)');
+  assert.equal(verdictText({ ...r, firesAfter: 35 }, false), '1/2 hold · 35 songs (±0)');
+  // Current: held / total and how many are broken now (its songs are in the header).
+  assert.equal(verdictText(r, true), '1/2 hold · 1 broken');
+  assert.equal(verdictText({ ...r, flags: [outcome('a', 0, 0, true)] }, true), '1/1 hold');
   assert.equal(verdictText({ flags: [], firesBefore: 4, firesAfter: 4 }, true), '');
   assert.equal(verdictText({ flags: [], firesBefore: 4, firesAfter: 5 }, false), '5 songs (+1)');
-  assert.equal(verdictText({ flags: [outcome('a', 0, 0, true)], firesBefore: 1, firesAfter: 1 }, false), '1/1 · 1 song (±0)');
+  assert.equal(verdictText({ flags: [outcome('a', 0, 0, true)], firesBefore: 1, firesAfter: 1 }, false), '1/1 hold · 1 song (±0)');
 });
 
-test('chips: shaky under 5 flags or weak leave-one-out, overlap rises, reads like only for generated lines', () => {
+test('chips: shaky under 5 flags (not with none) or weak leave-one-out, overlap rises, reads like another mood', () => {
   const base = { flags: Array.from({ length: 6 }, (_, i) => outcome(`f${i}`, 0, 0, true)), loo: { held: 0, total: 0 }, overlap: [], names: [] };
-  assert.equal(columnChips(base, 'Sorrowful', 'typed').shaky, false);
-  assert.equal(columnChips({ ...base, flags: base.flags.slice(0, 4) }, 'Sorrowful', 'typed').shaky, true);
-  assert.equal(columnChips({ ...base, loo: { held: 4, total: 6 } }, 'Sorrowful', 'suggested').shaky, true);
-  assert.equal(columnChips({ ...base, loo: { held: 5, total: 6 } }, 'Sorrowful', 'suggested').shaky, false);
-  const ov = columnChips({ ...base, overlap: [{ moodId: 'grim', before: 0.2, after: 0.35 }, { moodId: 'x', before: 0.2, after: 0.25 }] }, 'Sorrowful', 'typed');
+  const others = ['Serene', 'Horror'];
+  assert.equal(columnChips(base, 'Sorrowful', others).shaky, false);
+  assert.equal(columnChips({ ...base, flags: base.flags.slice(0, 4) }, 'Sorrowful', others).shaky, true);
+  assert.equal(columnChips({ ...base, flags: [] }, 'Sorrowful', others).shaky, false, 'no flags: nothing to be shaky about');
+  assert.equal(columnChips({ ...base, loo: { held: 4, total: 6 } }, 'Sorrowful', others).shaky, true);
+  assert.equal(columnChips({ ...base, loo: { held: 5, total: 6 } }, 'Sorrowful', others).shaky, false);
+  const ov = columnChips({ ...base, overlap: [{ moodId: 'grim', before: 0.2, after: 0.35 }, { moodId: 'x', before: 0.2, after: 0.25 }] }, 'Sorrowful', others);
   assert.deepEqual(ov.overlaps.map((o) => o.moodId), ['grim']);
-  const names = [{ word: 'slow', rho: 0.9 }, { word: 'calm', rho: 0.8 }, { word: 'soft', rho: 0.7 }];
-  assert.equal(columnChips({ ...base, names }, 'Sorrowful', 'suggested').readsLike, 'slow');
-  assert.equal(columnChips({ ...base, names }, 'Sorrowful', 'typed').readsLike, null);
-  assert.equal(columnChips({ ...base, names: [...names.slice(0, 2), { word: 'sorrowful', rho: 0.6 }] }, 'Sorrowful', 'arranged').readsLike, null);
+  // Only when the top name idea is another mood's name.
+  assert.equal(columnChips({ ...base, names: [{ word: 'serene', rho: 0.9 }] }, 'Sorrowful', others).readsLike, 'Serene');
+  assert.equal(columnChips({ ...base, names: [{ word: 'slow', rho: 0.9 }, { word: 'serene', rho: 0.8 }] }, 'Sorrowful', others).readsLike, null);
+  assert.equal(columnChips({ ...base, names: [{ word: 'sorrowful', rho: 0.9 }] }, 'Sorrowful', others).readsLike, null);
+});
+
+test('short band words with three or more versions, or narrow', () => {
+  assert.equal(useShortBands(false, 2), false);
+  assert.equal(useShortBands(false, 3), true);
+  assert.equal(useShortBands(true, 0), true);
 });
 
 // --- Flags table: sort and collapse ---
@@ -154,6 +186,9 @@ test('rows sort focus, regressed, broken, changed, holding; unchanged holding ro
   // A row with no value anywhere is not "changed".
   const none = sortAndCollapse([{ entryId: 'n', focus: false, cells: [cell('holds', null), cell('holds', null)] }], false);
   assert.equal(none.collapsed.length, 1);
+  // With Current the only column nothing collapses.
+  const alone = sortAndCollapse([{ entryId: 'h', focus: false, cells: [cell('holds', 0.8)] }], false);
+  assert.deepEqual([alone.shown.length, alone.collapsed.length], [1, 0]);
 });
 
 // --- Top 15 ---
@@ -164,9 +199,17 @@ test('top merge: rank, move, new, out with ranks, same as current', () => {
   const after = [t('b', 0.91), t('a', 0.85), t('d', 0.8)];
   const m = mergeTop(after, before);
   assert.deepEqual(m.rows.map((r) => [r.entryId, r.rank, r.move, r.isNew]), [['b', 1, 1, false], ['a', 2, -1, false], ['d', 3, null, true]]);
-  assert.deepEqual(m.out.map((o) => [o.entryId, o.oldRank]), [['c', 3]]);
+  assert.deepEqual(m.out.map((o) => [o.entryId, o.oldRank, o.newRank]), [['c', 3, null]]);
   assert.equal(m.same, false);
   assert.equal(mergeTop(before, before).same, true);
+  // The new rank of a song that left, from the review's out ranks.
+  const ranked = mergeTop(after, before, [{ song: song('c'), rank: 22 }]);
+  assert.equal(ranked.out[0].newRank, 22);
+  assert.equal(outRankLabel(ranked.out[0]), '3 → 22');
+  assert.equal(outRankLabel(m.out[0]), '3 → out');
+  assert.equal(topTitle('v4', ranked, false), 'Top 15 · v4 · 1 new · 1 out');
+  assert.equal(topTitle('v4', mergeTop(before, before), false), 'Top 15 · v4');
+  assert.equal(topTitle('Current', mergeTop(before, before), true), 'Top 15 · Current');
 });
 
 test('moved most: five each way', () => {

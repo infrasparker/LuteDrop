@@ -9,12 +9,13 @@ import type {
   TuneLeaveOneOut,
   TuneMovedSong,
   TuneNameIdea,
+  TuneOutRank,
   TuneOverlap,
   TuneReview,
   TuneSplitReview,
   TuneTopSong,
 } from '@generated/index';
-import { MIN_FLAGS, nameNote, overlapRises } from './moodTune.ts';
+import { MIN_FLAGS, overlapRises } from './moodTune.ts';
 
 type FlagLike = Pick<MoodFlag, 'kind' | 'band' | 'bound' | 'barAtFlag' | 'stale' | 'staleReason'>;
 
@@ -121,7 +122,7 @@ export function bandDistance(v: number, b: Bounds): number {
 /// or newly broken (Current held); `plain` when broken under Current
 /// already and no farther. The Current column (`current` null) is
 /// `holds` or `plain`, never an alarm.
-export type CellState = 'holds' | 'closer' | 'worse' | 'plain';
+export type CellState = 'holds' | 'closer' | 'worse' | 'broken';
 
 export function cellState(
   cell: { holds: boolean; after: number },
@@ -129,39 +130,49 @@ export function cellState(
   bounds: Bounds | null,
 ): CellState {
   if (cell.holds) return 'holds';
-  if (current === null) return 'plain';
+  if (current === null) return 'broken';
   if (current.holds) return 'worse';
   if (!bounds) return 'worse';
   const now = bandDistance(cell.after, bounds);
   const before = bandDistance(current.after, bounds);
   if (now < before - 1e-9) return 'closer';
-  // Broken under Current already and no farther: no alarm.
-  return now > before + 1e-9 ? 'worse' : 'plain';
+  // Broken under Current already and no farther: still broken, no worse.
+  return now > before + 1e-9 ? 'worse' : 'broken';
 }
 
 // --- Regressions ---
 
 type Outcomes = { flags: TuneFlagOutcome[] };
 
+/// One thing Use would break: a flag that holds now and not under the
+/// version, or (`leftTop`) a flagged song that still holds its band but
+/// leaves the top list while asking for a high bar.
+export interface Regression {
+  outcome: TuneFlagOutcome;
+  leftTop: boolean;
+}
+
 /// What Use would break, against Current (`baseline`): fresh flags that hold
-/// under Current and not under `review`, then flagged songs that ask for a
-/// high bar (`highIds`) and leave the top list. Flags already broken under
-/// Current never count. Each song once, as its flag outcome in `review`.
+/// under Current and not under `review`, then held songs that ask for a
+/// high bar (`highIds`) and leave the top list. A song whose flag is already
+/// broken under Current never counts. Each song once.
 export function regressions(
   review: Outcomes & Partial<Pick<TuneReview, 'top' | 'topBefore'>>,
   baseline: Outcomes,
   highIds: Set<string>,
-): TuneFlagOutcome[] {
+): Regression[] {
   const heldBefore = new Set(baseline.flags.filter((f) => f.holds).map((f) => f.song.entryId));
-  const out: TuneFlagOutcome[] = review.flags.filter((f) => f.fresh && !f.holds && heldBefore.has(f.song.entryId));
-  const seen = new Set(out.map((f) => f.song.entryId));
+  const out: Regression[] = review.flags
+    .filter((f) => f.fresh && !f.holds && heldBefore.has(f.song.entryId))
+    .map((outcome) => ({ outcome, leftTop: false }));
+  const seen = new Set(out.map((r) => r.outcome.song.entryId));
   if (review.top && review.topBefore) {
     const { out: left } = mergeTop(review.top, review.topBefore);
     for (const o of left) {
-      if (!highIds.has(o.entryId) || seen.has(o.entryId)) continue;
+      if (!highIds.has(o.entryId) || seen.has(o.entryId) || !heldBefore.has(o.entryId)) continue;
       const f = review.flags.find((x) => x.song.entryId === o.entryId);
       if (f) {
-        out.push(f);
+        out.push({ outcome: f, leftTop: true });
         seen.add(o.entryId);
       }
     }
@@ -179,8 +190,8 @@ export const confirmTitle = (n: number): string => `Break ${n} flag${n === 1 ? '
 
 const fmt = (v: number): string => v.toFixed(2);
 
-export const confirmLine = (name: string, before: number, after: number, band: string): string =>
-  `${name}: ${fmt(before)} → ${fmt(after)} (${band})`;
+export const confirmLine = (name: string, before: number, after: number, band: string, leftTop = false): string =>
+  `${name}: ${fmt(before)} → ${fmt(after)} (${band}${leftTop ? ', out of top 15' : ''})`;
 
 export const useLabel = (regressionCount: number): string => (regressionCount > 0 ? 'Use anyway' : 'Use');
 
@@ -188,12 +199,16 @@ export const breaksLabel = (n: number): string => `${n} break${n === 1 ? '' : 's
 
 // --- Verdict and chips ---
 
-/// A column's verdict: "{held}/{total} · {n} songs ({±d})"; with no flags
-/// only the songs show. Current shows only "{held}/{total}" (its song count
-/// is in the page header), or nothing without flags.
+/// A column's verdict: "{held}/{total} hold · {n} songs ({±d})"; with no
+/// flags only the songs show. Current shows "{held}/{total} hold · {b}
+/// broken" (its song count is in the page header), or nothing without flags.
 export function verdictText(r: Outcomes & Pick<TuneReview, 'firesBefore' | 'firesAfter'>, isCurrent: boolean): string {
-  const held = r.flags.length === 0 ? '' : `${r.flags.filter((f) => f.holds).length}/${r.flags.length}`;
-  if (isCurrent) return held;
+  const holding = r.flags.filter((f) => f.holds).length;
+  const held = r.flags.length === 0 ? '' : `${holding}/${r.flags.length} hold`;
+  if (isCurrent) {
+    const broken = r.flags.length - holding;
+    return broken > 0 ? `${held} · ${broken} broken` : held;
+  }
   const n = r.firesAfter;
   const d = r.firesAfter - r.firesBefore;
   const songs = `${n} song${n === 1 ? '' : 's'} (${d > 0 ? `+${d}` : d < 0 ? `−${-d}` : '±0'})`;
@@ -206,23 +221,31 @@ export interface ColumnChips {
   readsLike: string | null;
 }
 
-/// The chips under a column's verdict: Shaky (fewer than MIN_FLAGS flags,
-/// or leave-one-out under SHAKY_LOO when known), Overlaps (another mood's
-/// overlap rose by OVERLAP_RISE or more), Reads like (arranged or suggested
-/// lines whose name ideas leave out the mood's name).
+/// The chips under a column's verdict: Shaky (1 to MIN_FLAGS - 1 flags, or
+/// leave-one-out under SHAKY_LOO when known; never with no flags), Overlaps
+/// (another mood's overlap rose by OVERLAP_RISE or more), Reads like (the
+/// top name idea is another mood's name: that mood, as named).
 export function columnChips(
   r: Outcomes & { loo: TuneLeaveOneOut; overlap: TuneOverlap[]; names: TuneNameIdea[] },
   moodName: string,
-  source: VersionSource,
+  otherMoodNames: string[],
 ): ColumnChips {
   const looWeak = r.loo.total > 0 && r.loo.held / r.loo.total < SHAKY_LOO;
-  const generated = source === 'arranged' || source === 'suggested';
+  const n = r.flags.length;
+  const top = r.names[0]?.word.trim().toLowerCase() ?? '';
+  const other = top && top !== moodName.trim().toLowerCase()
+    ? (otherMoodNames.find((m) => m.trim().toLowerCase() === top) ?? null)
+    : null;
   return {
-    shaky: r.flags.length < MIN_FLAGS || looWeak,
+    shaky: n > 0 && (n < MIN_FLAGS || looWeak),
     overlaps: overlapRises(r.overlap),
-    readsLike: generated && nameNote(moodName, r.names) !== null ? r.names[0].word : null,
+    readsLike: other,
   };
 }
+
+/// The flags table abbreviates band words when narrow or with three or
+/// more version columns.
+export const useShortBands = (narrow: boolean, versionCount: number): boolean => narrow || versionCount >= 3;
 
 // --- Flags table ---
 
@@ -256,6 +279,8 @@ function rowRank(r: RowModel): number {
 /// change in any column collapse (`collapsed`) unless `expanded`.
 export function sortAndCollapse<R extends RowModel>(rows: R[], expanded: boolean): { shown: R[]; collapsed: R[] } {
   const ranked = rows.map((r, i) => ({ r, i, k: rowRank(r) })).sort((a, b) => a.k - b.k || a.i - b.i);
+  // With Current the only column there is nothing to compare: show every row.
+  if (rows.every((r) => r.cells.length <= 1)) return { shown: ranked.map((x) => x.r), collapsed: [] };
   const shown = ranked.filter((x) => expanded || x.k < 4).map((x) => x.r);
   const collapsed = ranked.filter((x) => x.k === 4).map((x) => x.r);
   return { shown, collapsed };
@@ -277,12 +302,19 @@ export interface OutRow {
   entryId: string;
   name: string;
   oldRank: number;
+  /// Its rank in the selected column's whole ranking, when the review says.
+  newRank: number | null;
   bar: number;
 }
 
 /// The selected column's top list against Current's: each song's rank and
 /// move, the songs that left (`out`), and whether the two are the same.
-export function mergeTop(top: TuneTopSong[], topBefore: TuneTopSong[]): { rows: TopRow[]; out: OutRow[]; same: boolean } {
+export function mergeTop(
+  top: TuneTopSong[],
+  topBefore: TuneTopSong[],
+  outRanks: TuneOutRank[] = [],
+): { rows: TopRow[]; out: OutRow[]; same: boolean } {
+  const newRank = new Map(outRanks.map((o) => [o.song.entryId, o.rank]));
   const before = new Map(topBefore.map((t, i) => [t.song.entryId, i + 1]));
   const now = new Set(top.map((t) => t.song.entryId));
   const rows = top.map((t, i) => {
@@ -297,10 +329,26 @@ export function mergeTop(top: TuneTopSong[], topBefore: TuneTopSong[]): { rows: 
     };
   });
   const out = topBefore
-    .map((t, i) => ({ entryId: t.song.entryId, name: t.song.name, oldRank: i + 1, bar: t.bar }))
+    .map((t, i) => ({ entryId: t.song.entryId, name: t.song.name, oldRank: i + 1, newRank: newRank.get(t.song.entryId) ?? null, bar: t.bar }))
     .filter((o) => !now.has(o.entryId));
   const same = top.length === topBefore.length && top.every((t, i) => t.song.entryId === topBefore[i].song.entryId);
   return { rows, out, same };
+}
+
+/// "3 → 22", or "3 → out" when the new rank is not known.
+export const outRankLabel = (o: Pick<OutRow, 'oldRank' | 'newRank'>): string =>
+  `${o.oldRank} → ${o.newRank ?? 'out'}`;
+
+/// The Top panel's title: "Top 15 · v4 · 1 new · 1 out" (counts only when
+/// not Current and not zero).
+export function topTitle(name: string, merged: { rows: TopRow[]; out: OutRow[] }, isCurrent: boolean): string {
+  const parts = [`Top 15`, name];
+  if (!isCurrent) {
+    const added = merged.rows.filter((r) => r.isNew).length;
+    if (added > 0) parts.push(`${added} new`);
+    if (merged.out.length > 0) parts.push(`${merged.out.length} out`);
+  }
+  return parts.join(' · ');
 }
 
 /// "↑2", "↓3", or '' for no move.
