@@ -336,6 +336,56 @@ pub struct MoodValue {
     /// The level the user set, one of `MOOD_LEVELS`; `None` means the
     /// suggestion shows.
     pub user: Option<f64>,
+    /// The user's note on this song and mood, a tuning target; it never
+    /// changes the shown value. `None` when there is no flag.
+    pub flag: Option<MoodFlag>,
+}
+
+/// What a flag says: the bar belongs in `band`, or should be `higher` or
+/// `lower` than it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "snake_case")]
+pub enum FlagKind {
+    Band,
+    Higher,
+    Lower,
+}
+
+/// The bands a `band` flag can name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "snake_case")]
+pub enum FlagBand {
+    Definitely,
+    Understandable,
+    Stretch,
+    No,
+}
+
+/// Whether the band is exact (`in`) or a limit (`at_least`, `at_most`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "snake_case")]
+pub enum FlagBound {
+    In,
+    AtLeast,
+    AtMost,
+}
+
+/// A flag on one song and mood. `stale` is true when the mood's prompt
+/// lines have changed since the flag was set or last kept.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct MoodFlag {
+    pub kind: FlagKind,
+    pub band: Option<FlagBand>,
+    pub bound: FlagBound,
+    /// The bar the song showed when flagged.
+    pub bar_at_flag: Option<f64>,
+    pub calibrated_at: Option<String>,
+    pub stale: bool,
 }
 
 /// Which layer a shown value comes from: the user's, or the analyzer's.

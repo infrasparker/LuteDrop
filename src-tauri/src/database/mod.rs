@@ -4,6 +4,7 @@ pub mod configurations;
 pub mod error;
 pub mod hierarchy;
 pub mod library;
+pub mod mood_flags;
 pub mod settings;
 
 pub use error::DbError;
@@ -20,7 +21,7 @@ use crate::models::{
 
 /// Current schema version. Bump when adding a migration below; fresh
 /// databases are stamped with this directly.
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 /// Spacing between sibling `sort_order` values, leaving room for insertions
 /// between neighbours without renumbering. Shared by hierarchy + configurations.
@@ -434,6 +435,24 @@ const LIBRARY_ENTRY_MOODS_DDL: &str = "
     );
 ";
 
+/// The mood flag table (schema v15), shared by init_schema (fresh DBs) and
+/// the v14→v15 migration. One flag per (entry, mood); `lines_sig` is the
+/// mood's prompt lines joined with newlines when the flag was set or kept.
+const MOOD_FLAGS_DDL: &str = "
+    CREATE TABLE IF NOT EXISTS mood_flags (
+        library_entry_id TEXT NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,
+        mood             TEXT NOT NULL,
+        kind             TEXT NOT NULL CHECK (kind IN ('band','higher','lower')),
+        band             TEXT CHECK (band IS NULL OR band IN ('definitely','understandable','stretch','no')),
+        bound            TEXT NOT NULL DEFAULT 'in' CHECK (bound IN ('in','at_least','at_most')),
+        bar_at_flag      REAL,
+        calibrated_at    TEXT,
+        lines_sig        TEXT NOT NULL,
+        created_at       INTEGER NOT NULL,
+        PRIMARY KEY (library_entry_id, mood)
+    );
+";
+
 /// The analyzer's and user's pool columns schema v12 drops.
 const V11_POOL_COLUMNS: [&str; 4] = ["pool_auto", "pool_auto_p", "pool_auto_runner", "pool_user"];
 
@@ -584,6 +603,11 @@ fn migrate_v13_to_v14(conn: &Connection) -> SqlResult<()> {
     )
 }
 
+/// v14 → v15: the `mood_flags` table. Nothing existing changes.
+fn migrate_v14_to_v15(conn: &Connection) -> SqlResult<()> {
+    conn.execute_batch(MOOD_FLAGS_DDL)
+}
+
 // Ordered migrations: entry `(n, f)` upgrades version n → n+1.
 const MIGRATIONS: &[(i64, Migration)] = &[
     (3, migrate_v3_to_v4),
@@ -597,6 +621,7 @@ const MIGRATIONS: &[(i64, Migration)] = &[
     (11, migrate_v11_to_v12),
     (12, migrate_v12_to_v13),
     (13, migrate_v13_to_v14),
+    (14, migrate_v14_to_v15),
 ];
 
 fn read_schema_version(conn: &Connection) -> i64 {
@@ -795,6 +820,7 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
     ))?;
     conn.execute_batch(ENTRY_ANALYSIS_DDL)?;
     conn.execute_batch(LIBRARY_ENTRY_MOODS_DDL)?;
+    conn.execute_batch(MOOD_FLAGS_DDL)?;
     conn.execute_batch(INDEX_DDL)
 }
 
@@ -1059,6 +1085,8 @@ fn load_library_entries(conn: &Connection, vocabulary: &MoodVocabulary) -> Resul
         }
     }
 
+    let mut flags = mood_flags::load_flags(conn, vocabulary)?;
+
     let mood_ids = vocabulary.ids();
     let mut entries = Vec::with_capacity(rows.len());
     for (id, file_path, content_hash, name, duration, sample_rate, file_size,
@@ -1076,7 +1104,8 @@ fn load_library_entries(conn: &Connection, vocabulary: &MoodVocabulary) -> Resul
             .iter()
             .map(|mood| {
                 let (auto, user) = stored.get(mood).copied().unwrap_or((None, None));
-                MoodValue { mood: mood.clone(), auto, user }
+                let flag = flags.remove(&(id.clone(), mood.clone()));
+                MoodValue { mood: mood.clone(), auto, user, flag }
             })
             .collect();
         entries.push(LibraryEntry {
@@ -2087,7 +2116,7 @@ mod tests {
     fn fresh_database_is_current() {
         let dir = tempfile::tempdir().unwrap();
         let conn = open_db(&dir.path().join("fresh.db")).unwrap();
-        assert_eq!(read_schema_version(&conn), 14);
+        assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
         conn.prepare(
             "SELECT role_auto, role_auto_score, role_user, mood_reviewed_at FROM library_entries",
         )
@@ -3267,7 +3296,7 @@ mod tests {
         }
 
         let conn = open_db(&path).unwrap();
-        assert_eq!(read_schema_version(&conn), 14);
+        assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
         assert_eq!(meta_value(&conn, "mood_vocabulary").as_deref(), Some(edited_json.as_str()));
         assert_eq!(meta_value(&conn, "mood_calibration"), None);
         assert_eq!(mood_rows(&conn), vec![("L".into(), "peaceful".into(), None, Some(0.25))]);
@@ -3323,7 +3352,7 @@ mod tests {
             .unwrap();
 
         let conn = open_db(&path).unwrap();
-        assert_eq!(read_schema_version(&conn), 14);
+        assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
         assert_eq!(
             meta_value(&conn, "mood_vocabulary").unwrap(),
             settings::mood_vocabulary_json(&MoodVocabulary::defaults()).unwrap()
@@ -3442,6 +3471,53 @@ mod tests {
     }
 
     #[test]
+    fn migration_v14_to_v15_adds_mood_flags_and_keeps_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lutedrop.db");
+        let id = {
+            let conn = open_db(&path).unwrap();
+            let id = library::insert_library_entry(&conn, "/a.mp3", None, "A", None, None, None, "music").unwrap();
+            conn.execute(
+                "INSERT INTO library_entry_moods (library_entry_id, mood, auto_score, user_level) VALUES (?1, 'grim', 0.4, 0.75)",
+                [&id],
+            )
+            .unwrap();
+            // Put it back to v14: no flag table, version 14.
+            conn.execute_batch("DROP TABLE mood_flags; UPDATE meta SET value = '14' WHERE key = 'schema_version';")
+                .unwrap();
+            id
+        };
+
+        let conn = open_db(&path).unwrap();
+        assert_eq!(read_schema_version(&conn), 15);
+        let flags: i64 = conn.query_row("SELECT COUNT(*) FROM mood_flags", [], |r| r.get(0)).unwrap();
+        assert_eq!(flags, 0);
+        assert_eq!(mood_rows(&conn), vec![(id, "grim".into(), Some(0.4), Some(0.75))]);
+        assert_eq!(pre_migration_backups(dir.path(), 14).len(), 1);
+    }
+
+    #[test]
+    fn entries_load_their_flag_per_mood() {
+        use crate::models::{FlagBand, FlagBound, FlagKind};
+        let conn = open_memory_db();
+        let a = library::insert_library_entry(&conn, "/a.mp3", None, "A", None, None, None, "music").unwrap();
+        let vocab = MoodVocabulary::defaults();
+        let mood = vocab.moods[0].id.clone();
+        let sig = mood_flags::lines_sig(&vocab.prompt_signature(&mood).unwrap());
+        mood_flags::set_flag(
+            &conn, &a, &mood, FlagKind::Band, Some(FlagBand::Understandable), FlagBound::In, Some(0.4), None, &sig,
+        )
+        .unwrap();
+
+        let entries = load_library_entries(&conn, &vocab).unwrap();
+        let e = entries.iter().find(|e| e.id == a).unwrap();
+        let flag = e.moods.iter().find(|m| m.mood == mood).unwrap().flag.clone().unwrap();
+        assert_eq!(flag.band, Some(FlagBand::Understandable));
+        assert!(!flag.stale);
+        assert!(e.moods.iter().filter(|m| m.mood != mood).all(|m| m.flag.is_none()));
+    }
+
+    #[test]
     fn entries_load_moods_in_vocabulary_order() {
         let conn = open_memory_db();
         let set = library::insert_library_entry(&conn, "/a.mp3", None, "A", None, None, None, "music").unwrap();
@@ -3458,7 +3534,7 @@ mod tests {
 
         let entries = load_library_entries(&conn, &MoodVocabulary::defaults()).unwrap();
         let a = entries.iter().find(|e| e.id == set).unwrap();
-        let v = |mood: &str, auto, user| MoodValue { mood: mood.into(), auto, user };
+        let v = |mood: &str, auto, user| MoodValue { mood: mood.into(), auto, user, flag: None };
         // Every id, in order; missing rows (and a retired id) give neither layer.
         assert_eq!(
             a.moods,
