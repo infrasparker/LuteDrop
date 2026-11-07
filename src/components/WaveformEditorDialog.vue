@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
 import WaveformEditor from './WaveformEditor.vue';
@@ -192,6 +193,19 @@ async function updateMarkersFromNumeric(overrides: {
   });
 }
 
+// Find similar: Scry seeded with this entry. Only analyzed music has a sound
+// fingerprint to compare.
+const router = useRouter();
+const canFindSimilar = computed(
+  () => entry.value?.entryType === 'music' && entry.value.analysis?.status === 'embedded',
+);
+
+function findSimilar(): void {
+  const id = props.entryId;
+  close();
+  router.push({ name: 'scry', query: { seed: id } });
+}
+
 function close(): void {
   // Persist gain on close if changed
   if (entry.value && localGain.value !== entry.value.volume) {
@@ -218,6 +232,24 @@ async function relocateFile(): Promise<void> {
       <VCardTitle class="d-flex align-center">
         <span>Edit: {{ entry.name }}</span>
         <VSpacer />
+        <!-- The span carries the hover text, since a disabled button gets no hover. -->
+        <span
+          class="mr-2"
+          :title="canFindSimilar
+            ? 'Find similar in Scry'
+            : entry.entryType === 'music'
+              ? 'Find similar: not analyzed yet (run Analyze library in Auto-tagging)'
+              : 'Find similar: Scry compares music only'"
+        >
+          <VBtn
+            icon="mdi-compass-outline"
+            variant="tonal"
+            size="small"
+            aria-label="Find similar in Scry"
+            :disabled="!canFindSimilar"
+            @click="findSimilar"
+          />
+        </span>
         <VBtn
           :icon="isPreviewPlaying ? 'mdi-stop' : 'mdi-play'"
           variant="tonal"

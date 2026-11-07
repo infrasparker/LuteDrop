@@ -243,7 +243,12 @@ onBeforeUnmount(() => {
       <span class="head-trail" />
     </div>
 
-    <div ref="listEl" class="scry-results-list flex-grow-1" @mouseleave="setHovered(null)">
+    <div
+      ref="listEl"
+      class="scry-results-list flex-grow-1"
+      :class="{ 'has-selection': selectedIds.length > 0 }"
+      @mouseleave="setHovered(null)"
+    >
       <div
         v-for="{ entry, score } in visibleRows"
         :key="entry.id"
@@ -391,6 +396,12 @@ onBeforeUnmount(() => {
 .scry-results-list {
   min-height: 0;
   overflow-y: auto;
+}
+
+/* The selection bar floats over the bottom of the view; this lets the last
+   rows scroll up from under it without shrinking the panes. */
+.scry-results-list.has-selection {
+  padding-bottom: 64px;
 }
 
 .scry-row {

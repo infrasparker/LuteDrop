@@ -127,10 +127,20 @@ onMounted(async () => {
     <RemoteInfoDialog v-model="showRemoteInfo" />
     <BroadcastDialog v-model="showBroadcast" />
 
-    <VSnackbar v-model="toast.visible.value" :color="toast.color.value || undefined" :timeout="toast.action.value ? 6000 : 3000">
+    <!-- Top of the window so it never covers the floating selection bars or
+         the transport. Click anywhere on it, or the x, to dismiss; an action
+         button (such as Undo) runs its action instead. -->
+    <VSnackbar
+      v-model="toast.visible.value"
+      :color="toast.color.value || undefined"
+      :timeout="toast.timeout.value"
+      location="top"
+      @click="toast.hide()"
+    >
       {{ toast.message.value }}
-      <template v-if="toast.action.value" #actions>
-        <VBtn variant="text" @click="toast.runAction()">{{ toast.action.value.label }}</VBtn>
+      <template #actions>
+        <VBtn v-if="toast.action.value" variant="text" @click.stop="toast.runAction()">{{ toast.action.value.label }}</VBtn>
+        <VBtn icon="mdi-close" size="small" variant="text" aria-label="Dismiss" @click.stop="toast.hide()" />
       </template>
     </VSnackbar>
   </VApp>

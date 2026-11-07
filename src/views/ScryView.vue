@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Browse music by sound: a text search or seed tracks give ranked results,
-// and a map shows every analyzed music track. Selected tracks become a new
-// shuffle playlist or are added to an existing track. With `?target=<trackId>`
+// and a map shows every analyzed music track. Selected tracks become clips:
+// on a new comp (one shuffle track) or appended to an existing track. With `?target=<trackId>`
 // (Find similar on a Soundstage track) results leave out what that track
 // already holds and selections are added straight to it.
 import { computed, ref, watch } from 'vue';
@@ -74,10 +74,20 @@ function goBack(): void {
 
 // --- Results (text search or seeds) ---
 
+// Vibe asks the analyzer to match a description; Name filters track names as you type.
+const searchMode = ref<'vibe' | 'name'>('vibe');
 const searchText = ref('');
 const seeds = ref<string[]>([]);
-// What the current results answer: a submitted search, the seeds, or nothing yet.
-const query = ref<{ kind: 'search'; text: string } | { kind: 'seeds' } | null>(null);
+// A clicked empty spot on the map, in map coordinates.
+const spot = ref<{ x: number; y: number } | null>(null);
+// What the current results answer: a vibe search, a name search, a map spot,
+// the seeds, or nothing yet.
+type Query =
+  | { kind: 'search'; text: string }
+  | { kind: 'name'; text: string }
+  | { kind: 'spot' }
+  | { kind: 'seeds' };
+const query = ref<Query | null>(null);
 const hits = ref<ScryHit[]>([]);
 const resultsLoading = ref(false);
 const resultsError = ref<string | null>(null);
@@ -105,20 +115,98 @@ async function fetchResults(cmd: 'search_scry' | 'similar_entries', args: Record
   }
 }
 
-function clearResults(): void {
+// Results computed here rather than by the analyzer; any request still in
+// flight is superseded.
+function setLocalHits(next: ScryHit[]): void {
   resultsRequest++;
   resultsLoading.value = false;
   resultsError.value = null;
-  hits.value = [];
+  hits.value = next;
+}
+
+function clearResults(): void {
+  setLocalHits([]);
   query.value = null;
 }
 
 function submitSearch(): void {
   const text = (searchText.value ?? '').trim();
   if (!text) return;
+  if (searchMode.value === 'name') {
+    runNameSearch(text);
+    return;
+  }
   seeds.value = [];
+  spot.value = null;
   query.value = { kind: 'search', text };
   fetchResults('search_scry', { text });
+}
+
+// Analyzed music whose name contains the text: names starting with it rank
+// first, then names with a word starting with it, then the rest.
+function runNameSearch(text: string): void {
+  const needle = text.toLowerCase();
+  const found: ScryHit[] = [];
+  for (const e of store.libraryEntries) {
+    if (e.entryType !== 'music' || e.analysis?.status !== 'embedded') continue;
+    const name = e.name.toLowerCase();
+    const at = name.indexOf(needle);
+    if (at < 0) continue;
+    const wordStart = at === 0 || /[^a-z0-9]/.test(name[at - 1]);
+    found.push({ entryId: e.id, score: at === 0 ? 1 : wordStart ? 0.75 : 0.5 });
+  }
+  found.sort((a, b) => b.score - a.score || seedName(a.entryId).localeCompare(seedName(b.entryId)));
+  seeds.value = [];
+  spot.value = null;
+  query.value = { kind: 'name', text };
+  setLocalHits(found.slice(0, RESULT_LIMIT));
+}
+
+// Name mode searches as you type.
+watch(searchText, (raw) => {
+  if (searchMode.value !== 'name') return;
+  const text = (raw ?? '').trim();
+  if (text) runNameSearch(text);
+  else if (query.value?.kind === 'name') clearResults();
+});
+
+// Switching modes re-runs whatever is typed in the new mode.
+function toggleSearchMode(): void {
+  searchMode.value = searchMode.value === 'vibe' ? 'name' : 'vibe';
+  if ((searchText.value ?? '').trim()) submitSearch();
+}
+
+function clearSpot(): void {
+  spot.value = null;
+  if (query.value?.kind === 'spot') clearResults();
+}
+
+// Shift-right-click on the map: drop the spot and every seed.
+function clearSpotAndSeeds(): void {
+  clearSpot();
+  if (seeds.value.length > 0) {
+    seeds.value = [];
+    runSeeds();
+  }
+}
+
+// A spot click returns as many tracks as a seed or vibe search does.
+const SPOT_LIMIT = RESULT_LIMIT;
+
+// The tracks nearest a clicked empty spot on the map, closest first.
+function runSpot(pos: { x: number; y: number }): void {
+  const ranked = mappedPoints.value
+    .map((p) => ({ entryId: p.entryId, d: Math.hypot(p.x - pos.x, p.y - pos.y) }))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, SPOT_LIMIT);
+  if (ranked.length === 0) return;
+  seeds.value = [];
+  searchText.value = '';
+  spot.value = pos;
+  query.value = { kind: 'spot' };
+  // Closest gets the full bar; the farthest of the set still shows a sliver.
+  const far = ranked[ranked.length - 1].d || 1;
+  setLocalHits(ranked.map((r) => ({ entryId: r.entryId, score: 1 - 0.9 * (r.d / far) })));
 }
 
 function runSeeds(): void {
@@ -127,6 +215,7 @@ function runSeeds(): void {
     return;
   }
   searchText.value = '';
+  spot.value = null;
   query.value = { kind: 'seeds' };
   fetchResults('similar_entries', { entryIds: seeds.value });
 }
@@ -137,6 +226,12 @@ function addSeed(entryId: string): void {
   runSeeds();
 }
 
+// From the map: a seed click toggles the track in or out of the seeds.
+function toggleSeed(entryId: string): void {
+  if (seeds.value.includes(entryId)) removeSeed(entryId);
+  else addSeed(entryId);
+}
+
 function removeSeed(entryId: string): void {
   seeds.value = seeds.value.filter((id) => id !== entryId);
   runSeeds();
@@ -145,7 +240,7 @@ function removeSeed(entryId: string): void {
 // The search field's clear button only clears text-search results; seed
 // results stay.
 function onSearchCleared(): void {
-  if (query.value?.kind === 'search') clearResults();
+  if (query.value?.kind === 'search' || query.value?.kind === 'name') clearResults();
 }
 
 function retryResults(): void {
@@ -174,6 +269,8 @@ watch(
 
 const resultsHeading = computed(() => {
   if (query.value?.kind === 'search') return `Matches for "${query.value.text}"`;
+  if (query.value?.kind === 'name') return `Names containing "${query.value.text}"`;
+  if (query.value?.kind === 'spot') return 'Nearest to the spot you clicked';
   if (query.value?.kind === 'seeds') return seeds.value.length === 1 ? 'Similar to the seed' : 'Similar to the seeds';
   return '';
 });
@@ -278,7 +375,7 @@ function openPlaylistDialog(target: 'new' | 'existing'): void {
 const suggestedName = computed(() => {
   if (query.value?.kind === 'search') return query.value.text;
   if (query.value?.kind === 'seeds' && seeds.value.length > 0) return `Like ${seedName(seeds.value[0])}`;
-  return 'Scry playlist';
+  return 'Scry comp';
 });
 
 // --- Adding to the target track ---
@@ -295,7 +392,7 @@ async function addToTarget(): Promise<void> {
   try {
     const ok = await store.command('add_clips', { trackId: t.track.id, libraryEntryIds: ids });
     if (!ok) return;
-    toast.showSuccess(`Added ${ids.length} to "${t.track.name}"`);
+    toast.showSuccess(`Added ${ids.length} clip${ids.length === 1 ? '' : 's'} to "${t.track.name}"`);
     selectedIds.value = [];
   } finally {
     adding.value = false;
@@ -314,8 +411,9 @@ const showAnalyzer = ref(false);
     <Teleport to="#app-bar-main">
       <VTextField
         v-model="searchText"
-        placeholder="Describe a sound, e.g. tense strings building to a battle"
-        prepend-inner-icon="mdi-waveform"
+        :placeholder="searchMode === 'vibe'
+          ? 'Describe a sound, e.g. tense strings building to a battle'
+          : 'Search track names'"
         variant="solo-filled"
         flat
         density="compact"
@@ -328,6 +426,19 @@ const showAnalyzer = ref(false);
         @keydown.enter="submitSearch"
         @click:clear="onSearchCleared"
       >
+        <template #prepend-inner>
+          <VBtn
+            size="x-small"
+            variant="tonal"
+            rounded="xl"
+            :prepend-icon="searchMode === 'vibe' ? 'mdi-waveform' : 'mdi-format-letter-case'"
+            :title="searchMode === 'vibe' ? 'Searching by vibe; click to search by name' : 'Searching by name; click to search by vibe'"
+            class="mr-1"
+            @click.stop="toggleSearchMode"
+          >
+            {{ searchMode === 'vibe' ? 'Vibe' : 'Name' }}
+          </VBtn>
+        </template>
         <template #append-inner>
           <VBtn icon="mdi-magnify" size="x-small" variant="text" title="Search" @click="submitSearch" />
         </template>
@@ -364,23 +475,30 @@ const showAnalyzer = ref(false);
     </div>
 
     <template v-else>
-      <div v-if="seeds.length > 0" class="d-flex flex-wrap align-center ga-1 mb-2">
-        <span class="text-caption text-medium-emphasis mr-1">Seeds</span>
-        <VChip
-          v-for="id in seeds"
-          :key="id"
-          size="small"
-          prepend-icon="mdi-seed-outline"
-          closable
-          @click:close="removeSeed(id)"
-        >
-          {{ seedName(id) }}
-        </VChip>
-      </div>
-
-      <div class="scry-panes flex-grow-1" :class="{ 'has-selection': selectedIds.length > 0 }">
+      <div class="scry-panes flex-grow-1">
         <section class="scry-pane d-flex flex-column">
           <div v-if="resultsHeading" class="text-subtitle-2 mb-1 text-truncate">{{ resultsHeading }}</div>
+          <!-- Seed and spot chips sit in the results pane, so adding or
+               removing one never resizes the map. -->
+          <div v-if="query?.kind === 'spot'" class="d-flex flex-wrap align-center ga-1 mb-2">
+            <span class="text-caption text-medium-emphasis mr-1">Searching near</span>
+            <VChip size="small" prepend-icon="mdi-crosshairs-gps" closable @click:close="clearSpot">
+              Map spot
+            </VChip>
+          </div>
+          <div v-if="seeds.length > 0" class="d-flex flex-wrap align-center ga-1 mb-2">
+            <span class="text-caption text-medium-emphasis mr-1">Seeds</span>
+            <VChip
+              v-for="id in seeds"
+              :key="id"
+              size="small"
+              prepend-icon="mdi-seed-outline"
+              closable
+              @click:close="removeSeed(id)"
+            >
+              {{ seedName(id) }}
+            </VChip>
+          </div>
 
           <VAlert v-if="resultsError" type="error" variant="tonal" density="compact" class="mb-2">
             {{ resultsError }}
@@ -399,8 +517,9 @@ const showAnalyzer = ref(false);
           >
             <VIcon size="40" class="mb-2">mdi-magnify</VIcon>
             <div class="text-body-2" style="max-width: 360px;">
-              Describe a sound in the search bar and press Enter, or use "More like this" in the
-              Library. Lasso tracks on the map to select them.
+              Describe a sound in the search bar and press Enter (or switch it to Name), shift-click
+              an empty spot on the map for the tracks nearby, or use "More like this" in the Library.
+              Lasso tracks on the map to select them.
             </div>
           </div>
           <ScryResults
@@ -435,7 +554,12 @@ const showAnalyzer = ref(false);
               :selected-ids="selectedIds"
               :playing-id="playingId"
               :highlight-id="hoveredRowId"
+              :spot="query?.kind === 'spot' ? spot : null"
               @play="onMapPlay"
+              @spot="runSpot"
+              @seed="toggleSeed"
+              @clear-search="clearSpotAndSeeds"
+              @clear-selection="selectedIds = []"
               @lasso="addToSelection"
               @deselect="removeFromSelection"
             />
@@ -481,10 +605,10 @@ const showAnalyzer = ref(false);
           size="small"
           @click="openPlaylistDialog('new')"
         >
-          Create playlist
+          New comp
         </VBtn>
         <VBtn prepend-icon="mdi-playlist-music" variant="tonal" size="small" @click="openPlaylistDialog('existing')">
-          Add to existing track
+          Add to track
         </VBtn>
         <VBtn icon="mdi-close" variant="text" size="small" title="Clear selection" @click="selectedIds = []" />
       </div>
@@ -523,11 +647,6 @@ const showAnalyzer = ref(false);
   grid-template-rows: minmax(0, 1fr);
   gap: 16px;
   min-height: 0;
-}
-
-/* Room for the floating selection bar. */
-.scry-panes.has-selection {
-  padding-bottom: 56px;
 }
 
 @media (max-width: 900px) {
