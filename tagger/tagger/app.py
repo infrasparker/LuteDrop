@@ -451,6 +451,8 @@ def create_app(
             return (V @ X.T).mean(axis=0), (V @ reference.vectors.T).mean(axis=0) if use_ref else None
 
         before = raws(vecs["current"])
+        # The current lines' bars: the search pays for moving unflagged songs away from them.
+        b_before = tune.bars(before[0], before[0] if before[1] is None else before[1], m)
         other_raw = {k: raws(vecs[f"other:{k}"])[0] for k in req.other_moods}
 
         loo_memo: dict = {}
@@ -460,7 +462,7 @@ def create_app(
             loo, names = (0, 0), []
             if proposed:
                 loo = tune.leave_one_out(U_lib, U_ref, units, sub_flags, m, tune.Combo(tuple(lines), 0.0),
-                                         seeds=[current_rows], memo=loo_memo)
+                                         seeds=[current_rows], memo=loo_memo, before=b_before)
                 names = tune.name_suggestions(U_lib, units, names_from, after[0])
             return tune.build_report(
                 lines=lines, after=after, before=before, flags=sub_flags, flag_hashes=sub_hashes,
@@ -480,7 +482,7 @@ def create_app(
                 if use_ref:
                     U_ref = np.vstack([U_ref, blend_vecs["blends"] @ reference.vectors.T])
                 units = units + blends
-            found = tune.beam_search(U_lib, U_ref, units, flags, m, seeds=[current_rows])
+            found = tune.beam_search(U_lib, U_ref, units, flags, m, seeds=[current_rows], before=b_before)
             current_set = sorted(dict.fromkeys(req.current_lines))
             for c in found:
                 # Strictly better than the current lines (a hair of float noise is not

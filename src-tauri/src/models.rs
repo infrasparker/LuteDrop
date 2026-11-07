@@ -496,13 +496,15 @@ pub struct TuneNameIdea {
 }
 
 /// The review of one set of lines (the mood's current ones, a proposal, or a
-/// split half). Lower `loss` is better.
+/// split half). Lower `loss` is better; it includes `stability`, what the
+/// lines cost for moving unflagged songs (0 for the current lines).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
 pub struct TuneReview {
     pub lines: Vec<String>,
     pub loss: f64,
+    pub stability: f64,
     pub flags: Vec<TuneFlagOutcome>,
     pub top: Vec<TuneTopSong>,
     pub top_before: Vec<TuneTopSong>,

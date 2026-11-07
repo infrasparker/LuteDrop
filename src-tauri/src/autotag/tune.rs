@@ -124,6 +124,10 @@ pub struct TuneReport {
     pub loo: TuneLeaveOneOut,
     pub names: Vec<TuneNameIdea>,
     pub unsatisfied: Vec<String>,
+    /// How much the lines reshape the mood for unflagged songs (part of
+    /// `loss`); absent from an analyzer older than it.
+    #[serde(default)]
+    pub stability: f64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -497,6 +501,7 @@ impl Songs {
             unsatisfied: self.all(&r.unsatisfied),
             lines: r.lines,
             loss: r.loss,
+            stability: r.stability,
             fires_before: r.fires_before,
             fires_after: r.fires_after,
             loo: r.loo,
@@ -1004,6 +1009,7 @@ mod tests {
             top: vec![TuneBar { hash: "h-b".into(), bar: 0.8 }, TuneBar { hash: "h-gone".into(), bar: 0.7 }],
             risers: vec![TuneMover { hash: "h-b".into(), before: 0.2, after: 0.8 }],
             unsatisfied: vec!["h-a".into()],
+            stability: 0.03,
             ..Default::default()
         };
         let fake = FakeAnalyzer {
@@ -1040,6 +1046,7 @@ mod tests {
         assert_eq!(p.top[0].song, song(&b, "b"));
         assert_eq!(p.risers[0].song, song(&b, "b"));
         assert_eq!(p.unsatisfied, vec![song(&a, "a")]);
+        assert_eq!(p.stability, 0.03);
         let split = result.split.unwrap();
         assert_eq!(split.keep.lines, vec!["k"]);
         assert_eq!(split.keep_songs, vec![song(&a, "a")]);
@@ -1055,7 +1062,8 @@ mod tests {
             "risers":[{"hash":"g","before":0.1,"after":0.3}],"fallers":[],
             "fires_before":3,"fires_after":5,
             "overlap":[{"mood_id":"grim","before":0.2,"after":0.4}],
-            "loo":{"held":0,"total":0},"names":[{"word":"calm","rho":0.7}],"unsatisfied":["h"]}"#;
+            "loo":{"held":0,"total":0},"names":[{"word":"calm","rho":0.7}],"unsatisfied":["h"],
+            "stability":0.04}"#;
         let json = format!(r#"{{"baseline":{report},"proposals":[{report}],"split":null,"skipped":["x"]}}"#);
         let parsed: TuneResponse = serde_json::from_str(&json).unwrap();
         let r = &parsed.proposals[0];
@@ -1065,6 +1073,7 @@ mod tests {
         assert_eq!(r.names[0].word, "calm");
         assert!(!r.flags[0].fresh);
         assert!(r.flags[0].focus);
+        assert_eq!(r.stability, 0.04);
         // An analyzer from before focus sends no "focus": it reads as false.
         let old: TuneFlagResult =
             serde_json::from_str(r#"{"hash":"h","before":0.4,"after":0.8,"holds":true,"fresh":true}"#).unwrap();

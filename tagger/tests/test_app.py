@@ -839,7 +839,7 @@ def test_health_reports_reference(ref_client, client):
 
 REPORT_KEYS = {
     "lines", "loss", "flags", "top", "top_before", "risers", "fallers", "fires_before",
-    "fires_after", "overlap", "loo", "names", "unsatisfied",
+    "fires_after", "overlap", "loo", "names", "unsatisfied", "stability",
 }
 
 
@@ -910,6 +910,7 @@ def test_tune_returns_report_shape(client_tune):
         assert [o["mood_id"] for o in report["overlap"]] == ["grim"]
         assert set(report["loo"]) == {"held", "total"}
     assert body["baseline"]["lines"] == ["beta"]
+    assert body["baseline"]["stability"] == 0.0               # the current lines move nothing
     assert 1 <= len(body["proposals"]) <= 3
     assert body["proposals"][0]["loo"]["total"] == 3          # three fresh flags
 
@@ -946,7 +947,8 @@ def test_tune_proposes_nothing_worse_than_baseline(client_tune):
     assert body["proposals"]
     assert all(p["loss"] < body["baseline"]["loss"] for p in body["proposals"])
     assert [p["loss"] for p in body["proposals"]] == sorted(p["loss"] for p in body["proposals"])
-    assert any("alpha" in line for line in body["proposals"][0]["lines"])
+    # The best proposal fixes every flag the current lines break.
+    assert body["baseline"]["unsatisfied"] and body["proposals"][0]["unsatisfied"] == []
 
 
 def test_tune_offers_no_proposals_when_the_current_lines_are_already_best(client_tune):

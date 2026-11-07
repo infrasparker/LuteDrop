@@ -6,7 +6,7 @@ import pytest
 
 from tagger.tune import (
     Combo, FlagTarget, Mapping, bars, beam_search, blend_units, broken, build_report, combo_raw, leave_one_out,
-    loss, name_suggestions, spearman, split_units, try_split,
+    loss, name_suggestions, spearman, split_units, stability, try_split,
 )
 from tagger import tune
 
@@ -178,6 +178,91 @@ def test_blend_units_dedupe_words_and_drop_collapsed_blends():
     assert "sad, deep, memory, lonely" in out
 
 
+# --- stability: unflagged songs ----------------------------------------------
+
+
+def test_stability_measures_unflagged_moves_and_fires():
+    before = np.array([0.9, 0.2, 0.2, 0.6, 0.4])
+    after = np.array([0.1, 0.4, 0.2, 0.6, 0.6])        # song 0 is flagged: its move is free
+    flags = [FlagTarget(0, 0.75, None, 1.0, True, "high")]
+    mean_move = (0.2 + 0.0 + 0.0 + 0.2) / 4
+    fires = abs(2 - 2) / 10                                # 0.9 and 0.6 fire before; 0.6 and 0.6 after
+    assert stability(after, before, flags) == pytest.approx(
+        tune.STABILITY_WEIGHT * mean_move + tune.FIRES_WEIGHT * fires)
+    assert stability(before, before, flags) == 0.0
+    lifted = np.array([0.9, 0.7, 0.7, 0.6, 0.6])       # three more songs fire
+    assert stability(lifted, before, flags) == pytest.approx(
+        tune.STABILITY_WEIGHT * (0.5 + 0.5 + 0 + 0.2) / 4 + tune.FIRES_WEIGHT * 3 / 10)
+
+
+def _stability_world():
+    # 40 songs. Song 0 is flagged "at least Understandable". "current" leaves it at the
+    # midpoint; "fixes" lifts it and nudges the songs a little; "leaks" lifts it the same
+    # and also lifts songs 1-6 (unflagged) high; "gentle" lifts it and moves nothing else.
+    rng = np.random.default_rng(3)
+    base = rng.normal(size=40) * 0.3
+    base[0] = -0.2
+    current = base.copy()
+    fixes = base + rng.normal(size=40) * 0.05
+    fixes[0] = 2.0
+    leaks = base.copy()
+    leaks[0] = 2.0
+    leaks[1:7] = 1.5
+    gentle = base.copy()
+    gentle[0] = 2.0
+    return base, np.vstack([current, fixes, leaks, gentle])
+
+
+def _bars_of(U, row):
+    return bars(U[row], U[row], M_LIB)
+
+
+def test_a_fix_for_a_broken_flag_beats_the_baseline_despite_small_moves():
+    _, U = _stability_world()
+    units = ["current", "fixes"]
+    flags = [FlagTarget(0, 0.75, None, 1.0, True, "high")]
+    before = _bars_of(U, 0)
+    assert broken(before, flags) == [0]
+    got = beam_search(U[:2], None, units, flags, M_LIB, max_lines=1, before=before)
+    assert got[0].lines == ("fixes",)
+    assert stability(_bars_of(U, 1), before, flags) > 0.0
+    assert got[0].loss < loss(before, flags)
+
+
+def test_less_reshaping_wins_a_tie_on_the_flags():
+    _, U = _stability_world()
+    units = ["current", "leaks", "gentle"]
+    U3 = U[[0, 2, 3]]
+    flags = [FlagTarget(0, 0.75, None, 1.0, True, "high")]
+    before = _bars_of(U3, 0)
+    # Both satisfy the flag; on the flags alone it is a tie, settled by row order.
+    assert loss(_bars_of(U3, 1), flags) == loss(_bars_of(U3, 2), flags) == 0.0
+    plain = beam_search(U3, None, units, flags, M_LIB, max_lines=1)
+    assert plain[0].lines == ("leaks",)
+    steady = beam_search(U3, None, units, flags, M_LIB, max_lines=1, before=before)
+    assert steady[0].lines == ("gentle",)
+
+
+def test_a_leak_into_unflagged_songs_loses_to_a_near_miss():
+    # The leak satisfies the flag fully; the steady line leaves it a hair short (0.02 under
+    # its aim). Lifting six unflagged songs of 40 into the fire zone costs more than that.
+    _, U = _stability_world()
+    U2 = U[[0, 2, 3]].copy()
+    flags = [FlagTarget(0, 0.75, None, 1.0, True, "high")]
+    before = _bars_of(U2, 0)
+    # Tune "gentle" so song 0 lands 0.02 short of the aim (0.78).
+    lo, hi = -1.0, 5.0
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        U2[2, 0] = mid
+        lo, hi = (mid, hi) if _bars_of(U2, 2)[0] < 0.76 else (lo, mid)
+    assert loss(_bars_of(U2, 2), flags) == pytest.approx(0.02, abs=1e-3)
+    assert loss(_bars_of(U2, 1), flags) == 0.0
+    assert stability(_bars_of(U2, 1), before, flags) > 0.02 + stability(_bars_of(U2, 2), before, flags)
+    got = beam_search(U2, None, ["current", "leaks", "near miss"], flags, M_LIB, max_lines=1, before=before)
+    assert got[0].lines == ("near miss",)
+
+
 # --- report pieces -----------------------------------------------------------
 
 
@@ -294,3 +379,6 @@ def test_build_report_describes_a_change():
     assert r["fires_before"] < r["fires_after"]
     assert r["overlap"][0]["mood_id"] == "grim" and r["overlap"][0]["after"] == pytest.approx(1.0)
     assert r["names"] == [{"word": "sad", "rho": 0.5}]
+    b_after, b_before = bars(after, after, M_LIB), bars(before, before, M_LIB)
+    assert r["stability"] == pytest.approx(stability(b_after, b_before, flags))
+    assert r["loss"] == pytest.approx(loss(b_after, flags) + r["stability"])

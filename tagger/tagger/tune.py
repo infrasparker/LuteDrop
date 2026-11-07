@@ -14,6 +14,11 @@ from scipy.stats import rankdata
 AIM_MARGIN = 0.03        # aim this far inside a band edge so near-misses still pass
 ORDER_PENALTY = 0.2      # per (high flag, low flag) pair where high <= low
 FOCUS_WEIGHT = 3.0       # a focused flag (the one the user just added) counts this many times over
+# Stability, for the search only: unflagged songs cost nothing to move otherwise, so the
+# search would widen a mood freely. See `stability`.
+STABILITY_WEIGHT = 0.5   # times the mean bar move of unflagged songs
+FIRES_WEIGHT = 0.3       # times the change in songs at 0.5 or more, over max(fires before, 10)
+FIRES_FLOOR = 10
 MAX_UNIT_CHARS = 300
 LOO_MAX_FLAGS = 20       # leave-one-out checks at most this many flags
 SPLIT_MIN_HIGH = 4       # a split needs this many high-side flags
@@ -106,6 +111,40 @@ def _loss_fn(flags: list[FlagTarget]):
     return fn
 
 
+def stability(b: np.ndarray, before: np.ndarray, flags: list[FlagTarget]) -> float:
+    """How far bars `b` reshape the mood away from `before` (the current lines' bars):
+    STABILITY_WEIGHT times the mean absolute bar move over unflagged songs, plus
+    FIRES_WEIGHT times the change in how many songs fire (bar 0.5 or more), relative
+    to max(fires before, FIRES_FLOOR). 0.0 when nothing moves."""
+    return _stability_fn(before, flags)(b)
+
+
+def _stability_fn(before: np.ndarray, flags: list[FlagTarget]):
+    """`stability` as a function of b alone, with the unflagged mask built once."""
+    loose = np.ones(len(before), dtype=bool)
+    loose[[f.index for f in flags]] = False
+    b0 = before[loose]
+    fires0 = int((before >= 0.5).sum())
+    denom = max(fires0, FIRES_FLOOR)
+
+    def fn(b: np.ndarray) -> float:
+        move = float(np.abs(b[loose] - b0).mean()) if b0.size else 0.0
+        fires = abs(int((b >= 0.5).sum()) - fires0) / denom
+        return STABILITY_WEIGHT * move + FIRES_WEIGHT * fires
+
+    return fn
+
+
+def _search_loss_fn(flags: list[FlagTarget], before: np.ndarray | None):
+    """The loss the search ranks by: the flags' loss, plus `stability` against `before`
+    when it is given (the current lines' bars)."""
+    flag_fn = _loss_fn(flags)
+    if before is None:
+        return flag_fn
+    stab = _stability_fn(before, flags)
+    return lambda b: flag_fn(b) + stab(b)
+
+
 def broken(b: np.ndarray, flags: list[FlagTarget]) -> list[int]:
     """Positions (in `flags`) whose bar falls outside [lo, hi]."""
     out = []
@@ -129,8 +168,9 @@ def _score(rows, U_lib, U_ref, loss_fn, m: Mapping) -> float:
 def beam_search(U_lib: np.ndarray, U_ref: np.ndarray | None, units: list[str],
                 flags: list[FlagTarget], m: Mapping, *, top_units: int = 60,
                 beam: int = 24, max_lines: int = 6, keep: int = 3,
-                seeds=()) -> list[Combo]:
-    """Best prompt combinations by loss.
+                seeds=(), before: np.ndarray | None = None) -> list[Combo]:
+    """Best prompt combinations by loss (plus `stability` against `before`, the current
+    lines' bars, when given).
 
     Scores every unit alone, keeps the best `top_units` as the pool, then grows
     combinations one unit at a time, keeping `beam` per depth. Each seed (a tuple
@@ -140,7 +180,7 @@ def beam_search(U_lib: np.ndarray, U_ref: np.ndarray | None, units: list[str],
     Seeds longer than `max_lines` are skipped. Combinations are deduplicated by
     their set of rows; lines come back in unit order.
     """
-    loss_fn = _loss_fn(flags)
+    loss_fn = _search_loss_fn(flags, before)
     solo = sorted((_score((i,), U_lib, U_ref, loss_fn, m), (i,)) for i in range(len(units)))
     pool = [rows[0] for _, rows in solo[:top_units]]
     seen = {rows for _, rows in solo}
@@ -240,7 +280,8 @@ def name_suggestions(U_lib, units: list[str], candidates: list[str], combo_raw: 
 
 
 def leave_one_out(U_lib, U_ref, units: list[str], flags: list[FlagTarget], m: Mapping,
-                  winner: Combo, *, seeds=(), memo: dict | None = None) -> tuple[int, int]:
+                  winner: Combo, *, seeds=(), memo: dict | None = None,
+                  before: np.ndarray | None = None) -> tuple[int, int]:
     """(held, total): for each fresh flag (at most 20, lowest song index first), search
     again without it and see whether the best combination of the winner's size still puts
     that song inside its band. Shows whether the proposal generalises or only memorises.
@@ -256,7 +297,7 @@ def leave_one_out(U_lib, U_ref, units: list[str], flags: list[FlagTarget], m: Ma
         if key not in memo:
             rest = [g for g in flags if g is not f]
             best = beam_search(U_lib, U_ref, units, rest, m, beam=8, max_lines=len(winner.lines),
-                               keep=1, seeds=seeds)[0]
+                               keep=1, seeds=seeds, before=before)[0]
             b = _combo_bars(U_lib, U_ref, _rows(units, best.lines), m)
             memo[key] = not broken(b, [f])
         held += memo[key]
@@ -333,6 +374,7 @@ def build_report(*, lines, after, before, flags: list[FlagTarget], flag_hashes: 
     b_after = bars(after[0], after[0] if after[1] is None else after[1], m)
     b_before = bars(before[0], before[0] if before[1] is None else before[1], m)
     broken_after = set(broken(b_after, flags))
+    stab = stability(b_after, b_before, flags)
     flagged = {f.index for f in flags}
     delta = b_after - b_before
     loose = [int(i) for i in np.argsort(-delta, kind="stable") if int(i) not in flagged]
@@ -344,7 +386,9 @@ def build_report(*, lines, after, before, flags: list[FlagTarget], flag_hashes: 
 
     return {
         "lines": list(lines),
-        "loss": loss(b_after, flags),
+        # What the search ranks by: the flags' loss plus stability (0.0 for the current lines).
+        "loss": loss(b_after, flags) + stab,
+        "stability": stab,
         "flags": [
             {"hash": h, "before": float(b_before[f.index]), "after": float(b_after[f.index]),
              "holds": p not in broken_after, "fresh": f.fresh, "focus": f.focus}

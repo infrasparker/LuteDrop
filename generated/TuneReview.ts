@@ -9,9 +9,10 @@ import type { TuneTopSong } from "./TuneTopSong";
 
 /**
  * The review of one set of lines (the mood's current ones, a proposal, or a
- * split half). Lower `loss` is better.
+ * split half). Lower `loss` is better; it includes `stability`, what the
+ * lines cost for moving unflagged songs (0 for the current lines).
  */
-export type TuneReview = { lines: Array<string>, loss: number, flags: Array<TuneFlagOutcome>, top: Array<TuneTopSong>, topBefore: Array<TuneTopSong>, risers: Array<TuneMovedSong>, fallers: Array<TuneMovedSong>, 
+export type TuneReview = { lines: Array<string>, loss: number, stability: number, flags: Array<TuneFlagOutcome>, top: Array<TuneTopSong>, topBefore: Array<TuneTopSong>, risers: Array<TuneMovedSong>, fallers: Array<TuneMovedSong>, 
 /**
  * How many songs reach 0.5 under the current and the reviewed lines.
  */
