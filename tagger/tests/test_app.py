@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from tagger import app as app_module, moods, rhythm, tune, tune_phrases
+from tagger import app as app_module, moods, rhythm, tune, tune_phrases, tune_vocab
 from tagger.app import create_app
 from tagger.embed import EmbeddingCache
 from tagger.reference import ReferenceSet, reference_stats
@@ -949,7 +949,7 @@ def test_tune_labels_other_moods_and_phrases(client_tune):
     body = _tune_body(bank=[], current_lines=["zeta"])
     out = client_tune.post("/tune", json=body, headers=HEADERS).json()
     sources = {s for r in out["proposals"] for line in r["line_sources"] for s in line}
-    assert sources <= {"Grim words", "phrase list", "blend", "current lines", "mood name"}
+    assert sources <= {"Grim words", "phrase list", "built-in vocabulary", "blend", "current lines", "mood name"}
     assert out["proposals"]
     for r in out["proposals"]:
         for line, src in zip(r["lines"], r["line_sources"]):
@@ -982,6 +982,40 @@ def test_tune_leaves_out_excluded_words(client_tune, monkeypatch):
     assert "alphabet soup" in searched[0]                     # whole words only
     lines = [line for p in out["proposals"] for line in p["lines"]]
     assert not any(tune.excluded(line, ["alpha"]) for line in lines), lines
+
+
+def _spy_search(monkeypatch):
+    """Records the units of every beam search."""
+    searched = []
+    real = tune.beam_search
+
+    def spy(U_lib, U_ref, units, flags, m, **kw):
+        searched.append(list(units))
+        return real(U_lib, U_ref, units, flags, m, **kw)
+
+    monkeypatch.setattr(app_module.tune, "beam_search", spy)
+    return searched
+
+
+def test_tune_adds_the_built_in_vocabulary(client_tune, monkeypatch):
+    monkeypatch.setattr(tune_vocab, "VOCAB", ["alpha vocab", "beta vocab", "zeta vocab"])
+    searched = _spy_search(monkeypatch)
+    out = client_tune.post("/tune", json=_tune_body(), headers=HEADERS).json()
+    assert {"alpha vocab", "beta vocab", "zeta vocab"} <= set(searched[0])
+    for r in out["proposals"]:
+        for line, src in zip(r["lines"], r["line_sources"]):
+            if line.endswith(" vocab"):
+                assert src == ["built-in vocabulary"]
+
+
+def test_tune_vocabulary_respects_exclude_and_keeps_only_its_best(client_tune, monkeypatch):
+    monkeypatch.setattr(tune_vocab, "VOCAB", ["alpha vocab", "beta vocab", "zeta vocab", "gamma vocab"])
+    monkeypatch.setattr(app_module, "VOCAB_KEEP", 2)
+    searched = _spy_search(monkeypatch)
+    client_tune.post("/tune", json=_tune_body(exclude=["zeta"]), headers=HEADERS)
+    kept = [u for u in searched[0] if u.endswith(" vocab")]
+    assert len(kept) == 2 and "zeta vocab" not in kept
+    assert "alpha vocab" in kept          # the flagged high songs are alpha songs
 
 
 def test_tune_skips_unknown_hashes(client_tune):

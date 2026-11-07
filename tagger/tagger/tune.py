@@ -201,6 +201,13 @@ def _score(rows, U_lib, U_ref, loss_fn, m: Mapping) -> float:
     return loss_fn(bars(raw, ref, m)) + LINE_COST * len(rows)
 
 
+def best_rows(U_lib: np.ndarray, U_ref: np.ndarray | None, rows: list[int], flags: list[FlagTarget],
+              m: Mapping, k: int, *, before: np.ndarray | None = None) -> list[int]:
+    """The `k` of `rows` whose unit alone scores best by the search's loss, best first."""
+    loss_fn = _search_loss_fn(flags, before)
+    return [r for _, r in sorted((_score((r,), U_lib, U_ref, loss_fn, m), r) for r in rows)[:k]]
+
+
 def beam_search(U_lib: np.ndarray, U_ref: np.ndarray | None, units: list[str],
                 flags: list[FlagTarget], m: Mapping, *, top_units: int = 60,
                 beam: int = 24, max_lines: int = 6, keep: int = 3,

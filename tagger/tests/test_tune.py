@@ -213,6 +213,11 @@ def test_search_never_pairs_a_line_with_one_holding_the_same_words():
                 assert not (a <= b or b <= a), c.lines
 
 
+def test_best_rows_keeps_the_best_units_alone():
+    # Unit 1 lifts song 0 and unit 3 song 1; the noise units satisfy neither high flag.
+    assert sorted(tune.best_rows(U_PLANTED, None, [0, 1, 3, 4], FLAGS, M_LIB, 2)) == [1, 3]
+
+
 def test_beam_search_skips_seeds_longer_than_max_lines():
     got = beam_search(U_PLANTED, None, UNITS, FLAGS, M_LIB, max_lines=2, seeds=[(0, 1, 2, 3)])
     assert all(len(c.lines) <= 2 for c in got)

@@ -13,7 +13,7 @@ import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field, StringConstraints
 
-from . import heads, moods, rhythm, scry, tune
+from . import heads, moods, rhythm, scry, tune, tune_vocab
 from .embed import Embedder, EmbeddingCache, MuqEmbedder, decode_track
 from .reference import ReferenceSet, load_reference, reference_stats
 from .tune_phrases import PHRASES
@@ -29,12 +29,16 @@ MAX_MOODS = 32
 MAX_PROMPTS_PER_GROUP = 16
 MAX_PROMPT_CHARS = 300
 # Embedded prompt texts kept between requests. Past this the cache starts
-# over; it only grows when the user keeps editing prompts.
-MAX_CACHED_PROMPTS = 2048
+# over; it only grows when the user keeps editing prompts. /tune alone brings ~1000 texts
+# (its units, with the built-in vocabulary), so the room is twice that and more.
+MAX_CACHED_PROMPTS = 4096
 
 # Limits on what a /tune request may carry.
 MAX_TUNE_FLAGS = 500
 MAX_TUNE_BANK = 1000
+# The built-in vocabulary (tune_vocab) is large; only its this many best words alone, by
+# the search's own loss, join the search, which keeps /tune within a few seconds.
+VOCAB_KEEP = 120
 
 # How long /embed waits for the model to finish loading before it answers
 # 503. Loading starts when the app is created.
@@ -458,19 +462,18 @@ def create_app(
         # Current lines and phrases are also units whole.
         for line in req.current_lines:
             sources.setdefault(line, ["current lines"])
-        for phrase in PHRASES:
-            labels = sources.setdefault(phrase.lower(), [])
-            if "phrase list" not in labels:
-                labels.append("phrase list")
+        for label, texts in (("phrase list", PHRASES), ("built-in vocabulary", tune_vocab.VOCAB)):
+            for text in texts:
+                labels = sources.setdefault(text.lower(), [])
+                if label not in labels:
+                    labels.append(label)
         other_lines = [line for o in others.values() for line in o.lines]
         units = tune.split_units([*req.bank, *req.current_lines, *other_lines, name])
         # Each current line as written, so the search can start from (and keep) them whole.
         units += [line for line in dict.fromkeys(req.current_lines) if line not in set(units)]
         units += [p.lower() for p in PHRASES if p.lower() not in set(units)]
-        units = [u for u in units if not tune.excluded(u, req.exclude)]
-        current_rows = tuple(units.index(line) for line in dict.fromkeys(req.current_lines) if line in units)
-        candidates = [u for u in tune.split_units(req.bank) if " " not in u and u in units]
-        candidates += [name] if name in units else []
+        vocab = [v.lower() for v in tune_vocab.VOCAB if v.lower() not in set(units)]
+        units = [u for u in units + vocab if not tune.excluded(u, req.exclude)]
 
         groups = {"units": units, "current": req.current_lines}
         groups.update({f"other:{k}": o.lines for k, o in others.items()})
@@ -488,6 +491,18 @@ def create_app(
         # The current lines' bars: the search pays for moving unflagged songs away from them.
         b_before = tune.bars(before[0], before[0] if before[1] is None else before[1], m)
         other_raw = {k: raws(vecs[f"other:{k}"])[0] for k in others}
+
+        # Only the built-in vocabulary's best words alone stay in the search.
+        vocab_rows = [i for i, u in enumerate(units) if u in set(vocab)]
+        if len(vocab_rows) > VOCAB_KEEP:
+            best = set(tune.best_rows(U_lib, U_ref, vocab_rows, flags, m, VOCAB_KEEP, before=b_before))
+            keep = [i for i in range(len(units)) if i not in set(vocab_rows) or i in best]
+            units = [units[i] for i in keep]
+            U_lib = U_lib[keep]
+            U_ref = None if U_ref is None else U_ref[keep]
+        current_rows = tuple(units.index(line) for line in dict.fromkeys(req.current_lines) if line in units)
+        candidates = [u for u in tune.split_units(req.bank) if " " not in u and u in units]
+        candidates += [name] if name in units else []
 
         loo_memo: dict = {}
 
