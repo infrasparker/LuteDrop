@@ -1,6 +1,7 @@
 fastapi
 uvicorn
 numpy
+scipy
 scikit-learn
 librosa
 soundfile

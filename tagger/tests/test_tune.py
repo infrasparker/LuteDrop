@@ -5,9 +5,10 @@ import numpy as np
 import pytest
 
 from tagger.tune import (
-    Combo, FlagTarget, Mapping, bars, beam_search, broken, build_report, combo_raw, leave_one_out, loss,
-    name_suggestions, spearman, split_units, try_split,
+    Combo, FlagTarget, Mapping, bars, beam_search, blend_units, broken, build_report, combo_raw, leave_one_out,
+    loss, name_suggestions, spearman, split_units, try_split,
 )
+from tagger import tune
 
 
 def test_split_units_dedupes_and_strips():
@@ -132,6 +133,34 @@ def test_beam_search_reference_source_uses_reference_stats():
     assert by_reference[1].lines == ("weak",) and by_reference[1].loss > 0.2
 
 
+def test_beam_search_explores_the_seed_plus_or_minus_one_line():
+    # The seed is the planted pair plus a noise line. With a pool of one unit and a
+    # beam of one, plain growth cannot reach the pair; dropping one line of the seed can.
+    plain = beam_search(U_PLANTED, None, UNITS, FLAGS, M_LIB, top_units=1, beam=1)
+    assert plain[0].loss > 0.0
+    seeded = beam_search(U_PLANTED, None, UNITS, FLAGS, M_LIB, top_units=1, beam=1, seeds=[(0, 1, 3)])
+    assert seeded[0].lines == (UNITS[1], UNITS[3]) and seeded[0].loss == pytest.approx(0.0)
+
+
+def test_beam_search_skips_seeds_longer_than_max_lines():
+    got = beam_search(U_PLANTED, None, UNITS, FLAGS, M_LIB, max_lines=2, seeds=[(0, 1, 2, 3)])
+    assert all(len(c.lines) <= 2 for c in got)
+
+
+def test_blend_units_dedupe_words_and_drop_collapsed_blends():
+    units = ["sad", "sad, deep", "memory, sad, lonely", "deep"]
+    U = np.array([[1.0, 0.0, 0.0], [0.9, 0.0, 0.0], [0.8, 0.0, 0.0], [0.7, 0.0, 0.0]])
+    flags = [FlagTarget(0, 0.75, None, 1.0, True, "high")]
+    out = blend_units(U, None, units, flags, M_LIB, top=4)
+    for text in out:
+        parts = [p.strip() for p in text.split(",")]
+        assert len(parts) == len(set(parts)) >= 2, text
+    assert not set(out) & set(units)               # "sad" + "sad, deep" collapses to "sad, deep"
+    assert len(out) == len(set(out))
+    assert "sad, memory, lonely" in out            # parts kept in order, the repeat dropped
+    assert "sad, deep, memory, lonely" in out
+
+
 # --- report pieces -----------------------------------------------------------
 
 
@@ -166,6 +195,22 @@ def test_leave_one_out_counts_flags_the_rest_still_explain():
     winner = Combo(("a", "c"), 0.0)
     held, total = leave_one_out(U, None, units, flags, M_LIB, winner)
     assert (held, total) == (3, 4)
+
+
+def test_leave_one_out_reuses_searches_of_the_same_size(monkeypatch):
+    units = ["a", "b", "c"]
+    U = np.array([[1, 1, 1, 0], [0, 0, 0, 1], [0, 1, 0, 1]], dtype=float)
+    flags = [FlagTarget(i, 0.75, None, 1.0, True, "high") for i in range(3)]
+    calls = []
+    real = tune.beam_search
+    monkeypatch.setattr(tune, "beam_search", lambda *a, **k: calls.append(1) or real(*a, **k))
+    memo: dict = {}
+    first = leave_one_out(U, None, units, flags, M_LIB, Combo(("a", "b"), 0.0), memo=memo)
+    assert len(calls) == 3
+    second = leave_one_out(U, None, units, flags, M_LIB, Combo(("a", "c"), 0.0), memo=memo)
+    assert len(calls) == 3 and second == first      # same size: no new searches
+    leave_one_out(U, None, units, flags, M_LIB, Combo(("a",), 0.0), memo=memo)
+    assert len(calls) == 6                          # another size searches again
 
 
 def _split_world():

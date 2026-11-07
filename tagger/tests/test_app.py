@@ -942,6 +942,40 @@ def test_tune_offers_no_proposals_when_the_current_lines_are_already_best(client
     assert body["proposals"] == []
 
 
+def test_tune_offers_no_split_when_the_current_lines_are_already_best(client_tune, monkeypatch):
+    # Even if the search's own winner leaves a flag out, the dialog shows the baseline,
+    # which breaks nothing, so there is nothing to split.
+    offer = {"a": tune.Combo(("alpha",), 0.0), "b": tune.Combo(("beta",), 0.0),
+             "a_flags": [0], "b_flags": [1], "rho": 0.25}
+    monkeypatch.setattr(app_module.tune, "try_split", lambda *a: offer)
+    body = client_tune.post("/tune", json=_tune_body(current_lines=["alpha"]), headers=HEADERS).json()
+    assert body["proposals"] == [] and body["split"] is None
+
+
+def test_tune_accepts_comma_lines_and_never_proposes_the_current_lines(client_tune):
+    current = ["alpha, gamma", "beta"]
+    body = client_tune.post("/tune", json=_tune_body(current_lines=current), headers=HEADERS).json()
+    assert body["baseline"]["lines"] == current
+    assert all(sorted(p["lines"]) != sorted(current) for p in body["proposals"])
+    assert all(p["loss"] < body["baseline"]["loss"] for p in body["proposals"])
+
+
+def test_tune_seeds_the_search_with_the_current_lines_whole(client_tune, monkeypatch):
+    # Each current line, as written, is a unit, and the search starts from their
+    # combination, so "the current lines plus or minus one" is always explored.
+    seen = []
+    real = tune.beam_search
+
+    def spy(U_lib, U_ref, units, flags, m, **kw):
+        seen.append(sorted(units[i] for i in next(iter(kw.get("seeds", [()])), ())))
+        return real(U_lib, U_ref, units, flags, m, **kw)
+
+    monkeypatch.setattr(app_module.tune, "beam_search", spy)
+    current = ["Alpha, zeta", "beta"]
+    client_tune.post("/tune", json=_tune_body(current_lines=current), headers=HEADERS)
+    assert seen[0] == sorted(current)
+
+
 def test_tune_reference_source_needs_a_reference_set(client_tune):
     cal = {"source": "reference", "midpoint_z": 0.5, "slope": 1.5}
     r = client_tune.post("/tune", json=_tune_body(calibration=cal), headers=HEADERS)
@@ -988,7 +1022,16 @@ def test_tune_reports_an_offered_split(client_tune, monkeypatch):
     offer = {"a": tune.Combo(("alpha",), 0.0), "b": tune.Combo(("beta",), 0.0),
              "a_flags": [0], "b_flags": [1], "rho": 0.25}
     monkeypatch.setattr(app_module.tune, "try_split", lambda *a: offer)
-    split = client_tune.post("/tune", json=_tune_body(), headers=HEADERS).json()["split"]
+    # A split is only looked for while a fresh flag stays broken; no bar reaches 0.99.
+    flags = _tune_body()["flags"] + [
+        {"hash": "s3", "min": 0.99, "max": None, "weight": 1.0, "fresh": True, "side": "mid"}
+    ]
+    # Every word reads alike, in candidate order, so the current name ("alpha") would be
+    # a top suggestion for either half.
+    monkeypatch.setattr(app_module.tune, "name_suggestions",
+                        lambda U, units, cands, raw, k=3: [(w, 0.0) for w in dict.fromkeys(cands)][:k])
+    body = _tune_body(flags=flags, name="Alpha")
+    split = client_tune.post("/tune", json=body, headers=HEADERS).json()["split"]
     assert set(split) == {"keep", "new", "keep_hashes", "new_hashes", "rho"}
     assert split["rho"] == 0.25
     # Which half keeps the name is decided by the name ranking; either way each report
@@ -998,5 +1041,8 @@ def test_tune_reports_an_offered_split(client_tune, monkeypatch):
     assert split["new_hashes"] == by_lines[split["new"]["lines"][0]]
     assert {split["keep"]["lines"][0], split["new"]["lines"][0]} == {"alpha", "beta"}
     for half in (split["keep"], split["new"]):
-        assert [f["hash"] for f in half["flags"]][1:] == ["s6", "s7"]
+        assert [f["hash"] for f in half["flags"]][1:] == ["s6", "s7", "s3"]
         assert set(half) == REPORT_KEYS
+    # The new mood needs its own name: never the current mood's.
+    assert "alpha" not in [n["word"] for n in split["new"]["names"]]
+    assert len(split["new"]["names"]) == 3

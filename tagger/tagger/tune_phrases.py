@@ -4,7 +4,7 @@ lines already in the user's moods. Seeded with wordings that worked in the
 
 PHRASES: list[str] = [
     # sorrowful
-    "the saddest music", "a sad farewell", "music for a funeral", "remembrance",
+    "the saddest music", "a sad farewell", "music for a funeral", "remembrance", "grief",
     "memory, sad, lonely", "a lament", "grief and loss", "tender and heartbreaking",
     "a lullaby for the dead", "mourning", "bittersweet nostalgia", "quiet sorrow",
     # grim

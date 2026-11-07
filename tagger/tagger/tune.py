@@ -71,21 +71,37 @@ def bars(raw: np.ndarray, ref_raw: np.ndarray, m: Mapping) -> np.ndarray:
 
 
 def loss(b: np.ndarray, flags: list[FlagTarget]) -> float:
-    total = 0.0
-    for f in flags:
-        v = b[f.index]
-        miss = 0.0
-        if f.lo is not None:
-            miss += max(0.0, (f.lo + AIM_MARGIN) - v)
-        if f.hi is not None:
-            miss += max(0.0, v - (f.hi - AIM_MARGIN))
-        total += f.weight * miss
-    for hi in (f for f in flags if f.side == "high"):
-        for lo in (f for f in flags if f.side == "low"):
-            if b[hi.index] <= b[lo.index]:
-                # A pair is only as sure as its shakier flag.
-                total += ORDER_PENALTY * min(hi.weight, lo.weight)
-    return float(total)
+    return _loss_fn(flags)(b)
+
+
+def _loss_fn(flags: list[FlagTarget]):
+    """loss(b, flags) as a function of b alone, with the flag arrays built once.
+
+    Per flag: weighted distance short of its floor and past its ceiling, each aimed
+    AIM_MARGIN inside the band. Plus ORDER_PENALTY for every (high, low) pair where
+    the high song reads at or below the low one; a pair is only as sure as its
+    shakier flag, so it counts at the smaller of the two weights.
+    """
+    idx = np.array([f.index for f in flags], dtype=int)
+    lo = np.array([np.nan if f.lo is None else f.lo + AIM_MARGIN for f in flags])
+    hi = np.array([np.nan if f.hi is None else f.hi - AIM_MARGIN for f in flags])
+    w = np.array([f.weight for f in flags])
+    high = [p for p, f in enumerate(flags) if f.side == "high"]
+    low = [p for p, f in enumerate(flags) if f.side == "low"]
+    pair_w = ORDER_PENALTY * np.minimum.outer(w[high], w[low]) if high and low else None
+    hi_idx, lo_idx = idx[high], idx[low]
+
+    def fn(b: np.ndarray) -> float:
+        if not flags:
+            return 0.0
+        v = b[idx]
+        miss = np.nan_to_num(np.maximum(0.0, lo - v)) + np.nan_to_num(np.maximum(0.0, v - hi))
+        total = float((w * miss).sum())
+        if pair_w is not None:
+            total += float(pair_w[b[hi_idx][:, None] <= b[lo_idx][None, :]].sum())
+        return total
+
+    return fn
 
 
 def broken(b: np.ndarray, flags: list[FlagTarget]) -> list[int]:
@@ -102,27 +118,47 @@ def combo_raw(U: np.ndarray, rows: list[int]) -> np.ndarray:
     return U[rows].mean(axis=0)
 
 
-def _score(rows: list[int], U_lib, U_ref, flags, m: Mapping) -> float:
-    raw = combo_raw(U_lib, rows)
-    ref = raw if U_ref is None else combo_raw(U_ref, rows)
-    return loss(bars(raw, ref, m), flags)
+def _score(rows, U_lib, U_ref, loss_fn, m: Mapping) -> float:
+    raw = combo_raw(U_lib, list(rows))
+    ref = raw if U_ref is None else combo_raw(U_ref, list(rows))
+    return loss_fn(bars(raw, ref, m))
 
 
 def beam_search(U_lib: np.ndarray, U_ref: np.ndarray | None, units: list[str],
-                flags: list[FlagTarget], m: Mapping, *, top_units: int = 24,
-                beam: int = 8, max_lines: int = 6, keep: int = 3) -> list[Combo]:
+                flags: list[FlagTarget], m: Mapping, *, top_units: int = 60,
+                beam: int = 24, max_lines: int = 6, keep: int = 3,
+                seeds=()) -> list[Combo]:
     """Best prompt combinations by loss.
 
     Scores every unit alone, keeps the best `top_units` as the pool, then grows
-    combinations one unit at a time, keeping `beam` per depth. Combinations are
-    deduplicated by their set of rows; lines come back in unit order.
+    combinations one unit at a time, keeping `beam` per depth. Each seed (a tuple
+    of rows, such as the mood's current lines) and each seed less one line also
+    join the frontier at their depth, so "the current lines plus, minus or with one
+    line swapped" is always explored even when those lines are outside the pool.
+    Seeds longer than `max_lines` are skipped. Combinations are deduplicated by
+    their set of rows; lines come back in unit order.
     """
-    solo = sorted(((_score([i], U_lib, U_ref, flags, m), (i,)) for i in range(len(units))))
+    loss_fn = _loss_fn(flags)
+    solo = sorted((_score((i,), U_lib, U_ref, loss_fn, m), (i,)) for i in range(len(units)))
     pool = [rows[0] for _, rows in solo[:top_units]]
-    frontier = solo[:beam]
-    best = list(solo)
     seen = {rows for _, rows in solo}
-    for _ in range(2, max_lines + 1):
+    seeded: dict[tuple[int, ...], float] = {}
+    for seed in seeds:
+        seed = tuple(sorted(set(seed)))
+        if not seed or len(seed) > max_lines:
+            continue
+        for c in [seed] + [seed[:i] + seed[i + 1:] for i in range(len(seed))]:
+            if c and c not in seeded:
+                seeded[c] = _score(c, U_lib, U_ref, loss_fn, m)
+    best = list(solo) + [(l, c) for c, l in seeded.items() if c not in seen]
+    seen |= set(seeded)
+
+    def with_seeds(top: list, depth: int) -> list:
+        extra = [(l, c) for c, l in seeded.items() if len(c) == depth]
+        return top + [e for e in extra if e not in top]
+
+    frontier = with_seeds(solo[:beam], 1)
+    for depth in range(2, max_lines + 1):
         grown = []
         for _, rows in frontier:
             for u in pool:
@@ -132,11 +168,11 @@ def beam_search(U_lib: np.ndarray, U_ref: np.ndarray | None, units: list[str],
                 if cand in seen:
                     continue
                 seen.add(cand)
-                grown.append((_score(list(cand), U_lib, U_ref, flags, m), cand))
-        if not grown:
-            break
+                grown.append((_score(cand, U_lib, U_ref, loss_fn, m), cand))
         grown.sort()
-        frontier = grown[:beam]
+        frontier = with_seeds(grown[:beam], depth)
+        if not frontier:
+            break
         best += grown
     best.sort()
     return [Combo(tuple(units[i] for i in rows), l) for l, rows in best[:keep]]
@@ -173,15 +209,20 @@ def _combo_bars(U_lib, U_ref, rows: list[int], m: Mapping) -> np.ndarray:
 def blend_units(U_lib, U_ref, units: list[str], flags: list[FlagTarget], m: Mapping,
                 top: int = 8) -> list[str]:
     """Comma blends ("a, b" and "a, b, c") of every pair and triple of the `top`
-    best single units. Blends over the line length limit, or already in `units`, are dropped."""
-    solo = sorted((_score([i], U_lib, U_ref, flags, m), i) for i in range(len(units)))
+    best single units. A unit that is itself a comma list adds its parts, and a
+    part that repeats is kept once (first place). Blends with fewer than two distinct
+    parts, over the line length limit, or already in `units` are dropped."""
+    loss_fn = _loss_fn(flags)
+    solo = sorted((_score((i,), U_lib, U_ref, loss_fn, m), i) for i in range(len(units)))
     best = [i for _, i in solo[:top]]
-    existing = set(units)
+    taken = set(units)
     out: list[str] = []
     for n in (2, 3):
         for group in itertools.combinations(best, n):
-            text = ", ".join(units[i] for i in group)
-            if len(text) <= MAX_UNIT_CHARS and text not in existing:
+            parts = dict.fromkeys(p.strip() for i in group for p in units[i].split(",") if p.strip())
+            text = ", ".join(parts)
+            if len(parts) >= 2 and len(text) <= MAX_UNIT_CHARS and text not in taken:
+                taken.add(text)
                 out.append(text)
     return out
 
@@ -197,18 +238,26 @@ def name_suggestions(U_lib, units: list[str], candidates: list[str], combo_raw: 
 
 
 def leave_one_out(U_lib, U_ref, units: list[str], flags: list[FlagTarget], m: Mapping,
-                  winner: Combo) -> tuple[int, int]:
+                  winner: Combo, *, seeds=(), memo: dict | None = None) -> tuple[int, int]:
     """(held, total): for each fresh flag (at most 20, lowest song index first), search
     again without it and see whether the best combination of the winner's size still puts
-    that song inside its band. Shows whether the proposal generalises or only memorises."""
+    that song inside its band. Shows whether the proposal generalises or only memorises.
+
+    The answer depends only on the flags and the winner's size, so pass the same `memo`
+    dict for proposals of one request to search each (flag, size) once.
+    """
+    memo = {} if memo is None else memo
     fresh = sorted((f for f in flags if f.fresh), key=lambda f: f.index)[:LOO_MAX_FLAGS]
     held = 0
     for f in fresh:
-        rest = [g for g in flags if g is not f]
-        best = beam_search(U_lib, U_ref, units, rest, m, beam=4, max_lines=len(winner.lines), keep=1)[0]
-        b = _combo_bars(U_lib, U_ref, _rows(units, best.lines), m)
-        if not broken(b, [f]):
-            held += 1
+        key = (f, tuple(flags), len(winner.lines))
+        if key not in memo:
+            rest = [g for g in flags if g is not f]
+            best = beam_search(U_lib, U_ref, units, rest, m, beam=8, max_lines=len(winner.lines),
+                               keep=1, seeds=seeds)[0]
+            b = _combo_bars(U_lib, U_ref, _rows(units, best.lines), m)
+            memo[key] = not broken(b, [f])
+        held += memo[key]
     return held, len(fresh)
 
 

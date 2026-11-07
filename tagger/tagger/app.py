@@ -429,7 +429,10 @@ def create_app(
         name = req.name.strip().lower()
         other_lines = [line for lines in req.other_moods.values() for line in lines]
         units = tune.split_units([*req.bank, *req.current_lines, *other_lines, name])
+        # Each current line as written, so the search can start from (and keep) them whole.
+        units += [line for line in dict.fromkeys(req.current_lines) if line not in set(units)]
         units += [p.lower() for p in PHRASES if p.lower() not in set(units)]
+        current_rows = tuple(units.index(line) for line in dict.fromkeys(req.current_lines))
         candidates = [u for u in tune.split_units(req.bank) if " " not in u] + [name]
 
         groups = {"units": units, "current": req.current_lines}
@@ -447,12 +450,15 @@ def create_app(
         before = raws(vecs["current"])
         other_raw = {k: raws(vecs[f"other:{k}"])[0] for k in req.other_moods}
 
-        def report(lines, after, sub_flags, sub_hashes, proposed=True):
+        loo_memo: dict = {}
+
+        def report(lines, after, sub_flags, sub_hashes, proposed=True, names_from=candidates):
             # Leave-one-out and name suggestions only make sense for a proposal.
             loo, names = (0, 0), []
             if proposed:
-                loo = tune.leave_one_out(U_lib, U_ref, units, sub_flags, m, tune.Combo(tuple(lines), 0.0))
-                names = tune.name_suggestions(U_lib, units, candidates, after[0])
+                loo = tune.leave_one_out(U_lib, U_ref, units, sub_flags, m, tune.Combo(tuple(lines), 0.0),
+                                         seeds=[current_rows], memo=loo_memo)
+                names = tune.name_suggestions(U_lib, units, names_from, after[0])
             return tune.build_report(
                 lines=lines, after=after, before=before, flags=sub_flags, flag_hashes=sub_hashes,
                 hashes=hashes, m=m, other_raw=other_raw, loo=loo, names=names,
@@ -471,14 +477,22 @@ def create_app(
                 if use_ref:
                     U_ref = np.vstack([U_ref, blend_vecs["blends"] @ reference.vectors.T])
                 units = units + blends
-            found = tune.beam_search(U_lib, U_ref, units, flags, m)
+            found = tune.beam_search(U_lib, U_ref, units, flags, m, seeds=[current_rows])
+            current_set = sorted(dict.fromkeys(req.current_lines))
             for c in found:
-                if c.loss < baseline["loss"]:
+                # Strictly better than the current lines (a hair of float noise is not
+                # better), and never the current lines again in another order.
+                if c.loss < baseline["loss"] - 1e-9 and sorted(c.lines) != current_set:
                     after = tune.combo_raws(U_lib, U_ref, units, c.lines)
                     proposals.append(report(list(c.lines), after, flags, flag_hashes))
-            offer = tune.try_split(U_lib, U_ref, units, flags, m, X, found[0])
-            if offer is not None:
-                split = _split_report(offer, flags, flag_hashes, report, U_lib, U_ref, units, candidates, name)
+            # A split only answers flags the dialog shows broken: the best proposal's,
+            # or the current lines' when nothing beats them.
+            shown = proposals[0] if proposals else baseline
+            if any(f["fresh"] and not f["holds"] for f in shown["flags"]):
+                offer = tune.try_split(U_lib, U_ref, units, flags, m, X, found[0])
+                if offer is not None:
+                    split = _split_report(offer, flags, flag_hashes, report, U_lib, U_ref, units,
+                                          candidates, name)
         return {"baseline": baseline, "proposals": proposals, "split": split, "skipped": skipped}
 
     def _split_report(offer, flags, flag_hashes, report, U_lib, U_ref, units, candidates, name):
@@ -489,15 +503,21 @@ def create_app(
             ranking = [w for w, _ in tune.name_suggestions(U_lib, units, candidates, after[0], k=len(candidates))]
             # The half whose best-matching words reach the mood's name first keeps it.
             rank = ranking.index(name) if name in ranking else len(ranking)
-            sub = group + rest
-            halves.append((
-                (rank, -len(group)),
-                report(list(combo.lines), after, [flags[p] for p in sub], [flag_hashes[p] for p in sub]),
-                [flag_hashes[p] for p in group],
-            ))
+            halves.append(((rank, -len(group)), combo, group, after))
         keep, new = sorted(halves, key=lambda h: h[0])
+
+        def half_report(half, names_from):
+            _, combo, group, after = half
+            sub = group + rest
+            return report(list(combo.lines), after, [flags[p] for p in sub], [flag_hashes[p] for p in sub],
+                          names_from=names_from)
+
         return {
-            "keep": keep[1], "new": new[1], "keep_hashes": keep[2], "new_hashes": new[2],
+            # The new mood needs a name of its own, so the current one is not offered.
+            "keep": half_report(keep, candidates),
+            "new": half_report(new, [w for w in candidates if w != name]),
+            "keep_hashes": [flag_hashes[p] for p in keep[2]],
+            "new_hashes": [flag_hashes[p] for p in new[2]],
             "rho": offer["rho"],
         }
 
