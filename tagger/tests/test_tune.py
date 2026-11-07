@@ -109,7 +109,7 @@ def test_planted_combination_is_the_only_zero_loss_subset():
 def test_beam_search_finds_planted_combination():
     best = beam_search(U_PLANTED, None, UNITS, FLAGS, M_LIB)
     assert best[0].lines == (UNITS[1], UNITS[3])
-    assert best[0].loss == pytest.approx(0.0)
+    assert best[0].loss == pytest.approx(2 * tune.LINE_COST)   # flags all met
     assert [c.loss for c in best] == sorted(c.loss for c in best)
     assert len(best) <= 3
 
@@ -119,7 +119,7 @@ def test_beam_search_respects_max_lines():
     assert results and all(len(c.lines) <= 2 for c in results)
     single = beam_search(U_PLANTED, None, UNITS, FLAGS, M_LIB, max_lines=1)
     assert all(len(c.lines) == 1 for c in single)
-    assert single[0].loss > 0.0          # one line cannot satisfy both high songs
+    assert single[0].loss > tune.LINE_COST          # one line cannot satisfy both high songs
 
 
 def test_beam_search_reference_source_uses_reference_stats():
@@ -132,11 +132,11 @@ def test_beam_search_reference_source_uses_reference_stats():
     U_ref = np.array([[0.5, 0.5], [0.0, 0.5]])
     flags = [FlagTarget(0, 0.75, None, 1.0, True, "high")]
     by_library = beam_search(U, None, units, flags, M_LIB, max_lines=1)
-    assert by_library[0].lines == ("weak",) and by_library[0].loss == pytest.approx(0.0)
+    assert by_library[0].lines == ("weak",) and by_library[0].loss == pytest.approx(tune.LINE_COST)
     m_ref = Mapping(midpoint_z=0.0, slope=2.0, source="reference")
     by_reference = beam_search(U, U_ref, units, flags, m_ref, max_lines=1)
     assert by_reference[0].lines == ("strong",)
-    assert by_reference[0].loss == pytest.approx(0.0)
+    assert by_reference[0].loss == pytest.approx(tune.LINE_COST)
     assert by_reference[1].lines == ("weak",) and by_reference[1].loss > 0.2
 
 
@@ -144,9 +144,9 @@ def test_beam_search_explores_the_seed_plus_or_minus_one_line():
     # The seed is the planted pair plus a noise line. With a pool of one unit and a
     # beam of one, plain growth cannot reach the pair; dropping one line of the seed can.
     plain = beam_search(U_PLANTED, None, UNITS, FLAGS, M_LIB, top_units=1, beam=1)
-    assert plain[0].loss > 0.0
+    assert plain[0].loss > 2 * tune.LINE_COST
     seeded = beam_search(U_PLANTED, None, UNITS, FLAGS, M_LIB, top_units=1, beam=1, seeds=[(0, 1, 3)])
-    assert seeded[0].lines == (UNITS[1], UNITS[3]) and seeded[0].loss == pytest.approx(0.0)
+    assert seeded[0].lines == (UNITS[1], UNITS[3]) and seeded[0].loss == pytest.approx(2 * tune.LINE_COST)
 
 
 def test_beam_search_favours_the_focused_flag():
@@ -157,6 +157,38 @@ def test_beam_search_favours_the_focused_flag():
     focused = [FLAGS[0], FlagTarget(1, 0.75, None, 1.0, True, "high", focus=True), *FLAGS[2:]]
     got = beam_search(U_PLANTED, None, UNITS, focused, M_LIB, max_lines=1)
     assert got[0].lines == (UNITS[3],)
+
+
+def test_line_cost_makes_the_shorter_combination_win_a_tie():
+    # "sad again" reads exactly like "sad", so adding it changes no bar: the pair ties
+    # the single line on the flags, and the line cost settles it for the single line.
+    units = ["sad", "sad again", "noise"]
+    U = np.array([[1.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [0.0, 0.3, 0.1, 0.2]])
+    flags = [FlagTarget(0, 0.75, None, 1.0, True, "high")]
+    got = beam_search(U, None, units, flags, M_LIB, keep=5)
+    assert got[0].lines in (("sad",), ("sad again",))
+    assert got[0].loss == pytest.approx(tune.LINE_COST)
+    pairs = [c for c in got if len(c.lines) == 2]
+    assert all(c.loss >= 2 * tune.LINE_COST - 1e-12 for c in pairs)
+
+
+def test_words_of_drops_small_words_and_punctuation():
+    assert tune.words_of("Haunted house, a strange discovery") == {"haunted", "house", "strange", "discovery"}
+
+
+def test_search_never_pairs_a_line_with_one_holding_the_same_words():
+    units = ["haunted house", "horror, haunted house", "haunted house, horror", "horror", "a strange discovery",
+             "haunted house, a strange discovery"]
+    rng = np.random.default_rng(4)
+    U = rng.normal(size=(len(units), 12))
+    flags = [FlagTarget(i, 0.75, None, 1.0, True, "high") for i in range(4)]
+    got = beam_search(U, None, units, flags, M_LIB, keep=50)
+    assert got
+    for c in got:
+        sets = [tune.words_of(line) for line in c.lines]
+        for i, a in enumerate(sets):
+            for b in sets[i + 1:]:
+                assert not (a <= b or b <= a), c.lines
 
 
 def test_beam_search_skips_seeds_longer_than_max_lines():
@@ -348,7 +380,7 @@ def test_split_offered_when_two_groups_conflict():
 
 def test_split_not_offered_when_one_mood_satisfies_all():
     best = beam_search(U_PLANTED, None, UNITS, FLAGS, M_LIB)[0]
-    assert best.loss == pytest.approx(0.0)
+    assert best.loss == pytest.approx(tune.LINE_COST * len(best.lines))
     X = np.random.default_rng(1).normal(size=(6, 4))
     assert try_split(U_PLANTED, None, UNITS, FLAGS, M_LIB, X, best) is None
 
@@ -381,4 +413,4 @@ def test_build_report_describes_a_change():
     assert r["names"] == [{"word": "sad", "rho": 0.5}]
     b_after, b_before = bars(after, after, M_LIB), bars(before, before, M_LIB)
     assert r["stability"] == pytest.approx(stability(b_after, b_before, flags))
-    assert r["loss"] == pytest.approx(loss(b_after, flags) + r["stability"])
+    assert r["loss"] == pytest.approx(loss(b_after, flags) + r["stability"] + tune.LINE_COST * 1)

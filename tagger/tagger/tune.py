@@ -6,6 +6,7 @@ mood bars best fit those flags. Bars use the same mapping as the app: z-score
 against a reference distribution, then a logistic curve.
 """
 import itertools
+import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -19,6 +20,9 @@ FOCUS_WEIGHT = 3.0       # a focused flag (the one the user just added) counts t
 STABILITY_WEIGHT = 0.5   # times the mean bar move of unflagged songs
 FIRES_WEIGHT = 0.3       # times the change in songs at 0.5 or more, over max(fires before, 10)
 FIRES_FLOOR = 10
+LINE_COST = 0.01         # per line, so a tie on everything else goes to the shorter combination
+# Words too small to tell two lines apart (see `words_of`).
+SMALL_WORDS = frozenset({"a", "an", "the", "and", "or", "of", "in", "on", "to", "with", "for", "at", "by"})
 MAX_UNIT_CHARS = 300
 LOO_MAX_FLAGS = 20       # leave-one-out checks at most this many flags
 SPLIT_MIN_HIGH = 4       # a split needs this many high-side flags
@@ -60,6 +64,16 @@ def split_units(texts: list[str]) -> list[str]:
             if unit and len(unit) <= MAX_UNIT_CHARS:
                 seen.setdefault(unit)
     return list(seen)
+
+
+def words_of(line: str) -> frozenset[str]:
+    """The words of a line, lowercased, without punctuation or SMALL_WORDS. The search
+    never puts two lines in one combination when one's words are all in the other's."""
+    return frozenset(w for w in re.findall(r"[a-z0-9']+", line.lower()) if w not in SMALL_WORDS)
+
+
+def _overlaps(a: frozenset[str], b: frozenset[str]) -> bool:
+    return a <= b or b <= a
 
 
 def bars(raw: np.ndarray, ref_raw: np.ndarray, m: Mapping) -> np.ndarray:
@@ -162,7 +176,7 @@ def combo_raw(U: np.ndarray, rows: list[int]) -> np.ndarray:
 def _score(rows, U_lib, U_ref, loss_fn, m: Mapping) -> float:
     raw = combo_raw(U_lib, list(rows))
     ref = raw if U_ref is None else combo_raw(U_ref, list(rows))
-    return loss_fn(bars(raw, ref, m))
+    return loss_fn(bars(raw, ref, m)) + LINE_COST * len(rows)
 
 
 def beam_search(U_lib: np.ndarray, U_ref: np.ndarray | None, units: list[str],
@@ -170,7 +184,7 @@ def beam_search(U_lib: np.ndarray, U_ref: np.ndarray | None, units: list[str],
                 beam: int = 24, max_lines: int = 6, keep: int = 3,
                 seeds=(), before: np.ndarray | None = None) -> list[Combo]:
     """Best prompt combinations by loss (plus `stability` against `before`, the current
-    lines' bars, when given).
+    lines' bars, when given, and LINE_COST per line).
 
     Scores every unit alone, keeps the best `top_units` as the pool, then grows
     combinations one unit at a time, keeping `beam` per depth. Each seed (a tuple
@@ -178,8 +192,10 @@ def beam_search(U_lib: np.ndarray, U_ref: np.ndarray | None, units: list[str],
     join the frontier at their depth, so "the current lines plus, minus or with one
     line swapped" is always explored even when those lines are outside the pool.
     Seeds longer than `max_lines` are skipped. Combinations are deduplicated by
-    their set of rows; lines come back in unit order.
+    their set of rows; lines come back in unit order. Growth never adds a line whose
+    words (`words_of`) are all in a line already there, or the other way round.
     """
+    words = [words_of(u) for u in units]
     loss_fn = _search_loss_fn(flags, before)
     solo = sorted((_score((i,), U_lib, U_ref, loss_fn, m), (i,)) for i in range(len(units)))
     pool = [rows[0] for _, rows in solo[:top_units]]
@@ -204,7 +220,7 @@ def beam_search(U_lib: np.ndarray, U_ref: np.ndarray | None, units: list[str],
         grown = []
         for _, rows in frontier:
             for u in pool:
-                if u in rows:
+                if u in rows or any(_overlaps(words[u], words[r]) for r in rows):
                     continue
                 cand = tuple(sorted(rows + (u,)))
                 if cand in seen:
@@ -386,8 +402,9 @@ def build_report(*, lines, after, before, flags: list[FlagTarget], flag_hashes: 
 
     return {
         "lines": list(lines),
-        # What the search ranks by: the flags' loss plus stability (0.0 for the current lines).
-        "loss": loss(b_after, flags) + stab,
+        # What the search ranks by: the flags' loss, stability (0.0 for the current lines)
+        # and the line cost.
+        "loss": loss(b_after, flags) + stab + LINE_COST * len(lines),
         "stability": stab,
         "flags": [
             {"hash": h, "before": float(b_before[f.index]), "after": float(b_after[f.index]),
