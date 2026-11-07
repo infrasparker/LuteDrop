@@ -112,6 +112,13 @@ export function parseExtraWords(text: string): string[] {
   return [...new Set(words)];
 }
 
+/// The line saying which flag Tune focused on: the newest flag by default,
+/// or the one picked with "Tune around this flag". Null without a focus.
+export function focusNote(songName: string | null, picked: boolean): string | null {
+  if (songName === null) return null;
+  return `Focusing on ${songName} (${picked ? 'the flag you picked' : 'your newest flag'})`;
+}
+
 /// The songs with a flag on `moodId`, for the Flags list and the flag count.
 export function flaggedEntries<E extends Pick<LibraryEntry, 'id' | 'moods'>>(
   entries: E[],

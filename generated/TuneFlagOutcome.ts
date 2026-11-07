@@ -9,4 +9,8 @@ export type TuneFlagOutcome = { song: TuneSong, before: number, after: number, h
 /**
  * False for a flag made under older wording or calibration.
  */
-fresh: boolean, };
+fresh: boolean, 
+/**
+ * The flag Tune focused on (counted three times over in the search).
+ */
+focus: boolean, };

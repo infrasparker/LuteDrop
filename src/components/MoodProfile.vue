@@ -132,6 +132,15 @@ function clearFlag(mood: MoodId): void {
   void store.command('clear_mood_flag', { entryId, mood });
 }
 
+/// "Tune around this flag": opens the Moods dialog's Tune on this mood,
+/// focused on this song's flag (through the store, see `tuneRequest`).
+function tuneAround(mood: MoodId): void {
+  const entryId = ids.value[0];
+  if (entryId === undefined) return;
+  store.tuneRequest = { moodId: mood, focusEntryId: entryId };
+  store.moodSettingsOpen = true;
+}
+
 function onBarClick(row: Row, e: MouseEvent): void {
   const bar = e.currentTarget as HTMLElement;
   const rect = bar.getBoundingClientRect();
@@ -239,6 +248,7 @@ const pct = (v: number): string => `${Math.round(v * 1000) / 10}%`;
           <VListItem title="Lower" @click="setFlag(row.id, 'lower', null)" />
           <template v-if="row.flag">
             <VDivider />
+            <VListItem title="Tune around this flag" prepend-icon="mdi-tune-vertical" @click="tuneAround(row.id)" />
             <VListItem title="Remove flag" @click="clearFlag(row.id)" />
           </template>
         </VList>

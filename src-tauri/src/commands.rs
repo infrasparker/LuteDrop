@@ -360,9 +360,12 @@ pub async fn tune_mood(
     mood_id: String,
     extra_words: Vec<String>,
     bank: Vec<String>,
+    focus_entry_id: Option<String>,
 ) -> Result<TuneResult, String> {
     let container = state.inner().clone();
-    tokio::task::spawn_blocking(move || actions::tune_mood(&container, &mood_id, &extra_words, &bank))
+    tokio::task::spawn_blocking(move || {
+        actions::tune_mood(&container, &mood_id, &extra_words, &bank, focus_entry_id.as_deref())
+    })
         .await
         .map_err(|e| format!("Tune failed: {e}"))?
 }

@@ -46,6 +46,13 @@ def test_stale_flags_count_half():
     assert loss(np.array([0.65]), [stale]) == pytest.approx(loss(np.array([0.65]), [fresh]) / 2)
 
 
+def test_focused_flag_counts_three_times():
+    plain = FlagTarget(0, 0.75, None, 1.0, True, "high")
+    focused = FlagTarget(0, 0.75, None, 1.0, True, "high", focus=True)
+    assert not plain.focus
+    assert loss(np.array([0.65]), [focused]) == pytest.approx(3 * loss(np.array([0.65]), [plain]))
+
+
 def test_order_penalty_high_below_low():
     hi = FlagTarget(0, 0.75, None, 1.0, True, "high")
     lo = FlagTarget(1, None, 0.5, 1.0, True, "low")
@@ -140,6 +147,16 @@ def test_beam_search_explores_the_seed_plus_or_minus_one_line():
     assert plain[0].loss > 0.0
     seeded = beam_search(U_PLANTED, None, UNITS, FLAGS, M_LIB, top_units=1, beam=1, seeds=[(0, 1, 3)])
     assert seeded[0].lines == (UNITS[1], UNITS[3]) and seeded[0].loss == pytest.approx(0.0)
+
+
+def test_beam_search_favours_the_focused_flag():
+    # One line can lift song 0 (unit 1) or song 1 (unit 3), not both. Unfocused it is a
+    # tie, settled by row order; focusing song 1's flag makes unit 3 the winner.
+    plain = beam_search(U_PLANTED, None, UNITS, FLAGS, M_LIB, max_lines=1)
+    assert plain[0].lines == (UNITS[1],)
+    focused = [FLAGS[0], FlagTarget(1, 0.75, None, 1.0, True, "high", focus=True), *FLAGS[2:]]
+    got = beam_search(U_PLANTED, None, UNITS, focused, M_LIB, max_lines=1)
+    assert got[0].lines == (UNITS[3],)
 
 
 def test_beam_search_skips_seeds_longer_than_max_lines():
@@ -259,7 +276,7 @@ def test_build_report_describes_a_change():
     after[[0, 1]] = 1.0
     after[5] = 0.5
     flags = [FlagTarget(0, 0.75, None, 1.0, True, "high"), FlagTarget(1, 0.75, None, 0.5, False, "high"),
-             FlagTarget(2, 0.75, None, 1.0, True, "high")]
+             FlagTarget(2, 0.75, None, 1.0, True, "high", focus=True)]
     r = build_report(
         lines=["x"], after=(after, None), before=(before, None), flags=flags,
         flag_hashes=["h0", "h1", "h2"], hashes=hashes, m=M_LIB, other_raw={"grim": after},
@@ -267,6 +284,7 @@ def test_build_report_describes_a_change():
     )
     assert r["lines"] == ["x"] and r["loo"] == {"held": 1, "total": 2}
     assert [f["holds"] for f in r["flags"]] == [True, True, False]
+    assert [f["focus"] for f in r["flags"]] == [False, False, True]
     assert r["unsatisfied"] == ["h2"]
     assert len(r["top"]) == 15 and r["top"][0]["bar"] >= r["top"][-1]["bar"]
     movers = r["risers"] + r["fallers"]

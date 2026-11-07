@@ -13,6 +13,7 @@ from scipy.stats import rankdata
 
 AIM_MARGIN = 0.03        # aim this far inside a band edge so near-misses still pass
 ORDER_PENALTY = 0.2      # per (high flag, low flag) pair where high <= low
+FOCUS_WEIGHT = 3.0       # a focused flag (the one the user just added) counts this many times over
 MAX_UNIT_CHARS = 300
 LOO_MAX_FLAGS = 20       # leave-one-out checks at most this many flags
 SPLIT_MIN_HIGH = 4       # a split needs this many high-side flags
@@ -29,6 +30,7 @@ class FlagTarget:
     weight: float        # stale flags count less
     fresh: bool
     side: str            # "high" | "low" | "mid"; mid flags skip the order penalty
+    focus: bool = False  # the flag the user is tuning around: its weight counts FOCUS_WEIGHT times
 
 
 @dataclass(frozen=True)
@@ -78,14 +80,14 @@ def _loss_fn(flags: list[FlagTarget]):
     """loss(b, flags) as a function of b alone, with the flag arrays built once.
 
     Per flag: weighted distance short of its floor and past its ceiling, each aimed
-    AIM_MARGIN inside the band. Plus ORDER_PENALTY for every (high, low) pair where
+    AIM_MARGIN inside the band; a focused flag's weight is FOCUS_WEIGHT times its own. Plus ORDER_PENALTY for every (high, low) pair where
     the high song reads at or below the low one; a pair is only as sure as its
     shakier flag, so it counts at the smaller of the two weights.
     """
     idx = np.array([f.index for f in flags], dtype=int)
     lo = np.array([np.nan if f.lo is None else f.lo + AIM_MARGIN for f in flags])
     hi = np.array([np.nan if f.hi is None else f.hi - AIM_MARGIN for f in flags])
-    w = np.array([f.weight for f in flags])
+    w = np.array([f.weight * (FOCUS_WEIGHT if f.focus else 1.0) for f in flags])
     high = [p for p, f in enumerate(flags) if f.side == "high"]
     low = [p for p, f in enumerate(flags) if f.side == "low"]
     pair_w = ORDER_PENALTY * np.minimum.outer(w[high], w[low]) if high and low else None
@@ -345,7 +347,7 @@ def build_report(*, lines, after, before, flags: list[FlagTarget], flag_hashes: 
         "loss": loss(b_after, flags),
         "flags": [
             {"hash": h, "before": float(b_before[f.index]), "after": float(b_after[f.index]),
-             "holds": p not in broken_after, "fresh": f.fresh}
+             "holds": p not in broken_after, "fresh": f.fresh, "focus": f.focus}
             for p, (f, h) in enumerate(zip(flags, flag_hashes))
         ],
         "top": _top(b_after, hashes),

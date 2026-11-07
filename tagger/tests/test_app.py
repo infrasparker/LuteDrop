@@ -905,13 +905,26 @@ def test_tune_returns_report_shape(client_tune):
     for report in [body["baseline"], *body["proposals"]]:
         assert set(report) == REPORT_KEYS
         assert [f["hash"] for f in report["flags"]] == ["s0", "s1", "s6", "s7"]
-        assert set(report["flags"][0]) == {"hash", "before", "after", "holds", "fresh"}
+        assert set(report["flags"][0]) == {"hash", "before", "after", "holds", "fresh", "focus"}
         assert len(report["top"]) == 12 and len(report["top_before"]) == 12   # only 12 songs
         assert [o["mood_id"] for o in report["overlap"]] == ["grim"]
         assert set(report["loo"]) == {"held", "total"}
     assert body["baseline"]["lines"] == ["beta"]
     assert 1 <= len(body["proposals"]) <= 3
     assert body["proposals"][0]["loo"]["total"] == 3          # three fresh flags
+
+
+def test_tune_marks_the_focused_flag(client_tune):
+    flags = _tune_body()["flags"]
+    flags[1] = {**flags[1], "focus": True}
+    body = client_tune.post("/tune", json=_tune_body(flags=flags), headers=HEADERS).json()
+    for report in [body["baseline"], *body["proposals"]]:
+        assert [f["focus"] for f in report["flags"]] == [False, True, False, False]
+
+
+def test_tune_focus_defaults_to_false(client_tune):
+    body = client_tune.post("/tune", json=_tune_body(), headers=HEADERS).json()
+    assert not any(f["focus"] for f in body["baseline"]["flags"])
 
 
 def test_tune_skips_unknown_hashes(client_tune):

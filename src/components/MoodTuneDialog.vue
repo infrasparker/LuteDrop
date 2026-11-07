@@ -9,6 +9,7 @@ import {
   albumOf,
   brokenFresh,
   flaggedEntries,
+  focusNote,
   holdingEntryIds,
   isChangedSinceTune,
   leaveBand,
@@ -55,6 +56,9 @@ const props = defineProps<{
   moodId: string | null;
   /// Open with the Flags list expanded and scrolled into view.
   showFlags?: boolean;
+  /// Run Tune focused on this song's flag ("Tune around this flag"), rather
+  /// than on the newest flag.
+  focusEntryId?: string | null;
 }>();
 const emit = defineEmits<{ accepted: [newMoodId: string | null] }>();
 
@@ -105,6 +109,9 @@ function keepFlag(entryId: string): void {
 // --- Running Tune ---
 
 const extraText = ref('');
+/// Which flag the next run focuses on: null for the newest flag (the
+/// backend's default), an entry id for a picked one, '' for none.
+const focusRequest = ref<string | null>(null);
 const running = ref(false);
 const tuneError = ref<string | null>(null);
 const result = ref<TuneResult | null>(null);
@@ -125,6 +132,7 @@ async function runTune(): Promise<void> {
       moodId: props.moodId,
       extraWords: parseExtraWords(extraText.value),
       bank: WORD_BANK,
+      focusEntryId: focusRequest.value,
     });
     if (token !== runToken) return;
     result.value = r;
@@ -135,6 +143,20 @@ async function runTune(): Promise<void> {
   } finally {
     if (token === runToken) running.value = false;
   }
+}
+
+/// "Focusing on <song> (...)" for the last run, or null.
+const focusLine = computed(() => {
+  const id = result.value?.focusEntryId ?? null;
+  if (id === null) return null;
+  const name = store.findLibraryEntry(id)?.name ?? null;
+  return focusNote(name, focusRequest.value !== null && focusRequest.value !== '');
+});
+
+/// Runs again with no focus at all.
+function clearFocus(): void {
+  focusRequest.value = '';
+  void runTune();
 }
 
 // --- The review shown ---
@@ -264,6 +286,7 @@ watch(open, async (isOpen) => {
   acceptError.value = null;
   selected.value = 0;
   touched.clear();
+  focusRequest.value = props.focusEntryId ?? null;
   flagsOpen.value = !!props.showFlags;
   if (props.showFlags) {
     await nextTick();
@@ -358,6 +381,21 @@ watch(open, async (isOpen) => {
             <div class="text-caption text-medium-emphasis mt-1">Searching word lines; this can take a minute.</div>
           </div>
           <VAlert v-if="tuneError" type="error" variant="tonal" density="compact" class="mt-2">{{ tuneError }}</VAlert>
+          <div v-if="result && focusLine" class="d-flex align-center ga-1 mt-2 text-body-2">
+            <VIcon size="small" color="primary">mdi-target</VIcon>
+            {{ focusLine }}
+            <VBtn
+              size="x-small"
+              variant="text"
+              icon
+              :disabled="running"
+              aria-label="Run again without a focus"
+              @click="clearFocus"
+            >
+              <VIcon size="small">mdi-close</VIcon>
+              <VTooltip activator="parent" location="top">Run again without a focus</VTooltip>
+            </VBtn>
+          </div>
         </section>
 
         <template v-if="result && review">
@@ -415,6 +453,7 @@ watch(open, async (isOpen) => {
               <span class="text-truncate">
                 {{ o.song.name }}
                 <span class="text-caption text-medium-emphasis">· {{ o.song.album }}</span>
+                <span v-if="o.focus" class="tag text-primary">focus</span>
               </span>
               <span class="text-caption">{{ flagNow(o.song.entryId) }}</span>
               <span class="bars">{{ fmt(o.before) }} → {{ fmt(o.after) }}</span>

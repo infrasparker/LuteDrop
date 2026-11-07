@@ -41,6 +41,9 @@ export const useAppStore = defineStore('app', () => {
   /// Whether the Moods settings dialog is open (opened from the nav rail and
   /// from the lens row's marker).
   const moodSettingsOpen = ref(false);
+  /// Set by "Tune around this flag" on a song's mood bar: the Moods dialog
+  /// opens Tune on `moodId`, focused on that song's flag, then clears it.
+  const tuneRequest = ref<{ moodId: string; focusEntryId: string } | null>(null);
 
   /// Non-null while a background library import is active. Drives the
   /// bottom-bar progress indicator and disables the Import menu.
@@ -182,6 +185,7 @@ export const useAppStore = defineStore('app', () => {
     moodsNeedRecalibration,
     moodVocabularyUnreadable,
     moodSettingsOpen,
+    tuneRequest,
     importProgress,
     masterMuted,
     mutedTracks,

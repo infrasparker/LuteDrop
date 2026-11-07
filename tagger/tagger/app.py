@@ -110,6 +110,8 @@ class TuneFlag(BaseModel):
     weight: float = 1.0
     fresh: bool = True
     side: Literal["high", "low", "mid"]
+    # The flag the user is tuning around (at most one): it counts tune.FOCUS_WEIGHT times.
+    focus: bool = False
 
 
 class TuneCalibration(BaseModel):
@@ -420,7 +422,8 @@ def create_app(
         row = {h: i for i, h in enumerate(hashes)}
         skipped = [f.hash for f in req.flags if f.hash not in row]
         kept = [f for f in req.flags if f.hash in row]
-        flags = [tune.FlagTarget(row[f.hash], f.min, f.max, f.weight, f.fresh, f.side) for f in kept]
+        flags = [tune.FlagTarget(row[f.hash], f.min, f.max, f.weight, f.fresh, f.side, f.focus)
+                 for f in kept]
         flag_hashes = [f.hash for f in kept]
         m = tune.Mapping(req.calibration.midpoint_z, req.calibration.slope, req.calibration.source)
         use_ref = req.calibration.source == "reference"

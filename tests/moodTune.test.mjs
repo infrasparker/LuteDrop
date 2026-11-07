@@ -6,6 +6,7 @@ import {
   albumOf,
   brokenFresh,
   flaggedEntries,
+  focusNote,
   flagsLinkLabel,
   handSetCount,
   holdingEntryIds,
@@ -202,4 +203,10 @@ test('a hand-set level counts as high from 0.75, and a flag decides over a level
   assert.equal(reviewTargetIsHigh(null, 0.5), false);
   assert.equal(reviewTargetIsHigh(null, null), false);
   assert.equal(reviewTargetIsHigh(flag, 1), false);                   // the flag decides
+});
+
+test('focusNote names the focused song and why it was picked', () => {
+  assert.equal(focusNote('White Orchard', false), 'Focusing on White Orchard (your newest flag)');
+  assert.equal(focusNote('White Orchard', true), 'Focusing on White Orchard (the flag you picked)');
+  assert.equal(focusNote(null, false), null);
 });

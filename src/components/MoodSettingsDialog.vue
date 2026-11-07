@@ -379,11 +379,29 @@ const tuneBlocked = (row: DraftRow): boolean => {
   return saved !== null && !sameList(saved, lines(row.prompts));
 };
 
+const tuneFocusEntryId = ref<string | null>(null);
+
 function openTune(row: DraftRow, showFlags: boolean): void {
   tuneMoodId.value = row.id;
   tuneShowFlags.value = showFlags;
+  tuneFocusEntryId.value = null;
   tuneOpen.value = true;
 }
+
+/// "Tune around this flag" on a song's mood bar asks, through the store, for
+/// Tune on one mood focused on that song's flag. Taken once, then cleared.
+watch(
+  () => [store.tuneRequest, open.value] as const,
+  ([req, isOpen]) => {
+    if (!req || !isOpen) return;
+    store.tuneRequest = null;
+    tuneMoodId.value = req.moodId;
+    tuneShowFlags.value = false;
+    tuneFocusEntryId.value = req.focusEntryId;
+    tuneOpen.value = true;
+  },
+  { immediate: true },
+);
 
 /// After an accept: the tuned mood's row takes its new saved lines, and the
 /// mood a split added (`newMoodId`) gets a row; other unsaved edits, removed
@@ -738,6 +756,7 @@ async function importCaseStudies(): Promise<void> {
       v-model="tuneOpen"
       :mood-id="tuneMoodId"
       :show-flags="tuneShowFlags"
+      :focus-entry-id="tuneFocusEntryId"
       @accepted="onTuneAccepted"
     />
     <VDialog v-model="importReportOpen" max-width="520">

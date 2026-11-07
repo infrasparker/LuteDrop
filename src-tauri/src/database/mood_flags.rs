@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use super::settings;
 use crate::autotag::plan::MoodStat;
@@ -243,6 +243,18 @@ pub fn flags_for_mood(conn: &Connection, mood: &str) -> Result<Vec<StoredFlag>, 
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("Failed to read flags: {e}"))
 }
 
+/// The entry whose flag on `mood` was set or last changed most recently
+/// (`set_flag` moves `created_at` on every change; "keep" does not), if any.
+pub fn newest_flag(conn: &Connection, mood: &str) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT library_entry_id FROM mood_flags WHERE mood = ?1 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        params![mood],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(|e| format!("Failed to read the newest flag: {e}"))
+}
+
 /// All flags keyed by (entry id, mood), with `stale` worked out against the
 /// vocabulary's current lines and each mood's current calibration (see
 /// `stale_reason`). Flags on moods no longer in the vocabulary are left out.
@@ -429,6 +441,25 @@ mod tests {
                 lines_sig: "y".into(),
             }]
         );
+    }
+
+    #[test]
+    fn changing_a_flag_makes_it_the_newest() {
+        let conn = open_memory_db();
+        let (a, b) = (entry(&conn, "a"), entry(&conn, "b"));
+        assert_eq!(newest_flag(&conn, "peaceful").unwrap(), None);
+        band_flag(&conn, &a, "peaceful", FlagBand::Stretch, "x");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        band_flag(&conn, &b, "peaceful", FlagBand::Stretch, "x");
+        assert_eq!(newest_flag(&conn, "peaceful").unwrap(), Some(b.clone()));
+        // Changing a's flag (an upsert) moves its created_at on, so it is the newest again.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        band_flag(&conn, &a, "peaceful", FlagBand::No, "x");
+        assert_eq!(newest_flag(&conn, "peaceful").unwrap(), Some(a.clone()));
+        // Keeping a stale flag is not a change: b stays behind a.
+        refresh_flag(&conn, &b, "peaceful", "y").unwrap();
+        assert_eq!(newest_flag(&conn, "peaceful").unwrap(), Some(a));
+        assert_eq!(newest_flag(&conn, "grim").unwrap(), None);
     }
 
     #[test]

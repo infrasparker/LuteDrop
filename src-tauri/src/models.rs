@@ -441,6 +441,8 @@ pub struct TuneFlagOutcome {
     pub holds: bool,
     /// False for a flag made under older wording or calibration.
     pub fresh: bool,
+    /// The flag Tune focused on (counted three times over in the search).
+    pub focus: bool,
 }
 
 /// One of the songs a set of lines ranks highest, with its bar.
@@ -547,6 +549,8 @@ pub struct TuneResult {
     /// Flags left out of the request: songs never analyzed (no hash), and
     /// flags that cannot be read or ask nothing of the bar.
     pub skipped_flags: usize,
+    /// The song whose flag the search focused on, if any.
+    pub focus_entry_id: Option<String>,
 }
 
 /// Which layer a shown value comes from: the user's, or the analyzer's.

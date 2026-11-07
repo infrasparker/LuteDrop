@@ -18,4 +18,8 @@ skipped: Array<TuneSong>, linesTunedFrom: Array<string>,
  * Flags left out of the request: songs never analyzed (no hash), and
  * flags that cannot be read or ask nothing of the bar.
  */
-skippedFlags: number, };
+skippedFlags: number, 
+/**
+ * The song whose flag the search focused on, if any.
+ */
+focusEntryId: string | null, };
