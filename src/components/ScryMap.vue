@@ -3,7 +3,7 @@
 // hovering shows the name, a click on a point plays the track and pins a small
 // card with a Seed button (shift-click seeds straight away), a shift-click on
 // empty space asks for the tracks nearest that spot (shift-right-click clears
-// it), a right-click on empty space clears the selection, a left-drag lasso adds the
+// the spot and any seeds), a right-click on empty space clears the selection, a left-drag lasso adds the
 // enclosed points to the selection, and a right-click or right-drag lasso
 // removes them from it.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
@@ -31,8 +31,8 @@ const emit = defineEmits<{
   spot: [pos: { x: number; y: number }];
   // Toggle a track in or out of the seeds.
   seed: [entryId: string];
-  // Empty space was shift-right-clicked: drop the spot search.
-  clearSpot: [];
+  // Empty space was shift-right-clicked: drop the spot and the seeds.
+  clearSearch: [];
   // Empty space was right-clicked: clear the selection.
   clearSelection: [];
 }>();
@@ -452,7 +452,7 @@ function onPointerUp(e: PointerEvent): void {
       if (removing) emit('clearSelection');
       return;
     }
-    if (removing) emit('clearSpot');
+    if (removing) emit('clearSearch');
     else emit('spot', toData(start.x, start.y));
     return;
   }
@@ -606,7 +606,7 @@ onBeforeUnmount(() => {
       <span class="d-inline-flex align-center ga-1"><span class="swatch-ring" />Result</span>
       <span class="d-inline-flex align-center ga-1"><span class="swatch-ring selected" />Selected</span>
       <VSpacer />
-      <span>Click a dot to play, shift-click to seed · drag to select, right-drag to deselect, right-click empty space to clear · shift-click empty space for nearby tracks, shift-right-click to clear</span>
+      <span>Click a dot to play, shift-click to seed · drag to select, right-drag to deselect, right-click empty space to clear · shift-click empty space for nearby tracks, shift-right-click to clear spot and seeds</span>
     </div>
   </div>
 </template>
