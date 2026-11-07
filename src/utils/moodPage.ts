@@ -206,7 +206,7 @@ export function draftStale(
 }
 
 /// Why a rescore left the bars as they were, for the page header, or null:
-/// auto-tagging off (the command refused), the words changed while it ran
+/// the analyzer off (the command refused), the words changed while it ran
 /// (the run skips moods then), or still not scorable (too few analyzed
 /// tracks for a calibration).
 export function rescoreProblem(r: {
@@ -216,7 +216,7 @@ export function rescoreProblem(r: {
   linesNow: string;
 }): string | null {
   const head = 'Bars not updated: ';
-  if (r.error !== null) return head + (r.error.toLowerCase().includes('auto-tagging') ? 'auto-tagging is off' : r.error);
+  if (r.error !== null) return head + (r.error.toLowerCase().includes('turn on the analyzer') ? 'the analyzer is off' : r.error);
   if (!r.needsRecalibration) return null;
   return head + (r.linesAtStart !== r.linesNow ? 'words changed, run again' : 'not enough analyzed tracks');
 }

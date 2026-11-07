@@ -11,7 +11,6 @@ import type { LibraryEntry, ScryHit, ScryPoint } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAutoTagEvents } from '../composables/useAutoTagEvents';
 import { useLibraryPreview } from '../composables/useLibraryPreview';
-import { useVocabulary } from '../composables/useVocabulary';
 import { useToast } from '../composables/useToast';
 import ScryMap from '../components/ScryMap.vue';
 import ScryResults from '../components/ScryResults.vue';
@@ -24,7 +23,6 @@ const store = useAppStore();
 const route = useRoute();
 const router = useRouter();
 const toast = useToast();
-const { vocabulary } = useVocabulary();
 const { playingId, toggle: togglePreview } = useLibraryPreview();
 const { completedRuns } = useAutoTagEvents();
 
@@ -308,7 +306,7 @@ function openDetails(entryId: string): void {
   store.editEntryId = entryId;
 }
 
-const showAutoTagging = ref(false);
+const showAnalyzer = ref(false);
 </script>
 
 <template>
@@ -335,8 +333,8 @@ const showAutoTagging = ref(false);
         </template>
       </VTextField>
       <VSpacer />
-      <VBtn prepend-icon="mdi-creation" variant="tonal" size="small" rounded="xl" @click="showAutoTagging = true">
-        Auto-tagging
+      <VBtn prepend-icon="mdi-creation" variant="tonal" size="small" rounded="xl" @click="showAnalyzer = true">
+        Analyzer
       </VBtn>
     </Teleport>
 
@@ -357,11 +355,11 @@ const showAutoTagging = ref(false);
       <VIcon size="64" class="mb-4 text-medium-emphasis">mdi-compass-outline</VIcon>
       <div class="text-h6 mb-2">No analyzed music yet</div>
       <div class="text-body-2 text-medium-emphasis mb-4" style="max-width: 460px;">
-        Scry searches and maps music the analyzer has processed. Open Auto-tagging,
+        Scry searches and maps music the analyzer has processed. Open Analyzer,
         connect the analyzer, and run Analyze library; analyzed music tracks then appear here.
       </div>
-      <VBtn prepend-icon="mdi-creation" color="primary" variant="tonal" @click="showAutoTagging = true">
-        Open Auto-tagging
+      <VBtn prepend-icon="mdi-creation" color="primary" variant="tonal" @click="showAnalyzer = true">
+        Open Analyzer
       </VBtn>
     </div>
 
@@ -414,7 +412,6 @@ const showAutoTagging = ref(false);
             :entries-by-id="entriesById"
             :seed-ids="seeds"
             :playing-id="playingId"
-            :vocabulary="vocabulary"
             @play="togglePreview"
             @add-seed="addSeed"
             @hover="hoveredRowId = $event"
@@ -500,7 +497,7 @@ const showAutoTagging = ref(false);
       :suggested-name="suggestedName"
       @done="selectedIds = []"
     />
-    <AutoTaggingDialog v-model="showAutoTagging" />
+    <AutoTaggingDialog v-model="showAnalyzer" />
   </div>
 </template>
 

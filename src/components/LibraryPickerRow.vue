@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { AutoTag, LibraryEntry } from '@generated/index';
+import type { LibraryEntry } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import TagChip from './TagChip.vue';
 import { useAudio } from '../composables/useAudio';
@@ -42,12 +42,7 @@ async function removeTag(tag: string): Promise<void> {
   await store.command('update_library_entry_tags', {
     entryId: props.entry.id,
     tags: newTags,
-    seenAutoTags: props.entry.autoTags.map((a) => a.tag),
   });
-}
-
-function autoFor(tag: string): AutoTag | null {
-  return props.entry.autoTags.find((a) => a.tag === tag) ?? null;
 }
 
 function handleClick(): void {
@@ -90,8 +85,6 @@ function openEditor(): void {
         v-for="tag in entry.tags"
         :key="tag"
         :tag="tag"
-        :auto="autoFor(tag)"
-        :entry-id="entry.id"
         class="mr-1"
         closable
         @remove="removeTag(tag)"

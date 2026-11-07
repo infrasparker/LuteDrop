@@ -159,18 +159,14 @@ async function handle(cmd: string, a: Args): Promise<unknown> {
       const e = state.libraryEntries.find((x) => x.filePath === a.filePath);
       return { peaks: peaks((a.width as number) ?? 1200), duration: e?.duration ?? 120 };
     }
-    case 'get_entry_tag_scores':
-      return null;
     case 'get_library_entry_usage':
     case 'scry_map':
     case 'scan_folder_for_audio':
       return [];
     case 'get_autotag_settings':
       return settingsFixture.autotag;
-    case 'get_scene_config':
-      return { vocabulary: state.tags };
     case 'get_autotag_report':
-      return { finishedAt: null, analyzed: 0, added: 0, removed: 0, failed: 0, unreachable: 0, gate: null, tags: [], error: null, sampleErrors: [] };
+      return { finishedAt: null, analyzed: 0, failed: 0, unreachable: 0, error: null, sampleErrors: [] };
     case 'test_autotag_connection':
       return 'Preview: no analyzer';
     case 'get_server_info':

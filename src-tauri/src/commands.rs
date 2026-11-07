@@ -3,8 +3,8 @@ use tauri::State;
 use std::sync::Arc;
 use crate::actions;
 use crate::models::{
-    AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodResetImpact, MoodTunePrefs, MoodVocabulary, AcceptedLines, MoodFlagRow, ClearedFlag,
-    Role, SceneConfig, TrackUpdates, ScryHit, ScryPoint, EnergyPreview, TuneMode, TuneResult};
+    AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, LibraryEntryUsage, MoodResetImpact, MoodTunePrefs, MoodVocabulary, AcceptedLines, MoodFlagRow, ClearedFlag,
+    Role, TrackUpdates, ScryHit, ScryPoint, EnergyPreview, TuneMode, TuneResult};
 use crate::autotag::tune::TuneInputs;
 use crate::state::AppStateContainer;
 use crate::waveform;
@@ -265,9 +265,8 @@ pub fn update_library_entry_tags(
     state: State<'_, Arc<AppStateContainer>>,
     entry_id: String,
     tags: Vec<String>,
-    seen_auto_tags: Option<Vec<String>>,
 ) -> Result<AppState, String> {
-    actions::update_library_entry_tags(&state, &entry_id, tags, seen_auto_tags)
+    actions::update_library_entry_tags(&state, &entry_id, tags)
 }
 
 #[tauri::command]
@@ -278,15 +277,6 @@ pub fn bulk_edit_library_entry_tags(
     remove: Vec<String>,
 ) -> Result<AppState, String> {
     actions::bulk_edit_library_entry_tags(&state, entry_ids, add, remove)
-}
-
-#[tauri::command]
-pub fn keep_auto_tags(
-    state: State<'_, Arc<AppStateContainer>>,
-    entry_ids: Vec<String>,
-    tags: Option<Vec<String>>,
-) -> Result<AppState, String> {
-    actions::keep_auto_tags(&state, entry_ids, tags)
 }
 
 #[tauri::command]
@@ -475,26 +465,6 @@ pub fn reset_mood_vocabulary(state: State<'_, Arc<AppStateContainer>>) -> Result
 #[tauri::command]
 pub fn recalibrate_moods(state: State<'_, Arc<AppStateContainer>>) -> Result<AppState, String> {
     actions::recalibrate_moods(&state)
-}
-
-#[tauri::command]
-pub fn reject_auto_tags(
-    state: State<'_, Arc<AppStateContainer>>,
-    entry_ids: Vec<String>,
-    tags: Option<Vec<String>>,
-) -> Result<AppState, String> {
-    actions::reject_auto_tags(&state, entry_ids, tags)
-}
-
-/// Clears the user's vote on `tags` for each of `entry_ids`; see
-/// `library::reset_entry_tag_votes`.
-#[tauri::command]
-pub fn reset_entry_tag_votes(
-    state: State<'_, Arc<AppStateContainer>>,
-    entry_ids: Vec<String>,
-    tags: Vec<String>,
-) -> Result<AppState, String> {
-    actions::reset_entry_tag_votes(&state, entry_ids, tags)
 }
 
 #[tauri::command]
@@ -687,16 +657,6 @@ pub fn save_autotag_settings(
     actions::save_autotag_settings(&state, settings)
 }
 
-#[tauri::command]
-pub fn get_scene_config(state: State<'_, Arc<AppStateContainer>>) -> Result<SceneConfig, String> {
-    actions::get_scene_config(&state)
-}
-
-#[tauri::command]
-pub fn save_scene_config(state: State<'_, Arc<AppStateContainer>>, config: SceneConfig) -> Result<(), String> {
-    actions::save_scene_config(&state, config)
-}
-
 /// Async on purpose: the request can take seconds when the analyzer host is
 /// slow or down, and a plain command would freeze the window meanwhile.
 #[tauri::command]
@@ -775,10 +735,3 @@ pub async fn scry_map(state: State<'_, Arc<AppStateContainer>>) -> Result<Vec<Sc
         .map_err(|e| format!("Scry map failed: {e}"))?
 }
 
-#[tauri::command]
-pub fn get_entry_tag_scores(
-    state: State<'_, Arc<AppStateContainer>>,
-    entry_id: String,
-) -> Result<Option<EntryTagScores>, String> {
-    actions::get_entry_tag_scores(&state, &entry_id)
-}

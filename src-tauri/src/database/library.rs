@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::database::now_millis;
 use crate::database::DbError;
 use crate::database::settings;
-use crate::models::{AutoTag, LibraryEntryUsage, MoodResetImpact, MoodVocabulary, Role, MOOD_LEVELS};
+use crate::models::{LibraryEntryUsage, MoodResetImpact, MoodVocabulary, Role, MOOD_LEVELS};
 
 // ─── Library Entry CRUD ───────────────────────────────────────────────────────
 
@@ -79,12 +79,10 @@ pub fn update_library_entry_name(
     Ok(())
 }
 
-/// Updates the `entry_type` column for the given entry. Only music entries
-/// are auto-tagged and roles only apply to music, so when an entry stops being
-/// music the analyzer layer of its tags is dropped in the same transaction
-/// (rows the user has not voted on go), orphaned tag rows are swept, and its
-/// role and mood are cleared entirely, both layers (changing the type
-/// is itself a user action). The user's tag votes are left alone.
+/// Updates the `entry_type` column for the given entry. Roles and moods only
+/// apply to music, so when an entry stops being music its role and moods
+/// (both layers) are cleared in the same transaction (changing the type is
+/// itself a user action). Its tags are left alone.
 ///
 /// Returns true if the entry was not music before and is music now.
 pub fn update_library_entry_type(
@@ -117,14 +115,7 @@ pub fn update_library_entry_type(
     .map_err(|e| format!("Failed to update entry type: {e}"))?;
 
     if was_music && !is_music {
-        remove_auto_tags(conn, id)?;
-        sweep_orphan_tags(conn)?;
-        conn.execute(
-            "UPDATE library_entries
-             SET role_auto = NULL, role_auto_score = NULL, role_user = NULL
-             WHERE id = ?1",
-            params![id],
-        )
+        conn.execute("UPDATE library_entries SET role_user = NULL WHERE id = ?1", params![id])
         .map_err(|e| format!("Failed to clear role: {e}"))?;
         // Ambiance has no moods: both layers go, and so does the review
         // time (ambiance is never reviewed).
@@ -402,46 +393,9 @@ pub fn ensure_tag(conn: &Connection, name: &str) -> Result<String, String> {
     Ok(id)
 }
 
-// ─── Tag layers ───────────────────────────────────────────────────────────────
+// ─── Entry tags ───────────────────────────────────────────────────────────────
 //
-// Each `library_entry_tags` row holds two independent layers for one tag on
-// one entry: the analyzer's `auto_score` (written only by analysis runs) and
-// the user's `user_vote` (1 yes, 0 no, NULL not voted; written only by the
-// user). A row with neither is deleted. The entry shows the tag when the user
-// voted yes, or did not vote and the analyzer tags it.
-
-/// SQL condition (on a `library_entry_tags` row aliased `lt`) for a tag the
-/// entry shows.
-const SHOWN: &str = "(lt.user_vote = 1 OR (lt.user_vote IS NULL AND lt.auto_score IS NOT NULL))";
-
-/// Sets the user's vote on one tag of one entry, creating the row if needed.
-fn set_vote(conn: &Connection, entry_id: &str, tag_id: &str, vote: bool) -> Result<(), String> {
-    conn.execute(
-        "INSERT INTO library_entry_tags (library_entry_id, tag_id, user_vote) VALUES (?1, ?2, ?3)
-         ON CONFLICT (library_entry_id, tag_id) DO UPDATE SET user_vote = excluded.user_vote",
-        params![entry_id, tag_id, vote as i64],
-    )
-    .map_err(|e| format!("Failed to record tag vote: {e}"))?;
-    Ok(())
-}
-
-/// Clears the user's vote on one tag of one entry. A row the analyzer does
-/// not tag either is deleted (first, since the table never holds a row with
-/// neither layer).
-fn clear_vote(conn: &Connection, entry_id: &str, tag_id: &str) -> Result<(), String> {
-    conn.execute(
-        "DELETE FROM library_entry_tags
-         WHERE library_entry_id = ?1 AND tag_id = ?2 AND auto_score IS NULL",
-        params![entry_id, tag_id],
-    )
-    .map_err(|e| format!("Failed to delete tag vote: {e}"))?;
-    conn.execute(
-        "UPDATE library_entry_tags SET user_vote = NULL WHERE library_entry_id = ?1 AND tag_id = ?2",
-        params![entry_id, tag_id],
-    )
-    .map_err(|e| format!("Failed to clear tag vote: {e}"))?;
-    Ok(())
-}
+// Each `library_entry_tags` row is one tag the user put on one entry.
 
 /// The id of the tag with this (normalised) name, if it exists.
 fn tag_id_of(conn: &Connection, tag_name: &str) -> Result<Option<String>, String> {
@@ -454,62 +408,38 @@ fn tag_id_of(conn: &Connection, tag_name: &str) -> Result<Option<String>, String
     .map_err(|e| format!("Failed to query tag: {e}"))
 }
 
-/// One stored tag row of an entry.
-struct StoredTag {
-    id: String,
-    name: String,
-    /// The entry shows the tag.
-    shown: bool,
-    /// The entry shows the tag only because of the analyzer (no vote).
-    auto_only: bool,
+/// Puts a tag on an entry; a tag it already has is left as it is.
+fn link_tag(conn: &Connection, entry_id: &str, tag_id: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT OR IGNORE INTO library_entry_tags (library_entry_id, tag_id) VALUES (?1, ?2)",
+        params![entry_id, tag_id],
+    )
+    .map_err(|e| format!("Failed to add tag: {e}"))?;
+    Ok(())
 }
 
-fn stored_tags(conn: &Connection, entry_id: &str) -> Result<Vec<StoredTag>, String> {
-    let mut stmt = conn
-        .prepare(&format!(
-            "SELECT lt.tag_id, t.name, {SHOWN}, lt.user_vote IS NULL AND lt.auto_score IS NOT NULL
-             FROM library_entry_tags lt
-             JOIN tags t ON t.id = lt.tag_id
-             WHERE lt.library_entry_id = ?1"
-        ))
-        .map_err(|e| format!("Failed to prepare stored tag query: {e}"))?;
-    let rows = stmt
-        .query_map(params![entry_id], |row| {
-            Ok(StoredTag {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                shown: row.get(2)?,
-                auto_only: row.get(3)?,
-            })
-        })
-        .map_err(|e| format!("Failed to query stored tags: {e}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Failed to collect stored tags: {e}"))?;
-    Ok(rows)
+/// Takes a tag off an entry.
+fn unlink_tag(conn: &Connection, entry_id: &str, tag_id: &str) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM library_entry_tags WHERE library_entry_id = ?1 AND tag_id = ?2",
+        params![entry_id, tag_id],
+    )
+    .map_err(|e| format!("Failed to remove tag: {e}"))?;
+    Ok(())
 }
 
-/// Votes yes on a user-added tag. A tag the entry already shows is left as
-/// it is (an analyzer tag stays the analyzer's until the user confirms it).
-fn add_user_tag(conn: &Connection, entry_id: &str, tag_id: &str, stored: &[StoredTag]) -> Result<(), String> {
-    if stored.iter().any(|t| t.id == tag_id && t.shown) {
-        return Ok(());
-    }
-    set_vote(conn, entry_id, tag_id, true)
-}
-
-/// Associates a tag (creating it if necessary) with the given library entry
-/// as a yes vote. Used for tags chosen at import time.
+/// Associates a tag (creating it if necessary) with the given library entry.
+/// Used for tags chosen at import time.
 pub fn add_tag_to_entry(
     conn: &Connection,
     entry_id: &str,
     tag_name: &str,
 ) -> Result<(), String> {
     let tag_id = ensure_tag(conn, tag_name)?;
-    set_vote(conn, entry_id, &tag_id, true)
+    link_tag(conn, entry_id, &tag_id)
 }
 
-/// Deletes tag rows that no entry row references. A no vote is a row, so a
-/// tag the user voted no on stays.
+/// Deletes tag rows that no entry row references.
 pub(crate) const SWEEP_ORPHAN_TAGS: &str =
     "DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM library_entry_tags)";
 
@@ -519,39 +449,9 @@ pub fn sweep_orphan_tags(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-/// Drops the analyzer layer from every tag on the entry: rows the user has
-/// not voted on are deleted, the rest lose their score. The votes stay.
-fn remove_auto_tags(conn: &Connection, entry_id: &str) -> Result<(), String> {
-    conn.execute(
-        "DELETE FROM library_entry_tags WHERE library_entry_id = ?1 AND user_vote IS NULL",
-        params![entry_id],
-    )
-    .map_err(|e| format!("Failed to remove auto tags: {e}"))?;
-    conn.execute(
-        "UPDATE library_entry_tags SET auto_score = NULL WHERE library_entry_id = ?1",
-        params![entry_id],
-    )
-    .map_err(|e| format!("Failed to clear auto tag scores: {e}"))?;
-    Ok(())
-}
-
-/// Atomically saves the full tag list for an entry as a diff against the
-/// tags it shows, in one transaction:
-/// - a listed tag the entry already shows is left as it is;
-/// - a listed tag the entry does not show gets a yes vote;
-/// - a shown tag missing from the list gets a no vote, whether it was the
-///   user's or the analyzer's.
-///
-/// `seen_auto_tags` names the analyzer tags the editor was showing when the
-/// list was built. When it is `Some`, a missing analyzer tag only gets a no
-/// vote if it is in that list; one a background run added after the editor
-/// loaded is left alone. With `None`, every missing shown tag gets a no vote.
-pub fn set_entry_tags(
-    conn: &Connection,
-    entry_id: &str,
-    tags: &[String],
-    seen_auto_tags: Option<&[String]>,
-) -> Result<(), String> {
+/// Atomically replaces an entry's tags with `tags`, in one transaction, and
+/// sweeps tag rows no entry uses any more.
+pub fn set_entry_tags(conn: &Connection, entry_id: &str, tags: &[String]) -> Result<(), String> {
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("Failed to begin tag transaction: {e}"))?;
@@ -560,19 +460,15 @@ pub fn set_entry_tags(
     for tag_name in tags {
         wanted_ids.push(ensure_tag(conn, tag_name)?);
     }
-
-    let seen: Option<Vec<String>> =
-        seen_auto_tags.map(|names| names.iter().map(|n| n.trim().to_lowercase()).collect());
-
-    let stored = stored_tags(conn, entry_id)?;
-    for tag in stored.iter().filter(|t| t.shown && !wanted_ids.contains(&t.id)) {
-        let unseen_auto = tag.auto_only && seen.as_ref().is_some_and(|seen| !seen.contains(&tag.name));
-        if !unseen_auto {
-            set_vote(conn, entry_id, &tag.id, false)?;
-        }
-    }
+    let wanted = serde_json::to_string(&wanted_ids).map_err(|e| format!("Failed to encode tag ids: {e}"))?;
+    conn.execute(
+        "DELETE FROM library_entry_tags
+         WHERE library_entry_id = ?1 AND tag_id NOT IN (SELECT value FROM json_each(?2))",
+        params![entry_id, wanted],
+    )
+    .map_err(|e| format!("Failed to remove tags: {e}"))?;
     for tag_id in &wanted_ids {
-        add_user_tag(conn, entry_id, tag_id, &stored)?;
+        link_tag(conn, entry_id, tag_id)?;
     }
 
     sweep_orphan_tags(conn)?;
@@ -582,10 +478,7 @@ pub fn set_entry_tags(
 }
 
 /// Adds `add` to and removes `remove` from every entry in `entry_ids`, in
-/// one transaction, with the same rules as `set_entry_tags`: removing a tag
-/// the entry shows votes no (removing one it doesn't show does nothing), and
-/// adding a tag it doesn't show votes yes. Orphaned tag rows are swept at the
-/// end.
+/// one transaction. Orphaned tag rows are swept at the end.
 pub fn bulk_edit_entry_tags(
     conn: &Connection,
     entry_ids: &[String],
@@ -608,12 +501,11 @@ pub fn bulk_edit_entry_tags(
     }
 
     for entry_id in entry_ids {
-        for tag in stored_tags(conn, entry_id)?.iter().filter(|t| t.shown && remove_ids.contains(&t.id)) {
-            set_vote(conn, entry_id, &tag.id, false)?;
+        for tag_id in &remove_ids {
+            unlink_tag(conn, entry_id, tag_id)?;
         }
-        let stored = stored_tags(conn, entry_id)?;
         for tag_id in &add_ids {
-            add_user_tag(conn, entry_id, tag_id, &stored)?;
+            link_tag(conn, entry_id, tag_id)?;
         }
     }
 
@@ -624,295 +516,25 @@ pub fn bulk_edit_entry_tags(
     Ok(())
 }
 
-/// Returns the ids of the tags the entry shows only because of the analyzer.
-/// With `tags` set, only those names are considered; with `None`, all of them.
-fn auto_tag_ids(
-    conn: &Connection,
-    entry_id: &str,
-    tags: Option<&[String]>,
-) -> Result<Vec<String>, String> {
-    let wanted: Option<Vec<String>> =
-        tags.map(|names| names.iter().map(|n| n.trim().to_lowercase()).collect());
-    Ok(stored_tags(conn, entry_id)?
-        .into_iter()
-        .filter(|t| t.auto_only && wanted.as_ref().map_or(true, |w| w.contains(&t.name)))
-        .map(|t| t.id)
-        .collect())
-}
+// ─── Role ─────────────────────────────────────────────────────────────────────
 
-/// Votes yes on the entries' matching analyzer tags, which makes them the
-/// user's (and training examples). `tags: None` confirms every analyzer tag
-/// on the entries. The analyzer's scores stay.
-pub fn keep_auto_tags(
-    conn: &Connection,
-    entry_ids: &[String],
-    tags: Option<&[String]>,
-) -> Result<(), String> {
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| format!("Failed to begin keep transaction: {e}"))?;
-
-    for entry_id in entry_ids {
-        for tag_id in auto_tag_ids(conn, entry_id, tags)? {
-            set_vote(conn, entry_id, &tag_id, true)?;
-        }
-    }
-
-    tx.commit().map_err(|e| format!("Failed to commit keep transaction: {e}"))?;
-    Ok(())
-}
-
-/// Votes no on the entries' matching analyzer tags, so they are no longer
-/// shown. `tags: None` rejects every analyzer tag on the entries. Tags the
-/// user voted on are never touched.
-pub fn reject_auto_tags(
-    conn: &Connection,
-    entry_ids: &[String],
-    tags: Option<&[String]>,
-) -> Result<(), String> {
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| format!("Failed to begin reject transaction: {e}"))?;
-
-    for entry_id in entry_ids {
-        for tag_id in auto_tag_ids(conn, entry_id, tags)? {
-            set_vote(conn, entry_id, &tag_id, false)?;
-        }
-    }
-
-    tx.commit().map_err(|e| format!("Failed to commit reject transaction: {e}"))?;
-    Ok(())
-}
-
-/// Clears the user's vote (yes or no) on the named tags of every entry, so
-/// the analyzer's layer decides again. Rows the analyzer does not tag are
-/// deleted, and orphaned tag rows are swept.
-pub fn reset_entry_tag_votes(
-    conn: &Connection,
-    entry_ids: &[String],
-    tags: &[String],
-) -> Result<(), String> {
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| format!("Failed to begin vote reset transaction: {e}"))?;
-
-    let mut tag_ids = Vec::new();
-    for tag_name in tags {
-        if let Some(id) = tag_id_of(conn, tag_name)? {
-            tag_ids.push(id);
-        }
-    }
-    for entry_id in entry_ids {
-        for tag_id in &tag_ids {
-            clear_vote(conn, entry_id, tag_id)?;
-        }
-    }
-    sweep_orphan_tags(conn)?;
-
-    tx.commit().map_err(|e| format!("Failed to commit vote reset transaction: {e}"))?;
-    Ok(())
-}
-
-/// True if the user voted no on this tag on this entry.
-#[cfg(test)]
-pub fn is_rejected(conn: &Connection, entry_id: &str, tag_name: &str) -> Result<bool, String> {
-    let normalised = tag_name.trim().to_lowercase();
-    conn.query_row(
-        "SELECT EXISTS(
-             SELECT 1 FROM library_entry_tags lt
-             JOIN tags t ON t.id = lt.tag_id
-             WHERE lt.library_entry_id = ?1 AND t.name = ?2 AND lt.user_vote = 0)",
-        params![entry_id, normalised],
-        |row| row.get(0),
-    )
-    .map_err(|e| format!("Failed to check tag rejection: {e}"))
-}
-
-/// Replaces the analyzer layer of the entry's tags with `desired` and
-/// returns how many tags the entry now shows (added, removed) compared to
-/// before.
-///
-/// Only `auto_score` is written. A desired tag gets its score (creating the
-/// row if needed); a tag no longer desired loses it, and its row goes if the
-/// user has not voted on it. The user's votes are never read or changed, so
-/// a tag the user voted on is scored like any other.
-///
-/// The counts are changes to what the entry shows, which here is cheap: a
-/// new row (nothing was there) is an addition and a deleted row (the
-/// analyzer's tag with no vote) is a removal. Scoring a tag the user voted on
-/// changes nothing shown, so it is not counted.
-///
-/// This does not open its own transaction and must be called inside one. It
-/// does not sweep orphaned tag rows; the caller runs `sweep_orphan_tags`
-/// once after its last call.
-pub fn apply_auto_tags(
-    conn: &Connection,
-    entry_id: &str,
-    desired: &[AutoTag],
-) -> Result<(u32, u32), String> {
-    let mut keep: Vec<(String, f64)> = Vec::new();
-    for wanted in desired {
-        let tag_id = ensure_tag(conn, &wanted.tag)?;
-        if !keep.iter().any(|(id, _)| *id == tag_id) {
-            keep.push((tag_id, wanted.score));
-        }
-    }
-
-    // (tag id, has a vote) for every row the analyzer currently tags.
-    let scored: Vec<(String, bool)> = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT tag_id, user_vote IS NOT NULL FROM library_entry_tags
-                 WHERE library_entry_id = ?1 AND auto_score IS NOT NULL",
-            )
-            .map_err(|e| format!("Failed to prepare auto tag query: {e}"))?;
-        let rows = stmt
-            .query_map(params![entry_id], |row| Ok((row.get(0)?, row.get(1)?)))
-            .map_err(|e| format!("Failed to query auto tags: {e}"))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("Failed to collect auto tags: {e}"))?;
-        rows
-    };
-
-    let mut removed = 0;
-    for (tag_id, voted) in &scored {
-        if keep.iter().any(|(id, _)| id == tag_id) {
-            continue;
-        }
-        if *voted {
-            conn.execute(
-                "UPDATE library_entry_tags SET auto_score = NULL
-                 WHERE library_entry_id = ?1 AND tag_id = ?2",
-                params![entry_id, tag_id],
-            )
-            .map_err(|e| format!("Failed to clear auto tag score: {e}"))?;
-        } else {
-            conn.execute(
-                "DELETE FROM library_entry_tags WHERE library_entry_id = ?1 AND tag_id = ?2",
-                params![entry_id, tag_id],
-            )
-            .map_err(|e| format!("Failed to remove auto tag: {e}"))?;
-            removed += 1;
-        }
-    }
-
-    let mut added = 0;
-    for (tag_id, score) in &keep {
-        let updated = conn
-            .execute(
-                "UPDATE library_entry_tags SET auto_score = ?3
-                 WHERE library_entry_id = ?1 AND tag_id = ?2",
-                params![entry_id, tag_id, score],
-            )
-            .map_err(|e| format!("Failed to update auto tag score: {e}"))?;
-        if updated == 0 {
-            conn.execute(
-                "INSERT INTO library_entry_tags (library_entry_id, tag_id, auto_score)
-                 VALUES (?1, ?2, ?3)",
-                params![entry_id, tag_id, score],
-            )
-            .map_err(|e| format!("Failed to add auto tag: {e}"))?;
-            added += 1;
-        }
-    }
-
-    Ok((added, removed))
-}
-
-// ─── Role layers ──────────────────────────────────────────────────────────────
-
-/// A facet stored on `library_entries` as an analyzer layer (`<name>_auto`,
-/// `<name>_auto_score`) and a user layer (`<name>_user`). Column names come
-/// from this closed enum, never from caller-supplied text.
-#[derive(Clone, Copy)]
-enum Facet {
-    Role,
-}
-
-impl Facet {
-    fn name(self) -> &'static str {
-        match self {
-            Facet::Role => "role",
-        }
-    }
-}
-
-/// Sets the user layer of a facet on each entry. `None` clears it, so the
-/// analyzer's value shows.
-fn set_user_facet(
-    conn: &Connection,
-    facet: Facet,
-    entry_ids: &[String],
-    value: Option<&str>,
-) -> Result<(), String> {
-    let name = facet.name();
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| format!("Failed to begin {name} transaction: {e}"))?;
-    let sql = format!("UPDATE library_entries SET {name}_user = ?2 WHERE id = ?1");
-    for entry_id in entry_ids {
-        conn.execute(&sql, params![entry_id, value])
-            .map_err(|e| format!("Failed to set {name}: {e}"))?;
-    }
-    tx.commit().map_err(|e| format!("Failed to commit {name} transaction: {e}"))?;
-    Ok(())
-}
-
-/// Writes the analyzer layer of a facet and returns whether it changed.
-/// `Some` stores the value with `score`; `None` clears value and score. The
-/// user layer is never read or written. Opens no transaction of its own.
-fn apply_auto_facet(
-    conn: &Connection,
-    facet: Facet,
-    entry_id: &str,
-    value: Option<&str>,
-    score: f64,
-) -> Result<bool, String> {
-    let name = facet.name();
-    let current: Option<(Option<String>, Option<f64>)> = conn
-        .query_row(
-            &format!("SELECT {name}_auto, {name}_auto_score FROM library_entries WHERE id = ?1"),
-            params![entry_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(|e| format!("Failed to read {name}: {e}"))?;
-    let Some((current_value, current_score)) = current else {
-        return Ok(false);
-    };
-
-    let new_score = value.map(|_| score);
-    if current_value.as_deref() == value && current_score == new_score {
-        return Ok(false);
-    }
-    conn.execute(
-        &format!("UPDATE library_entries SET {name}_auto = ?2, {name}_auto_score = ?3 WHERE id = ?1"),
-        params![entry_id, value, new_score],
-    )
-    .map_err(|e| format!("Failed to write auto {name}: {e}"))?;
-    Ok(true)
-}
-
-/// Sets the user's role on each entry. `None` clears it, so the analyzer's
-/// role (if any) shows.
+/// Sets the user's role on each entry. `None` clears it, so the entry shows
+/// the default, Non-combat.
 pub fn set_user_role(
     conn: &Connection,
     entry_ids: &[String],
     role: Option<Role>,
 ) -> Result<(), String> {
-    set_user_facet(conn, Facet::Role, entry_ids, role.map(|r| r.as_db_str()))
-}
-
-/// Writes the analyzer's role for an entry and returns whether it changed.
-/// `Some(role)` stores it with `score` (the Combat probability); `None`
-/// clears it. The user's role is never read or written.
-pub fn apply_auto_role(
-    conn: &Connection,
-    entry_id: &str,
-    role: Option<Role>,
-    score: f64,
-) -> Result<bool, String> {
-    apply_auto_facet(conn, Facet::Role, entry_id, role.map(|r| r.as_db_str()), score)
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin role transaction: {e}"))?;
+    let value = role.map(|r| r.as_db_str());
+    for entry_id in entry_ids {
+        conn.execute("UPDATE library_entries SET role_user = ?2 WHERE id = ?1", params![entry_id, value])
+            .map_err(|e| format!("Failed to set role: {e}"))?;
+    }
+    tx.commit().map_err(|e| format!("Failed to commit role transaction: {e}"))?;
+    Ok(())
 }
 
 /// The level a user may set, snapped exactly onto `MOOD_LEVELS` (a value
@@ -1097,10 +719,10 @@ pub fn reset_mood_vocabulary(conn: &Connection) -> Result<(), String> {
 }
 
 /// Clears what the analyzer said about moods, for Recalibrate, in one
-/// transaction: the calibration, every `auto_score` (rows left with no level
-/// go), and every entry's stored scores (`scores_json`), so the next run
-/// takes a new calibration from the current prompts and scores everything
-/// again. User-set levels and review times are untouched.
+/// transaction: the calibration and every `auto_score` (rows left with no
+/// level go), so the next run takes a new calibration from the current
+/// prompts and scores everything again. User-set levels and review times are
+/// untouched.
 pub fn clear_mood_analysis(conn: &Connection) -> Result<(), String> {
     let tx = conn
         .unchecked_transaction()
@@ -1108,15 +730,14 @@ pub fn clear_mood_analysis(conn: &Connection) -> Result<(), String> {
     settings::clear_mood_calibration(conn)?;
     conn.execute_batch(
         "UPDATE library_entry_moods SET auto_score = NULL;
-         DELETE FROM library_entry_moods WHERE user_level IS NULL;
-         UPDATE entry_analysis SET scores_json = NULL;",
+         DELETE FROM library_entry_moods WHERE user_level IS NULL;",
     )
     .map_err(|e| format!("Failed to clear mood scores: {e}"))?;
     tx.commit().map_err(|e| format!("Failed to commit recalibrate transaction: {e}"))?;
     Ok(())
 }
 
-// Returns the names of the tags the given library entry shows, sorted.
+// Returns the names of the given library entry's tags, sorted.
 #[cfg(test)]
 pub fn get_tags_for_entry(
     conn: &Connection,
@@ -1124,13 +745,11 @@ pub fn get_tags_for_entry(
 ) -> Result<Vec<String>, String> {
     let mut stmt = conn
         .prepare(
-            &format!(
-                "SELECT t.name
-                 FROM tags t
-                 JOIN library_entry_tags lt ON lt.tag_id = t.id
-                 WHERE lt.library_entry_id = ?1 AND {SHOWN}
-                 ORDER BY t.name ASC"
-            ),
+            "SELECT t.name
+             FROM tags t
+             JOIN library_entry_tags lt ON lt.tag_id = t.id
+             WHERE lt.library_entry_id = ?1
+             ORDER BY t.name ASC",
         )
         .map_err(|e| format!("Failed to prepare get_tags_for_entry: {e}"))?;
 
@@ -1143,16 +762,14 @@ pub fn get_tags_for_entry(
     Ok(names)
 }
 
-/// Returns all tag names that at least one library entry shows, sorted. A
-/// tag that is only voted no on is not listed.
+/// Returns all tag names that at least one library entry has, sorted.
 pub fn list_all_tags(conn: &Connection) -> Result<Vec<String>, String> {
     let mut stmt = conn
-        .prepare(&format!(
+        .prepare(
             "SELECT DISTINCT t.name FROM tags t
              JOIN library_entry_tags lt ON lt.tag_id = t.id
-             WHERE {SHOWN}
-             ORDER BY t.name ASC"
-        ))
+             ORDER BY t.name ASC",
+        )
         .map_err(|e| format!("Failed to prepare list_all_tags: {e}"))?;
 
     let names = stmt
@@ -1538,18 +1155,20 @@ mod tests {
         // A tag row nothing references, as a crash between writes could leave.
         ensure_tag(&conn, "stray").unwrap();
 
-        set_entry_tags(&conn, &e, &["kept".to_string(), "new".to_string()], None).unwrap();
+        set_entry_tags(&conn, &e, &["kept".to_string(), "new".to_string()]).unwrap();
 
         assert_eq!(get_tags_for_entry(&conn, &e).unwrap(), vec!["kept", "new"]);
-        // "old-only" now holds the user's no vote, so its tag row stays but
-        // is no longer offered as a library tag.
-        assert!(is_rejected(&conn, &e, "old-only").unwrap());
         assert_eq!(list_all_tags(&conn).unwrap(), vec!["kept", "new"]);
-        // A tag nothing references is swept.
-        let orphan: i64 = conn
-            .query_row("SELECT COUNT(*) FROM tags WHERE name = 'stray'", [], |r| r.get(0))
+        // Tags nothing references any more are swept, "old-only" included.
+        let orphans: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tags WHERE name IN ('stray', 'old-only')", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(orphan, 0);
+        assert_eq!(orphans, 0);
+
+        // An empty list removes every tag.
+        set_entry_tags(&conn, &e, &[]).unwrap();
+        assert!(get_tags_for_entry(&conn, &e).unwrap().is_empty());
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tags"), 0);
     }
 
     #[test]
@@ -1562,9 +1181,9 @@ mod tests {
         let c = insert_library_entry(&conn, "/tmp/c.mp3", None, "C", None, None, None, "music")
             .expect("insert c");
 
-        set_entry_tags(&conn, &a, &["combat".into(), "night".into()], None).expect("tag a");
-        set_entry_tags(&conn, &b, &["night".into()], None).expect("tag b");
-        set_entry_tags(&conn, &c, &["night".into()], None).expect("tag c");
+        set_entry_tags(&conn, &a, &["combat".into(), "night".into()]).expect("tag a");
+        set_entry_tags(&conn, &b, &["night".into()]).expect("tag b");
+        set_entry_tags(&conn, &c, &["night".into()]).expect("tag c");
 
         // Add "boss" and remove "night" from a and b only; c is untouched.
         bulk_edit_entry_tags(
@@ -1579,56 +1198,13 @@ mod tests {
         assert_eq!(get_tags_for_entry(&conn, &b).unwrap(), vec!["boss"]);
         assert_eq!(get_tags_for_entry(&conn, &c).unwrap(), vec!["night"]);
 
-        // Removing a tag everywhere leaves no votes for it in the library tag list.
+        // Removing a tag everywhere drops it from the library tag list.
         bulk_edit_entry_tags(&conn, std::slice::from_ref(&c), &[], &["night".into()]).expect("bulk remove");
         assert_eq!(list_all_tags(&conn).unwrap(), vec!["boss", "combat"]);
     }
 
-    // ── Tag layers ────────────────────────────────────────────────────────────
-
     fn new_entry(conn: &Connection, path: &str) -> String {
         insert_library_entry(conn, path, None, "T", None, None, None, "music").unwrap()
-    }
-
-    /// Gives `tag` on `entry` the analyzer score `score`, as a run would.
-    fn add_auto(conn: &Connection, entry: &str, tag: &str, score: f64) {
-        let tag_id = ensure_tag(conn, tag).unwrap();
-        conn.execute(
-            "INSERT INTO library_entry_tags (library_entry_id, tag_id, auto_score) VALUES (?1, ?2, ?3)
-             ON CONFLICT (library_entry_id, tag_id) DO UPDATE SET auto_score = excluded.auto_score",
-            params![entry, tag_id, score],
-        )
-        .unwrap();
-    }
-
-    /// (auto_score, user_vote) of a stored tag row, or None if absent.
-    type TagRow = (Option<f64>, Option<i64>);
-
-    fn row_of(conn: &Connection, entry: &str, tag: &str) -> Option<TagRow> {
-        conn.query_row(
-            "SELECT lt.auto_score, lt.user_vote FROM library_entry_tags lt
-             JOIN tags t ON t.id = lt.tag_id
-             WHERE lt.library_entry_id = ?1 AND t.name = ?2",
-            params![entry, tag],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
-        .unwrap()
-    }
-
-    /// The analyzer's tag with this score and no vote.
-    fn auto_row(score: f64) -> Option<TagRow> {
-        Some((Some(score), None))
-    }
-
-    /// A yes vote with no analyzer score.
-    fn yes() -> Option<TagRow> {
-        Some((None, Some(1)))
-    }
-
-    /// A no vote with no analyzer score.
-    fn no() -> Option<TagRow> {
-        Some((None, Some(0)))
     }
 
     fn count(conn: &Connection, sql: &str) -> i64 {
@@ -1636,347 +1212,51 @@ mod tests {
     }
 
     #[test]
-    fn type_change_from_music_drops_the_analyzer_layer() {
+    fn type_change_keeps_tags() {
         let conn = open_memory_db();
         let e = new_entry(&conn, "/a.mp3");
-        add_auto(&conn, &e, "brass", 0.8);
-        add_auto(&conn, &e, "dark", 0.7);
-        add_auto(&conn, &e, "folk", 0.6);
         add_tag_to_entry(&conn, &e, "night").unwrap();
-        reject_auto_tags(&conn, std::slice::from_ref(&e), Some(&["dark".to_string()])).unwrap();
-        keep_auto_tags(&conn, std::slice::from_ref(&e), Some(&["folk".to_string()])).unwrap();
 
         assert!(!update_library_entry_type(&conn, &e, "ambiance").unwrap());
-
-        // The unvoted analyzer tag goes; the votes stay without scores.
-        assert_eq!(row_of(&conn, &e, "brass"), None);
-        assert_eq!(row_of(&conn, &e, "dark"), no());
-        assert_eq!(row_of(&conn, &e, "folk"), yes());
-        assert_eq!(row_of(&conn, &e, "night"), yes());
-        // "brass" is used by nothing and is swept; the no vote keeps "dark".
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tags"), 3);
-    }
-
-    #[test]
-    fn type_change_to_music_reports_it_and_keeps_tags() {
-        let conn = open_memory_db();
-        let e = new_entry(&conn, "/a.mp3");
-        update_library_entry_type(&conn, &e, "ambiance").unwrap();
+        assert_eq!(get_tags_for_entry(&conn, &e).unwrap(), vec!["night"]);
         assert!(update_library_entry_type(&conn, &e, "music").unwrap());
-    }
-
-    #[test]
-    fn music_to_music_type_change_keeps_auto_tags() {
-        let conn = open_memory_db();
-        let e = new_entry(&conn, "/a.mp3");
-        add_auto(&conn, &e, "brass", 0.8);
-
-        assert!(!update_library_entry_type(&conn, &e, "music").unwrap());
-
-        assert_eq!(row_of(&conn, &e, "brass"), auto_row(0.8));
-    }
-
-    #[test]
-    fn set_tags_keeps_shown_auto_tags_as_they_are() {
-        let conn = open_memory_db();
-        let e = new_entry(&conn, "/a.mp3");
-        add_auto(&conn, &e, "brass", 0.8);
-        set_entry_tags(&conn, &e, &["brass".into(), "night".into()], None).unwrap();
-        assert_eq!(row_of(&conn, &e, "brass"), auto_row(0.8));
-        assert_eq!(row_of(&conn, &e, "night"), yes());
-    }
-
-    #[test]
-    fn set_tags_missing_auto_votes_no_and_keeps_the_score() {
-        let conn = open_memory_db();
-        let e = new_entry(&conn, "/a.mp3");
-        add_auto(&conn, &e, "brass", 0.8);
-        set_entry_tags(&conn, &e, &[], None).unwrap();
-        assert_eq!(row_of(&conn, &e, "brass"), Some((Some(0.8), Some(0))));
-        assert!(is_rejected(&conn, &e, "brass").unwrap());
-        assert!(get_tags_for_entry(&conn, &e).unwrap().is_empty());
-    }
-
-    #[test]
-    fn set_tags_only_rejects_seen_auto_tags() {
-        let conn = open_memory_db();
-        let e = new_entry(&conn, "/a.mp3");
-        add_auto(&conn, &e, "brass", 0.8);
-        // Added by a run after the editor loaded the entry, so not in `seen`.
-        add_auto(&conn, &e, "dark", 0.7);
-        add_tag_to_entry(&conn, &e, "night").unwrap();
-
-        let seen = vec![" Brass".to_string()];
-        set_entry_tags(&conn, &e, &[], Some(&seen)).unwrap();
-
-        assert!(is_rejected(&conn, &e, "brass").unwrap());
-        assert_eq!(row_of(&conn, &e, "dark"), auto_row(0.7));
-        assert!(!is_rejected(&conn, &e, "dark").unwrap());
-        assert_eq!(row_of(&conn, &e, "night"), no(), "user tags are voted no too");
-    }
-
-    #[test]
-    fn set_tags_missing_user_tag_votes_no() {
-        let conn = open_memory_db();
-        let e = new_entry(&conn, "/a.mp3");
-        add_tag_to_entry(&conn, &e, "night").unwrap();
-        set_entry_tags(&conn, &e, &[], None).unwrap();
-        assert_eq!(row_of(&conn, &e, "night"), no());
-        assert!(is_rejected(&conn, &e, "night").unwrap());
-
-        // A later analyzer score does not bring it back.
-        add_auto(&conn, &e, "night", 0.9);
-        assert!(get_tags_for_entry(&conn, &e).unwrap().is_empty());
-    }
-
-    #[test]
-    fn user_add_overrides_a_no_vote() {
-        let conn = open_memory_db();
-        let e = new_entry(&conn, "/a.mp3");
-        add_auto(&conn, &e, "brass", 0.8);
-        set_entry_tags(&conn, &e, &[], None).unwrap();
-        assert!(is_rejected(&conn, &e, "brass").unwrap());
-
-        set_entry_tags(&conn, &e, &["brass".into()], None).unwrap();
-        assert_eq!(row_of(&conn, &e, "brass"), Some((Some(0.8), Some(1))));
-        assert!(!is_rejected(&conn, &e, "brass").unwrap());
-
-        // Same rule for bulk add.
-        let f = new_entry(&conn, "/b.mp3");
-        add_auto(&conn, &f, "drums", 0.7);
-        bulk_edit_entry_tags(&conn, std::slice::from_ref(&f), &[], &["drums".into()]).unwrap();
-        assert!(is_rejected(&conn, &f, "drums").unwrap());
-        bulk_edit_entry_tags(&conn, std::slice::from_ref(&f), &["drums".into()], &[]).unwrap();
-        assert_eq!(row_of(&conn, &f, "drums"), Some((Some(0.7), Some(1))));
-    }
-
-    #[test]
-    fn bulk_remove_votes_no_on_shown_tags_only() {
-        let conn = open_memory_db();
-        let a = new_entry(&conn, "/a.mp3");
-        let b = new_entry(&conn, "/b.mp3");
-        let c = new_entry(&conn, "/c.mp3");
-        add_auto(&conn, &a, "brass", 0.8);
-        add_tag_to_entry(&conn, &b, "brass").unwrap();
-        add_tag_to_entry(&conn, &c, "night").unwrap();
-        bulk_edit_entry_tags(&conn, &[a.clone(), b.clone(), c.clone()], &[], &["brass".into()]).unwrap();
-        assert_eq!(row_of(&conn, &a, "brass"), Some((Some(0.8), Some(0))));
-        assert_eq!(row_of(&conn, &b, "brass"), no());
-        // c never showed the tag, so it gets no vote.
-        assert_eq!(row_of(&conn, &c, "brass"), None);
-    }
-
-    #[test]
-    fn bulk_add_existing_auto_stays_auto() {
-        let conn = open_memory_db();
-        let a = new_entry(&conn, "/a.mp3");
-        add_auto(&conn, &a, "brass", 0.8);
-        bulk_edit_entry_tags(&conn, std::slice::from_ref(&a), &["brass".into()], &[]).unwrap();
-        assert_eq!(row_of(&conn, &a, "brass"), auto_row(0.8));
-    }
-
-    #[test]
-    fn keep_votes_yes_and_keeps_the_score() {
-        let conn = open_memory_db();
-        let e = new_entry(&conn, "/a.mp3");
-        add_auto(&conn, &e, "brass", 0.8);
-        add_auto(&conn, &e, "drums", 0.7);
-
-        keep_auto_tags(&conn, std::slice::from_ref(&e), Some(&["brass".to_string()])).unwrap();
-        assert_eq!(row_of(&conn, &e, "brass"), Some((Some(0.8), Some(1))));
-        assert_eq!(row_of(&conn, &e, "drums"), auto_row(0.7));
-
-        keep_auto_tags(&conn, std::slice::from_ref(&e), None).unwrap();
-        assert_eq!(row_of(&conn, &e, "drums"), Some((Some(0.7), Some(1))));
-    }
-
-    #[test]
-    fn reject_auto_tags_votes_no_on_analyzer_tags_only() {
-        let conn = open_memory_db();
-        let e = new_entry(&conn, "/a.mp3");
-        add_auto(&conn, &e, "brass", 0.8);
-        add_auto(&conn, &e, "drums", 0.7);
-        add_tag_to_entry(&conn, &e, "night").unwrap();
-
-        reject_auto_tags(&conn, std::slice::from_ref(&e), Some(&["brass".to_string()])).unwrap();
-        assert_eq!(row_of(&conn, &e, "brass"), Some((Some(0.8), Some(0))));
-        assert_eq!(row_of(&conn, &e, "drums"), auto_row(0.7));
-
-        reject_auto_tags(&conn, std::slice::from_ref(&e), None).unwrap();
-        assert!(is_rejected(&conn, &e, "drums").unwrap());
-        // The user's own tags are not analyzer tags, so they are untouched.
-        assert_eq!(row_of(&conn, &e, "night"), yes());
         assert_eq!(get_tags_for_entry(&conn, &e).unwrap(), vec!["night"]);
     }
 
     #[test]
-    fn reset_votes_returns_tags_to_the_analyzer() {
+    fn bulk_remove_only_touches_entries_with_the_tag() {
         let conn = open_memory_db();
-        let e = new_entry(&conn, "/a.mp3");
-        let f = new_entry(&conn, "/b.mp3");
-        add_auto(&conn, &e, "brass", 0.8);
-        add_tag_to_entry(&conn, &e, "night").unwrap();
-        add_tag_to_entry(&conn, &e, "folk").unwrap();
-        reject_auto_tags(&conn, std::slice::from_ref(&e), None).unwrap();
-        set_entry_tags(&conn, &e, &["folk".into()], None).unwrap();
-        add_tag_to_entry(&conn, &f, "night").unwrap();
-        assert_eq!(row_of(&conn, &e, "night"), no());
-
-        reset_entry_tag_votes(&conn, std::slice::from_ref(&e), &["Brass".into(), "night".into(), "missing".into()])
-            .unwrap();
-
-        // The analyzer's tag shows again; the vote-only row is gone.
-        assert_eq!(row_of(&conn, &e, "brass"), auto_row(0.8));
-        assert_eq!(row_of(&conn, &e, "night"), None);
-        // Other tags and other entries are untouched.
-        assert_eq!(row_of(&conn, &e, "folk"), yes());
-        assert_eq!(row_of(&conn, &f, "night"), yes());
-
-        // A tag nothing references any more is swept.
-        reset_entry_tag_votes(&conn, std::slice::from_ref(&e), &["folk".into()]).unwrap();
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tags WHERE name = 'folk'"), 0);
-    }
-
-    fn auto(tag: &str, score: f64) -> crate::models::AutoTag {
-        crate::models::AutoTag { tag: tag.into(), score }
-    }
-
-    #[test]
-    fn apply_auto_scores_voted_tags_without_touching_votes() {
-        let conn = open_memory_db();
-        let e = new_entry(&conn, "/a.mp3");
-        add_tag_to_entry(&conn, &e, "night").unwrap();
-        add_auto(&conn, &e, "drums", 0.7);
-        reject_auto_tags(&conn, std::slice::from_ref(&e), None).unwrap();
-
-        let (added, removed) = apply_auto_tags(
-            &conn,
-            &e,
-            &[auto("night", 0.9), auto("drums", 0.95), auto("brass", 0.8)],
-        )
-        .unwrap();
-        // Only brass changes what the entry shows.
-        assert_eq!((added, removed), (1, 0));
-        assert_eq!(row_of(&conn, &e, "night"), Some((Some(0.9), Some(1))));
-        assert_eq!(row_of(&conn, &e, "drums"), Some((Some(0.95), Some(0))));
-        assert_eq!(row_of(&conn, &e, "brass"), auto_row(0.8));
-
-        // An empty desired set drops every score but keeps the votes.
-        let (added, removed) = apply_auto_tags(&conn, &e, &[]).unwrap();
-        assert_eq!((added, removed), (0, 1));
-        assert_eq!(row_of(&conn, &e, "night"), yes());
-        assert_eq!(row_of(&conn, &e, "drums"), no());
-        assert_eq!(row_of(&conn, &e, "brass"), None);
-    }
-
-    #[test]
-    fn apply_auto_replaces_previous_auto_set() {
-        let conn = open_memory_db();
-        let e = new_entry(&conn, "/a.mp3");
-        add_auto(&conn, &e, "old", 0.6);
-        add_auto(&conn, &e, "same", 0.6);
-
-        let (added, removed) =
-            apply_auto_tags(&conn, &e, &[auto("same", 0.9), auto("fresh", 0.8), auto("fresh", 0.1)])
-                .unwrap();
-        assert_eq!((added, removed), (1, 1));
-        assert_eq!(row_of(&conn, &e, "old"), None);
-        // A kept name gets its new score; a repeated name counts once.
-        assert_eq!(row_of(&conn, &e, "same"), auto_row(0.9));
-        assert_eq!(row_of(&conn, &e, "fresh"), auto_row(0.8));
-        assert!(!is_rejected(&conn, &e, "old").unwrap());
-        sweep_orphan_tags(&conn).unwrap();
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tags WHERE name = 'old'"), 0);
-    }
-
-    #[test]
-    fn removing_a_tag_leaves_the_other_auto_tags() {
-        let conn = open_memory_db();
-
-        // Rejecting one analyzer tag rejects only that tag.
-        let e = new_entry(&conn, "/a.mp3");
-        add_auto(&conn, &e, "encounter", 0.9);
-        add_auto(&conn, &e, "brass", 0.8);
-        reject_auto_tags(&conn, std::slice::from_ref(&e), Some(&["Encounter".to_string()])).unwrap();
-        assert!(is_rejected(&conn, &e, "encounter").unwrap());
-        assert_eq!(row_of(&conn, &e, "brass"), auto_row(0.8));
-
-        // A full-list save that drops a user tag keeps the listed auto tags.
-        let a = new_entry(&conn, "/b.mp3");
-        add_tag_to_entry(&conn, &a, "encounter").unwrap();
-        add_auto(&conn, &a, "brass", 0.8);
-        set_entry_tags(&conn, &a, &["brass".into()], None).unwrap();
-        assert_eq!(row_of(&conn, &a, "encounter"), no());
-        assert_eq!(row_of(&conn, &a, "brass"), auto_row(0.8));
-
-        // A bulk remove of a user tag keeps the auto tags.
-        let b = new_entry(&conn, "/c.mp3");
-        add_tag_to_entry(&conn, &b, "encounter").unwrap();
-        add_auto(&conn, &b, "brass", 0.8);
-        bulk_edit_entry_tags(&conn, std::slice::from_ref(&b), &[], &["encounter".into()]).unwrap();
-        assert_eq!(row_of(&conn, &b, "encounter"), no());
-        assert_eq!(row_of(&conn, &b, "brass"), auto_row(0.8));
-    }
-
-    #[test]
-    fn no_vote_survives_orphan_sweep() {
-        let conn = open_memory_db();
-        let e = new_entry(&conn, "/a.mp3");
-        add_tag_to_entry(&conn, &e, "x").unwrap();
-        set_entry_tags(&conn, &e, &[], None).unwrap();
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tags WHERE name = 'x'"), 1);
-        // A tag only voted no on is not offered as a library tag.
-        assert!(list_all_tags(&conn).unwrap().is_empty());
-    }
-
-    #[test]
-    fn tag_rows_need_a_layer_and_a_valid_vote() {
-        let conn = open_memory_db();
-        let e = new_entry(&conn, "/a.mp3");
-        let t = ensure_tag(&conn, "x").unwrap();
-        let insert = |score: Option<f64>, vote: Option<i64>| {
-            conn.execute(
-                "INSERT OR REPLACE INTO library_entry_tags (library_entry_id, tag_id, auto_score, user_vote)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![e, t, score, vote],
-            )
-        };
-        assert!(insert(None, None).is_err());
-        assert!(insert(None, Some(2)).is_err());
-        assert!(insert(Some(0.5), None).is_ok());
-        assert!(insert(None, Some(0)).is_ok());
+        let a = new_entry(&conn, "/a.mp3");
+        let b = new_entry(&conn, "/b.mp3");
+        add_tag_to_entry(&conn, &a, "brass").unwrap();
+        add_tag_to_entry(&conn, &b, "night").unwrap();
+        bulk_edit_entry_tags(&conn, &[a.clone(), b.clone()], &[], &["Brass ".into(), "missing".into()]).unwrap();
+        assert!(get_tags_for_entry(&conn, &a).unwrap().is_empty());
+        assert_eq!(get_tags_for_entry(&conn, &b).unwrap(), vec!["night"]);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tags WHERE name = 'brass'"), 0);
+        // Adding a tag an entry already has changes nothing.
+        bulk_edit_entry_tags(&conn, std::slice::from_ref(&b), &["night".into()], &[]).unwrap();
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM library_entry_tags"), 1);
     }
 
     #[test]
     fn delete_entry_cascades_tag_rows() {
         let conn = open_memory_db();
         let e = new_entry(&conn, "/a.mp3");
-        add_auto(&conn, &e, "x", 0.8);
-        reject_auto_tags(&conn, std::slice::from_ref(&e), None).unwrap();
+        add_tag_to_entry(&conn, &e, "x").unwrap();
         conn.execute("DELETE FROM library_entries WHERE id = ?1", params![e]).unwrap();
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM library_entry_tags"), 0);
     }
 
-    // ── Role facet ────────────────────────────────────────────────────────────
+    // ── Role ──────────────────────────────────────────────────────────────────
 
-    /// (auto, auto score, user) of a facet as stored.
-    type FacetRow = (Option<String>, Option<f64>, Option<String>);
-
-    fn role_row(conn: &Connection, id: &str) -> FacetRow {
-        conn.query_row(
-            "SELECT role_auto, role_auto_score, role_user FROM library_entries WHERE id = ?1",
-            params![id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .unwrap()
+    fn role_user(conn: &Connection, id: &str) -> Option<String> {
+        conn.query_row("SELECT role_user FROM library_entries WHERE id = ?1", params![id], |r| r.get(0))
+            .unwrap()
     }
 
     fn music_entry(conn: &Connection, path: &str) -> String {
         insert_library_entry(conn, path, None, "T", None, None, None, "music").unwrap()
-    }
-
-    fn s(v: &str) -> Option<String> {
-        Some(v.to_string())
     }
 
     #[test]
@@ -1984,60 +1264,25 @@ mod tests {
         let conn = open_memory_db();
         let a = music_entry(&conn, "/a.mp3");
         let b = music_entry(&conn, "/b.mp3");
-        apply_auto_role(&conn, &a, Some(Role::Combat), 0.8).unwrap();
 
-        set_user_role(&conn, &[a.clone(), b.clone()], Some(Role::NonCombat)).unwrap();
-        assert_eq!(role_row(&conn, &a), (s("combat"), Some(0.8), s("non_combat")));
-        assert_eq!(role_row(&conn, &b), (None, None, s("non_combat")));
+        set_user_role(&conn, &[a.clone(), b.clone()], Some(Role::Combat)).unwrap();
+        assert_eq!(role_user(&conn, &a).as_deref(), Some("combat"));
+        assert_eq!(role_user(&conn, &b).as_deref(), Some("combat"));
 
-        // Clearing is "use auto": only the user layer goes.
         set_user_role(&conn, std::slice::from_ref(&a), None).unwrap();
-        assert_eq!(role_row(&conn, &a), (s("combat"), Some(0.8), None));
-        assert_eq!(role_row(&conn, &b).2, s("non_combat"));
+        assert_eq!(role_user(&conn, &a), None);
+        assert_eq!(role_user(&conn, &b).as_deref(), Some("combat"));
     }
 
     #[test]
-    fn apply_auto_role_writes_the_auto_layer_even_when_user_set() {
+    fn leaving_music_clears_the_role() {
         let conn = open_memory_db();
         let a = music_entry(&conn, "/a.mp3");
-        set_user_role(&conn, std::slice::from_ref(&a), Some(Role::NonCombat)).unwrap();
-
-        assert!(apply_auto_role(&conn, &a, Some(Role::Combat), 0.99).unwrap());
-        assert_eq!(role_row(&conn, &a), (s("combat"), Some(0.99), s("non_combat")));
-        assert!(apply_auto_role(&conn, &a, None, 0.1).unwrap());
-        assert_eq!(role_row(&conn, &a), (None, None, s("non_combat")));
-    }
-
-    #[test]
-    fn apply_auto_role_reports_change() {
-        let conn = open_memory_db();
-        let a = music_entry(&conn, "/a.mp3");
-
-        assert!(apply_auto_role(&conn, &a, Some(Role::Combat), 0.8).unwrap());
-        assert_eq!(role_row(&conn, &a), (s("combat"), Some(0.8), None));
-
-        // Same value again changes nothing; a new score does.
-        assert!(!apply_auto_role(&conn, &a, Some(Role::Combat), 0.8).unwrap());
-        assert!(apply_auto_role(&conn, &a, Some(Role::Combat), 0.7).unwrap());
-
-        assert!(apply_auto_role(&conn, &a, None, 0.5).unwrap());
-        assert_eq!(role_row(&conn, &a), (None, None, None));
-        // Nothing left to clear.
-        assert!(!apply_auto_role(&conn, &a, None, 0.5).unwrap());
-        // A missing entry is no change.
-        assert!(!apply_auto_role(&conn, "nope", Some(Role::Combat), 0.5).unwrap());
-    }
-
-    #[test]
-    fn leaving_music_clears_both_role_layers() {
-        let conn = open_memory_db();
-        let a = music_entry(&conn, "/a.mp3");
-        apply_auto_role(&conn, &a, Some(Role::Combat), 0.8).unwrap();
         set_user_role(&conn, std::slice::from_ref(&a), Some(Role::NonCombat)).unwrap();
 
         update_library_entry_type(&conn, &a, "ambiance").unwrap();
 
-        assert_eq!(role_row(&conn, &a), (None, None, None));
+        assert_eq!(role_user(&conn, &a), None);
     }
 
     // ── Moods ─────────────────────────────────────────────────────────────────
@@ -2282,11 +1527,8 @@ mod tests {
         apply_auto_moods(&conn, &a, &all_moods(0.5)).unwrap();
         set_user_mood_level(&conn, std::slice::from_ref(&a), "grim", Some(0.25)).unwrap();
         let reviewed = reviewed_at(&conn, &a);
-        conn.execute(
-            "INSERT INTO entry_analysis (library_entry_id, status, scores_json) VALUES (?1, 'embedded', '{}')",
-            params![a],
-        )
-        .unwrap();
+        conn.execute("INSERT INTO entry_analysis (library_entry_id, status) VALUES (?1, 'embedded')", params![a])
+            .unwrap();
         settings::save_mood_calibration(
             &conn,
             &MoodCalibration { calibrated_at: "1".into(), tracks: 50, prompts: Default::default(), stats: Default::default(), source: Default::default(), reference_set: None },
@@ -2299,10 +1541,11 @@ mod tests {
         assert_eq!(mood_row(&conn, &a, "grim"), Some((None, Some(0.25))));
         assert_eq!(mood_rows(&conn, &a), 1);
         assert_eq!(reviewed_at(&conn, &a), reviewed);
-        let scores: Option<String> = conn
-            .query_row("SELECT scores_json FROM entry_analysis WHERE library_entry_id = ?1", params![a], |r| r.get(0))
+        // The embedding is still good.
+        let status: String = conn
+            .query_row("SELECT status FROM entry_analysis WHERE library_entry_id = ?1", params![a], |r| r.get(0))
             .unwrap();
-        assert_eq!(scores, None);
+        assert_eq!(status, "embedded");
     }
 
 }

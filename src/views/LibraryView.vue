@@ -50,7 +50,6 @@ const router = useRouter();
 const searchQuery = ref('');
 const tagSelection = ref<ChipSelection>(emptyChipSelection());
 const untagged = ref(false);
-const hasAuto = ref(false);
 const selectedType = ref<string>('all');
 const moodFilters = ref<MoodFilterState>(emptyMoodFilters());
 const sortKey = ref<SortKey>('name');
@@ -93,14 +92,12 @@ const filteredEntries = computed(() => {
     const query = (searchQuery.value ?? '').trim().toLowerCase();
     const matchesSearch =
       query === '' || searchFields(entry).some((f) => f.toLowerCase().includes(query));
-    // Auto tags are part of `tags`, so "untagged" means no user tags.
     const matchesTags = untagged.value
-      ? entry.tags.length === entry.autoTags.length
+      ? entry.tags.length === 0
       : matchesTagSelection(entry.tags, tagSelection.value);
     const matchesType =
       selectedType.value === 'all' || entry.entryType === selectedType.value;
-    const matchesAuto = !hasAuto.value || entry.autoTags.length > 0;
-    return matchesSearch && matchesTags && matchesType && matchesAuto && matchesMoodFilters(entry, moodFilters.value);
+    return matchesSearch && matchesTags && matchesType && matchesMoodFilters(entry, moodFilters.value);
   });
   return sortByKey(matching, sortKey.value, sortDir.value, moodFilters.value, (e) => e, (e) => store.isEntryMissing(e.id));
 });
@@ -226,7 +223,7 @@ async function applyBulkMusic(cmd: string, args: Record<string, unknown>): Promi
   }
 }
 
-const applyBulkRole = (role: Role | null) => applyBulkMusic('set_entry_role', { role });
+const applyBulkRole = (role: Role) => applyBulkMusic('set_entry_role', { role });
 // "Set mood levels…" opens the mood profile for the selected music entries;
 // ambiance has no moods.
 const selectedMusic = computed(() =>
@@ -236,20 +233,6 @@ const showMoodDialog = ref(false);
 watch(selectedMusic, (list) => {
   if (list.length === 0) showMoodDialog.value = false;
 });
-
-const selectedHaveAuto = computed(() =>
-  libraryEntries.value.some((e) => selectedIds.value.includes(e.id) && e.autoTags.length > 0),
-);
-
-async function applyAutoDecision(cmd: 'keep_auto_tags' | 'reject_auto_tags'): Promise<void> {
-  if (selectedIds.value.length === 0) return;
-  bulkBusy.value = true;
-  try {
-    await store.command(cmd, { entryIds: selectedIds.value, tags: null });
-  } finally {
-    bulkBusy.value = false;
-  }
-}
 
 // --- Import flow ---
 
@@ -278,7 +261,7 @@ async function handleImportConfirm(payload: { paths: string[]; tags: string[]; e
 // --- Fix missing files flow ---
 
 const showFixMissing = ref(false);
-const showAutoTagging = ref(false);
+const showAnalyzer = ref(false);
 
 // --- Delete flow ---
 
@@ -375,9 +358,9 @@ async function relocateEntry(entryId: string): Promise<void> {
         size="small"
         rounded="xl"
         class="mr-2"
-        @click="showAutoTagging = true"
+        @click="showAnalyzer = true"
       >
-        Auto-tagging
+        Analyzer
       </VBtn>
       <VMenu :disabled="!!store.importProgress">
         <template #activator="{ props: menuProps }">
@@ -418,7 +401,7 @@ async function relocateEntry(entryId: string): Promise<void> {
 
     <div class="d-flex align-end mb-2 ga-2">
       <div class="d-flex flex-wrap ga-1 flex-grow-1" style="min-width: 0;">
-        <TagFilter v-model:selection="tagSelection" v-model:untagged="untagged" v-model:has-auto="hasAuto" />
+        <TagFilter v-model:selection="tagSelection" v-model:untagged="untagged" />
       </div>
       <span class="text-caption text-medium-emphasis" style="white-space: nowrap;">
         {{ filteredEntries.length }} {{ filteredEntries.length === 1 ? 'entry' : 'entries' }}
@@ -486,15 +469,9 @@ async function relocateEntry(entryId: string): Promise<void> {
       </template>
 
       <template #item.role="{ item }">
-        <span v-if="item.role" class="role-cell" :title="roleLabel(item.role)">
-          <VIcon size="small" :color="item.roleUser === null ? undefined : 'primary'">
-            {{ item.role === 'combat' ? 'mdi-sword-cross' : 'mdi-music-note' }}
-          </VIcon>
-          <VIcon v-if="item.roleUser === null" size="x-small" class="role-auto">mdi-creation</VIcon>
-          <VTooltip v-if="item.roleUser === null" activator="parent" location="top" open-delay="300">
-            {{ roleLabel(item.role) }} · Suggested{{ item.roleAuto === null ? ' (default)' : item.roleAutoScore === null ? '' : ` · ${item.roleAutoScore.toFixed(2)}` }}
-          </VTooltip>
-        </span>
+        <VIcon v-if="item.role" size="small" :title="roleLabel(item.role)">
+          {{ item.role === 'combat' ? 'mdi-sword-cross' : 'mdi-music-note' }}
+        </VIcon>
       </template>
 
       <template #header.lens="{ column, getSortIcon }">
@@ -522,7 +499,7 @@ async function relocateEntry(entryId: string): Promise<void> {
       </template>
 
       <template #item.tags="{ item }">
-        <TagCellEditor :entry-id="item.id" :tags="item.tags" :auto-tags="item.autoTags" />
+        <TagCellEditor :entry-id="item.id" :tags="item.tags" />
       </template>
 
       <template #item.duration="{ item }">
@@ -619,7 +596,6 @@ async function relocateEntry(entryId: string): Promise<void> {
           <VList density="compact">
             <VListItem prepend-icon="mdi-sword-cross" title="Combat" @click="applyBulkRole('combat')" />
             <VListItem prepend-icon="mdi-music-note" title="Non-combat" @click="applyBulkRole('nonCombat')" />
-            <VListItem prepend-icon="mdi-restore" title="Back to suggestion" subtitle="Clear the role you set" @click="applyBulkRole(null)" />
           </VList>
         </VMenu>
         <VBtn
@@ -630,24 +606,6 @@ async function relocateEntry(entryId: string): Promise<void> {
           @click="showMoodDialog = true"
         >
           Set mood levels…
-        </VBtn>
-        <VBtn
-          prepend-icon="mdi-check"
-          variant="tonal"
-          size="small"
-          :disabled="bulkBusy || !selectedHaveAuto"
-          @click="applyAutoDecision('keep_auto_tags')"
-        >
-          Keep auto tags
-        </VBtn>
-        <VBtn
-          prepend-icon="mdi-creation"
-          variant="tonal"
-          size="small"
-          :disabled="bulkBusy || !selectedHaveAuto"
-          @click="applyAutoDecision('reject_auto_tags')"
-        >
-          Remove auto tags
         </VBtn>
         <VBtn
           icon="mdi-close"
@@ -684,7 +642,7 @@ async function relocateEntry(entryId: string): Promise<void> {
     </VDialog>
 
     <FixMissingDialog v-model="showFixMissing" />
-    <AutoTaggingDialog v-model="showAutoTagging" />
+    <AutoTaggingDialog v-model="showAnalyzer" />
 
     <ConfirmDialog
       v-model="showDeleteConfirm"
@@ -731,18 +689,6 @@ async function relocateEntry(entryId: string): Promise<void> {
 :deep(.preview-active) {
   background: rgba(240, 168, 48, 0.08) !important;
   border-left: 3px solid #F0A830;
-}
-
-.role-cell {
-  position: relative;
-  display: inline-flex;
-}
-
-.role-auto {
-  position: absolute;
-  top: -4px;
-  right: -8px;
-  opacity: 0.8;
 }
 
 .lens-cell {

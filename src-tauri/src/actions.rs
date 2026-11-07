@@ -9,12 +9,11 @@ use crate::autotag::scry;
 use crate::autotag::tune;
 use crate::autotag::case_import;
 use crate::database::mood_flags;
-use crate::database::autotag_db;
 use crate::database::settings::{self as broadcast_settings, BroadcastSettings};
 use crate::database::settings as autotag_settings;
 use crate::models::{
-    AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
-    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodResetImpact, MoodVocabulary, Role, SceneConfig, Track, TrackUpdates, ScryHit,
+    AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryType,
+    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodResetImpact, MoodVocabulary, Role, Track, TrackUpdates, ScryHit,
     ScryPoint, EnergyPreview, TuneResult, MoodTunePrefs, AcceptedLines, MoodFlagRow, ClearedFlag};
 use crate::relink;
 use crate::state::AppStateContainer;
@@ -345,19 +344,13 @@ pub fn import_library_entry(
     Ok(state)
 }
 
-/// Saves an entry's full tag list. `seen_auto_tags` is the set of auto tags
-/// the editor showed; see `library::set_entry_tags`.
+/// Saves an entry's full tag list.
 pub fn update_library_entry_tags(
     container: &AppStateContainer,
     entry_id: &str,
     tags: Vec<String>,
-    seen_auto_tags: Option<Vec<String>>,
 ) -> Result<AppState, String> {
-    let state = mutate_and_reload(container, |conn| {
-        library::set_entry_tags(conn, entry_id, &tags, seen_auto_tags.as_deref())
-    })?;
-    request_rescore_if_enabled(container);
-    Ok(state)
+    mutate_and_reload(container, |conn| library::set_entry_tags(conn, entry_id, &tags))
 }
 
 pub fn bulk_edit_library_entry_tags(
@@ -366,63 +359,19 @@ pub fn bulk_edit_library_entry_tags(
     add: Vec<String>,
     remove: Vec<String>,
 ) -> Result<AppState, String> {
-    let state = mutate_and_reload(container, |conn| {
+    mutate_and_reload(container, |conn| {
         library::bulk_edit_entry_tags(conn, &entry_ids, &add, &remove)
-    })?;
-    request_rescore_if_enabled(container);
-    Ok(state)
+    })
 }
 
-pub fn keep_auto_tags(
-    container: &AppStateContainer,
-    entry_ids: Vec<String>,
-    tags: Option<Vec<String>>,
-) -> Result<AppState, String> {
-    let state = mutate_and_reload(container, |conn| {
-        library::keep_auto_tags(conn, &entry_ids, tags.as_deref())
-    })?;
-    request_rescore_if_enabled(container);
-    Ok(state)
-}
-
-pub fn reject_auto_tags(
-    container: &AppStateContainer,
-    entry_ids: Vec<String>,
-    tags: Option<Vec<String>>,
-) -> Result<AppState, String> {
-    let state = mutate_and_reload(container, |conn| {
-        library::reject_auto_tags(conn, &entry_ids, tags.as_deref())
-    })?;
-    request_rescore_if_enabled(container);
-    Ok(state)
-}
-
-/// Clears the user's yes or no vote on the named tags of the given entries,
-/// so the analyzer decides them again.
-pub fn reset_entry_tag_votes(
-    container: &AppStateContainer,
-    entry_ids: Vec<String>,
-    tags: Vec<String>,
-) -> Result<AppState, String> {
-    let state = mutate_and_reload(container, |conn| {
-        library::reset_entry_tag_votes(conn, &entry_ids, &tags)
-    })?;
-    request_rescore_if_enabled(container);
-    Ok(state)
-}
-
-/// Sets the user's role on the given entries. `None` clears it ("use auto"),
-/// so the analyzer's role shows.
+/// Sets the user's role on the given entries. `None` clears it, so the
+/// entries show the default, Non-combat.
 pub fn set_entry_role(
     container: &AppStateContainer,
     entry_ids: Vec<String>,
     role: Option<Role>,
 ) -> Result<AppState, String> {
-    let state = mutate_and_reload(container, |conn| {
-        library::set_user_role(conn, &entry_ids, role)
-    })?;
-    request_rescore_if_enabled(container);
-    Ok(state)
+    mutate_and_reload(container, |conn| library::set_user_role(conn, &entry_ids, role))
 }
 
 /// Sets the user's level of one mood on the given music entries (`None` goes
@@ -544,7 +493,7 @@ pub fn undo_tuned_lines(
 /// and leaves every other mood's bars as they are.
 pub fn rescore_moods(container: &AppStateContainer) -> Result<(), String> {
     if !autotag_enabled(container) {
-        return Err("Turn on auto-tagging first: the analyzer rescores the moods".to_string());
+        return Err("Turn on the analyzer first: it rescores the moods".to_string());
     }
     container.autotag.analyze_library();
     Ok(())
@@ -619,10 +568,10 @@ pub fn reset_mood_vocabulary(container: &AppStateContainer) -> Result<AppState, 
 /// Recalibrate: clears the mood calibration, every analyzer mood value and
 /// the stored scores (user levels stay), then starts an analysis run, which
 /// takes a new calibration from the current prompts. Refused while
-/// auto-tagging is off, since nothing could rebuild what it clears.
+/// the analyzer is off, since nothing could rebuild what it clears.
 pub fn recalibrate_moods(container: &AppStateContainer) -> Result<AppState, String> {
     if !autotag_enabled(container) {
-        return Err("Turn on auto-tagging first: the analyzer rebuilds the calibration".to_string());
+        return Err("Turn on the analyzer first: it rebuilds the calibration".to_string());
     }
     let state = mutate_and_reload(container, library::clear_mood_analysis)?;
     container.autotag.analyze_library();
@@ -896,24 +845,17 @@ fn is_music(entry_type: &str) -> bool {
     matches!(EntryType::from_str(entry_type), EntryType::Music)
 }
 
-// --- Auto-tagging ---
+// --- Analyzer ---
 
-/// True if auto-tagging is turned on. A settings read error counts as off.
+/// True if the analyzer is turned on. A settings read error counts as off.
 fn autotag_enabled(container: &AppStateContainer) -> bool {
     with_db(container, autotag_settings::load_autotag)
         .map(|s| s.enabled)
         .unwrap_or(false)
 }
 
-/// Asks the worker to re-score after a tag change, if auto-tagging is on.
-fn request_rescore_if_enabled(container: &AppStateContainer) {
-    if autotag_enabled(container) {
-        container.autotag.request_rescore();
-    }
-}
-
 /// Queues every entry whose analysis is missing, failed, or stale. Called at
-/// app start; does nothing while auto-tagging is off.
+/// app start; does nothing while the analyzer is off.
 pub fn queue_unanalyzed_on_startup(container: &AppStateContainer) {
     if autotag_enabled(container) {
         container.autotag.analyze_library();
@@ -924,7 +866,7 @@ pub fn get_autotag_settings(container: &AppStateContainer) -> Result<AutoTagSett
     with_db(container, autotag_settings::load_autotag)
 }
 
-/// Saves the connection settings. Turning auto-tagging on starts analyzing
+/// Saves the connection settings. Turning the analyzer on starts analyzing
 /// the library right away.
 pub fn save_autotag_settings(container: &AppStateContainer, settings: AutoTagSettings) -> Result<(), String> {
     let was_enabled = autotag_enabled(container);
@@ -932,18 +874,6 @@ pub fn save_autotag_settings(container: &AppStateContainer, settings: AutoTagSet
     if settings.enabled && !was_enabled {
         container.autotag.analyze_library();
     }
-    Ok(())
-}
-
-pub fn get_scene_config(container: &AppStateContainer) -> Result<SceneConfig, String> {
-    with_db(container, autotag_settings::load_scene_config)
-}
-
-/// Saves the scene config and re-scores, since the vocabulary may have
-/// changed.
-pub fn save_scene_config(container: &AppStateContainer, config: SceneConfig) -> Result<(), String> {
-    with_db(container, |conn| autotag_settings::save_scene_config(conn, &config))?;
-    request_rescore_if_enabled(container);
     Ok(())
 }
 
@@ -958,7 +888,7 @@ pub fn test_autotag_connection(settings: &AutoTagSettings) -> Result<String, Str
 /// `autotag-progress` events.
 pub fn analyze_library(container: &AppStateContainer) -> Result<(), String> {
     if !autotag_enabled(container) {
-        return Err("Auto-tagging is turned off".to_string());
+        return Err("The analyzer is turned off".to_string());
     }
     container.autotag.reanalyze_library();
     Ok(())
@@ -1004,14 +934,6 @@ pub fn preview_energy_prompts(
 pub fn scry_map(container: &AppStateContainer) -> Result<Vec<ScryPoint>, String> {
     let client = scry::client_for(&container.db)?;
     scry::map(&container.db, &client)
-}
-
-/// The entry's stored scores, or `None` if it has not been scored.
-pub fn get_entry_tag_scores(
-    container: &AppStateContainer,
-    entry_id: &str,
-) -> Result<Option<EntryTagScores>, String> {
-    with_db(container, |conn| autotag_db::load_scores(conn, entry_id))
 }
 
 pub fn relocate_library_entry(

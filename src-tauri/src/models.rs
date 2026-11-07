@@ -35,26 +35,15 @@ pub struct LibraryEntry {
     pub loop_start: Option<f64>,
     pub loop_end: Option<f64>,
     pub created_at: String,
-    /// The tags the entry shows: those the user voted yes on, plus the
-    /// analyzer's tags the user has not voted on.
+    /// The entry's tags, all set by hand.
     pub tags: Vec<String>,
     pub entry_type: EntryType,
-    /// The tags shown because of the analyzer (the user has not voted on
-    /// them), each with the analyzer's score.
-    pub auto_tags: Vec<AutoTag>,
-    /// Tags the user voted no on. They are not shown, whatever the analyzer
-    /// says.
-    pub rejected_tags: Vec<String>,
     /// Analyzer state for this entry; `None` if it was never submitted.
     pub analysis: Option<EntryAnalysis>,
     /// The role shown (see `effective_role`): for music `role_user`, else
-    /// `role_auto`, else Non-combat, so never `None`; for ambiance `None`.
+    /// Non-combat, so never `None`; for ambiance `None`.
     pub role: Option<Role>,
-    /// The analyzer's role, written by every analysis run.
-    pub role_auto: Option<Role>,
-    /// The analyzer's Combat probability behind `role_auto`.
-    pub role_auto_score: Option<f64>,
-    /// The user's role. When set it is shown instead of `role_auto`.
+    /// The role the user set; `None` shows as Non-combat.
     pub role_user: Option<Role>,
     /// The mood profile: one value per id of the mood vocabulary, in its
     /// order (the moods, then Energy). Always every id; an id with no stored
@@ -98,14 +87,11 @@ impl Role {
     }
 }
 
-/// The role a music entry shows: the user's, else the analyzer's, else
-/// Non-combat (the default; there is no "no role" state). Ambiance has no
-/// role. Only `role_user` ever trains the Combat gate: a role that is shown
-/// because of this default is not a training example (see
-/// `EntryFacts::user_role`).
-pub fn effective_role(entry_type: &EntryType, role_user: Option<Role>, role_auto: Option<Role>) -> Option<Role> {
+/// The role a music entry shows: the user's, else Non-combat (the default;
+/// there is no "no role" state). Ambiance has no role.
+pub fn effective_role(entry_type: &EntryType, role_user: Option<Role>) -> Option<Role> {
     match entry_type {
-        EntryType::Music => Some(role_user.or(role_auto).unwrap_or(Role::NonCombat)),
+        EntryType::Music => Some(role_user.unwrap_or(Role::NonCombat)),
         EntryType::Ambiance => None,
     }
 }
@@ -639,25 +625,6 @@ pub struct TuneResult {
     pub mode: TuneMode,
 }
 
-/// Which layer a shown value comes from: the user's, or the analyzer's.
-/// Used by `TagScore::applied`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../generated/")]
-#[serde(rename_all = "camelCase")]
-pub enum TagSource {
-    User,
-    Auto,
-}
-
-/// A tag applied by the analyzer, with the score that earned it.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../generated/")]
-#[serde(rename_all = "camelCase")]
-pub struct AutoTag {
-    pub tag: String,
-    pub score: f64,
-}
-
 /// Where an entry is in the analysis pipeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
@@ -717,61 +684,22 @@ pub struct AutoTagSettings {
     pub remote_prefix: String,
 }
 
-/// The tags the analyzer scores on every music entry. Older saved configs
-/// also hold `scene`, `gateTag` and `negativeSceneTags`; serde ignores those
-/// fields when loading, and a config with no `vocabulary` gets the default one.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../generated/")]
-#[serde(rename_all = "camelCase", default)]
-pub struct SceneConfig {
-    /// Tags that can be auto-applied to music entries.
-    pub vocabulary: Vec<String>,
-}
-
-impl Default for SceneConfig {
-    fn default() -> Self {
-        Self {
-            vocabulary: ["folk", "electronic", "playful"]
-            .iter()
-            .map(|w| w.to_string())
-            .collect(),
-        }
-    }
-}
-
-/// How well the analyzer can predict one tag, from leave-one-out testing.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../generated/")]
-#[serde(rename_all = "camelCase")]
-pub struct TagQuality {
-    pub tag: String,
-    pub auc: Option<f64>,
-    pub pos: u32,
-    pub neg: u32,
-    pub trusted: bool,
-    pub threshold: Option<f64>,
-}
-
-/// Summary of the most recent auto-tagging run.
+/// Summary of the most recent analysis run.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
 pub struct AutoTagReport {
     pub finished_at: Option<String>,
     pub analyzed: u32,
-    pub added: u32,
-    pub removed: u32,
     pub failed: u32,
     pub unreachable: u32,
-    pub gate: Option<TagQuality>,
-    pub tags: Vec<TagQuality>,
     pub error: Option<String>,
     /// Up to 5 "entry name: error" lines from entries that failed or could
     /// not be reached in this run.
     pub sample_errors: Vec<String>,
 }
 
-/// Emitted to the frontend while an auto-tagging run is in progress.
+/// Emitted to the frontend while an analysis run is in progress.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
@@ -811,33 +739,6 @@ pub struct ScryPoint {
     pub entry_id: String,
     pub x: f64,
     pub y: f64,
-}
-
-/// One tag's score for one entry.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../generated/")]
-#[serde(rename_all = "camelCase")]
-pub struct TagScore {
-    pub tag: String,
-    pub score: f64,
-    pub threshold: Option<f64>,
-    pub trusted: bool,
-    /// Why the entry shows this tag: `User` when the user voted yes, `Auto`
-    /// when only the analyzer put it there, `None` when it is not shown
-    /// (absent, or the user voted no).
-    pub applied: Option<TagSource>,
-}
-
-/// The gate score and per-tag scores for one entry.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../generated/")]
-#[serde(rename_all = "camelCase")]
-pub struct EntryTagScores {
-    /// The Combat probability, with `tag` `"combat"`. Its `applied` is the
-    /// layer the shown role comes from (`User` when the user set one, else
-    /// `Auto` when the analyzer did), or `None` when the entry shows no role.
-    pub gate: TagScore,
-    pub tags: Vec<TagScore>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -1091,16 +992,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn effective_role_is_user_then_auto_then_non_combat() {
+    fn effective_role_is_user_then_non_combat() {
         use Role::{Combat, NonCombat};
         let music = EntryType::Music;
-        assert_eq!(effective_role(&music, Some(Combat), Some(NonCombat)), Some(Combat));
-        assert_eq!(effective_role(&music, Some(NonCombat), Some(Combat)), Some(NonCombat));
-        assert_eq!(effective_role(&music, None, Some(Combat)), Some(Combat));
-        assert_eq!(effective_role(&music, None, None), Some(NonCombat));
+        assert_eq!(effective_role(&music, Some(Combat)), Some(Combat));
+        assert_eq!(effective_role(&music, Some(NonCombat)), Some(NonCombat));
+        assert_eq!(effective_role(&music, None), Some(NonCombat));
         // Ambiance has no role, whatever is stored.
-        assert_eq!(effective_role(&EntryType::Ambiance, Some(Combat), Some(Combat)), None);
-        assert_eq!(effective_role(&EntryType::Ambiance, None, None), None);
+        assert_eq!(effective_role(&EntryType::Ambiance, Some(Combat)), None);
+        assert_eq!(effective_role(&EntryType::Ambiance, None), None);
     }
 
     #[test]

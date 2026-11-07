@@ -15,13 +15,13 @@ use std::path::Path;
 use uuid::Uuid;
 
 use crate::models::{
-    AnalysisStatus, AppState, AutoTag, Clip, Comp, Configuration, EntryAnalysis, EntryType, Group,
+    AnalysisStatus, AppState, Clip, Comp, Configuration, EntryAnalysis, EntryType, Group,
     LibraryEntry, MoodCalibrationInfo, MoodValue, MoodVocabulary, Role, Track, TrackMode, TrackTransition,
 };
 
 /// Current schema version. Bump when adding a migration below; fresh
 /// databases are stamped with this directly.
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 
 /// Spacing between sibling `sort_order` values, leaving room for insertions
 /// between neighbours without renumbering. Shared by hierarchy + configurations.
@@ -57,9 +57,21 @@ fn migrate_v3_to_v4(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(INDEX_DDL)
 }
 
-/// The analysis table, shared by init_schema (fresh DBs) and the v4→v5
-/// migration. IF NOT EXISTS makes running both harmless.
+/// The analysis table as init_schema creates it (schema v16: no stored
+/// scores). IF NOT EXISTS makes running it on an existing database harmless.
 const ENTRY_ANALYSIS_DDL: &str = "
+    CREATE TABLE IF NOT EXISTS entry_analysis (
+        library_entry_id TEXT PRIMARY KEY REFERENCES library_entries(id) ON DELETE CASCADE,
+        content_hash     TEXT,
+        status           TEXT NOT NULL,
+        error            TEXT,
+        analyzed_at      TEXT
+    );
+";
+
+/// The analysis table as the v4→v5 migration created it, with the
+/// `scores_json` column the migrations up to v15 clear and v16 drops.
+const V5_ENTRY_ANALYSIS_DDL: &str = "
     CREATE TABLE IF NOT EXISTS entry_analysis (
         library_entry_id TEXT PRIMARY KEY REFERENCES library_entries(id) ON DELETE CASCADE,
         content_hash     TEXT,
@@ -82,10 +94,17 @@ const V5_TAG_REJECTIONS_DDL: &str = "
     );
 ";
 
-/// The v8 tag table: each row is one tag on one entry, with two independent
-/// layers. `auto_score` is the analyzer's (NULL when it does not tag it);
-/// `user_vote` is the user's (1 yes, 0 no, NULL not voted). A row with
-/// neither is deleted, never kept.
+/// The tag table (schema v16): each row is one tag the user put on one entry.
+const LIBRARY_ENTRY_TAGS_COLUMNS: &str = "
+        library_entry_id TEXT NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,
+        tag_id           TEXT NOT NULL REFERENCES tags(id)            ON DELETE CASCADE,
+        PRIMARY KEY (library_entry_id, tag_id)
+";
+
+/// The v8–v15 tag table: each row is one tag on one entry, with two
+/// independent layers. `auto_score` is the analyzer's (NULL when it does not
+/// tag it); `user_vote` is the user's (1 yes, 0 no, NULL not voted). A row
+/// with neither is deleted, never kept. Only the v7→v8 migration creates it.
 const LIBRARY_ENTRY_TAGS_V8_COLUMNS: &str = "
         library_entry_id TEXT NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,
         tag_id           TEXT NOT NULL REFERENCES tags(id)            ON DELETE CASCADE,
@@ -104,7 +123,15 @@ fn migrate_v4_to_v5(conn: &Connection) -> SqlResult<()> {
          ALTER TABLE library_entry_tags ADD COLUMN score REAL;",
     )?;
     conn.execute_batch(V5_TAG_REJECTIONS_DDL)?;
-    conn.execute_batch(ENTRY_ANALYSIS_DDL)
+    conn.execute_batch(V5_ENTRY_ANALYSIS_DDL)?;
+    // `open_db` runs init_schema before the migrations, so on a database
+    // older than v5 the table already exists in its v16 shape, without
+    // `scores_json`. The migrations up to v15 clear that column, so add it
+    // back here; v16 drops it again.
+    if !column_exists(conn, "entry_analysis", "scores_json")? {
+        conn.execute_batch("ALTER TABLE entry_analysis ADD COLUMN scores_json TEXT")?;
+    }
+    Ok(())
 }
 
 /// Adds the combat / non-combat role columns. Existing entries start with no
@@ -192,7 +219,7 @@ fn migrate_v6_to_v7(conn: &Connection) -> SqlResult<()> {
         [],
     )?;
 
-    settings::reset_saved_scene_config(conn)?;
+    v7_reset_saved_scene_config(conn)?;
 
     // Queue every analyzed music entry for the next run, which computes the
     // new pace features and mood scores and re-scores the new vocabulary.
@@ -391,7 +418,51 @@ fn migrate_v9_to_v10(conn: &Connection) -> SqlResult<()> {
 
          UPDATE entry_analysis SET scores_json = NULL;",
     )?;
-    settings::remove_from_saved_vocabulary(conn, "driving")
+    v10_remove_from_saved_vocabulary(conn, "driving")
+}
+
+/// Meta key of the auto-tagging scene configuration (`{"vocabulary": [..]}`)
+/// that schemas v5 to v15 kept. v16 deletes it.
+const SCENE_CONFIG_KEY: &str = "autotag_scene_encounter";
+
+/// The scene configuration v7 reset a saved one to (its default vocabulary).
+const V7_DEFAULT_SCENE_CONFIG_JSON: &str = r#"{"vocabulary":["folk","electronic","playful"]}"#;
+
+/// Replaces a saved scene configuration with the v7 default. A database that
+/// never saved one already loaded the default and is left as is. Used by the
+/// v6→v7 migration.
+fn v7_reset_saved_scene_config(conn: &Connection) -> SqlResult<()> {
+    conn.execute(
+        "UPDATE meta SET value = ?1 WHERE key = ?2",
+        params![V7_DEFAULT_SCENE_CONFIG_JSON, SCENE_CONFIG_KEY],
+    )?;
+    Ok(())
+}
+
+/// Removes `word` from a saved scene configuration's vocabulary, matching
+/// names the way tags are stored (trimmed, lowercase). Every other field of
+/// the saved JSON is kept. A database that never saved one, or saved one that
+/// does not parse, is left as is. Used by the v9→v10 migration.
+fn v10_remove_from_saved_vocabulary(conn: &Connection, word: &str) -> SqlResult<()> {
+    use rusqlite::OptionalExtension;
+    let text: Option<String> = conn
+        .query_row("SELECT value FROM meta WHERE key = ?1", [SCENE_CONFIG_KEY], |r| r.get(0))
+        .optional()?;
+    let Some(text) = text else { return Ok(()) };
+    let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Ok(());
+    };
+    let Some(words) = config.get_mut("vocabulary").and_then(|v| v.as_array_mut()) else {
+        return Ok(());
+    };
+    let before = words.len();
+    words.retain(|w| !matches!(w.as_str(), Some(w) if w.trim().to_lowercase() == word));
+    if words.len() == before {
+        return Ok(());
+    }
+    let text = serde_json::to_string(&config).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    conn.execute("UPDATE meta SET value = ?1 WHERE key = ?2", params![text, SCENE_CONFIG_KEY])?;
+    Ok(())
 }
 
 /// Replaces the dark kind with mood pools (spec "Mood pools and the Review
@@ -610,6 +681,47 @@ fn migrate_v14_to_v15(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(MOOD_FLAGS_DDL)
 }
 
+/// v15 → v16: auto-tagging is removed. Runs inside the migration runner's
+/// transaction.
+///
+/// - `library_entry_tags` is rebuilt as plain user tags: only the user's yes
+///   votes are kept. Analyzer-only tags and no votes go (a CHECK on the old
+///   table blocks dropping its columns, so the rows are copied into a new
+///   table, as v8 did).
+/// - The analyzer's role (`role_auto`, `role_auto_score`) goes; the user's
+///   role stays, and an entry without one shows as Non-combat.
+/// - The scene vocabulary (meta `autotag_scene_encounter`) goes, and tag rows
+///   no entry uses any more are swept.
+/// - The stored tag and gate scores (`entry_analysis.scores_json`) go. The
+///   embedding status stays.
+/// - Moods (`library_entry_moods`, both layers), mood flags, the mood
+///   vocabulary and calibration are untouched. The pre-migration backup keeps
+///   everything dropped here.
+fn migrate_v15_to_v16(conn: &Connection) -> SqlResult<()> {
+    conn.execute_batch(&format!(
+        "CREATE TABLE library_entry_tags_v16 ({LIBRARY_ENTRY_TAGS_COLUMNS});
+
+         INSERT INTO library_entry_tags_v16 (library_entry_id, tag_id)
+         SELECT library_entry_id, tag_id
+         FROM library_entry_tags
+         WHERE user_vote = 1
+           AND library_entry_id IN (SELECT id FROM library_entries)
+           AND tag_id IN (SELECT id FROM tags);
+
+         DROP TABLE library_entry_tags;
+         ALTER TABLE library_entry_tags_v16 RENAME TO library_entry_tags;
+         CREATE INDEX IF NOT EXISTS idx_library_entry_tags_tag_id ON library_entry_tags(tag_id);
+
+         ALTER TABLE library_entries DROP COLUMN role_auto;
+         ALTER TABLE library_entries DROP COLUMN role_auto_score;
+
+         ALTER TABLE entry_analysis DROP COLUMN scores_json;"
+    ))?;
+    conn.execute("DELETE FROM meta WHERE key = ?1", [SCENE_CONFIG_KEY])?;
+    conn.execute(library::SWEEP_ORPHAN_TAGS, [])?;
+    Ok(())
+}
+
 // Ordered migrations: entry `(n, f)` upgrades version n → n+1.
 const MIGRATIONS: &[(i64, Migration)] = &[
     (3, migrate_v3_to_v4),
@@ -624,6 +736,7 @@ const MIGRATIONS: &[(i64, Migration)] = &[
     (12, migrate_v12_to_v13),
     (13, migrate_v13_to_v14),
     (14, migrate_v14_to_v15),
+    (15, migrate_v15_to_v16),
 ];
 
 fn read_schema_version(conn: &Connection) -> i64 {
@@ -701,7 +814,7 @@ pub fn open_db(path: &Path) -> Result<Connection, String> {
     // Light/Heavy and pace values, v10 folds the `driving` tag into
     // Calm ↔ Energetic, v11 drops the dark kind, v12 drops the pools and the
     // mood scales, v13 may replace the default mood words and clear mood
-    // suggestions), so an existing database behind the current schema is copied first, before anything changes it. No copy,
+    // suggestions, v16 drops the analyzer's tags and roles), so an existing database behind the current schema is copied first, before anything changes it. No copy,
     // no migration.
     if !fresh {
         let on_disk = match read_schema_version(&conn) {
@@ -762,8 +875,6 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
             loop_end     REAL,
             created_at   TEXT NOT NULL,
             entry_type   TEXT NOT NULL DEFAULT 'music',
-            role_auto        TEXT,
-            role_auto_score  REAL,
             role_user        TEXT,
             mood_reviewed_at TEXT
         );
@@ -818,7 +929,7 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
         );
     ")?;
     conn.execute_batch(&format!(
-        "CREATE TABLE IF NOT EXISTS library_entry_tags ({LIBRARY_ENTRY_TAGS_V8_COLUMNS});"
+        "CREATE TABLE IF NOT EXISTS library_entry_tags ({LIBRARY_ENTRY_TAGS_COLUMNS});"
     ))?;
     conn.execute_batch(ENTRY_ANALYSIS_DDL)?;
     conn.execute_batch(LIBRARY_ENTRY_MOODS_DDL)?;
@@ -949,15 +1060,14 @@ pub fn load_full_state(conn: &Connection) -> Result<AppState, String> {
     })
 }
 
-/// Queries all library_entries ordered by name and fills in tags, auto tags,
-/// rejected tags, analysis state and the mood profile (in `vocabulary`'s
-/// order) for each.
+/// Queries all library_entries ordered by name and fills in tags, analysis
+/// state and the mood profile (in `vocabulary`'s order) for each.
 fn load_library_entries(conn: &Connection, vocabulary: &MoodVocabulary) -> Result<Vec<LibraryEntry>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, file_path, content_hash, name, duration, sample_rate, file_size,
                     volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type,
-                    role_auto, role_auto_score, role_user, mood_reviewed_at
+                    role_user, mood_reviewed_at
              FROM library_entries
              ORDER BY name ASC",
         )
@@ -980,60 +1090,31 @@ fn load_library_entries(conn: &Connection, vocabulary: &MoodVocabulary) -> Resul
                 row.get::<_, Option<f64>>(11)?,     // loop_end
                 row.get::<_, String>(12)?,          // created_at
                 row.get::<_, String>(13)?,          // entry_type
-                (
-                    row.get::<_, Option<String>>(14)?, // role_auto
-                    row.get::<_, Option<f64>>(15)?,    // role_auto_score
-                    row.get::<_, Option<String>>(16)?, // role_user
-                ),
-                row.get::<_, Option<String>>(17)?, // mood_reviewed_at
+                row.get::<_, Option<String>>(14)?,  // role_user
+                row.get::<_, Option<String>>(15)?,  // mood_reviewed_at
             ))
         })
         .map_err(|e| format!("Failed to query library_entries: {e}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to collect library_entries: {e}"))?;
 
-    // All entry→tag rows in one query, sorted into the shown tags, the ones
-    // shown because of the analyzer, and the ones the user voted no on.
-    #[derive(Default)]
-    struct EntryTags {
-        shown: Vec<String>,
-        auto: Vec<AutoTag>,
-        rejected: Vec<String>,
-    }
-    let mut tag_map: HashMap<String, EntryTags> = HashMap::new();
+    // All entry→tag rows in one query, by entry, each list sorted by name.
+    let mut tag_map: HashMap<String, Vec<String>> = HashMap::new();
     {
         let mut tstmt = conn
             .prepare(
-                "SELECT let.library_entry_id, t.name, let.auto_score, let.user_vote
+                "SELECT let.library_entry_id, t.name
                  FROM library_entry_tags let
                  JOIN tags t ON t.id = let.tag_id
                  ORDER BY t.name ASC",
             )
             .map_err(|e| format!("Failed to prepare tag map query: {e}"))?;
         let tag_rows = tstmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<f64>>(2)?,
-                    row.get::<_, Option<i64>>(3)?,
-                ))
-            })
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
             .map_err(|e| format!("Failed to query tag map: {e}"))?;
         for row in tag_rows {
-            let (entry_id, name, auto_score, user_vote) =
-                row.map_err(|e| format!("Failed to read tag row: {e}"))?;
-            let tags = tag_map.entry(entry_id).or_default();
-            match (user_vote, auto_score) {
-                (Some(0), _) => tags.rejected.push(name),
-                (Some(_), _) => tags.shown.push(name),
-                (None, Some(score)) => {
-                    tags.auto.push(AutoTag { tag: name.clone(), score });
-                    tags.shown.push(name);
-                }
-                // The table's CHECK rules this out.
-                (None, None) => {}
-            }
+            let (entry_id, name) = row.map_err(|e| format!("Failed to read tag row: {e}"))?;
+            tag_map.entry(entry_id).or_default().push(name);
         }
     }
 
@@ -1093,12 +1174,11 @@ fn load_library_entries(conn: &Connection, vocabulary: &MoodVocabulary) -> Resul
     let mut entries = Vec::with_capacity(rows.len());
     for (id, file_path, content_hash, name, duration, sample_rate, file_size,
          volume, trim_start, trim_end, loop_start, loop_end, created_at, entry_type,
-         (role_auto, role_auto_score, role_user), mood_reviewed_at)
+         role_user, mood_reviewed_at)
         in rows
     {
         let tags = tag_map.remove(&id).unwrap_or_default();
         let analysis = analysis_map.remove(&id);
-        let role_auto = role_auto.as_deref().and_then(Role::from_db_str);
         let role_user = role_user.as_deref().and_then(Role::from_db_str);
         let entry_type = EntryType::from_str(&entry_type);
         let stored = mood_map.remove(&id).unwrap_or_default();
@@ -1124,15 +1204,10 @@ fn load_library_entries(conn: &Connection, vocabulary: &MoodVocabulary) -> Resul
             loop_start,
             loop_end,
             created_at,
-            tags: tags.shown,
-            role: crate::models::effective_role(&entry_type, role_user, role_auto),
+            tags,
+            role: crate::models::effective_role(&entry_type, role_user),
             entry_type,
-            auto_tags: tags.auto,
-            rejected_tags: tags.rejected,
             analysis,
-            role_auto,
-            // A score without a role says nothing the UI can show.
-            role_auto_score: role_auto.and(role_auto_score),
             role_user,
             moods,
             mood_reviewed_at,
@@ -1890,9 +1965,24 @@ mod tests {
     /// The mood scale columns schema v12 drops from `library_entries`.
     const V11_MOOD_COLUMNS: [&str; 6] = V11_SCALE_COLUMNS;
 
+    /// Turns a database `init_schema` just built into the v15 shape: the
+    /// analyzer's role columns, the two-layer tag table, and stored scores.
+    fn make_v15_shape(conn: &Connection) {
+        conn.execute_batch(&format!(
+            "ALTER TABLE library_entries ADD COLUMN role_auto TEXT;
+             ALTER TABLE library_entries ADD COLUMN role_auto_score REAL;
+             DROP TABLE library_entry_tags;
+             CREATE TABLE library_entry_tags ({LIBRARY_ENTRY_TAGS_V8_COLUMNS});
+             CREATE INDEX IF NOT EXISTS idx_library_entry_tags_tag_id ON library_entry_tags(tag_id);
+             ALTER TABLE entry_analysis ADD COLUMN scores_json TEXT;"
+        ))
+        .unwrap();
+    }
+
     /// Turns a database `init_schema` just built into the v11 shape: the
     /// three mood scales, auto and user, beside the pools, and no mood table.
     fn make_v11_shape(conn: &Connection) {
+        make_v15_shape(conn);
         conn.execute_batch(
             "DROP TABLE library_entry_moods;
              ALTER TABLE library_entries RENAME COLUMN mood_reviewed_at TO pool_reviewed_at;
@@ -2016,16 +2106,55 @@ mod tests {
         run_migrations(&conn).unwrap();
 
         assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
-        let rows: Vec<(Option<f64>, Option<i64>)> = conn
-            .prepare("SELECT auto_score, user_vote FROM library_entry_tags")
+        // Both tags were the user's, so both stay, as plain tags.
+        let rows: Vec<(String, String)> = conn
+            .prepare("SELECT library_entry_id, tag_id FROM library_entry_tags ORDER BY tag_id")
             .unwrap()
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
-        assert_eq!(rows, vec![(None, Some(1)), (None, Some(1))]);
+        assert_eq!(rows, pairs(&[("e1", "t1"), ("e1", "t2")]));
+        assert!(!has_column(&conn, "library_entry_tags", "user_vote"));
         assert!(!table_exists(&conn, "tag_rejections"), "v8 folds rejections into votes");
         assert!(table_exists(&conn, "entry_analysis"));
+        assert!(!has_column(&conn, "entry_analysis", "scores_json"));
+    }
+
+    /// `open_db` runs init_schema before the migrations, so a database older
+    /// than v5 gets the v16 `entry_analysis` (no `scores_json`) first; the
+    /// migrations that clear that column must still run.
+    #[test]
+    fn v4_database_opens_through_init_schema_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lutedrop.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 CREATE TABLE library_entries (
+                     id TEXT PRIMARY KEY, file_path TEXT NOT NULL UNIQUE, content_hash TEXT,
+                     name TEXT NOT NULL, duration REAL, sample_rate INTEGER, file_size INTEGER,
+                     volume REAL NOT NULL DEFAULT 1.0, trim_start REAL, trim_end REAL,
+                     loop_start REAL, loop_end REAL, created_at TEXT NOT NULL,
+                     entry_type TEXT NOT NULL DEFAULT 'music');
+                 CREATE TABLE tags (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE);
+                 CREATE TABLE library_entry_tags (
+                     library_entry_id TEXT NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,
+                     tag_id           TEXT NOT NULL REFERENCES tags(id)            ON DELETE CASCADE,
+                     PRIMARY KEY (library_entry_id, tag_id));
+                 INSERT INTO meta (key, value) VALUES ('schema_version', '4');
+                 INSERT INTO library_entries (id, file_path, name, created_at) VALUES ('e1', '/a.mp3', 'A', '0');
+                 INSERT INTO tags (id, name) VALUES ('t1', 'night');
+                 INSERT INTO library_entry_tags (library_entry_id, tag_id) VALUES ('e1', 't1');",
+            )
+            .unwrap();
+        }
+
+        let conn = open_db(&path).unwrap();
+        assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
+        assert_eq!(entry_tags(&conn, "e1"), pairs(&[("night", "user")]));
+        assert!(!has_column(&conn, "entry_analysis", "scores_json"));
     }
 
     #[test]
@@ -2035,43 +2164,33 @@ mod tests {
         assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
         assert!(table_exists(&conn, "entry_analysis"));
         assert!(!table_exists(&conn, "tag_rejections"));
-        // The tag layer columns exist on a fresh database.
-        conn.prepare("SELECT auto_score, user_vote FROM library_entry_tags").unwrap();
-        assert!(!has_column(&conn, "library_entry_tags", "source"));
+        // Tags are plain user tags on a fresh database.
+        conn.prepare("SELECT library_entry_id, tag_id FROM library_entry_tags").unwrap();
+        for old in ["source", "auto_score", "user_vote"] {
+            assert!(!has_column(&conn, "library_entry_tags", old), "{old} should be gone");
+        }
+        assert!(!has_column(&conn, "entry_analysis", "scores_json"));
     }
 
     #[test]
-    fn library_entry_exposes_tag_layers_and_analysis() {
-        use crate::models::{AnalysisStatus, AutoTag};
+    fn library_entry_exposes_tags_and_analysis() {
+        use crate::models::AnalysisStatus;
 
         let conn = open_memory_db();
         let with_data = library::insert_library_entry(&conn, "/a.mp3", None, "A", None, None, None, "music").unwrap();
         let untouched = library::insert_library_entry(&conn, "/b.mp3", None, "B", None, None, None, "music").unwrap();
-        library::add_tag_to_entry(&conn, &with_data, "folk").unwrap();
-        let auto = |tag: &str, score: f64| AutoTag { tag: tag.into(), score };
-        library::apply_auto_tags(
-            &conn,
-            &with_data,
-            &[auto("brass", 0.82), auto("dark", 0.7), auto("folk", 0.9), auto("drums", 0.6)],
-        )
-        .unwrap();
-        library::reject_auto_tags(&conn, std::slice::from_ref(&with_data), Some(&["dark".to_string()])).unwrap();
-        library::keep_auto_tags(&conn, std::slice::from_ref(&with_data), Some(&["drums".to_string()])).unwrap();
+        library::set_entry_tags(&conn, &with_data, &["folk".into(), "brass".into()]).unwrap();
         autotag_db::set_analysis(&conn, &with_data, Some("h1"), AnalysisStatus::Failed, Some("bad file")).unwrap();
 
         let entries = load_library_entries(&conn, &MoodVocabulary::defaults()).unwrap();
         let a = entries.iter().find(|e| e.id == with_data).unwrap();
-        assert_eq!(a.tags, vec!["brass", "drums", "folk"]);
-        // Only brass is shown because of the analyzer alone; folk and drums
-        // are the user's even though the analyzer scores them too.
-        assert_eq!(a.auto_tags, vec![auto("brass", 0.82)]);
-        assert_eq!(a.rejected_tags, vec!["dark"]);
+        assert_eq!(a.tags, vec!["brass", "folk"]);
         let analysis = a.analysis.as_ref().unwrap();
         assert_eq!(analysis.status, AnalysisStatus::Failed);
         assert_eq!(analysis.error.as_deref(), Some("bad file"));
 
         let b = entries.iter().find(|e| e.id == untouched).unwrap();
-        assert!(b.tags.is_empty() && b.auto_tags.is_empty() && b.rejected_tags.is_empty());
+        assert!(b.tags.is_empty());
         assert!(b.analysis.is_none());
     }
 
@@ -2099,19 +2218,16 @@ mod tests {
         )
         .unwrap();
         conn.execute_batch(V5_TAG_REJECTIONS_DDL).unwrap();
-        conn.execute_batch(ENTRY_ANALYSIS_DDL).unwrap();
+        conn.execute_batch(V5_ENTRY_ANALYSIS_DDL).unwrap();
 
         run_migrations(&conn).unwrap();
 
         assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
-        let row: (Option<String>, Option<f64>, Option<String>) = conn
-            .query_row(
-                "SELECT role_auto, role_auto_score, role_user FROM library_entries WHERE id = 'e1'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
+        let role: Option<String> = conn
+            .query_row("SELECT role_user FROM library_entries WHERE id = 'e1'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(row, (None, None, None));
+        assert_eq!(role, None);
+        assert!(!has_column(&conn, "library_entries", "role_auto"));
     }
 
     #[test]
@@ -2119,10 +2235,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let conn = open_db(&dir.path().join("fresh.db")).unwrap();
         assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
-        conn.prepare(
-            "SELECT role_auto, role_auto_score, role_user, mood_reviewed_at FROM library_entries",
-        )
-        .unwrap();
+        conn.prepare("SELECT role_user, mood_reviewed_at FROM library_entries").unwrap();
         conn.prepare("SELECT library_entry_id, mood, auto_score, user_level FROM library_entry_moods")
             .unwrap();
         // The default mood vocabulary is seeded, with the v13 words.
@@ -2141,7 +2254,7 @@ mod tests {
         for old in [
             "role", "role_source", "role_score", "pace", "pace_source", "pace_score",
             "pace_auto", "pace_auto_score", "pace_user", "mood_light", "mood_light_user",
-            "mood_sad", "mood_scary", "dark_kind_user",
+            "mood_sad", "mood_scary", "dark_kind_user", "role_auto", "role_auto_score",
         ]
         .into_iter()
         .chain(V11_MOOD_COLUMNS)
@@ -2154,37 +2267,28 @@ mod tests {
     }
 
     #[test]
-    fn library_entry_exposes_role_layers() {
+    fn library_entry_exposes_the_users_role_or_non_combat() {
         use crate::models::Role;
 
         let conn = open_memory_db();
-        let auto = library::insert_library_entry(&conn, "/a.mp3", None, "A", None, None, None, "music").unwrap();
-        let both = library::insert_library_entry(&conn, "/b.mp3", None, "B", None, None, None, "music").unwrap();
-        let user = library::insert_library_entry(&conn, "/c.mp3", None, "C", None, None, None, "music").unwrap();
-        let unset = library::insert_library_entry(&conn, "/d.mp3", None, "D", None, None, None, "music").unwrap();
-        library::apply_auto_role(&conn, &auto, Some(Role::Combat), 0.9).unwrap();
-        library::apply_auto_role(&conn, &both, Some(Role::Combat), 0.8).unwrap();
-        library::set_user_role(&conn, &[both.clone(), user.clone()], Some(Role::NonCombat)).unwrap();
+        let combat = library::insert_library_entry(&conn, "/a.mp3", None, "A", None, None, None, "music").unwrap();
+        let non = library::insert_library_entry(&conn, "/b.mp3", None, "B", None, None, None, "music").unwrap();
+        let unset = library::insert_library_entry(&conn, "/c.mp3", None, "C", None, None, None, "music").unwrap();
+        let amb = library::insert_library_entry(&conn, "/e.ogg", None, "E", None, None, None, "ambiance").unwrap();
+        library::set_user_role(&conn, std::slice::from_ref(&combat), Some(Role::Combat)).unwrap();
+        library::set_user_role(&conn, std::slice::from_ref(&non), Some(Role::NonCombat)).unwrap();
 
         let entries = load_library_entries(&conn, &MoodVocabulary::defaults()).unwrap();
-        let get = |id: &str| entries.iter().find(|e| e.id == id).unwrap();
-        let layers = |id: &str| {
-            let e = get(id);
-            (e.role, e.role_auto, e.role_auto_score, e.role_user)
+        let role = |id: &str| {
+            let e = entries.iter().find(|e| e.id == id).unwrap();
+            (e.role, e.role_user)
         };
-        assert_eq!(layers(&auto), (Some(Role::Combat), Some(Role::Combat), Some(0.9), None));
-        // The user's role is shown; the analyzer's stays visible beside it.
-        assert_eq!(
-            layers(&both),
-            (Some(Role::NonCombat), Some(Role::Combat), Some(0.8), Some(Role::NonCombat))
-        );
-        assert_eq!(layers(&user), (Some(Role::NonCombat), None, None, Some(Role::NonCombat)));
-        // Neither layer: Non-combat by default, with no layer behind it.
-        assert_eq!(layers(&unset), (Some(Role::NonCombat), None, None, None));
+        assert_eq!(role(&combat), (Some(Role::Combat), Some(Role::Combat)));
+        assert_eq!(role(&non), (Some(Role::NonCombat), Some(Role::NonCombat)));
+        // No role set: Non-combat by default.
+        assert_eq!(role(&unset), (Some(Role::NonCombat), None));
         // Ambiance has no role.
-        let amb = library::insert_library_entry(&conn, "/e.ogg", None, "E", None, None, None, "ambiance").unwrap();
-        let entries = load_library_entries(&conn, &MoodVocabulary::defaults()).unwrap();
-        assert_eq!(entries.iter().find(|e| e.id == amb).unwrap().role, None);
+        assert_eq!(role(&amb), (None, None));
     }
 
     /// The columns schema v7 adds to `library_entries`.
@@ -2270,14 +2374,20 @@ mod tests {
     }
 
     /// (tag name, layer) pairs on an entry, sorted by name. The layer is
-    /// "user" (yes vote), "no" (no vote) or "auto" (analyzer only).
+    /// "user" (yes vote), "no" (no vote) or "auto" (analyzer only); from v16
+    /// on every tag is the user's.
     fn entry_tags(conn: &Connection, entry_id: &str) -> Vec<(String, String)> {
-        conn.prepare(
-            "SELECT t.name, CASE let.user_vote WHEN 1 THEN 'user' WHEN 0 THEN 'no' ELSE 'auto' END
+        let layer = if has_column(conn, "library_entry_tags", "user_vote") {
+            "CASE let.user_vote WHEN 1 THEN 'user' WHEN 0 THEN 'no' ELSE 'auto' END"
+        } else {
+            "'user'"
+        };
+        conn.prepare(&format!(
+            "SELECT t.name, {layer}
              FROM library_entry_tags let
              JOIN tags t ON t.id = let.tag_id
-             WHERE let.library_entry_id = ?1 ORDER BY t.name",
-        )
+             WHERE let.library_entry_id = ?1 ORDER BY t.name"
+        ))
         .unwrap()
         .query_map([entry_id], |r| Ok((r.get(0)?, r.get(1)?)))
         .unwrap()
@@ -2377,6 +2487,22 @@ mod tests {
             assert_eq!(mood_energy_user(&v11, "D").as_deref(), Some("high"));
         }
 
+        // At v15: E's auto tag renamed onto a tag the user rejected was
+        // dropped, leaving the rejection as a no vote (which v16 drops); the
+        // saved vocabulary was reset to the v7 default; stored scores were
+        // cleared.
+        {
+            let v15 = migrated_copy(&path, 15);
+            assert_eq!(entry_tags(&v15, "E"), pairs(&[("playful", "no")]));
+            assert_eq!(meta_value(&v15, SCENE_CONFIG_KEY).as_deref(), Some(V7_DEFAULT_SCENE_CONFIG_JSON));
+            let scores = |id: &str| -> Option<String> {
+                v15.query_row("SELECT scores_json FROM entry_analysis WHERE library_entry_id = ?1", [id], |r| r.get(0))
+                    .unwrap()
+            };
+            assert_eq!(scores("A"), None, "stale scores are cleared for queued entries");
+            assert_eq!(scores("R"), None, "v8 clears every stored score");
+        }
+
         let conn = open_db(&path).unwrap();
         assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
         for column in V11_MOOD_COLUMNS {
@@ -2394,9 +2520,8 @@ mod tests {
         assert_eq!(entry_tags(&conn, "C"), pairs(&[("playful", "user")]));
         // D: its `driving` tag became a step in v10, since dropped.
         assert!(entry_tags(&conn, "D").is_empty());
-        // E: an auto tag renamed onto a tag the user rejected is dropped; the
-        // rejection is now a no vote.
-        assert_eq!(entry_tags(&conn, "E"), pairs(&[("playful", "no")]));
+        // E: only a no vote was left, and v16 keeps yes votes only.
+        assert!(entry_tags(&conn, "E").is_empty());
 
         // Orphan tag rows are swept.
         let names: Vec<String> = conn
@@ -2408,11 +2533,8 @@ mod tests {
             .unwrap();
         assert_eq!(names, ["electronic", "playful", "skyrim"]);
 
-        // The saved vocabulary is replaced with the new default.
-        assert_eq!(
-            settings::load_scene_config(&conn).unwrap(),
-            crate::models::SceneConfig::default()
-        );
+        // The saved vocabulary is gone (v16).
+        assert_eq!(meta_value(&conn, SCENE_CONFIG_KEY), None);
 
         // Music entries are queued for re-analysis; ambiance is left alone.
         let status = |id: &str| -> String {
@@ -2426,16 +2548,6 @@ mod tests {
         assert_eq!(status("A"), "pending");
         assert_eq!(status("D"), "pending");
         assert_eq!(status("R"), "embedded");
-        let scores = |id: &str| -> Option<String> {
-            conn.query_row(
-                "SELECT scores_json FROM entry_analysis WHERE library_entry_id = ?1",
-                [id],
-                |r| r.get(0),
-            )
-            .unwrap()
-        };
-        assert_eq!(scores("A"), None, "stale scores are cleared for queued entries");
-        assert_eq!(scores("R"), None, "v8 clears every stored score");
         let needing = crate::autotag::entries_needing_analysis(&conn).unwrap();
         assert!(needing.contains(&"A".to_string()));
 
@@ -2463,7 +2575,7 @@ mod tests {
     /// Every data case of the v7 → v8 split into analyzer and user layers.
     #[test]
     fn v7_database_migrates_to_auto_and_user_layers() {
-        use crate::models::{AutoTag, Role};
+        use crate::models::Role;
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("lutedrop.db");
@@ -2503,89 +2615,93 @@ mod tests {
             .unwrap();
         }
 
+        // The v8 split, checked on a copy walked to v15 (v16 drops the
+        // analyzer's layer and the no votes).
+        {
+            let v15 = migrated_copy(&path, 15);
+            // Role: (auto, auto score, user) per entry.
+            type Layers = (Option<String>, Option<f64>, Option<String>);
+            let layers = |id: &str| -> Layers {
+                v15.query_row(
+                    "SELECT role_auto, role_auto_score, role_user FROM library_entries WHERE id = ?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap()
+            };
+            let s = |v: &str| Some(v.to_string());
+            // A user role becomes the user layer.
+            assert_eq!(layers("U"), (None, None, s("combat")));
+            // An auto role becomes the analyzer layer with its score.
+            assert_eq!(layers("AU"), (s("non_combat"), Some(0.2), None));
+            // "None (yours)" becomes all NULL, i.e. "use auto".
+            assert_eq!(layers("CL"), (None, None, None));
+            assert_eq!(layers("N"), (None, None, None));
+
+            // Tags: (auto_score, user_vote) per tag on U.
+            let tag_row = |tag: &str| -> Option<(Option<f64>, Option<i64>)> {
+                use rusqlite::OptionalExtension;
+                v15.query_row(
+                    "SELECT let.auto_score, let.user_vote FROM library_entry_tags let
+                     JOIN tags t ON t.id = let.tag_id
+                     WHERE let.library_entry_id = 'U' AND t.name = ?1",
+                    [tag],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .unwrap()
+            };
+            // A user tag is a yes vote.
+            assert_eq!(tag_row("folk"), Some((None, Some(1))));
+            // An auto tag keeps its score with no vote; a missing score is 0.0.
+            assert_eq!(tag_row("brass"), Some((Some(0.8), None)));
+            assert_eq!(tag_row("dark"), Some((Some(0.0), None)));
+            // A rejection is a no vote...
+            assert_eq!(tag_row("drums"), Some((None, Some(0))));
+            // ...beside the analyzer's score when the auto row was still there...
+            assert_eq!(tag_row("choir"), Some((Some(0.6), Some(0))));
+            // ...but never over the user's own tag.
+            assert_eq!(tag_row("x"), Some((None, Some(1))));
+            // A rejection of a deleted entry is not carried over.
+            let gone: i64 = v15
+                .query_row("SELECT COUNT(*) FROM library_entry_tags WHERE library_entry_id = 'GONE'", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(gone, 0);
+            // Every stored score is cleared so the next run re-scores.
+            let scores: i64 = v15
+                .query_row("SELECT COUNT(*) FROM entry_analysis WHERE scores_json IS NOT NULL", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(scores, 0);
+        }
+
         let conn = open_db(&path).unwrap();
         assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
 
         // Old columns and the rejections table are gone; the index is back.
-        // Pace goes entirely in v9 (see v7_to_v8_splits_pace_layers).
-        for old in ["role", "role_source", "role_score", "pace", "pace_source", "pace_score", "pace_user"] {
+        // Pace goes entirely in v9 (see v7_to_v8_splits_pace_layers), the
+        // analyzer's role in v16.
+        for old in [
+            "role", "role_source", "role_score", "pace", "pace_source", "pace_score", "pace_user", "role_auto",
+            "role_auto_score",
+        ] {
             assert!(!has_column(&conn, "library_entries", old), "{old} should be gone");
         }
         assert!(!has_column(&conn, "library_entry_tags", "source"));
         assert!(!table_exists(&conn, "tag_rejections"));
         assert_eq!(index_names(&conn), EXPECTED_INDEXES);
 
-        // Role: (auto, auto score, user) per entry.
-        type Layers = (Option<String>, Option<f64>, Option<String>);
-        let layers = |facet: &str, id: &str| -> Layers {
-            conn.query_row(
-                &format!("SELECT {facet}_auto, {facet}_auto_score, {facet}_user FROM library_entries WHERE id = ?1"),
-                [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .unwrap()
-        };
-        let s = |v: &str| Some(v.to_string());
-        // A user role becomes the user layer.
-        assert_eq!(layers("role", "U"), (None, None, s("combat")));
-        // An auto role becomes the analyzer layer with its score.
-        assert_eq!(layers("role", "AU"), (s("non_combat"), Some(0.2), None));
-        // "None (yours)" becomes all NULL, i.e. "use auto".
-        assert_eq!(layers("role", "CL"), (None, None, None));
-        assert_eq!(layers("role", "N"), (None, None, None));
-
-        // Tags: (auto_score, user_vote) per tag on U.
-        let tag_row = |tag: &str| -> Option<(Option<f64>, Option<i64>)> {
-            use rusqlite::OptionalExtension;
-            conn.query_row(
-                "SELECT let.auto_score, let.user_vote FROM library_entry_tags let
-                 JOIN tags t ON t.id = let.tag_id
-                 WHERE let.library_entry_id = 'U' AND t.name = ?1",
-                [tag],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()
-            .unwrap()
-        };
-        // A user tag is a yes vote.
-        assert_eq!(tag_row("folk"), Some((None, Some(1))));
-        // An auto tag keeps its score with no vote; a missing score is 0.0.
-        assert_eq!(tag_row("brass"), Some((Some(0.8), None)));
-        assert_eq!(tag_row("dark"), Some((Some(0.0), None)));
-        // A rejection is a no vote...
-        assert_eq!(tag_row("drums"), Some((None, Some(0))));
-        // ...beside the analyzer's score when the auto row was still there...
-        assert_eq!(tag_row("choir"), Some((Some(0.6), Some(0))));
-        // ...but never over the user's own tag.
-        assert_eq!(tag_row("x"), Some((None, Some(1))));
-        // A rejection of a deleted entry is not carried over.
-        let gone: i64 = conn
-            .query_row("SELECT COUNT(*) FROM library_entry_tags WHERE library_entry_id = 'GONE'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(gone, 0);
-
-        // What the app sees.
+        // What the app sees at v16: the user's role, else Non-combat, and
+        // the user's own tags only.
         ensure_test_config(&conn);
         let state = load_full_state(&conn).unwrap();
         let entry = |id: &str| state.library_entries.iter().find(|e| e.id == id).unwrap();
         let u = entry("U");
-        assert_eq!((u.role, u.role_user, u.role_auto), (Some(Role::Combat), Some(Role::Combat), None));
-        assert_eq!(u.tags, vec!["brass", "dark", "folk", "x"]);
-        assert_eq!(
-            u.auto_tags,
-            vec![AutoTag { tag: "brass".into(), score: 0.8 }, AutoTag { tag: "dark".into(), score: 0.0 }]
-        );
-        assert_eq!(u.rejected_tags, vec!["choir", "drums"]);
+        assert_eq!((u.role, u.role_user), (Some(Role::Combat), Some(Role::Combat)));
+        assert_eq!(u.tags, vec!["folk", "x"]);
         let au = entry("AU");
-        assert_eq!((au.role, au.role_auto_score, au.role_user), (Some(Role::NonCombat), Some(0.2), None));
-        assert_eq!(state.tags, vec!["brass", "dark", "folk", "x"]);
+        assert_eq!((au.role, au.role_user), (Some(Role::NonCombat), None));
+        assert_eq!(state.tags, vec!["folk", "x"]);
 
-        // Every stored score is cleared so the next run re-scores, and fills
-        // the analyzer layer of entries that were user-set until now.
-        let scores: i64 = conn
-            .query_row("SELECT COUNT(*) FROM entry_analysis WHERE scores_json IS NOT NULL", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(scores, 0);
         let status: String = conn
             .query_row("SELECT status FROM entry_analysis WHERE library_entry_id = 'U'", [], |r| r.get(0))
             .unwrap();
@@ -2701,7 +2817,7 @@ mod tests {
     /// drops again).
     #[test]
     fn v8_database_migrates_to_three_mood_scales() {
-        use crate::models::{AutoTag, Role};
+        use crate::models::Role;
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("lutedrop.db");
@@ -2760,24 +2876,15 @@ mod tests {
         }
         assert_eq!(index_names(&conn), EXPECTED_INDEXES);
 
-        // Role and tags are untouched.
+        // The user's role and tags survive (v16 drops the analyzer's).
         ensure_test_config(&conn);
         let state = load_full_state(&conn).unwrap();
         let m = state.library_entries.iter().find(|e| e.id == "M").unwrap();
-        assert_eq!(
-            (m.role, m.role_auto, m.role_auto_score, m.role_user),
-            (Some(Role::NonCombat), Some(Role::Combat), Some(0.9), Some(Role::NonCombat))
-        );
-        assert_eq!(m.tags, vec!["brass", "folk"]);
-        assert_eq!(m.auto_tags, vec![AutoTag { tag: "brass".into(), score: 0.7 }]);
-        assert_eq!(m.rejected_tags, vec!["drums"]);
+        assert_eq!((m.role, m.role_user), (Some(Role::NonCombat), Some(Role::NonCombat)));
+        assert_eq!(m.tags, vec!["folk"]);
 
-        // Every stored score is cleared so the next run re-scores; the
-        // embeddings stay good.
-        let scores: i64 = conn
-            .query_row("SELECT COUNT(*) FROM entry_analysis WHERE scores_json IS NOT NULL", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(scores, 0);
+        // Stored scores are gone; the embeddings stay good.
+        assert!(!has_column(&conn, "entry_analysis", "scores_json"));
         let status: String = conn
             .query_row("SELECT status FROM entry_analysis WHERE library_entry_id = 'M'", [], |r| r.get(0))
             .unwrap();
@@ -2841,6 +2948,15 @@ mod tests {
             assert_eq!(mood_energy_user(&v10, "AMB"), None);
         }
 
+        // `driving` left the saved vocabulary (which v16 deletes).
+        {
+            let v15 = migrated_copy(&path, 15);
+            let saved: serde_json::Value =
+                serde_json::from_str(&meta_value(&v15, SCENE_CONFIG_KEY).unwrap()).unwrap();
+            assert_eq!(saved["vocabulary"], serde_json::json!(["folk", "electronic"]));
+            assert_eq!(entry_tags(&v15, "AUTO"), pairs(&[("folk", "auto")]));
+        }
+
         let conn = open_db(&path).unwrap();
         assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
         assert!(!has_column(&conn, "library_entries", "mood_energy_user"));
@@ -2848,7 +2964,8 @@ mod tests {
         // Every `driving` row and the tag itself are gone; other tags stay.
         assert_eq!(entry_tags(&conn, "YES"), pairs(&[("folk", "user")]));
         assert!(entry_tags(&conn, "KEEP").is_empty());
-        assert_eq!(entry_tags(&conn, "AUTO"), pairs(&[("folk", "auto")]));
+        // v16 drops the analyzer-only `folk`.
+        assert!(entry_tags(&conn, "AUTO").is_empty());
         assert!(entry_tags(&conn, "NO").is_empty());
         assert!(entry_tags(&conn, "AMB").is_empty());
         let driving: i64 = conn
@@ -2856,22 +2973,13 @@ mod tests {
             .unwrap();
         assert_eq!(driving, 0);
 
-        // `driving` leaves the saved vocabulary.
-        assert_eq!(
-            settings::load_scene_config(&conn).unwrap().vocabulary,
-            ["folk", "electronic"]
-        );
-
-        // The new columns start empty; stored scores are cleared.
+        // The new columns start empty; stored scores are gone.
         ensure_test_config(&conn);
         let state = load_full_state(&conn).unwrap();
         let yes = state.library_entries.iter().find(|e| e.id == "YES").unwrap();
         assert!(yes.moods.iter().all(|m| m.auto.is_none() && m.user.is_none()));
         assert_eq!(yes.mood_reviewed_at, None);
-        let scores: i64 = conn
-            .query_row("SELECT COUNT(*) FROM entry_analysis WHERE scores_json IS NOT NULL", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(scores, 0);
+        assert!(!has_column(&conn, "entry_analysis", "scores_json"));
 
         // A pre-migration copy of the v9 database keeps the tag.
         let backups = pre_migration_backups(dir.path(), 9);
@@ -2972,20 +3080,16 @@ mod tests {
         ensure_test_config(&conn);
         let state = load_full_state(&conn).unwrap();
         let m = state.library_entries.iter().find(|e| e.id == "M").unwrap();
-        // The role survives.
-        assert_eq!((m.role_auto, m.role_user), (Some(Role::Combat), Some(Role::NonCombat)));
+        // The user's role survives.
+        assert_eq!((m.role, m.role_user), (Some(Role::NonCombat), Some(Role::NonCombat)));
         let n = state.library_entries.iter().find(|e| e.id == "N").unwrap();
         // Nothing carries into moods.
         for e in [m, n] {
             assert!(e.moods.iter().all(|m| m.auto.is_none() && m.user.is_none()));
             assert_eq!(e.mood_reviewed_at, None);
         }
-        // Stored scores are cleared so the next run scores moods; no
-        // calibration exists yet.
-        let scores: i64 = conn
-            .query_row("SELECT COUNT(*) FROM entry_analysis WHERE scores_json IS NOT NULL", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(scores, 0);
+        // Stored scores are gone; no calibration exists yet.
+        assert!(!has_column(&conn, "entry_analysis", "scores_json"));
         assert_eq!(settings::load_mood_calibration(&conn).unwrap(), None);
 
         // A pre-migration copy of the v10 database keeps the dark kind.
@@ -3039,12 +3143,12 @@ mod tests {
         let conn = open_db(&path).unwrap();
         assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
 
-        // The pool and scale columns are gone; the role columns stay, and the
-        // review time is renamed.
-        for column in V11_MOOD_COLUMNS.into_iter().chain(V11_ALL_POOL_COLUMNS) {
+        // The pool and scale columns are gone (and the analyzer's role, in
+        // v16); the user's role stays, and the review time is renamed.
+        for column in V11_MOOD_COLUMNS.into_iter().chain(V11_ALL_POOL_COLUMNS).chain(["role_auto", "role_auto_score"]) {
             assert!(!has_column(&conn, "library_entries", column), "{column} should be gone");
         }
-        for column in ["role_auto", "role_auto_score", "role_user", "mood_reviewed_at"] {
+        for column in ["role_user", "mood_reviewed_at"] {
             assert!(has_column(&conn, "library_entries", column), "{column} should exist");
         }
         assert_eq!(index_names(&conn), EXPECTED_INDEXES);
@@ -3093,12 +3197,9 @@ mod tests {
             assert_eq!(e.moods.iter().map(|m| m.mood.clone()).collect::<Vec<_>>(), MoodVocabulary::defaults().ids());
             assert!(e.moods.iter().all(|m| m.auto.is_none() && m.user.is_none()));
         }
-        assert_eq!(
-            (t.role, t.role_auto, t.role_auto_score, t.role_user),
-            (Some(Role::NonCombat), Some(Role::Combat), Some(0.9), Some(Role::NonCombat))
-        );
-        assert_eq!(t.tags, vec!["brass", "folk"]);
-        assert_eq!(t.auto_tags, vec![crate::models::AutoTag { tag: "brass".into(), score: 0.7 }]);
+        assert_eq!((t.role, t.role_user), (Some(Role::NonCombat), Some(Role::NonCombat)));
+        // v16 keeps the user's tag and drops the analyzer's.
+        assert_eq!(t.tags, vec!["folk"]);
 
         // The pool calibration row and the stored scores are gone, so the
         // next run scores moods and takes a mood calibration.
@@ -3115,10 +3216,7 @@ mod tests {
         assert_eq!(state.mood_vocabulary, MoodVocabulary::defaults());
         assert_eq!((state.mood_calibration.clone(), state.moods_need_recalibration), (None, false));
         assert!(!state.mood_vocabulary_unreadable);
-        let scores: i64 = conn
-            .query_row("SELECT COUNT(*) FROM entry_analysis WHERE scores_json IS NOT NULL", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(scores, 0);
+        assert!(!has_column(&conn, "entry_analysis", "scores_json"));
         let status: String = conn
             .query_row("SELECT status FROM entry_analysis WHERE library_entry_id = 'T'", [], |r| r.get(0))
             .unwrap();
@@ -3248,6 +3346,7 @@ mod tests {
     fn create_v12_db(path: &Path, vocabulary_json: &str) {
         drop(open_db(path).unwrap());
         let conn = Connection::open(path).unwrap();
+        make_v15_shape(&conn);
         conn.execute_batch(
             r#"UPDATE meta SET value = '12' WHERE key = 'schema_version';
                INSERT OR REPLACE INTO meta (key, value) VALUES ('mood_calibration', '{"calibratedAt":"1"}');
@@ -3302,7 +3401,7 @@ mod tests {
         assert_eq!(meta_value(&conn, "mood_vocabulary").as_deref(), Some(edited_json.as_str()));
         assert_eq!(meta_value(&conn, "mood_calibration"), None);
         assert_eq!(mood_rows(&conn), vec![("L".into(), "peaceful".into(), None, Some(0.25))]);
-        assert_eq!(stored_score_count(&conn), 0);
+        assert!(!has_column(&conn, "entry_analysis", "scores_json"));
         let reviewed: Option<String> = conn
             .query_row("SELECT mood_reviewed_at FROM library_entries WHERE id = 'L'", [], |r| r.get(0))
             .unwrap();
@@ -3484,14 +3583,15 @@ mod tests {
                 [&id],
             )
             .unwrap();
-            // Put it back to v14: no flag table, version 14.
+            // Put it back to v14: the v15 shape without the flag table.
+            make_v15_shape(&conn);
             conn.execute_batch("DROP TABLE mood_flags; UPDATE meta SET value = '14' WHERE key = 'schema_version';")
                 .unwrap();
             id
         };
 
         let conn = open_db(&path).unwrap();
-        assert_eq!(read_schema_version(&conn), 15);
+        assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
         let flags: i64 = conn.query_row("SELECT COUNT(*) FROM mood_flags", [], |r| r.get(0)).unwrap();
         assert_eq!(flags, 0);
         assert_eq!(mood_rows(&conn), vec![(id, "grim".into(), Some(0.4), Some(0.75))]);
@@ -3610,4 +3710,232 @@ mod tests {
         assert!(load_full_state(&conn).unwrap().moods_need_recalibration);
     }
 
+
+    /// A v15 library: auto-only tags, no votes, yes votes (some beside an
+    /// analyzer score), analyzer roles beside user roles, the scene
+    /// vocabulary, stored scores, moods (both layers), mood flags and the
+    /// mood meta rows.
+    fn create_v15_db(path: &Path) {
+        drop(open_db(path).unwrap());
+        let conn = Connection::open(path).unwrap();
+        make_v15_shape(&conn);
+        conn.execute_batch(
+            r#"UPDATE meta SET value = '15' WHERE key = 'schema_version';
+               INSERT INTO library_entries (id, file_path, name, created_at, entry_type, role_auto, role_auto_score, role_user) VALUES
+                 ('M', '/m.mp3', 'M', '1', 'music', 'combat', 0.9, 'non_combat'),
+                 ('A', '/a.mp3', 'A', '2', 'music', 'combat', 0.8, NULL),
+                 ('U', '/u.mp3', 'U', '3', 'music', NULL, NULL, 'combat'),
+                 ('N', '/n.mp3', 'N', '4', 'music', 'non_combat', 0.1, NULL),
+                 ('R', '/r.ogg', 'R', '5', 'ambiance', NULL, NULL, NULL);
+               INSERT INTO tags (id, name) VALUES
+                 ('t-folk', 'folk'), ('t-brass', 'brass'), ('t-dark', 'dark'),
+                 ('t-boss', 'boss'), ('t-rain', 'rain'), ('t-electronic', 'electronic');
+               INSERT INTO library_entry_tags (library_entry_id, tag_id, auto_score, user_vote) VALUES
+                 ('M', 't-folk', NULL, 1),
+                 ('M', 't-brass', 0.7, NULL),
+                 ('M', 't-dark', 0.6, 0),
+                 ('M', 't-boss', 0.9, 1),
+                 ('A', 't-electronic', 0.8, NULL),
+                 ('A', 't-folk', NULL, 0),
+                 ('U', 't-boss', NULL, 1),
+                 ('R', 't-rain', NULL, 1);
+               INSERT INTO entry_analysis (library_entry_id, content_hash, status, analyzed_at, scores_json) VALUES
+                 ('M', 'h-m', 'embedded', '7', '{"gate":1}'),
+                 ('A', 'h-a', 'failed', NULL, NULL);
+               INSERT INTO library_entry_moods (library_entry_id, mood, auto_score, user_level) VALUES
+                 ('M', 'grim', 0.4, 0.75),
+                 ('M', 'energy', 0.6, NULL),
+                 ('A', 'heroic', NULL, 1.0);
+               INSERT INTO mood_flags (library_entry_id, mood, kind, band, bound, bar_at_flag, lines_sig, created_at) VALUES
+                 ('M', 'grim', 'band', 'definitely', 'in', 0.4, 'sig', 1);
+               INSERT INTO meta (key, value) VALUES
+                 ('autotag_scene_encounter', '{"vocabulary":["folk","electronic","playful"]}'),
+                 ('mood_calibration', '{"calibratedAt":"1"}'),
+                 ('mood_tune_prefs', '{"grim":{"neverSuggest":["sad"]}}');"#,
+        )
+        .unwrap();
+    }
+
+    /// Every mood row, every flag as (entry, mood, kind), and the mood meta
+    /// rows, for comparing before and after a migration.
+    type MoodSnapshot = (Vec<MoodRow>, Vec<(String, String, String)>, Vec<Option<String>>);
+
+    fn mood_snapshot(conn: &Connection) -> MoodSnapshot {
+        let flags = conn
+            .prepare("SELECT library_entry_id, mood, kind FROM mood_flags ORDER BY library_entry_id, mood")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let meta = ["mood_vocabulary", "mood_calibration", "mood_tune_prefs"]
+            .iter()
+            .map(|k| meta_value(conn, k))
+            .collect();
+        (mood_rows(conn), flags, meta)
+    }
+
+    #[test]
+    fn v16_keeps_only_user_tags_and_roles_and_leaves_moods_alone() {
+        use crate::models::Role;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lutedrop.db");
+        create_v15_db(&path);
+        let before = mood_snapshot(&Connection::open(&path).unwrap());
+        assert_eq!(before.0.len(), 3);
+
+        let conn = open_db(&path).unwrap();
+        assert_eq!(read_schema_version(&conn), SCHEMA_VERSION);
+        assert_eq!(SCHEMA_VERSION, 16);
+
+        // Only the yes votes are left, as plain tags.
+        assert_eq!(entry_tags(&conn, "M"), pairs(&[("boss", "user"), ("folk", "user")]));
+        assert!(entry_tags(&conn, "A").is_empty());
+        assert_eq!(entry_tags(&conn, "U"), pairs(&[("boss", "user")]));
+        assert_eq!(entry_tags(&conn, "R"), pairs(&[("rain", "user")]));
+        // Tags nothing uses any more are swept.
+        let names: Vec<String> = conn
+            .prepare("SELECT name FROM tags ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(names, ["boss", "folk", "rain"]);
+
+        // The analyzer's role, the scene vocabulary and the stored scores go.
+        for old in ["role_auto", "role_auto_score"] {
+            assert!(!has_column(&conn, "library_entries", old), "{old} should be gone");
+        }
+        for old in ["auto_score", "user_vote"] {
+            assert!(!has_column(&conn, "library_entry_tags", old), "{old} should be gone");
+        }
+        assert!(!has_column(&conn, "entry_analysis", "scores_json"));
+        assert_eq!(meta_value(&conn, SCENE_CONFIG_KEY), None);
+        assert_eq!(index_names(&conn), EXPECTED_INDEXES);
+
+        // The analysis status stays.
+        let analysis = |id: &str| -> (String, Option<String>) {
+            conn.query_row(
+                "SELECT status, analyzed_at FROM entry_analysis WHERE library_entry_id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        assert_eq!(analysis("M"), ("embedded".into(), Some("7".into())));
+        assert_eq!(analysis("A"), ("failed".into(), None));
+
+        // Moods (both layers), flags and the mood meta rows are untouched.
+        assert_eq!(mood_snapshot(&conn), before);
+
+        // What the app sees: the user's role, else Non-combat.
+        ensure_test_config(&conn);
+        let state = load_full_state(&conn).unwrap();
+        let entry = |id: &str| state.library_entries.iter().find(|e| e.id == id).unwrap();
+        let role = |id: &str| (entry(id).role, entry(id).role_user);
+        assert_eq!(role("M"), (Some(Role::NonCombat), Some(Role::NonCombat)));
+        assert_eq!(role("A"), (Some(Role::NonCombat), None), "the analyzer's Combat is gone");
+        assert_eq!(role("U"), (Some(Role::Combat), Some(Role::Combat)));
+        assert_eq!(role("N"), (Some(Role::NonCombat), None));
+        assert_eq!(role("R"), (None, None));
+        assert_eq!(entry("M").tags, vec!["boss", "folk"]);
+        assert_eq!(state.tags, vec!["boss", "folk", "rain"]);
+        let grim = entry("M").moods.iter().find(|m| m.mood == "grim").unwrap();
+        assert_eq!((grim.auto, grim.user), (Some(0.4), Some(0.75)));
+        assert!(grim.flag.is_some());
+
+        // A pre-migration copy of the v15 database keeps everything.
+        let backups = pre_migration_backups(dir.path(), 15);
+        assert_eq!(backups.len(), 1);
+        let copy = Connection::open(&backups[0]).unwrap();
+        assert_eq!(read_schema_version(&copy), 15);
+        assert_eq!(entry_tags(&copy, "A"), pairs(&[("electronic", "auto"), ("folk", "no")]));
+    }
+
+    #[test]
+    fn v16_migration_rolls_back_as_a_whole_on_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lutedrop.db");
+        create_v15_db(&path);
+        let conn = Connection::open(&path).unwrap();
+        // An index on a column v16 drops makes that DROP fail.
+        conn.execute_batch("CREATE INDEX idx_in_the_way ON library_entries(role_auto_score);").unwrap();
+
+        assert!(run_migrations(&conn).is_err());
+
+        assert_eq!(read_schema_version(&conn), 15);
+        assert!(has_column(&conn, "library_entry_tags", "user_vote"));
+        assert!(has_column(&conn, "library_entries", "role_auto"));
+        assert!(meta_value(&conn, SCENE_CONFIG_KEY).is_some());
+        assert_eq!(entry_tags(&conn, "A"), pairs(&[("electronic", "auto"), ("folk", "no")]));
+    }
+
+    /// The columns of `table`, in order, with their declared type.
+    fn table_columns(conn: &Connection, table: &str) -> Vec<(String, String)> {
+        conn.prepare("SELECT name, type FROM pragma_table_info(?1) ORDER BY cid")
+            .unwrap()
+            .query_map([table], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn migrated_v16_tables_match_a_fresh_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let migrated_path = dir.path().join("migrated.db");
+        create_v15_db(&migrated_path);
+        let migrated = open_db(&migrated_path).unwrap();
+        let fresh = open_db(&dir.path().join("fresh.db")).unwrap();
+        for table in ["library_entry_tags", "entry_analysis", "library_entry_moods", "mood_flags", "tags"] {
+            assert_eq!(table_columns(&migrated, table), table_columns(&fresh, table), "{table}");
+        }
+        // library_entries gained its columns in a different order over the
+        // years; the set must match.
+        let mut m = table_columns(&migrated, "library_entries");
+        let mut f = table_columns(&fresh, "library_entries");
+        m.sort();
+        f.sort();
+        assert_eq!(m, f);
+        assert_eq!(index_names(&migrated), index_names(&fresh));
+        assert_eq!(
+            table_columns(&fresh, "library_entry_tags"),
+            vec![("library_entry_id".to_string(), "TEXT".to_string()), ("tag_id".to_string(), "TEXT".to_string())]
+        );
+        // The primary key and cascade work on the migrated table.
+        assert!(migrated
+            .execute("INSERT INTO library_entry_tags (library_entry_id, tag_id) VALUES ('M', 't-folk')", [])
+            .is_err());
+        library::delete_library_entry(&migrated, "M").unwrap();
+        let left: i64 = migrated
+            .query_row("SELECT COUNT(*) FROM library_entry_tags WHERE library_entry_id = 'M'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn v10_remove_from_saved_vocabulary_keeps_the_rest() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        // Nothing saved: nothing to do.
+        v10_remove_from_saved_vocabulary(&conn, "driving").unwrap();
+        assert_eq!(meta_value(&conn, SCENE_CONFIG_KEY), None);
+
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)",
+            params![SCENE_CONFIG_KEY, r#"{"gateTag":"encounter","vocabulary":["folk"," Driving ","brass","driving"]}"#],
+        )
+        .unwrap();
+        v10_remove_from_saved_vocabulary(&conn, "driving").unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&meta_value(&conn, SCENE_CONFIG_KEY).unwrap()).unwrap();
+        assert_eq!(saved["vocabulary"], serde_json::json!(["folk", "brass"]));
+        assert_eq!(saved["gateTag"], "encounter");
+
+        // An unparseable value is left alone.
+        conn.execute("UPDATE meta SET value = 'not json' WHERE key = ?1", [SCENE_CONFIG_KEY]).unwrap();
+        v10_remove_from_saved_vocabulary(&conn, "driving").unwrap();
+        assert_eq!(meta_value(&conn, SCENE_CONFIG_KEY).as_deref(), Some("not json"));
+    }
 }

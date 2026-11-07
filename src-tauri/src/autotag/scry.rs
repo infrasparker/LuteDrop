@@ -21,8 +21,8 @@ use crate::models::{AnalysisStatus, EntryAnalysis, EnergyPreview, ScryHit, ScryP
 /// Largest result count the analyzer returns.
 const MAX_LIMIT: u32 = 500;
 
-/// Shown when auto-tagging is off or has no analyzer URL.
-const NOT_CONFIGURED: &str = "Auto-tagging analyzer is not configured";
+/// Shown when the analyzer is off or has no URL.
+const NOT_CONFIGURED: &str = "The analyzer is not configured";
 
 /// The music entries that have a content hash.
 pub(crate) struct MusicIndex {
@@ -100,7 +100,7 @@ fn clamp_limit(limit: u32) -> u32 {
     limit.clamp(1, MAX_LIMIT)
 }
 
-/// An analyzer client for the saved settings, or an error if auto-tagging is
+/// An analyzer client for the saved settings, or an error if the analyzer is
 /// off or has no URL.
 pub fn client_for(db: &Mutex<Connection>) -> Result<HttpAnalyzer, String> {
     let settings = {
@@ -484,7 +484,7 @@ mod tests {
     #[test]
     fn not_configured_returns_error() {
         let db = setup();
-        let message = "Auto-tagging analyzer is not configured".to_string();
+        let message = "The analyzer is not configured".to_string();
         let save = |enabled: bool, url: &str| {
             let conn = db.lock().unwrap();
             settings::save_autotag(
