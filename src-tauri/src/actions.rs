@@ -6,11 +6,13 @@ use crate::database;
 use crate::database::{configurations, hierarchy, library, DbError};
 use crate::autotag::client::{AnalyzerClient, HttpAnalyzer};
 use crate::autotag::scry;
+use crate::autotag::case_import;
+use crate::database::mood_flags;
 use crate::database::autotag_db;
 use crate::database::settings::{self as broadcast_settings, BroadcastSettings};
 use crate::database::settings as autotag_settings;
 use crate::models::{
-    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
+    AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
     FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodResetImpact, MoodVocabulary, Role, SceneConfig, Track, TrackUpdates, ScryHit,
     ScryPoint, EnergyPreview};
 use crate::relink;
@@ -433,6 +435,33 @@ pub fn set_entry_mood_level(
     level: Option<f64>,
 ) -> Result<AppState, String> {
     mutate_and_reload(container, |conn| library::set_user_mood_level(conn, &entry_ids, &mood, level))
+}
+
+/// Flags one song's value for a mood (see `mood_flags::set_flag_for_entry`).
+pub fn set_mood_flag(
+    container: &AppStateContainer,
+    entry_id: String,
+    mood: String,
+    kind: FlagKind,
+    band: Option<FlagBand>,
+) -> Result<AppState, String> {
+    mutate_and_reload(container, |conn| mood_flags::set_flag_for_entry(conn, &entry_id, &mood, kind, band))
+}
+
+/// Removes the flag a song has for a mood.
+pub fn clear_mood_flag(container: &AppStateContainer, entry_id: String, mood: String) -> Result<AppState, String> {
+    mutate_and_reload(container, |conn| mood_flags::clear_flag(conn, &entry_id, &mood))
+}
+
+/// "Keep" on a stale flag: it counts as made against the mood's current lines.
+pub fn keep_mood_flag(container: &AppStateContainer, entry_id: String, mood: String) -> Result<AppState, String> {
+    mutate_and_reload(container, |conn| mood_flags::keep_flag(conn, &entry_id, &mood))
+}
+
+/// One-off: imports the case-study file at `path` as flags.
+pub fn import_case_studies(container: &AppStateContainer, path: String) -> Result<CaseImportReport, String> {
+    let json = std::fs::read_to_string(&path).map_err(|e| format!("Could not read {path}: {e}"))?;
+    with_db(container, |conn| case_import::import_into(conn, &json))
 }
 
 /// Saves the mood vocabulary from Settings → Moods (see

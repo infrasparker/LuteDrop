@@ -6,6 +6,7 @@
 //! background thread that decides when to call it, and `Handle` is how the
 //! rest of the app talks to that thread.
 
+pub mod case_import;
 pub mod client;
 pub mod plan;
 pub mod scry;

@@ -3,7 +3,7 @@ use tauri::State;
 use std::sync::Arc;
 use crate::actions;
 use crate::models::{
-    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodResetImpact, MoodVocabulary,
+    AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodResetImpact, MoodVocabulary,
     Role, SceneConfig, TrackUpdates, ScryHit, ScryPoint, EnergyPreview};
 use crate::state::AppStateContainer;
 use crate::waveform;
@@ -305,6 +305,43 @@ pub fn set_entry_mood_level(
     level: Option<f64>,
 ) -> Result<AppState, String> {
     actions::set_entry_mood_level(&state, entry_ids, mood, level)
+}
+
+#[tauri::command]
+pub fn set_mood_flag(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_id: String,
+    mood: String,
+    kind: FlagKind,
+    band: Option<FlagBand>,
+) -> Result<AppState, String> {
+    actions::set_mood_flag(&state, entry_id, mood, kind, band)
+}
+
+#[tauri::command]
+pub fn clear_mood_flag(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_id: String,
+    mood: String,
+) -> Result<AppState, String> {
+    actions::clear_mood_flag(&state, entry_id, mood)
+}
+
+#[tauri::command]
+pub fn keep_mood_flag(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_id: String,
+    mood: String,
+) -> Result<AppState, String> {
+    actions::keep_mood_flag(&state, entry_id, mood)
+}
+
+#[tauri::command]
+pub fn import_case_studies(
+    state: State<'_, Arc<AppStateContainer>>,
+    path: String,
+) -> Result<CaseImportReport, String> {
+    actions::import_case_studies(&state, path)
 }
 
 #[tauri::command]

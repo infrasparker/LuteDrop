@@ -388,6 +388,18 @@ pub struct MoodFlag {
     pub stale: bool,
 }
 
+/// What the one-off case-study import did: how many flags it wrote, the
+/// tracks it could not find in the library, and the moods in the file that
+/// are not in the vocabulary.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct CaseImportReport {
+    pub imported: usize,
+    pub unmatched: Vec<String>,
+    pub skipped_moods: Vec<String>,
+}
+
 /// Which layer a shown value comes from: the user's, or the analyzer's.
 /// Used by `TagScore::applied`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -6,15 +6,12 @@
 //! set or last kept. If the wording changes later the flag is `stale`: it
 //! was made against different lines, and the user can keep or drop it.
 
-// The setters and the tuner's reads are called by the flag commands and the
-// Tune request, which come in later tasks.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use rusqlite::{params, Connection};
 
-use crate::models::{FlagBand, FlagBound, FlagKind, MoodFlag, MoodVocabulary};
+use super::settings;
+use crate::models::{FlagBand, FlagBound, FlagKind, MoodFlag, MoodVocabulary, ENERGY_ID};
 
 impl FlagKind {
     fn as_db_str(self) -> &'static str {
@@ -189,6 +186,8 @@ const SELECT_FLAGS: &str =
     "SELECT library_entry_id, mood, kind, band, bound, bar_at_flag, calibrated_at, lines_sig FROM mood_flags";
 
 /// Every flag of one mood.
+// Read by the Tune request in Task 5.
+#[allow(dead_code)]
 pub fn flags_for_mood(conn: &Connection, mood: &str) -> Result<Vec<StoredFlag>, String> {
     let mut stmt = conn
         .prepare(&format!("{SELECT_FLAGS} WHERE mood = ?1 ORDER BY created_at, library_entry_id"))
@@ -231,8 +230,71 @@ pub fn load_flags(
     Ok(out)
 }
 
+/// The flag command's work: validates and stores one flag the user made on a
+/// song, against the current vocabulary and calibration.
+///
+/// A `band` flag needs a band (Definitely and Understandable mean "at least"
+/// that band, Stretch and No mean "in" it). `higher` and `lower` carry no band
+/// and record the song's suggested bar for the mood (the analyzer's value, not
+/// the user's level) and when the calibration was taken, so the tuner can read
+/// them against the bar as it was.
+pub fn set_flag_for_entry(
+    conn: &Connection,
+    entry_id: &str,
+    mood: &str,
+    kind: FlagKind,
+    band: Option<FlagBand>,
+) -> Result<(), String> {
+    let vocabulary = settings::load_mood_vocabulary(conn)?;
+    if mood == ENERGY_ID || !vocabulary.contains(mood) {
+        return Err(format!("There is no mood \"{mood}\" to flag"));
+    }
+    let lines = lines_sig(&vocabulary.prompt_signature(mood).unwrap_or_default());
+    match (kind, band) {
+        (FlagKind::Band, None) => Err("Pick a band for this flag".to_string()),
+        (FlagKind::Higher | FlagKind::Lower, Some(_)) => {
+            Err("A higher or lower flag does not take a band".to_string())
+        }
+        (FlagKind::Band, Some(band)) => {
+            let bound = match band {
+                FlagBand::Definitely | FlagBand::Understandable => FlagBound::AtLeast,
+                FlagBand::Stretch | FlagBand::No => FlagBound::In,
+            };
+            set_flag(conn, entry_id, mood, kind, Some(band), bound, None, None, &lines)
+        }
+        (FlagKind::Higher | FlagKind::Lower, None) => {
+            let bar: Option<f64> = conn
+                .query_row(
+                    "SELECT auto_score FROM library_entry_moods WHERE library_entry_id = ?1 AND mood = ?2",
+                    params![entry_id, mood],
+                    |r| r.get(0),
+                )
+                .or_else(|e| match e {
+                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                    e => Err(e),
+                })
+                .map_err(|e| format!("Failed to read the suggested value: {e}"))?;
+            let bar = bar.ok_or("This song has no suggested value for that mood yet")?;
+            let calibrated_at = settings::load_mood_calibration(conn)?.map(|c| c.calibrated_at);
+            let bound = if kind == FlagKind::Higher { FlagBound::AtLeast } else { FlagBound::AtMost };
+            set_flag(conn, entry_id, mood, kind, None, bound, Some(bar), calibrated_at.as_deref(), &lines)
+        }
+    }
+}
+
+/// "Keep" on a stale flag: it now counts as made against the mood's current
+/// lines. A mood no longer in the vocabulary is refused.
+pub fn keep_flag(conn: &Connection, entry_id: &str, mood: &str) -> Result<(), String> {
+    let lines = settings::load_mood_vocabulary(conn)?
+        .prompt_signature(mood)
+        .ok_or_else(|| format!("There is no mood \"{mood}\""))?;
+    refresh_flag(conn, entry_id, mood, &lines_sig(&lines))
+}
+
 /// Moves the listed songs' flags from one mood to another (for a mood split
 /// or merge). A flag already on the target mood is replaced.
+// Called by the mood split and merge in Task 5.
+#[allow(dead_code)]
 pub fn move_flags(conn: &Connection, from: &str, to: &str, entry_ids: &[String]) -> Result<(), String> {
     for id in entry_ids {
         conn.execute(
@@ -247,6 +309,8 @@ pub fn move_flags(conn: &Connection, from: &str, to: &str, entry_ids: &[String])
 /// Copies the "not this mood" flags (band `no`, bound `at_most`, kind
 /// `lower`) from one mood to another, leaving any flag the target already
 /// has alone.
+// Called by the mood split in Task 5.
+#[allow(dead_code)]
 pub fn copy_low_flags(conn: &Connection, from: &str, to: &str) -> Result<(), String> {
     conn.execute(
         "INSERT OR IGNORE INTO mood_flags
@@ -384,5 +448,89 @@ mod tests {
         want.sort();
         assert_eq!(copied, want);
         assert_eq!(flags_for_mood(&conn, "peaceful").unwrap().len(), 5);
+    }
+
+    fn set_auto(conn: &Connection, id: &str, mood: &str, score: f64) {
+        conn.execute(
+            "INSERT INTO library_entry_moods (library_entry_id, mood, auto_score, user_level) VALUES (?1, ?2, ?3, 1.0)",
+            params![id, mood, score],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn set_mood_flag_band_definitely_is_at_least() {
+        let conn = open_memory_db();
+        let a = entry(&conn, "a");
+        let want = [
+            (FlagBand::Definitely, FlagBound::AtLeast),
+            (FlagBand::Understandable, FlagBound::AtLeast),
+            (FlagBand::Stretch, FlagBound::In),
+            (FlagBand::No, FlagBound::In),
+        ];
+        for (band, bound) in want {
+            set_flag_for_entry(&conn, &a, "peaceful", FlagKind::Band, Some(band)).unwrap();
+            let f = &flags_for_mood(&conn, "peaceful").unwrap()[0];
+            assert_eq!((f.band, f.bound, f.bar_at_flag), (Some(band), bound, None));
+        }
+        let sig = lines_sig(&MoodVocabulary::defaults().prompt_signature("peaceful").unwrap());
+        assert_eq!(flags_for_mood(&conn, "peaceful").unwrap()[0].lines_sig, sig);
+    }
+
+    #[test]
+    fn set_mood_flag_higher_records_bar_and_calibration() {
+        use crate::autotag::plan::MoodCalibration;
+        let conn = open_memory_db();
+        let a = entry(&conn, "a");
+        settings::save_mood_calibration(
+            &conn,
+            &MoodCalibration {
+                calibrated_at: "123".into(),
+                tracks: 50,
+                prompts: Default::default(),
+                stats: Default::default(),
+                source: Default::default(),
+                reference_set: None,
+            },
+        )
+        .unwrap();
+
+        // No suggestion yet: refused.
+        let err = set_flag_for_entry(&conn, &a, "peaceful", FlagKind::Higher, None).unwrap_err();
+        assert_eq!(err, "This song has no suggested value for that mood yet");
+
+        set_auto(&conn, &a, "peaceful", 0.62);
+        set_flag_for_entry(&conn, &a, "peaceful", FlagKind::Higher, None).unwrap();
+        let f = &flags_for_mood(&conn, "peaceful").unwrap()[0];
+        assert_eq!(
+            (f.kind, f.band, f.bound, f.bar_at_flag, f.calibrated_at.as_deref()),
+            (FlagKind::Higher, None, FlagBound::AtLeast, Some(0.62), Some("123"))
+        );
+        set_flag_for_entry(&conn, &a, "peaceful", FlagKind::Lower, None).unwrap();
+        assert_eq!(flags_for_mood(&conn, "peaceful").unwrap()[0].bound, FlagBound::AtMost);
+    }
+
+    #[test]
+    fn set_mood_flag_refuses_energy_unknown_mood_and_bad_kind_band_pairs() {
+        let conn = open_memory_db();
+        let a = entry(&conn, "a");
+        set_auto(&conn, &a, "peaceful", 0.5);
+        assert!(set_flag_for_entry(&conn, &a, "energy", FlagKind::Band, Some(FlagBand::No)).is_err());
+        assert!(set_flag_for_entry(&conn, &a, "nosuchmood", FlagKind::Band, Some(FlagBand::No)).is_err());
+        assert!(set_flag_for_entry(&conn, &a, "peaceful", FlagKind::Band, None).is_err());
+        assert!(set_flag_for_entry(&conn, &a, "peaceful", FlagKind::Higher, Some(FlagBand::No)).is_err());
+        assert!(set_flag_for_entry(&conn, &a, "peaceful", FlagKind::Lower, Some(FlagBand::No)).is_err());
+        assert_eq!(count(&conn), 0);
+    }
+
+    #[test]
+    fn keep_flag_refreshes_lines_and_refuses_unknown_mood() {
+        let conn = open_memory_db();
+        let a = entry(&conn, "a");
+        band_flag(&conn, &a, "peaceful", FlagBand::Stretch, "old lines");
+        keep_flag(&conn, &a, "peaceful").unwrap();
+        let sig = lines_sig(&MoodVocabulary::defaults().prompt_signature("peaceful").unwrap());
+        assert_eq!(flags_for_mood(&conn, "peaceful").unwrap()[0].lines_sig, sig);
+        assert!(keep_flag(&conn, &a, "nosuchmood").is_err());
     }
 }
