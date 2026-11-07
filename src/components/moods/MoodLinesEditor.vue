@@ -73,6 +73,9 @@ function onInput(i: number, e: Event): void {
   const el = e.target as HTMLTextAreaElement;
   const caret = el.selectionStart ?? el.value.length;
   const parts = el.value.split('\n');
+  // Typing into "Add a line" starts a new line; the typing then continues
+  // in that line, so the add field must hand over focus and empty itself.
+  const fromAddField = i >= rows.value.length;
   const next = [...rows.value];
   if (i >= next.length) next.push(...parts);
   else next.splice(i, 1, ...parts);
@@ -87,7 +90,8 @@ function onInput(i: number, e: Event): void {
   }
   rows.value = next;
   emit('update:text', next.join('\n'));
-  if (parts.length > 1) void focusLine(line, lastCaret);
+  if (fromAddField) el.value = '';
+  if (parts.length > 1 || fromAddField) void focusLine(line, lastCaret);
 }
 
 function onKeydown(i: number, e: KeyboardEvent): void {
