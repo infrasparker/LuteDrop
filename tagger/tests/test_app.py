@@ -1039,6 +1039,16 @@ def test_tune_compare_reports_each_version_in_order_without_searching(client_tun
     assert out["proposals"][2]["unsatisfied"] == []       # the alpha version lifts the alpha songs
 
 
+def test_tune_compare_works_without_flags(client_tune):
+    # The Moods page evaluates versions of a mood nobody has flagged yet.
+    r = client_tune.post("/tune", json=_tune_body(mode="compare", flags=[], candidates=[["alpha"]]), headers=HEADERS)
+    assert r.status_code == 200
+    out = r.json()
+    assert [p["lines"] for p in out["proposals"]] == [["alpha"]]
+    assert out["proposals"][0]["flags"] == [] and out["baseline"]["flags"] == []
+    assert len(out["proposals"][0]["top"]) > 0
+
+
 def test_tune_compare_needs_a_version_and_at_most_eight(client_tune):
     assert client_tune.post("/tune", json=_tune_body(mode="compare"), headers=HEADERS).status_code == 422
     nine = [["beta"]] * 9

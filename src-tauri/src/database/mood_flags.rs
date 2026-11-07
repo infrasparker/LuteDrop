@@ -203,6 +203,27 @@ pub fn refresh_flag(conn: &Connection, entry_id: &str, mood: &str, lines_sig: &s
     Ok(())
 }
 
+/// Turns a song's flag on `mood` into a band flag (`band`, `bound`) made
+/// against `lines_sig`, keeping when it was set (so the newest-flag order
+/// stays). The direction flag's bar and calibration mark go.
+pub fn convert_to_band(
+    conn: &Connection,
+    entry_id: &str,
+    mood: &str,
+    band: FlagBand,
+    bound: FlagBound,
+    lines_sig: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE mood_flags SET kind = 'band', band = ?3, bound = ?4, bar_at_flag = NULL,
+             calibrated_at = NULL, lines_sig = ?5
+         WHERE library_entry_id = ?1 AND mood = ?2",
+        params![entry_id, mood, band.as_db_str(), bound.as_db_str(), lines_sig],
+    )
+    .map_err(|e| format!("Failed to convert flag: {e}"))?;
+    Ok(())
+}
+
 fn read_row(row: &rusqlite::Row) -> rusqlite::Result<StoredFlag> {
     let bad = |what: &str, v: &str| {
         rusqlite::Error::FromSqlConversionFailure(

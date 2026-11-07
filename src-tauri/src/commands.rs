@@ -3,7 +3,7 @@ use tauri::State;
 use std::sync::Arc;
 use crate::actions;
 use crate::models::{
-    AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodResetImpact, MoodVocabulary,
+    AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodResetImpact, MoodTunePrefs, MoodVocabulary,
     Role, SceneConfig, TrackUpdates, ScryHit, ScryPoint, EnergyPreview, TuneMode, TuneResult};
 use crate::autotag::tune::TuneInputs;
 use crate::state::AppStateContainer;
@@ -382,8 +382,24 @@ pub fn accept_tuned_lines(
     lines_tuned_from: Vec<String>,
     lines: Vec<String>,
     holding_entry_ids: Vec<String>,
+    reached_bars: Option<std::collections::HashMap<String, f64>>,
 ) -> Result<AppState, String> {
-    actions::accept_tuned_lines(&state, mood_id, lines_tuned_from, lines, holding_entry_ids)
+    actions::accept_tuned_lines(&state, mood_id, lines_tuned_from, lines, holding_entry_ids, reached_bars.unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn load_mood_tune_prefs(
+    state: State<'_, Arc<AppStateContainer>>,
+) -> Result<std::collections::BTreeMap<String, MoodTunePrefs>, String> {
+    actions::load_mood_tune_prefs(&state)
+}
+
+#[tauri::command]
+pub fn save_mood_tune_prefs(
+    state: State<'_, Arc<AppStateContainer>>,
+    prefs: std::collections::BTreeMap<String, MoodTunePrefs>,
+) -> Result<(), String> {
+    actions::save_mood_tune_prefs(&state, prefs)
 }
 
 #[tauri::command]

@@ -7,7 +7,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use crate::autotag::plan::MoodCalibration;
-use crate::models::{AutoTagSettings, MoodVocabulary, SceneConfig};
+use std::collections::BTreeMap;
+
+use crate::models::{AutoTagSettings, MoodTunePrefs, MoodVocabulary, SceneConfig};
 
 const KEY_ENABLED: &str = "broadcast_enabled";
 const KEY_PORT: &str = "broadcast_port";
@@ -22,6 +24,7 @@ const KEY_AUTOTAG_REMOTE_PREFIX: &str = "autotag_remote_prefix";
 const KEY_AUTOTAG_SCENE: &str = "autotag_scene_encounter";
 pub(crate) const KEY_MOOD_CALIBRATION: &str = "mood_calibration";
 pub(crate) const KEY_MOOD_VOCABULARY: &str = "mood_vocabulary";
+const KEY_MOOD_TUNE_PREFS: &str = "mood_tune_prefs";
 
 /// Where the analyzer host mounts the audio folder until the user says otherwise.
 pub const DEFAULT_REMOTE_PREFIX: &str = "/media/audio";
@@ -171,6 +174,40 @@ pub fn load_scene_config(conn: &Connection) -> Result<SceneConfig, String> {
 pub fn save_scene_config(conn: &Connection, c: &SceneConfig) -> Result<(), String> {
     let text = serde_json::to_string(c).map_err(|e| format!("Failed to encode scene config: {e}"))?;
     write_meta(conn, KEY_AUTOTAG_SCENE, &text)
+}
+
+/// Loads the Moods page's per-mood Tune preferences (`MoodTunePrefs`, by
+/// mood id), stored as JSON. Missing or unparseable gives an empty map.
+pub fn load_mood_tune_prefs(conn: &Connection) -> Result<BTreeMap<String, MoodTunePrefs>, String> {
+    let Some(text) = read_meta(conn, KEY_MOOD_TUNE_PREFS)? else {
+        return Ok(BTreeMap::new());
+    };
+    Ok(serde_json::from_str(&text).unwrap_or_else(|e| {
+        log::warn!("Invalid stored {KEY_MOOD_TUNE_PREFS}: {e}; starting empty");
+        BTreeMap::new()
+    }))
+}
+
+/// Saves the per-mood Tune preferences as JSON. Words are trimmed, blanks
+/// and repeats (ignoring case) dropped, and moods left with nothing are
+/// left out.
+pub fn save_mood_tune_prefs(conn: &Connection, prefs: &BTreeMap<String, MoodTunePrefs>) -> Result<(), String> {
+    let cleaned: BTreeMap<String, MoodTunePrefs> = prefs
+        .iter()
+        .map(|(id, p)| {
+            let mut seen = std::collections::HashSet::new();
+            let never_suggest = p
+                .never_suggest
+                .iter()
+                .map(|w| w.trim().to_string())
+                .filter(|w| !w.is_empty() && seen.insert(w.to_lowercase()))
+                .collect();
+            (id.clone(), MoodTunePrefs { never_suggest })
+        })
+        .filter(|(_, p)| !p.never_suggest.is_empty())
+        .collect();
+    let text = serde_json::to_string(&cleaned).map_err(|e| format!("Failed to encode Tune preferences: {e}"))?;
+    write_meta(conn, KEY_MOOD_TUNE_PREFS, &text)
 }
 
 /// Loads the frozen mood calibration (see `MoodCalibration`). `None` until
@@ -329,6 +366,26 @@ mod tests {
         save_mood_calibration(&conn, &cal).unwrap();
         clear_mood_calibration(&conn).unwrap();
         assert_eq!(load_mood_calibration(&conn).unwrap(), None);
+    }
+
+    #[test]
+    fn mood_tune_prefs_round_trip_cleaned_and_survive_bad_json() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        assert!(load_mood_tune_prefs(&conn).unwrap().is_empty());
+
+        let mut prefs = BTreeMap::new();
+        prefs.insert("sorrowful".to_string(), MoodTunePrefs { never_suggest: vec![" sad ".into(), "Sad".into(), "".into(), "slow".into()] });
+        prefs.insert("serene".to_string(), MoodTunePrefs { never_suggest: vec![" ".into()] });
+        save_mood_tune_prefs(&conn, &prefs).unwrap();
+        let back = load_mood_tune_prefs(&conn).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back["sorrowful"].never_suggest, vec!["sad", "slow"]);
+        let text = read_meta(&conn, KEY_MOOD_TUNE_PREFS).unwrap().unwrap();
+        assert_eq!(text, r#"{"sorrowful":{"neverSuggest":["sad","slow"]}}"#);
+
+        write_meta(&conn, KEY_MOOD_TUNE_PREFS, "{oops").unwrap();
+        assert!(load_mood_tune_prefs(&conn).unwrap().is_empty());
     }
 
     #[test]

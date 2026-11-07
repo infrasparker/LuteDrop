@@ -486,6 +486,16 @@ pub struct TuneLeaveOneOut {
     pub total: u32,
 }
 
+/// The Moods page's per-mood preferences for Tune: words never to suggest
+/// (sent as `exclude` for Arrange and Suggest). Stored as JSON in the meta
+/// key `mood_tune_prefs`, a map from mood id to this.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase", default)]
+pub struct MoodTunePrefs {
+    pub never_suggest: Vec<String>,
+}
+
 /// A suggested name word, with how closely its own ranking follows the lines'.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]

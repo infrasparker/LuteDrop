@@ -15,7 +15,7 @@ use crate::database::settings as autotag_settings;
 use crate::models::{
     AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
     FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodResetImpact, MoodVocabulary, Role, SceneConfig, Track, TrackUpdates, ScryHit,
-    ScryPoint, EnergyPreview, TuneResult};
+    ScryPoint, EnergyPreview, TuneResult, MoodTunePrefs};
 use crate::relink;
 use crate::state::AppStateContainer;
 use rusqlite::params;
@@ -490,10 +490,25 @@ pub fn accept_tuned_lines(
     lines_tuned_from: Vec<String>,
     lines: Vec<String>,
     holding_entry_ids: Vec<String>,
+    reached_bars: HashMap<String, f64>,
 ) -> Result<AppState, String> {
     mutate_and_reload(container, |conn| {
-        tune::accept_lines(conn, &mood_id, &lines_tuned_from, &lines, &holding_entry_ids)
+        tune::accept_lines(conn, &mood_id, &lines_tuned_from, &lines, &holding_entry_ids, &reached_bars)
     })
+}
+
+/// The Moods page's per-mood Tune preferences (never-suggest words).
+pub fn load_mood_tune_prefs(
+    container: &AppStateContainer,
+) -> Result<std::collections::BTreeMap<String, MoodTunePrefs>, String> {
+    with_db(container, autotag_settings::load_mood_tune_prefs)
+}
+
+pub fn save_mood_tune_prefs(
+    container: &AppStateContainer,
+    prefs: std::collections::BTreeMap<String, MoodTunePrefs>,
+) -> Result<(), String> {
+    with_db(container, |conn| autotag_settings::save_mood_tune_prefs(conn, &prefs))
 }
 
 /// Accepts a Tune split: the mood keeps `keep_lines` and a new mood takes

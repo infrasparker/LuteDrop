@@ -260,6 +260,14 @@ fn level_band(level: f64) -> FlagBand {
     }
 }
 
+/// The band a bar sits in, by the bands' floors (`band_floor`).
+fn bar_band(bar: f64) -> FlagBand {
+    [FlagBand::Definitely, FlagBand::Understandable, FlagBand::Stretch]
+        .into_iter()
+        .find(|b| band_floor(*b).is_some_and(|floor| bar >= floor))
+        .unwrap_or(FlagBand::No)
+}
+
 /// A built `/tune` request, with how many flags were left out of it and the
 /// song whose flag it focuses on.
 #[derive(Debug, Clone, PartialEq)]
@@ -351,7 +359,8 @@ pub fn build_tune_request(
             lines_sig: current_sig.clone(),
         });
     }
-    if flags.is_empty() {
+    // Compare reviews versions as written, so it works with no flags at all.
+    if flags.is_empty() && inputs.mode != TuneMode::Compare {
         return Err("Flag a few songs on this mood first: Tune needs to know which songs belong".to_string());
     }
 
@@ -398,7 +407,7 @@ pub fn build_tune_request(
         out[i].focus = true;
         out_ids[i].to_string()
     });
-    if out.is_empty() {
+    if out.is_empty() && inputs.mode != TuneMode::Compare {
         return Err(if unusable == 0 {
             "None of the songs flagged on this mood have been analyzed yet".to_string()
         } else {
@@ -662,12 +671,18 @@ fn refresh_holding(conn: &Connection, saved: &MoodVocabulary, mood: &str, entry_
 /// the mood then needs a recalibration just as after a manual edit. The flags
 /// of `holding_entry_ids` (fresh flags that hold under `lines`) are refreshed
 /// to the new lines; every other flag on the mood now reads as stale.
+///
+/// The direction-flag ratchet: a holding Higher / Lower flag whose bar under
+/// `lines` is in `reached_bars` becomes a band flag for where the song now
+/// is (see `ratchet`), so the next tuning keeps that gain instead of asking
+/// for "higher" again from a new starting point.
 pub fn accept_lines(
     conn: &Connection,
     mood_id: &str,
     lines_tuned_from: &[String],
     lines: &[String],
     holding_entry_ids: &[String],
+    reached_bars: &HashMap<String, f64>,
 ) -> Result<(), String> {
     let (mut vocabulary, i) = tuned_mood(conn, mood_id, lines_tuned_from)?;
     vocabulary.moods[i].prompts = lines.to_vec();
@@ -677,7 +692,34 @@ pub fn accept_lines(
         .map_err(|e| format!("Failed to begin accept transaction: {e}"))?;
     let saved = library::write_mood_vocabulary(conn, &vocabulary)?;
     refresh_holding(conn, &saved, mood_id, holding_entry_ids)?;
+    let sig = lines_sig(&saved.prompt_signature(mood_id).unwrap_or_default());
+    let holding: HashSet<&str> = holding_entry_ids.iter().map(String::as_str).collect();
+    for f in mood_flags::flags_for_mood(conn, mood_id)? {
+        if !holding.contains(f.entry_id.as_str()) {
+            continue;
+        }
+        let Some(&bar) = reached_bars.get(&f.entry_id) else { continue };
+        if let Some((band, bound)) = ratchet(f.kind, bar) {
+            mood_flags::convert_to_band(conn, &f.entry_id, mood_id, band, bound, &sig)?;
+        }
+    }
     tx.commit().map_err(|e| format!("Failed to commit accept transaction: {e}"))
+}
+
+/// The band flag a held direction flag becomes once its song's bar reaches
+/// `bar`: Higher → at least the band reached (Stretch or more,
+/// Understandable, Definitely); Lower → at most the band reached
+/// (Understandable or less, Stretch or less), or No. `None` keeps the
+/// direction flag: a band flag would ask nothing (Higher still in No, Lower
+/// still in Definitely), and a band flag is never a direction.
+pub fn ratchet(kind: FlagKind, bar: f64) -> Option<(FlagBand, FlagBound)> {
+    let band = bar_band(bar);
+    match (kind, band) {
+        (FlagKind::Higher, FlagBand::No) | (FlagKind::Lower, FlagBand::Definitely) | (FlagKind::Band, _) => None,
+        (FlagKind::Higher, band) => Some((band, FlagBound::AtLeast)),
+        (FlagKind::Lower, FlagBand::No) => Some((FlagBand::No, FlagBound::In)),
+        (FlagKind::Lower, band) => Some((band, FlagBound::AtMost)),
+    }
 }
 
 /// Accepts a split, in one transaction: the mood keeps `keep_lines`, a new
@@ -1167,6 +1209,72 @@ mod tests {
     }
 
     #[test]
+    fn ratchet_turns_held_directions_into_the_band_reached() {
+        use FlagBand::*;
+        use FlagBound::*;
+        assert_eq!(ratchet(FlagKind::Higher, 0.95), Some((Definitely, AtLeast)));
+        assert_eq!(ratchet(FlagKind::Higher, 0.8), Some((Understandable, AtLeast)));
+        assert_eq!(ratchet(FlagKind::Higher, 0.6), Some((Stretch, AtLeast)));
+        assert_eq!(ratchet(FlagKind::Higher, 0.3), None, "at least No asks nothing");
+        assert_eq!(ratchet(FlagKind::Lower, 0.3), Some((No, In)));
+        assert_eq!(ratchet(FlagKind::Lower, 0.6), Some((Stretch, AtMost)));
+        assert_eq!(ratchet(FlagKind::Lower, 0.8), Some((Understandable, AtMost)));
+        assert_eq!(ratchet(FlagKind::Lower, 0.95), None, "at most Definitely asks nothing");
+        assert_eq!(ratchet(FlagKind::Band, 0.95), None);
+    }
+
+    #[test]
+    fn accept_ratchets_only_held_direction_flags_and_keeps_their_order() {
+        let db = setup();
+        calibrate(&db, CalibrationSource::Library);
+        let sig = current_sig(&db);
+        let (up, down, broken, plain) =
+            (add(&db, "up", "music"), add(&db, "down", "music"), add(&db, "broken", "music"), add(&db, "plain", "music"));
+        direction(&db, &up, FlagKind::Higher, 0.5, NOW, &sig);
+        direction(&db, &down, FlagKind::Lower, 0.7, NOW, &sig);
+        direction(&db, &broken, FlagKind::Higher, 0.5, NOW, &sig);
+        band(&db, &plain, FlagBand::Stretch, FlagBound::In, &sig);
+        let conn = db.lock().unwrap();
+        let order_before = mood_flags::flags_newest_first(&conn, MOOD).unwrap();
+        let current = prompts_of(&conn, MOOD).unwrap();
+        let reached: HashMap<String, f64> =
+            [(up.clone(), 0.8), (down.clone(), 0.55), (broken.clone(), 0.52), (plain.clone(), 0.6)].into();
+        let holding = vec![up.clone(), down.clone(), plain.clone()];
+
+        accept_lines(&conn, MOOD, &current, &["new words".to_string()], &holding, &reached).unwrap();
+
+        let flags = flags_for_mood(&conn, MOOD).unwrap();
+        let get = |id: &str| flags.iter().find(|f| f.entry_id == id).unwrap().clone();
+        let new_sig = lines_sig(&["new words".to_string()]);
+        let u = get(&up);
+        assert_eq!((u.kind, u.band, u.bound), (FlagKind::Band, Some(FlagBand::Understandable), FlagBound::AtLeast));
+        assert_eq!((u.bar_at_flag, u.calibrated_at.as_deref(), u.lines_sig.as_str()), (None, None, new_sig.as_str()));
+        let d = get(&down);
+        assert_eq!((d.kind, d.band, d.bound), (FlagKind::Band, Some(FlagBand::Stretch), FlagBound::AtMost));
+        let b = get(&broken);
+        assert_eq!(b.kind, FlagKind::Higher, "a flag that does not hold stays a direction");
+        assert_ne!(b.lines_sig, new_sig);
+        let p = get(&plain);
+        assert_eq!((p.kind, p.band, p.bound), (FlagKind::Band, Some(FlagBand::Stretch), FlagBound::In));
+        assert_eq!(mood_flags::flags_newest_first(&conn, MOOD).unwrap(), order_before);
+    }
+
+    #[test]
+    fn tune_compare_works_without_flags() {
+        let db = setup();
+        calibrate(&db, CalibrationSource::Library);
+        add(&db, "a", "music");
+        let fake = FakeAnalyzer::default();
+        let mut i = inputs(&[], &[], None, &[]);
+        i.mode = TuneMode::Compare;
+        i.candidates = vec![vec!["quiet".to_string()]];
+        tune(&db, &fake, MOOD, &i).unwrap();
+        let sent = fake.last_tune.lock().unwrap().clone().expect("compare is sent");
+        assert!(sent.flags.is_empty());
+        assert_eq!(sent.candidates, vec![vec!["quiet".to_string()]]);
+    }
+
+    #[test]
     fn tune_refuses_without_flags() {
         let db = setup();
         calibrate(&db, CalibrationSource::Library);
@@ -1340,11 +1448,11 @@ mod tests {
         let conn = db.lock().unwrap();
         let before = settings::load_mood_vocabulary(&conn).unwrap();
         let stale = vec!["not the current line".to_string()];
-        let err = accept_lines(&conn, MOOD, &stale, &["new".to_string()], &[]).unwrap_err();
+        let err = accept_lines(&conn, MOOD, &stale, &["new".to_string()], &[], &HashMap::new()).unwrap_err();
         assert!(err.contains("changed since Tune ran"), "{err}");
         let err = accept_split(&conn, MOOD, &stale, &["k".into()], "fresh", "Fresh", &["n".into()], &[], &[], &[]).unwrap_err();
         assert!(err.contains("changed since Tune ran"), "{err}");
-        let err = accept_lines(&conn, "nosuchmood", &stale, &["new".to_string()], &[]).unwrap_err();
+        let err = accept_lines(&conn, "nosuchmood", &stale, &["new".to_string()], &[], &HashMap::new()).unwrap_err();
         assert!(err.contains("no longer"), "{err}");
         assert_eq!(settings::load_mood_vocabulary(&conn).unwrap(), before);
     }
@@ -1358,7 +1466,7 @@ mod tests {
         assert!(!needs_recalibration(settings::load_mood_calibration(&conn).unwrap().as_ref(), &settings::load_mood_vocabulary(&conn).unwrap()));
 
         let lines = vec!["the calmest music".to_string(), "a quiet lake".to_string()];
-        accept_lines(&conn, MOOD, &current, &lines, &[]).unwrap();
+        accept_lines(&conn, MOOD, &current, &lines, &[], &HashMap::new()).unwrap();
 
         assert_eq!(prompts_of(&conn, MOOD).unwrap(), lines);
         assert!(needs_recalibration(settings::load_mood_calibration(&conn).unwrap().as_ref(), &settings::load_mood_vocabulary(&conn).unwrap()));
@@ -1430,7 +1538,7 @@ mod tests {
         let current = prompts_of(&conn, MOOD).unwrap();
 
         let lines = vec!["the calmest music".to_string()];
-        accept_lines(&conn, MOOD, &current, &lines, std::slice::from_ref(&holds)).unwrap();
+        accept_lines(&conn, MOOD, &current, &lines, std::slice::from_ref(&holds), &HashMap::new()).unwrap();
 
         let mut want = vec![(holds, true), (breaks, false)];
         want.sort();
