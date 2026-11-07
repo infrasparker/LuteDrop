@@ -452,3 +452,12 @@ def test_build_report_describes_a_change():
     b_after, b_before = bars(after, after, M_LIB), bars(before, before, M_LIB)
     assert r["stability"] == pytest.approx(stability(b_after, b_before, flags))
     assert r["loss"] == pytest.approx(loss(b_after, flags) + r["stability"] + tune.LINE_COST * 1)
+
+
+def test_blends_leave_out_a_part_whose_words_are_already_there():
+    units = ["horror, haunted house, terror", "a haunted house", "dark"]
+    U = np.array([[1.0, 0.0, 0.0], [0.9, 0.0, 0.0], [0.8, 0.0, 0.0]])
+    flags = [FlagTarget(0, 0.75, None, 1.0, True, "high")]
+    out = blend_units(U, None, units, flags, M_LIB, top=3)
+    # "a haunted house" adds no word to the first unit, so that pair is the unit itself (dropped).
+    assert out == ["horror, haunted house, terror, dark", "a haunted house, dark"]

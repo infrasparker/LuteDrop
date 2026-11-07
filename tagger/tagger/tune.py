@@ -17,8 +17,8 @@ ORDER_PENALTY = 0.2      # per (high flag, low flag) pair where high <= low
 FOCUS_WEIGHT = 3.0       # a focused flag (the one the user just added) counts this many times over
 # Stability, for the search only: unflagged songs cost nothing to move otherwise, so the
 # search would widen a mood freely. See `stability`.
-STABILITY_WEIGHT = 0.5   # times the mean bar move of unflagged songs
-FIRES_WEIGHT = 0.3       # times the change in songs at 0.5 or more, over max(fires before, 10)
+STABILITY_WEIGHT = 1.0   # times the mean bar move of unflagged songs
+FIRES_WEIGHT = 0.6       # times the change in songs at 0.5 or more, over max(fires before, 10)
 FIRES_FLOOR = 10
 LINE_COST = 0.01         # per line, so a tie on everything else goes to the shorter combination
 # Words too small to tell two lines apart (see `words_of`).
@@ -303,8 +303,8 @@ def blend_groups(U_lib, U_ref, units: list[str], flags: list[FlagTarget], m: Map
                  top: int = 8) -> list[tuple[str, tuple[int, ...]]]:
     """Comma blends ("a, b" and "a, b, c") of every pair and triple of the `top`
     best single units, each with the rows of the units it is made of. A unit that
-    is itself a comma list adds its parts, and a part that repeats is kept once
-    (first place). Blends with fewer than two distinct parts, over the line length
+    is itself a comma list adds its parts, and a part that repeats, or whose words
+    (`words_of`) are all in the parts before it, is left out. Blends with fewer than two distinct parts, over the line length
     limit, or already in `units` are dropped."""
     loss_fn = _loss_fn(flags)
     solo = sorted((_score((i,), U_lib, U_ref, loss_fn, m), i) for i in range(len(units)))
@@ -313,7 +313,13 @@ def blend_groups(U_lib, U_ref, units: list[str], flags: list[FlagTarget], m: Map
     out: list[tuple[str, tuple[int, ...]]] = []
     for n in (2, 3):
         for group in itertools.combinations(best, n):
-            parts = dict.fromkeys(p.strip() for i in group for p in units[i].split(",") if p.strip())
+            parts: list[str] = []
+            covered: set[str] = set()
+            for p in (p.strip() for i in group for p in units[i].split(",")):
+                # A part whose words are all in the blend already adds nothing but length.
+                if p and p not in parts and not (words_of(p) and words_of(p) <= covered):
+                    parts.append(p)
+                    covered |= words_of(p)
             text = ", ".join(parts)
             if len(parts) >= 2 and len(text) <= MAX_UNIT_CHARS and text not in taken:
                 taken.add(text)
