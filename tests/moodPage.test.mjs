@@ -206,7 +206,9 @@ test('top merge: rank, move, new, out with ranks, same as current', () => {
   assert.equal(m.same, false);
   assert.equal(mergeTop(before, before).same, true);
   // The new rank of a song that left, from the review's out ranks.
-  const ranked = mergeTop(after, before, [{ song: song('c'), rank: 22 }]);
+  const ranked = mergeTop(after, before, [{ song: song('c'), rank: 22, bar: 0.41 }]);
+  assert.equal(ranked.out[0].newBar, 0.41);
+  assert.equal(m.out[0].newBar, null);
   assert.equal(ranked.out[0].newRank, 22);
   assert.equal(outRankLabel(ranked.out[0]), '3 → 22');
   assert.equal(outRankLabel(m.out[0]), '3 → out');

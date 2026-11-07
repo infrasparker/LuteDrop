@@ -80,12 +80,18 @@ function onRowKey(entryId: string, e: KeyboardEvent): void {
           >
             <span class="rank" />
             <MoodSong v-model:menu="menus[o.entryId]" :entry-id="o.entryId" :mood-id="moodId" :name="o.name" />
-            <span class="flag-slot">
-              <VIcon v-if="flaggedIds.has(o.entryId)" size="x-small" :color="highIds.has(o.entryId) ? 'error' : 'warning'" aria-label="Flagged">mdi-flag</VIcon>
-            </span>
+            <!-- Empty grid cell: the song's own flag button shows that it is flagged; a red row marks a flagged high song. -->
+            <span class="flag-slot" />
             <span class="tag-slot move">{{ outRankLabel(o) }}</span>
-            <span class="bar" aria-hidden="true" />
-            <span class="val" />
+            <span class="bar" aria-hidden="true">
+              <span v-if="o.newBar !== null" class="fill" :style="{ width: pct(o.newBar) }" />
+            </span>
+            <span class="val">
+              <template v-if="o.newBar !== null">
+                {{ fmt(o.newBar) }}
+                <VTooltip activator="parent" location="top" open-on-focus>Was {{ fmt(o.bar) }}</VTooltip>
+              </template>
+            </span>
           </li>
         </ul>
         <div class="out-rule" role="separator" />

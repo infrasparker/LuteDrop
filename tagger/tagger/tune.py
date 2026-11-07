@@ -474,11 +474,11 @@ def build_report(*, lines, after, before, flags: list[FlagTarget], flag_hashes: 
     def mover(i: int) -> dict:
         return {"hash": hashes[i], "before": float(b_before[i]), "after": float(b_after[i])}
 
-    # Each song that leaves the top list, with its rank (1-based) in the whole new ranking.
+    # Each song that leaves the top list, with its rank (1-based) in the whole new ranking and its new bar.
     rank_after = np.empty(len(b_after), dtype=int)
     rank_after[np.argsort(-b_after, kind="stable")] = np.arange(1, len(b_after) + 1)
     top_now = set(np.argsort(-b_after, kind="stable")[:TOP_N].tolist())
-    out_ranks = [{"hash": hashes[i], "rank": int(rank_after[i])}
+    out_ranks = [{"hash": hashes[i], "rank": int(rank_after[i]), "bar": float(b_after[i])}
                  for i in np.argsort(-b_before, kind="stable")[:TOP_N].tolist() if i not in top_now]
 
     return {

@@ -463,6 +463,9 @@ def test_build_report_describes_a_change():
     left = {t["hash"] for t in r["top_before"]} - {t["hash"] for t in r["top"]}
     assert {o["hash"] for o in r["out_ranks"]} == left
     assert all(o["rank"] == order.index(o["hash"]) + 1 and o["rank"] > 15 for o in r["out_ranks"])
+    # ...and its new bar, so the page can show where it landed.
+    new_bar = dict(zip(hashes, bars(after, after, M_LIB)))
+    assert all(o["bar"] == pytest.approx(new_bar[o["hash"]]) for o in r["out_ranks"])
 
 
 def test_blends_leave_out_a_part_whose_words_are_already_there():
@@ -515,3 +518,19 @@ def test_blend_slots_go_to_units_that_do_not_leak():
     assert any("leaky" in t for t in plain), plain
     steady = [t for t, _ in tune.blend_groups(U, None, units, flags, M_LIB, top=2, before=before)]
     assert steady and not any("leaky" in t for t in steady), steady
+
+
+def test_build_report_gives_each_song_that_left_the_top_its_new_rank_and_bar():
+    # 20 songs with distinct scores; under the new lines song 0 (top before) falls to last.
+    hashes = [f"h{i}" for i in range(20)]
+    before = np.linspace(1.0, 0.0, 20)
+    after = before.copy()
+    after[0] = -1.0
+    r = build_report(
+        lines=["x"], after=(after, None), before=(before, None), flags=[],
+        flag_hashes=[], hashes=hashes, m=M_LIB, other_raw={}, loo=(0, 0), names=[], sources={"x": []},
+    )
+    new_bar = dict(zip(hashes, bars(after, after, M_LIB)))
+    assert [o["hash"] for o in r["out_ranks"]] == ["h0"]
+    assert r["out_ranks"][0]["rank"] == 20
+    assert r["out_ranks"][0]["bar"] == pytest.approx(new_bar["h0"])

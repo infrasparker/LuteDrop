@@ -4,4 +4,8 @@ import type { TuneSong } from "./TuneSong";
 /**
  * A song that left the top list, and where it ranks now.
  */
-export type TuneOutRank = { song: TuneSong, rank: number, };
+export type TuneOutRank = { song: TuneSong, rank: number, 
+/**
+ * Its new bar, when the analyzer reports it.
+ */
+bar: number | null, };

@@ -346,6 +346,8 @@ export interface OutRow {
   /// Its rank in the selected column's whole ranking, when the review says.
   newRank: number | null;
   bar: number;
+  /// Its bar under the selected column, when the review says.
+  newBar: number | null;
 }
 
 /// The selected column's top list against Current's: each song's rank and
@@ -356,6 +358,7 @@ export function mergeTop(
   outRanks: TuneOutRank[] = [],
 ): { rows: TopRow[]; out: OutRow[]; same: boolean } {
   const newRank = new Map(outRanks.map((o) => [o.song.entryId, o.rank]));
+  const newBar = new Map(outRanks.map((o) => [o.song.entryId, o.bar ?? null]));
   const before = new Map(topBefore.map((t, i) => [t.song.entryId, i + 1]));
   const now = new Set(top.map((t) => t.song.entryId));
   const rows = top.map((t, i) => {
@@ -370,7 +373,7 @@ export function mergeTop(
     };
   });
   const out = topBefore
-    .map((t, i) => ({ entryId: t.song.entryId, name: t.song.name, oldRank: i + 1, newRank: newRank.get(t.song.entryId) ?? null, bar: t.bar }))
+    .map((t, i) => ({ entryId: t.song.entryId, name: t.song.name, oldRank: i + 1, newRank: newRank.get(t.song.entryId) ?? null, bar: t.bar, newBar: newBar.get(t.song.entryId) ?? null }))
     .filter((o) => !now.has(o.entryId));
   const same = top.length === topBefore.length && top.every((t, i) => t.song.entryId === topBefore[i].song.entryId);
   return { rows, out, same };

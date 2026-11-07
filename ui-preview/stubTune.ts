@@ -150,7 +150,7 @@ export function stubTune(
           .sort((x, y) => y.before - x.before)
           .slice(0, 15)
           .filter((x) => !now.has(x.entry.id))
-          .map((x) => ({ song: { entryId: x.entry.id, name: x.entry.name, album: '' }, rank: order.indexOf(x.entry.id) + 1 }));
+          .map((x) => ({ song: { entryId: x.entry.id, name: x.entry.name, album: '' }, rank: order.indexOf(x.entry.id) + 1, bar: after.get(x.entry.id)! }));
       })(),
     };
   };

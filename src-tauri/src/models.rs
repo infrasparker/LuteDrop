@@ -583,6 +583,8 @@ pub struct TuneReview {
 pub struct TuneOutRank {
     pub song: TuneSong,
     pub rank: u32,
+    /// Its new bar, when the analyzer reports it.
+    pub bar: Option<f64>,
 }
 
 /// A suggested split of the mood in two: `keep` stays the mood, `new` becomes

@@ -160,6 +160,9 @@ pub struct TuneReport {
 pub struct TuneRankRaw {
     pub hash: String,
     pub rank: u32,
+    /// The song's new bar; absent from an analyzer older than it.
+    #[serde(default)]
+    pub bar: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -602,7 +605,7 @@ impl Songs {
             out_ranks: r
                 .out_ranks
                 .into_iter()
-                .filter_map(|o| Some(TuneOutRank { song: self.song(&o.hash)?, rank: o.rank }))
+                .filter_map(|o| Some(TuneOutRank { song: self.song(&o.hash)?, rank: o.rank, bar: o.bar }))
                 .collect(),
             lines: r.lines,
             line_sources: r.line_sources,
@@ -1434,6 +1437,14 @@ mod tests {
         assert_eq!(split.keep.lines, vec!["k"]);
         assert_eq!(split.keep_songs, vec![song(&a, "a")]);
         assert_eq!(split.new_songs, vec![song(&b, "b")]);
+    }
+
+    #[test]
+    fn out_ranks_read_the_new_bar_and_tolerate_an_older_analyzer() {
+        let with: TuneRankRaw = serde_json::from_str(r#"{"hash":"h","rank":20,"bar":0.41}"#).unwrap();
+        assert_eq!(with.bar, Some(0.41));
+        let without: TuneRankRaw = serde_json::from_str(r#"{"hash":"h","rank":20}"#).unwrap();
+        assert_eq!(without.bar, None);
     }
 
     #[test]
