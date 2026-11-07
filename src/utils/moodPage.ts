@@ -171,13 +171,54 @@ export function regressions(
     for (const o of left) {
       if (!highIds.has(o.entryId) || seen.has(o.entryId) || !heldBefore.has(o.entryId)) continue;
       const f = review.flags.find((x) => x.song.entryId === o.entryId);
-      if (f) {
+      if (f?.fresh) {
         out.push({ outcome: f, leftTop: true });
         seen.add(o.entryId);
       }
     }
   }
   return out;
+}
+
+/// What Use of a split would break: fresh flags broken in either half that
+/// hold under Current (`baseline`), the same rule as a version's.
+export function splitRegressions(split: { keep: Outcomes; new: Outcomes }, baseline: Outcomes): Regression[] {
+  const heldBefore = new Set(baseline.flags.filter((f) => f.holds).map((f) => f.song.entryId));
+  return [...split.keep.flags, ...split.new.flags]
+    .filter((f) => f.fresh && !f.holds && heldBefore.has(f.song.entryId))
+    .map((outcome) => ({ outcome, leftTop: false }));
+}
+
+/// Whether a draft's review no longer answers for it: its lines, Current's
+/// lines or the mood's flags (`flags`, a signature) changed since it was
+/// made, or it is being evaluated again. Use waits for a fresh one.
+export function draftStale(
+  d: { review: unknown; reviewedLines: string | null; reviewedAgainst: string | null; reviewedFlags: string | null; evaluating: boolean },
+  now: { text: string; current: string; flags: string },
+): boolean {
+  if (d.review === null) return false;
+  return (
+    d.evaluating ||
+    d.reviewedLines !== parseLines(now.text).join('\n') ||
+    d.reviewedAgainst !== now.current ||
+    d.reviewedFlags !== now.flags
+  );
+}
+
+/// Why a rescore left the bars as they were, for the page header, or null:
+/// auto-tagging off (the command refused), the words changed while it ran
+/// (the run skips moods then), or still not scorable (too few analyzed
+/// tracks for a calibration).
+export function rescoreProblem(r: {
+  error: string | null;
+  needsRecalibration: boolean;
+  linesAtStart: string;
+  linesNow: string;
+}): string | null {
+  const head = 'Bars not updated: ';
+  if (r.error !== null) return head + (r.error.toLowerCase().includes('auto-tagging') ? 'auto-tagging is off' : r.error);
+  if (!r.needsRecalibration) return null;
+  return head + (r.linesAtStart !== r.linesNow ? 'words changed, run again' : 'not enough analyzed tracks');
 }
 
 /// The bar each fresh flag that holds under `review` reaches, by entry id

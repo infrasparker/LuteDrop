@@ -18,6 +18,9 @@ import {
   outRankLabel,
   topTitle,
   useShortBands,
+  draftStale,
+  splitRegressions,
+  rescoreProblem,
   parseLines,
   reachedBars,
   regressions,
@@ -257,4 +260,44 @@ test('next version name skips names in use', () => {
 test('reached bars: the bar each holding flag reaches', () => {
   const r = { flags: [outcome('a', 0.5, 0.8, true), outcome('b', 0.5, 0.4, false), outcome('s', 0.5, 0.9, true, { fresh: false })] };
   assert.deepEqual(reachedBars(r), { a: 0.8 });
+});
+
+// --- Review freshness, split regressions, rescore problems ---
+
+test('a draft review is stale when its lines, Current or the flags changed since, or while it evaluates', () => {
+  const d = { review: {}, reviewedLines: 'a\nb', reviewedAgainst: 'cur', reviewedFlags: 'f1', evaluating: false };
+  const now = { text: ' a\n\nb ', current: 'cur', flags: 'f1' };
+  assert.equal(draftStale(d, now), false);
+  assert.equal(draftStale(d, { ...now, text: 'a' }), true);
+  assert.equal(draftStale(d, { ...now, current: 'other' }), true);
+  assert.equal(draftStale(d, { ...now, flags: 'f2' }), true, 'a flag changed after the review');
+  assert.equal(draftStale({ ...d, evaluating: true }, now), true);
+  assert.equal(draftStale({ ...d, review: null }, now), false, 'no review: nothing to be stale');
+});
+
+test('split regressions: fresh flags broken in either half that held under Current', () => {
+  const base = { flags: [outcome('a', 0.8, 0.8, true), outcome('w', 0.6, 0.6, false), outcome('n', 0.3, 0.3, true)] };
+  const split = {
+    keep: { flags: [outcome('a', 0.8, 0.7, false), outcome('w', 0.6, 0.5, false)] },
+    new: { flags: [outcome('n', 0.3, 0.6, false), outcome('s', 0.3, 0.6, false, { fresh: false })] },
+  };
+  assert.deepEqual(splitRegressions(split, base).map((r) => r.outcome.song.entryId), ['a', 'n']);
+});
+
+test('a stale flag leaving the top list is not a regression', () => {
+  const base = { flags: [outcome('c', 0.9, 0.9, true, { fresh: false })] };
+  const v = { flags: [outcome('c', 0.9, 0.91, true, { fresh: false })], top: [], topBefore: [{ song: song('c'), bar: 0.9 }] };
+  assert.deepEqual(regressions(v, base, new Set(['c'])), []);
+});
+
+test('rescore problem: why the bars were not updated', () => {
+  const ok = { error: null, needsRecalibration: false, linesAtStart: 'a', linesNow: 'a' };
+  assert.equal(rescoreProblem(ok), null);
+  assert.equal(
+    rescoreProblem({ ...ok, error: 'Turn on auto-tagging first: the analyzer rescores the moods' }),
+    'Bars not updated: auto-tagging is off',
+  );
+  assert.equal(rescoreProblem({ ...ok, needsRecalibration: true, linesNow: 'b' }), 'Bars not updated: words changed, run again');
+  assert.equal(rescoreProblem({ ...ok, needsRecalibration: true }), 'Bars not updated: not enough analyzed tracks');
+  assert.equal(rescoreProblem({ ...ok, error: 'analyzer down' }), 'Bars not updated: analyzer down');
 });
