@@ -1,4 +1,4 @@
-// Pure view-model helpers for the Tune dialog (MoodTuneDialog.vue): what the
+// Pure view-model helpers for Tune on the Moods page (MoodsView.vue): what a
 // review screen says about one set of proposed lines.
 import type {
   LibraryEntry,
@@ -134,7 +134,7 @@ export function initialTuneMode(focusEntryId: string | null | undefined): TuneMo
   return focusEntryId ? 'arrange' : DEFAULT_TUNE_MODE;
 }
 
-/// The Tune dialog's modes, in the order of its switch, with each one's run
+/// Tune's modes (Compare, Arrange, Suggest), each with its run
 /// button: Compare reviews your own versions of the lines, Arrange my words
 /// searches only the words you type (and the current lines), Suggest also
 /// tries the word bank, other moods' words and the analyzer's vocabulary.
@@ -173,7 +173,7 @@ export function versionProblem(texts: string[]): string | null {
 }
 
 /// The compare-mode versions as line lists: one prompt per line, as in the
-/// Moods panel; blank lines and empty versions dropped.
+/// Moods page; blank lines and empty versions dropped.
 export function versionCandidates(texts: string[]): string[][] {
   return texts
     .map((t) => t.split('\n').map((l) => l.trim()).filter((l) => l.length > 0))
@@ -281,8 +281,8 @@ export function rankLabel(rank: { before: number | null; after: number | null } 
   return rank.before === rank.after ? 'same' : `#${rank.before} → #${rank.after}`;
 }
 
-/// "Artist / Album" from the file's two parent folders, as the Moods panel
-/// previews and Tune's songs show it.
+/// "Artist / Album" from the file's two parent folders, as the Moods page's
+/// song tooltips show it.
 export function albumOf(filePath: string): string {
   const parts = filePath.split(/[\\/]/).filter((p) => p.length > 0 && !/^[A-Za-z]:$/.test(p));
   return [parts[parts.length - 3], parts[parts.length - 2]].filter(Boolean).join(' / ');

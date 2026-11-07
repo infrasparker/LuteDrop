@@ -1,9 +1,7 @@
-// Mood words shared by the Moods panel (MoodSettingsDialog.vue) and the Tune
-// dialog (MoodTuneDialog.vue).
+// Mood words for the Moods page (MoodsView.vue).
 
 /// Tag words the analyzer's text model knows well (MTG-Jamendo moods and
-/// themes). The Moods panel offers them as a word bank; Tune sends them as
-/// part of its candidate bank.
+/// themes). Suggest sends them as part of its candidate bank.
 export const WORD_BANK = [
   'action', 'adventure', 'ambiental', 'calm', 'dark', 'deep', 'dramatic', 'dream', 'emotional',
   'energetic', 'epic', 'fast', 'fun', 'funny', 'groovy', 'happy', 'heavy', 'hopeful', 'horror',
