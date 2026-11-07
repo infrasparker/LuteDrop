@@ -2,7 +2,7 @@
 import { computed, reactive } from 'vue';
 import type { FlagBand, FlagKind, LibraryEntry, MoodFlag, MoodId } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
-import { flagControlVisible, flagLabel, FLAG_BANDS } from '../utils/moodFlags';
+import { flagControlVisible, flagLabel, flagMark, FLAG_BANDS } from '../utils/moodFlags';
 import { MOOD_LEVELS, moodLayers, moodList, snapLevel, stepLevel } from '../utils/moods';
 
 /// The mood profile of one or more music entries: one row per mood of the
@@ -226,6 +226,7 @@ const pct = (v: number): string => `${Math.round(v * 1000) / 10}%`;
             :aria-label="row.flag ? `${row.name}: flagged ${flagLabel(row.flag)}` : `${row.name}: flag this bar`"
           >
             <VIcon size="small">{{ row.flag ? 'mdi-flag' : 'mdi-flag-outline' }}</VIcon>
+            <span v-if="row.flag" class="flag-mark" aria-hidden="true">{{ flagMark(row.flag) }}</span>
             <VTooltip activator="parent" location="top" open-delay="300">
               {{ row.flag ? flagLabel(row.flag) : 'Flag this bar as wrong' }}
             </VTooltip>
@@ -357,8 +358,20 @@ const pct = (v: number): string => `${Math.round(v * 1000) / 10}%`;
 .flag-idle:focus-visible {
   opacity: 1;
 }
+/* The band initial or arrow, tucked into the flag button's corner. */
+.flag-mark {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+/* A stale flag: dashed ring, so it never reads as the faded idle button. */
 .flag-stale {
-  opacity: 0.5;
+  outline: 1px dashed rgb(var(--v-theme-warning));
+  outline-offset: -2px;
+  opacity: 0.75;
 }
 .reset-placeholder {
   display: inline-block;

@@ -3,7 +3,7 @@ import { computed, nextTick, reactive, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type { AppState, FlagBand, FlagKind, MoodFlag, TuneResult, TuneReview, TuneSong } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
-import { flagLabel, FLAG_BANDS } from '../utils/moodFlags';
+import { flagLabel, FLAG_BANDS, reviewTargetLabel } from '../utils/moodFlags';
 import {
   acceptLabel,
   albumOf,
@@ -11,20 +11,22 @@ import {
   flaggedEntries,
   holdingEntryIds,
   isChangedSinceTune,
+  leaveBand,
   looNote,
   nameNote,
   orderedFlags,
   overlapRises,
   parseExtraWords,
   rankLabel,
+  reviewTargetIsHigh,
   shakyNote,
   splitAcceptLabel,
   splitBrokenFresh,
   splitName,
-  targetIsHigh,
   topChanges,
   topRanks,
   tuneTargetCount,
+  tuneTargetIds,
 } from '../utils/moodTune';
 import { newMoodId, WORD_BANK } from '../utils/moodWords';
 import ConfirmDialog from './ConfirmDialog.vue';
@@ -78,6 +80,10 @@ const flagsSection = ref<HTMLElement | null>(null);
 /// Tune ran), or null.
 const currentFlag = (entryId: string): MoodFlag | null =>
   store.findLibraryEntry(entryId)?.moods.find((m) => m.mood === props.moodId)?.flag ?? null;
+/// The level the user set on one song for this mood, or null. Without a
+/// flag, Tune reads it as a band flag.
+const currentLevel = (entryId: string): number | null =>
+  store.findLibraryEntry(entryId)?.moods.find((m) => m.mood === props.moodId)?.user ?? null;
 
 /// Stale flags acted on (Keep / Update / Delete) since the review was made:
 /// the review no longer reflects them until Tune runs again.
@@ -145,22 +151,24 @@ const hasProposal = computed(() => (result.value?.proposals.length ?? 0) > 0);
 const shownFlags = computed(() => (review.value ? orderedFlags(review.value) : []));
 const changes = computed(() => (review.value ? topChanges(review.value) : { joined: new Set<string>(), dropped: new Set<string>() }));
 const ranks = computed(() => (review.value ? topRanks(review.value) : new Map<string, { before: number | null; after: number | null }>()));
-const flaggedIds = computed(() => new Set(flags.value.map((f) => f.entry.id)));
-/// A song that drops out of the top while flagged to sit high: shown in red.
+/// Songs Tune graded against: flagged, or with a hand-set level.
+const flaggedIds = computed(() =>
+  props.moodId === null ? new Set<string>() : tuneTargetIds(store.libraryEntries, props.moodId),
+);
+/// A song that drops out of the top while flagged (or hand-set) to sit high:
+/// shown in red.
 function droppedHigh(entryId: string): boolean {
   if (!changes.value.dropped.has(entryId)) return false;
-  const f = currentFlag(entryId);
-  return f !== null && targetIsHigh(f);
+  return reviewTargetIsHigh(currentFlag(entryId), currentLevel(entryId));
 }
 const rises = computed(() => (review.value ? overlapRises(review.value.overlap) : []));
 const songNames = (songs: TuneSong[]): string => songs.map((s) => s.name).join(', ');
 
 const fmt = (v: number): string => v.toFixed(2);
 
-/// Where a song's flag stands now, for the review's flag rows.
+/// Where a song's flag (or hand-set level) stands now, for the review's flag rows.
 function flagNow(entryId: string): string {
-  const f = currentFlag(entryId);
-  return f ? flagLabel(f) : 'flag removed';
+  return reviewTargetLabel(currentFlag(entryId), currentLevel(entryId));
 }
 
 // --- Accept ---
@@ -393,8 +401,7 @@ watch(open, async (isOpen) => {
               density="compact"
               class="mb-2"
             >
-              {{ brokenFresh(review) }} flagged song{{ brokenFresh(review) === 1 ? '' : 's' }}
-              leave{{ brokenFresh(review) === 1 ? 's' : '' }} their band with these lines.
+              {{ leaveBand(brokenFresh(review)) }} with these lines.
             </VAlert>
             <div
               v-for="o in shownFlags"
@@ -546,8 +553,7 @@ watch(open, async (isOpen) => {
                   <pre class="lines">{{ result.split.keep.lines.join('\n') }}</pre>
                   <div class="text-caption">Songs: {{ songNames(result.split.keepSongs) || 'none' }}</div>
                   <div v-if="brokenFresh(result.split.keep) > 0" class="text-caption text-error">
-                    {{ brokenFresh(result.split.keep) }} flagged song{{ brokenFresh(result.split.keep) === 1 ? '' : 's' }}
-                    leave{{ brokenFresh(result.split.keep) === 1 ? 's' : '' }} their band
+                    {{ leaveBand(brokenFresh(result.split.keep)) }}
                   </div>
                 </div>
                 <div>
@@ -558,8 +564,7 @@ watch(open, async (isOpen) => {
                     Name ideas: {{ result.split.new.names.slice(0, 3).map((n) => n.word).join(', ') }}
                   </div>
                   <div v-if="brokenFresh(result.split.new) > 0" class="text-caption text-error">
-                    {{ brokenFresh(result.split.new) }} flagged song{{ brokenFresh(result.split.new) === 1 ? '' : 's' }}
-                    leave{{ brokenFresh(result.split.new) === 1 ? 's' : '' }} their band
+                    {{ leaveBand(brokenFresh(result.split.new)) }}
                   </div>
                 </div>
               </div>

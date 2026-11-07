@@ -6,6 +6,8 @@ import {
   albumOf,
   brokenFresh,
   flaggedEntries,
+  flagsLinkLabel,
+  handSetCount,
   holdingEntryIds,
   isChangedSinceTune,
   looNote,
@@ -15,6 +17,7 @@ import {
   parseExtraWords,
   shakyNote,
   rankLabel,
+  reviewTargetIsHigh,
   splitAcceptLabel,
   splitBrokenFresh,
   splitName,
@@ -22,6 +25,7 @@ import {
   topChanges,
   topRanks,
   tuneTargetCount,
+  tuneTargetIds,
 } from '../src/utils/moodTune.ts';
 
 const song = (entryId) => ({ entryId, name: entryId, album: '' });
@@ -29,7 +33,7 @@ const song = (entryId) => ({ entryId, name: entryId, album: '' });
 test('accept label counts only fresh broken flags', () => {
   const r = { flags: [{ holds: false, fresh: true }, { holds: false, fresh: false }, { holds: true, fresh: true }] };
   assert.equal(brokenFresh(r), 1);
-  assert.equal(acceptLabel(r), 'Accept anyway: 1 flagged song leaves their band');
+  assert.equal(acceptLabel(r), 'Accept anyway: 1 flagged song leaves its band');
 });
 test('accept label is plain Accept when no fresh flag breaks, and counts plurals', () => {
   assert.equal(acceptLabel({ flags: [{ holds: false, fresh: false }] }), 'Accept');
@@ -38,9 +42,12 @@ test('accept label is plain Accept when no fresh flag breaks, and counts plurals
 });
 test('shaky note under five flags', () => { assert.equal(shakyNote(3), 'Only 3 flags: the result may be shaky'); assert.equal(shakyNote(5), null); });
 test('shaky note says flag for one', () => assert.equal(shakyNote(1), 'Only 1 flag: the result may be shaky'));
-test('name note only when the name is not the best word', () => {
+test('name note only when the name is not among the top three words', () => {
   assert.equal(nameNote('Sad', [{ word: 'sad', rho: 0.9 }]), null);
-  assert.equal(nameNote('Wondrous', [{ word: 'reverent', rho: 0.77 }]), 'These words now read more like reverent than Wondrous');
+  const names = (...words) => words.map((word) => ({ word, rho: 0.5 }));
+  assert.equal(nameNote('Sad', names('slow', 'melancholic', 'sad')), null);
+  assert.equal(nameNote('Sad', names('slow', 'melancholic', 'dark', 'sad')), 'These words now read more like slow than Sad');
+  assert.equal(nameNote('Wondrous', names('reverent')), 'These words now read more like reverent than Wondrous');
   assert.equal(nameNote('Sad', []), null);
 });
 
@@ -126,6 +133,8 @@ test('split broken-fresh counts both halves and labels the split accept', () => 
     keep: half([{ holds: false, fresh: true }, { holds: false, fresh: false }]),
     new: half([{ holds: false, fresh: true }, { holds: true, fresh: true }]),
   };
+  assert.equal(splitAcceptLabel({ keep: half([{ holds: false, fresh: true }]), new: half([]) }),
+    'Accept anyway: 1 flagged song leaves its band');
   assert.equal(splitBrokenFresh(split), 2);
   assert.equal(splitAcceptLabel(split), 'Accept anyway: 2 flagged songs leave their band');
   assert.equal(splitAcceptLabel({ keep: half([]), new: half([{ holds: true, fresh: true }]) }), 'Accept split');
@@ -169,4 +178,28 @@ test('top ranks and their labels', () => {
   assert.equal(rankLabel(ranks.get('n')), 'new');
   assert.equal(rankLabel(ranks.get('d')), 'drops out');
   assert.equal(rankLabel({ before: 4, after: 4 }), 'same');
+});
+
+test('the flags link counts flags and hand-set levels apart', () => {
+  const flag = { kind: 'band', band: 'no', bound: 'in', barAtFlag: null, calibratedAt: null, stale: false, staleReason: null };
+  const entries = [
+    { id: '1', moods: [{ mood: 'sad', auto: 0.5, user: null, flag }] },
+    { id: '2', moods: [{ mood: 'sad', auto: 0.5, user: 0.75, flag: null }] },
+    { id: '3', moods: [{ mood: 'sad', auto: 0.5, user: 1, flag }] },
+    { id: '4', moods: [{ mood: 'sad', auto: 0.5, user: 0, flag: null }] },
+  ];
+  assert.equal(handSetCount(entries, 'sad'), 2);
+  assert.deepEqual([...tuneTargetIds(entries, 'sad')].sort(), ['1', '2', '3', '4']);
+  assert.equal(flagsLinkLabel(2, 2), '2 flags · 2 hand-set');
+  assert.equal(flagsLinkLabel(1, 0), '1 flag');
+  assert.equal(flagsLinkLabel(0, 0), '0 flags');
+});
+
+test('a hand-set level counts as high from 0.75, and a flag decides over a level', () => {
+  const flag = { kind: 'band', band: 'stretch', bound: 'in' };
+  assert.equal(reviewTargetIsHigh(null, 1), true);
+  assert.equal(reviewTargetIsHigh(null, 0.75), true);
+  assert.equal(reviewTargetIsHigh(null, 0.5), false);
+  assert.equal(reviewTargetIsHigh(null, null), false);
+  assert.equal(reviewTargetIsHigh(flag, 1), false);                   // the flag decides
 });

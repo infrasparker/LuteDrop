@@ -6,7 +6,7 @@ import type { AppState, CaseImportReport, EnergyPreview, MoodResetImpact, MoodVo
 import { useAppStore } from '../stores/appStore';
 import { useToast } from '../composables/useToast';
 import { calibrationLabel } from '../utils/moods';
-import { albumOf, tuneTargetCount } from '../utils/moodTune';
+import { albumOf, flaggedEntries, flagsLinkLabel, handSetCount } from '../utils/moodTune';
 import { newMoodId, WORD_BANK } from '../utils/moodWords';
 import ConfirmDialog from './ConfirmDialog.vue';
 import MoodTuneDialog from './MoodTuneDialog.vue';
@@ -363,9 +363,10 @@ const tuneOpen = ref(false);
 const tuneMoodId = ref<string | null>(null);
 const tuneShowFlags = ref(false);
 
-/// Tune targets per saved mood, for each row's "N flags" link: flags plus
-/// hand-set levels without a flag (Tune reads those as flags too).
-const flagCount = (id: string): number => tuneTargetCount(store.libraryEntries, id);
+/// Each saved row's link to its Flags list: "N flags", plus "· M hand-set"
+/// for hand-set levels without a flag (Tune reads those as flags too).
+const flagsLabel = (id: string): string =>
+  flagsLinkLabel(flaggedEntries(store.libraryEntries, id).length, handSetCount(store.libraryEntries, id));
 
 /// The saved prompts of a row's mood, or null for a mood not saved yet.
 const savedPrompts = (row: DraftRow): string[] | null =>
@@ -549,7 +550,7 @@ async function importCaseStudies(): Promise<void> {
                     Tune
                   </VBtn>
                   <a href="#" class="text-caption flags-link" @click.prevent="openTune(row, true)">
-                    {{ flagCount(row.id) }} flag{{ flagCount(row.id) === 1 ? '' : 's' }}
+                    {{ flagsLabel(row.id) }}
                   </a>
                   <span v-if="tuneBlocked(row)" class="text-caption text-medium-emphasis">Save the prompts to tune</span>
                 </template>

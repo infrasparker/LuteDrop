@@ -33,7 +33,12 @@ export function acceptLabel(report: FlagOutcomes): string {
 
 function anywayLabel(n: number, plain: string): string {
   if (n === 0) return plain;
-  return `Accept anyway: ${n} flagged song${n === 1 ? '' : 's'} leave${n === 1 ? 's' : ''} their band`;
+  return `Accept anyway: ${leaveBand(n)}`;
+}
+
+/// "1 flagged song leaves its band" / "2 flagged songs leave their band".
+export function leaveBand(n: number): string {
+  return n === 1 ? '1 flagged song leaves its band' : `${n} flagged songs leave their band`;
 }
 
 /// Broken fresh flags over both halves of a split: like a proposal's, they
@@ -54,11 +59,12 @@ export function shakyNote(flagCount: number): string | null {
   return `Only ${flagCount} flag${flagCount === 1 ? '' : 's'}: the result may be shaky`;
 }
 
-/// Noted when the word that best follows the lines' ranking is not the
-/// mood's own name. Never renames anything.
+/// Noted when the mood's own name is not among the three words that best
+/// follow the lines' ranking. Never renames anything.
 export function nameNote(currentName: string, names: Pick<TuneNameIdea, 'word'>[]): string | null {
   const best = names[0]?.word;
-  if (best === undefined || best.trim().toLowerCase() === currentName.trim().toLowerCase()) return null;
+  const name = currentName.trim().toLowerCase();
+  if (best === undefined || names.slice(0, 3).some((n) => n.word.trim().toLowerCase() === name)) return null;
   return `These words now read more like ${best} than ${currentName}`;
 }
 
@@ -123,6 +129,34 @@ export function flaggedEntries<E extends Pick<LibraryEntry, 'id' | 'moods'>>(
 /// a hand-set level and no flag (the backend reads those as band flags).
 export function tuneTargetCount(entries: Pick<LibraryEntry, 'moods'>[], moodId: string): number {
   return entries.filter((e) => e.moods.some((m) => m.mood === moodId && (m.flag !== null || m.user !== null))).length;
+}
+
+/// The ids of the songs `tuneTargetCount` counts.
+export function tuneTargetIds(entries: Pick<LibraryEntry, 'id' | 'moods'>[], moodId: string): Set<string> {
+  return new Set(
+    entries
+      .filter((e) => e.moods.some((m) => m.mood === moodId && (m.flag !== null || m.user !== null)))
+      .map((e) => e.id),
+  );
+}
+
+/// Songs with a hand-set level on the mood and no flag on it.
+export function handSetCount(entries: Pick<LibraryEntry, 'moods'>[], moodId: string): number {
+  return entries.filter((e) => e.moods.some((m) => m.mood === moodId && m.flag === null && m.user !== null)).length;
+}
+
+/// The Moods row's link to the Flags list: "3 flags", or "3 flags · 2
+/// hand-set" when hand-set levels also count for Tune.
+export function flagsLinkLabel(flagCount: number, handSet: number): string {
+  const flags = `${flagCount} flag${flagCount === 1 ? '' : 's'}`;
+  return handSet > 0 ? `${flags} · ${handSet} hand-set` : flags;
+}
+
+/// Whether a song's flag, else its hand-set level, asks for a high bar. Tune
+/// reads a level of 0.75 or 1 as at least Understandable / Definitely.
+export function reviewTargetIsHigh(flag: Pick<MoodFlag, 'kind' | 'band' | 'bound'> | null, level: number | null): boolean {
+  if (flag) return targetIsHigh(flag);
+  return level !== null && level >= 0.75;
 }
 
 /// Whether a flag asks for a high bar (Definitely, Understandable, any
