@@ -840,6 +840,7 @@ def test_health_reports_reference(ref_client, client):
 REPORT_KEYS = {
     "lines", "loss", "flags", "top", "top_before", "risers", "fallers", "fires_before",
     "fires_after", "overlap", "loo", "names", "unsatisfied", "stability", "line_sources",
+    "out_ranks",
 }
 
 

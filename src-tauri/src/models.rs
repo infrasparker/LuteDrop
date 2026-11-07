@@ -557,6 +557,18 @@ pub struct TuneReview {
     pub names: Vec<TuneNameIdea>,
     /// Fresh flags that do not hold under the reviewed lines.
     pub unsatisfied: Vec<TuneSong>,
+    /// The songs that left the top list, with their rank in the whole new
+    /// ranking (empty from an older analyzer).
+    pub out_ranks: Vec<TuneOutRank>,
+}
+
+/// A song that left the top list, and where it ranks now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneOutRank {
+    pub song: TuneSong,
+    pub rank: u32,
 }
 
 /// A suggested split of the mood in two: `keep` stays the mood, `new` becomes

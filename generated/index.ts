@@ -49,6 +49,7 @@ export type { TuneLeaveOneOut } from "./TuneLeaveOneOut";
 export type { TuneMode } from "./TuneMode";
 export type { TuneMovedSong } from "./TuneMovedSong";
 export type { TuneNameIdea } from "./TuneNameIdea";
+export type { TuneOutRank } from "./TuneOutRank";
 export type { TuneOverlap } from "./TuneOverlap";
 export type { TuneResult } from "./TuneResult";
 export type { TuneReview } from "./TuneReview";

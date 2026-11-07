@@ -20,7 +20,7 @@ use crate::database::mood_flags::{self, lines_sig, StoredFlag};
 use crate::database::{library, settings};
 use crate::models::{
     FlagBand, FlagBound, FlagKind, MoodDef, MoodVocabulary, StaleReason, TuneFlagOutcome, TuneLeaveOneOut, TuneMode,
-    TuneMovedSong, TuneNameIdea, TuneOverlap, TuneResult, TuneReview, TuneSong, TuneSplitReview, TuneTopSong,
+    TuneMovedSong, TuneNameIdea, TuneOutRank, TuneOverlap, TuneResult, TuneReview, TuneSong, TuneSplitReview, TuneTopSong,
 };
 
 // --- The `/tune` HTTP contract (snake_case on the wire) ---
@@ -150,6 +150,16 @@ pub struct TuneReport {
     /// `loss`); absent from an analyzer older than it.
     #[serde(default)]
     pub stability: f64,
+    /// Songs that left the top list, with their rank in the whole new
+    /// ranking; absent from an analyzer older than it.
+    #[serde(default)]
+    pub out_ranks: Vec<TuneRankRaw>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TuneRankRaw {
+    pub hash: String,
+    pub rank: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -589,6 +599,11 @@ impl Songs {
                 .map(|o| TuneOverlap { mood_id: o.mood_id, before: o.before, after: o.after })
                 .collect(),
             unsatisfied: self.all(&r.unsatisfied),
+            out_ranks: r
+                .out_ranks
+                .into_iter()
+                .filter_map(|o| Some(TuneOutRank { song: self.song(&o.hash)?, rank: o.rank }))
+                .collect(),
             lines: r.lines,
             line_sources: r.line_sources,
             loss: r.loss,

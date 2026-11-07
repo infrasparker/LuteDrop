@@ -458,6 +458,11 @@ def test_build_report_describes_a_change():
     b_after, b_before = bars(after, after, M_LIB), bars(before, before, M_LIB)
     assert r["stability"] == pytest.approx(stability(b_after, b_before, flags))
     assert r["loss"] == pytest.approx(loss(b_after, flags) + r["stability"] + tune.LINE_COST * 1)
+    # Songs that left the top list, with their rank in the whole new ranking.
+    order = [hashes[i] for i in np.argsort(-bars(after, after, M_LIB), kind="stable")]
+    left = {t["hash"] for t in r["top_before"]} - {t["hash"] for t in r["top"]}
+    assert {o["hash"] for o in r["out_ranks"]} == left
+    assert all(o["rank"] == order.index(o["hash"]) + 1 and o["rank"] > 15 for o in r["out_ranks"])
 
 
 def test_blends_leave_out_a_part_whose_words_are_already_there():

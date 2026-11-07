@@ -3,6 +3,7 @@ import type { TuneFlagOutcome } from "./TuneFlagOutcome";
 import type { TuneLeaveOneOut } from "./TuneLeaveOneOut";
 import type { TuneMovedSong } from "./TuneMovedSong";
 import type { TuneNameIdea } from "./TuneNameIdea";
+import type { TuneOutRank } from "./TuneOutRank";
 import type { TuneOverlap } from "./TuneOverlap";
 import type { TuneSong } from "./TuneSong";
 import type { TuneTopSong } from "./TuneTopSong";
@@ -25,4 +26,9 @@ firesBefore: number, firesAfter: number, overlap: Array<TuneOverlap>, loo: TuneL
 /**
  * Fresh flags that do not hold under the reviewed lines.
  */
-unsatisfied: Array<TuneSong>, };
+unsatisfied: Array<TuneSong>, 
+/**
+ * The songs that left the top list, with their rank in the whole new
+ * ranking (empty from an older analyzer).
+ */
+outRanks: Array<TuneOutRank>, };
