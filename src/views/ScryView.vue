@@ -18,6 +18,10 @@ import CreatePlaylistDialog from '../components/CreatePlaylistDialog.vue';
 import AutoTaggingDialog from '../components/AutoTaggingDialog.vue';
 
 const RESULT_LIMIT = 100;
+// Seed searches ask for every track's score (the analyzer's cap), so the map's
+// seed view can place every dot by its similarity; the list still shows the
+// best RESULT_LIMIT.
+const SEED_SCORE_LIMIT = 500;
 
 const store = useAppStore();
 const route = useRoute();
@@ -91,28 +95,37 @@ const query = ref<Query | null>(null);
 const hits = ref<ScryHit[]>([]);
 const resultsLoading = ref(false);
 const resultsError = ref<string | null>(null);
+// Every score from the latest successful seed search, and the seeds it was for:
+// the map's seed view lays tracks out by these. Kept while a newer seed search
+// runs, so the view stays put until the new scores arrive.
+const seedScores = ref<{ seedIds: string[]; scores: Map<string, number> } | null>(null);
 
 // A superseded request still completes on the backend; only the latest
 // request's response is applied.
 let resultsRequest = 0;
 
-async function fetchResults(cmd: 'search_scry' | 'similar_entries', args: Record<string, unknown>): Promise<void> {
+async function fetchResults(
+  cmd: 'search_scry' | 'similar_entries',
+  args: Record<string, unknown>,
+  // Entries already in the target track are hidden, so ask for that many extra.
+  limit = RESULT_LIMIT + targetEntryIds.value.size,
+): Promise<ScryHit[] | null> {
   const id = ++resultsRequest;
   resultsLoading.value = true;
   resultsError.value = null;
   try {
-    // Entries already in the target track are hidden, so ask for that many extra.
-    const limit = RESULT_LIMIT + targetEntryIds.value.size;
     const result = await invoke<ScryHit[]>(cmd, { ...args, limit });
-    if (id !== resultsRequest) return;
+    if (id !== resultsRequest) return null;
     hits.value = result;
+    return result;
   } catch (e) {
-    if (id !== resultsRequest) return;
+    if (id !== resultsRequest) return null;
     hits.value = [];
     resultsError.value = String(e);
   } finally {
     if (id === resultsRequest) resultsLoading.value = false;
   }
+  return null;
 }
 
 // Results computed here rather than by the analyzer; any request still in
@@ -127,6 +140,7 @@ function setLocalHits(next: ScryHit[]): void {
 function clearResults(): void {
   setLocalHits([]);
   query.value = null;
+  seedScores.value = null;
 }
 
 function submitSearch(): void {
@@ -137,6 +151,7 @@ function submitSearch(): void {
     return;
   }
   seeds.value = [];
+  seedScores.value = null;
   spot.value = null;
   query.value = { kind: 'search', text };
   fetchResults('search_scry', { text });
@@ -157,6 +172,7 @@ function runNameSearch(text: string): void {
   }
   found.sort((a, b) => b.score - a.score || seedName(a.entryId).localeCompare(seedName(b.entryId)));
   seeds.value = [];
+  seedScores.value = null;
   spot.value = null;
   query.value = { kind: 'name', text };
   setLocalHits(found.slice(0, RESULT_LIMIT));
@@ -201,6 +217,7 @@ function runSpot(pos: { x: number; y: number }): void {
     .slice(0, SPOT_LIMIT);
   if (ranked.length === 0) return;
   seeds.value = [];
+  seedScores.value = null;
   searchText.value = '';
   spot.value = pos;
   query.value = { kind: 'spot' };
@@ -217,7 +234,11 @@ function runSeeds(): void {
   searchText.value = '';
   spot.value = null;
   query.value = { kind: 'seeds' };
-  fetchResults('similar_entries', { entryIds: seeds.value });
+  const seedIds = seeds.value;
+  void fetchResults('similar_entries', { entryIds: seedIds }, SEED_SCORE_LIMIT).then((result) => {
+    if (result) seedScores.value = { seedIds, scores: new Map(result.map((h) => [h.entryId, h.score])) };
+    else if (resultsError.value) seedScores.value = null;
+  });
 }
 
 function addSeed(entryId: string): void {
@@ -314,9 +335,11 @@ watch(completedRuns, () => {
 });
 
 const mappedPoints = computed(() => mapPoints.value.filter((p) => entriesById.value.has(p.entryId)));
-// Results shown: in target mode, without what the track already holds.
+// Results shown: in target mode, without what the track already holds; at
+// most RESULT_LIMIT (seed searches fetch more, for the map's seed view).
 const shownHits = computed(() =>
-  targetEntryIds.value.size === 0 ? hits.value : hits.value.filter((h) => !targetEntryIds.value.has(h.entryId)),
+  (targetEntryIds.value.size === 0 ? hits.value : hits.value.filter((h) => !targetEntryIds.value.has(h.entryId)))
+    .slice(0, RESULT_LIMIT),
 );
 const resultIds = computed(() => shownHits.value.map((h) => h.entryId));
 
@@ -555,6 +578,7 @@ const showAnalyzer = ref(false);
               :playing-id="playingId"
               :highlight-id="hoveredRowId"
               :spot="query?.kind === 'spot' ? spot : null"
+              :seed-scores="seeds.length > 0 ? seedScores : null"
               @play="onMapPlay"
               @spot="runSpot"
               @seed="toggleSeed"
