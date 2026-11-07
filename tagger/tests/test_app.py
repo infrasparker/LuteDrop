@@ -1058,7 +1058,23 @@ def test_tune_arrange_searches_only_the_typed_words_and_current_lines(client_tun
     for u in searched[0]:
         assert set(p.strip() for p in u.split(",")) <= {"alpha", "zeta", "eta", "beta", "theta"}, u
     labels = {s for p in out["proposals"] for line in p["line_sources"] for s in line}
-    assert labels <= {"your extra words", "current lines", "blend"}
+    assert labels <= {"your words", "current lines", "blend"}
+
+
+def test_tune_arrange_keeps_typed_lines_as_written(client_tune, monkeypatch):
+    searched = _spy_search(monkeypatch)
+    body = _tune_body(mode="arrange", extra_words=["Alpha, Zeta"], current_lines=["beta"])
+    out = client_tune.post("/tune", json=body, headers=HEADERS).json()
+    assert "Alpha, Zeta" in searched[0] and "alpha" in searched[0]
+    by_line = {line: src for p in out["proposals"] for line, src in zip(p["lines"], p["line_sources"])}
+    if "Alpha, Zeta" in by_line:
+        assert by_line["Alpha, Zeta"] == ["your words"]
+
+
+def test_tune_credits_a_line_only_to_sources_that_added_it(client_tune):
+    # "a sad farewell" is also in the phrase list, but the current lines brought it.
+    out = client_tune.post("/tune", json=_tune_body(current_lines=["a sad farewell"]), headers=HEADERS).json()
+    assert out["baseline"]["line_sources"] == [["current lines"]]
 
 
 def test_tune_mode_defaults_to_suggest(client_tune, monkeypatch):

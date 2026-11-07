@@ -29,16 +29,22 @@ def test_excluded_matches_whole_words_ignoring_case():
     assert not tune.excluded("anything", ["", "  "])
 
 
-def test_unit_sources_lists_every_source_of_a_unit_in_order():
-    got = tune.unit_sources([
-        ("word bank", ["sad, calm", "ambient"]),
-        ("current lines", ["Sad, grief"]),
-        ("Mysterious words", ["ambient, eerie"]),
-    ])
-    assert got == {
+def test_unit_pool_lists_every_source_that_contributed_a_unit():
+    pool = tune.UnitPool()
+    pool.add_parts("word bank", ["sad, calm", "ambient"])
+    pool.add_parts("current lines", ["Sad, grief", "a sad farewell"])
+    pool.add_whole("current lines", ["Sad, grief", "a sad farewell"])
+    pool.add_parts("Mysterious words", ["ambient, eerie"])
+    # Phrases only add what is not there yet: an existing text is not credited to them.
+    pool.add_whole("phrase list", ["A sad farewell", "a lament"], only_new=True, lower=True)
+    assert pool.sources == {
         "sad": ["word bank", "current lines"], "calm": ["word bank"], "ambient": ["word bank", "Mysterious words"],
-        "grief": ["current lines"], "eerie": ["Mysterious words"],
+        "grief": ["current lines"], "a sad farewell": ["current lines"], "Sad, grief": ["current lines"],
+        "eerie": ["Mysterious words"], "a lament": ["phrase list"],
     }
+    assert pool.units == list(pool.sources)
+    pool.drop(lambda u: "sad" in u)
+    assert pool.units == ["calm", "ambient", "grief", "Sad, grief", "eerie", "a lament"]
 
 
 def test_bars_match_app_reference_mapping():

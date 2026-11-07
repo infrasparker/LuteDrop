@@ -76,16 +76,43 @@ def excluded(text: str, words) -> bool:
     return False
 
 
-def unit_sources(groups) -> dict[str, list[str]]:
-    """Where each unit comes from: `groups` are (label, texts) pairs, the texts split
-    like `split_units`. A unit lists every label it appears under, in group order."""
-    out: dict[str, list[str]] = {}
-    for label, texts in groups:
+class UnitPool:
+    """The search's units in order, each with the sources that contributed it.
+
+    A source is credited only for units it brought: `add_parts` and `add_whole`
+    credit every unit the source holds (two sources holding "sad" both did), but a
+    source added with `only_new` (the phrase list, the built-in vocabulary) is only
+    credited for texts nobody brought before it."""
+
+    def __init__(self) -> None:
+        self.sources: dict[str, list[str]] = {}
+
+    def _add(self, unit: str, label: str) -> None:
+        labels = self.sources.setdefault(unit, [])
+        if label not in labels:
+            labels.append(label)
+
+    def add_parts(self, label: str, texts) -> None:
+        """Each text comma-split, stripped and lowercased, as `split_units`."""
         for unit in split_units(texts):
-            labels = out.setdefault(unit, [])
-            if label not in labels:
-                labels.append(label)
-    return out
+            self._add(unit, label)
+
+    def add_whole(self, label: str, texts, *, only_new: bool = False, lower: bool = False) -> None:
+        """Each text whole (stripped; lowercased when `lower`), skipping blanks and
+        texts over the line length limit; with `only_new`, skipping texts already in."""
+        for text in texts:
+            unit = text.strip().lower() if lower else text.strip()
+            if not unit or len(unit) > MAX_UNIT_CHARS or (only_new and unit in self.sources):
+                continue
+            self._add(unit, label)
+
+    def drop(self, rule) -> None:
+        """Removes every unit `rule(unit)` is true for."""
+        self.sources = {u: labels for u, labels in self.sources.items() if not rule(u)}
+
+    @property
+    def units(self) -> list[str]:
+        return list(self.sources)
 
 
 def words_of(line: str) -> frozenset[str]:

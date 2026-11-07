@@ -469,43 +469,30 @@ def create_app(
         name = req.name.strip().lower()
         others = req.other()
         suggest = req.mode == "suggest"
-        typed = {w.strip().lower() for w in req.extra_words}
-        sources = tune.unit_sources([
-            ("word bank", [t for t in req.bank if t.strip().lower() not in typed] if suggest else []),
-            ("your extra words", req.extra_words),
-            ("current lines", req.current_lines),
-            *((f"{o.name} words", o.lines) for o in others.values() if suggest),
-            ("mood name", [name] if suggest else []),
-        ])
-        # Current and typed lines are also units whole, as are phrases.
-        whole = [("current lines", req.current_lines)]
-        if req.mode == "arrange":
-            whole.append(("your extra words", req.extra_words))
+        pool = tune.UnitPool()
         if suggest:
-            whole += [("phrase list", PHRASES), ("built-in vocabulary", tune_vocab.VOCAB)]
-        for label, texts in whole:
-            for text in texts:
-                key = text if label == "current lines" else text.strip().lower()
-                labels = sources.setdefault(key, [])
-                if label not in labels:
-                    labels.append(label)
-        if suggest:
-            other_lines = [line for o in others.values() for line in o.lines]
-            units = tune.split_units([*req.bank, *req.current_lines, *other_lines, name])
+            typed = {w.strip().lower() for w in req.extra_words}
+            pool.add_parts("word bank", [t for t in req.bank if t.strip().lower() not in typed])
+            pool.add_parts("your extra words", req.extra_words)
         else:
-            units = tune.split_units([*req.extra_words, *req.current_lines])
-        # Each current line as written, so the search can start from (and keep) them whole.
-        units += [line for line in dict.fromkeys(req.current_lines) if line not in set(units)]
-        if req.mode == "arrange":
-            units += [
-                w for w in dict.fromkeys(t.strip().lower() for t in req.extra_words)
-                if w and len(w) <= tune.MAX_UNIT_CHARS and w not in set(units)
-            ]
-        vocab: list[str] = []
+            # Arrange: the typed words, and each typed line whole, as written.
+            pool.add_parts("your words", req.extra_words)
+        pool.add_parts("current lines", req.current_lines)
         if suggest:
-            units += [p.lower() for p in PHRASES if p.lower() not in set(units)]
-            vocab = [v.lower() for v in tune_vocab.VOCAB if v.lower() not in set(units)]
-        units = [u for u in units + vocab if not tune.excluded(u, req.exclude)]
+            for o in others.values():
+                pool.add_parts(f"{o.name} words", o.lines)
+            pool.add_parts("mood name", [name])
+        # Each current line as written, so the search can start from (and keep) them whole.
+        pool.add_whole("current lines", req.current_lines)
+        if req.mode == "arrange":
+            pool.add_whole("your words", req.extra_words)
+        if suggest:
+            pool.add_whole("phrase list", PHRASES, only_new=True, lower=True)
+            pool.add_whole("built-in vocabulary", tune_vocab.VOCAB, only_new=True, lower=True)
+        pool.drop(lambda u: tune.excluded(u, req.exclude))
+        sources = pool.sources
+        units = pool.units
+        vocab = {u for u, labels in sources.items() if labels == ["built-in vocabulary"]}
 
         groups = {"units": units, "current": req.current_lines}
         groups.update({f"other:{k}": o.lines for k, o in others.items()})
@@ -526,17 +513,19 @@ def create_app(
         other_raw = {k: raws(vecs[f"other:{k}"])[0] for k in others}
 
         # Only the built-in vocabulary's best words alone stay in the search.
-        vocab_rows = [i for i, u in enumerate(units) if u in set(vocab)]
+        vocab_rows = [i for i, u in enumerate(units) if u in vocab]
         if len(vocab_rows) > VOCAB_KEEP:
             best = set(tune.best_rows(U_lib, U_ref, vocab_rows, flags, m, VOCAB_KEEP, before=b_before))
-            keep = [i for i in range(len(units)) if i not in set(vocab_rows) or i in best]
+            dropped = set(vocab_rows) - best
+            keep = [i for i in range(len(units)) if i not in dropped]
             units = [units[i] for i in keep]
             U_lib = U_lib[keep]
             U_ref = None if U_ref is None else U_ref[keep]
-        current_rows = tuple(units.index(line) for line in dict.fromkeys(req.current_lines) if line in units)
+        row_of = {u: i for i, u in enumerate(units)}
+        current_rows = tuple(row_of[line] for line in dict.fromkeys(req.current_lines) if line in row_of)
         candidates = [u for u in tune.split_units(req.bank if suggest else req.extra_words)
-                      if " " not in u and u in units]
-        candidates += [name] if name in units else []
+                      if " " not in u and u in row_of]
+        candidates += [name] if name in row_of else []
 
         loo_memo: dict = {}
 
