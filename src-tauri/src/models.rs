@@ -486,6 +486,32 @@ pub struct TuneLeaveOneOut {
     pub total: u32,
 }
 
+/// A flag row as stored, whole: what Use's undo puts back for the direction
+/// flags the accept turned into band flags (see `tune::accept_lines`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct MoodFlagRow {
+    pub entry_id: String,
+    pub mood: String,
+    pub kind: FlagKind,
+    pub band: Option<FlagBand>,
+    pub bound: FlagBound,
+    pub bar_at_flag: Option<f64>,
+    pub calibrated_at: Option<String>,
+    pub lines_sig: String,
+}
+
+/// What accepting tuned lines returns: the new state, and the flag rows the
+/// direction-flag ratchet changed, as they were before.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptedLines {
+    pub state: AppState,
+    pub converted: Vec<MoodFlagRow>,
+}
+
 /// The Moods page's per-mood preferences for Tune: words never to suggest
 /// (sent as `exclude` for Arrange and Suggest). Stored as JSON in the meta
 /// key `mood_tune_prefs`, a map from mood id to this.

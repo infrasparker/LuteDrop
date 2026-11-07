@@ -15,7 +15,7 @@ use crate::database::settings as autotag_settings;
 use crate::models::{
     AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
     FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodResetImpact, MoodVocabulary, Role, SceneConfig, Track, TrackUpdates, ScryHit,
-    ScryPoint, EnergyPreview, TuneResult, MoodTunePrefs};
+    ScryPoint, EnergyPreview, TuneResult, MoodTunePrefs, AcceptedLines, MoodFlagRow};
 use crate::relink;
 use crate::state::AppStateContainer;
 use rusqlite::params;
@@ -491,10 +491,35 @@ pub fn accept_tuned_lines(
     lines: Vec<String>,
     holding_entry_ids: Vec<String>,
     reached_bars: HashMap<String, f64>,
-) -> Result<AppState, String> {
+) -> Result<AcceptedLines, String> {
+    let mut converted = Vec::new();
+    let state = mutate_and_reload(container, |conn| {
+        converted = tune::accept_lines(conn, &mood_id, &lines_tuned_from, &lines, &holding_entry_ids, &reached_bars)?;
+        Ok(())
+    })?;
+    Ok(AcceptedLines { state, converted: converted.into_iter().map(Into::into).collect() })
+}
+
+/// Undo of an accept's ratchet: puts the given flag rows back as they were.
+pub fn restore_mood_flags(container: &AppStateContainer, rows: Vec<MoodFlagRow>) -> Result<AppState, String> {
     mutate_and_reload(container, |conn| {
-        tune::accept_lines(conn, &mood_id, &lines_tuned_from, &lines, &holding_entry_ids, &reached_bars)
+        for row in rows {
+            mood_flags::restore_flag(conn, &row.into())?;
+        }
+        Ok(())
     })
+}
+
+/// Rescores after a mood's lines changed, without clearing anything: starts
+/// an analysis run, which rescores the changed moods (see
+/// `plan::extend_library_calibration`; a reference set is offered whole)
+/// and leaves every other mood's bars as they are.
+pub fn rescore_moods(container: &AppStateContainer) -> Result<(), String> {
+    if !autotag_enabled(container) {
+        return Err("Turn on auto-tagging first: the analyzer rescores the moods".to_string());
+    }
+    container.autotag.analyze_library();
+    Ok(())
 }
 
 /// The Moods page's per-mood Tune preferences (never-suggest words).
@@ -504,11 +529,20 @@ pub fn load_mood_tune_prefs(
     with_db(container, autotag_settings::load_mood_tune_prefs)
 }
 
-pub fn save_mood_tune_prefs(
+pub fn add_never_suggest(
     container: &AppStateContainer,
-    prefs: std::collections::BTreeMap<String, MoodTunePrefs>,
-) -> Result<(), String> {
-    with_db(container, |conn| autotag_settings::save_mood_tune_prefs(conn, &prefs))
+    mood: String,
+    words: Vec<String>,
+) -> Result<std::collections::BTreeMap<String, MoodTunePrefs>, String> {
+    with_db(container, |conn| autotag_settings::add_never_suggest(conn, &mood, &words))
+}
+
+pub fn remove_never_suggest(
+    container: &AppStateContainer,
+    mood: String,
+    word: String,
+) -> Result<std::collections::BTreeMap<String, MoodTunePrefs>, String> {
+    with_db(container, |conn| autotag_settings::remove_never_suggest(conn, &mood, &word))
 }
 
 /// Accepts a Tune split: the mood keeps `keep_lines` and a new mood takes

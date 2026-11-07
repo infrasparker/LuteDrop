@@ -683,42 +683,52 @@ pub fn accept_lines(
     lines: &[String],
     holding_entry_ids: &[String],
     reached_bars: &HashMap<String, f64>,
-) -> Result<(), String> {
+) -> Result<Vec<StoredFlag>, String> {
     let (mut vocabulary, i) = tuned_mood(conn, mood_id, lines_tuned_from)?;
     vocabulary.moods[i].prompts = lines.to_vec();
     // Dropped without a commit (any error below), the transaction rolls back.
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("Failed to begin accept transaction: {e}"))?;
+    let before_rows = mood_flags::flags_for_mood(conn, mood_id)?;
     let saved = library::write_mood_vocabulary(conn, &vocabulary)?;
     refresh_holding(conn, &saved, mood_id, holding_entry_ids)?;
     let sig = lines_sig(&saved.prompt_signature(mood_id).unwrap_or_default());
     let holding: HashSet<&str> = holding_entry_ids.iter().map(String::as_str).collect();
+    // The flags as they were before the accept, for Undo.
+    let before: HashMap<String, StoredFlag> = before_rows.into_iter().map(|f| (f.entry_id.clone(), f)).collect();
+    let mut converted = Vec::new();
     for f in mood_flags::flags_for_mood(conn, mood_id)? {
         if !holding.contains(f.entry_id.as_str()) {
             continue;
         }
         let Some(&bar) = reached_bars.get(&f.entry_id) else { continue };
-        if let Some((band, bound)) = ratchet(f.kind, bar) {
+        if let Some((band, bound)) = ratchet(f.kind, f.bar_at_flag, bar) {
             mood_flags::convert_to_band(conn, &f.entry_id, mood_id, band, bound, &sig)?;
+            converted.extend(before.get(&f.entry_id).cloned());
         }
     }
-    tx.commit().map_err(|e| format!("Failed to commit accept transaction: {e}"))
+    tx.commit().map_err(|e| format!("Failed to commit accept transaction: {e}"))?;
+    Ok(converted)
 }
 
 /// The band flag a held direction flag becomes once its song's bar reaches
 /// `bar`: Higher → at least the band reached (Stretch or more,
 /// Understandable, Definitely); Lower → at most the band reached
-/// (Understandable or less, Stretch or less), or No. `None` keeps the
-/// direction flag: a band flag would ask nothing (Higher still in No, Lower
-/// still in Definitely), and a band flag is never a direction.
-pub fn ratchet(kind: FlagKind, bar: f64) -> Option<(FlagBand, FlagBound)> {
+/// (Understandable or less, Stretch or less), or No. Only when that bound
+/// is strictly tighter than the direction flag's own starting point
+/// (`bar_at_flag`): Higher needs the band's floor above it, Lower the band's
+/// ceiling below it. Otherwise (or without a starting bar) `None`: the
+/// direction flag stays, since the band flag would ask less of the bar.
+pub fn ratchet(kind: FlagKind, bar_at_flag: Option<f64>, bar: f64) -> Option<(FlagBand, FlagBound)> {
+    let from = bar_at_flag?;
     let band = bar_band(bar);
-    match (kind, band) {
-        (FlagKind::Higher, FlagBand::No) | (FlagKind::Lower, FlagBand::Definitely) | (FlagKind::Band, _) => None,
-        (FlagKind::Higher, band) => Some((band, FlagBound::AtLeast)),
-        (FlagKind::Lower, FlagBand::No) => Some((FlagBand::No, FlagBound::In)),
-        (FlagKind::Lower, band) => Some((band, FlagBound::AtMost)),
+    match kind {
+        FlagKind::Band => None,
+        FlagKind::Higher => band_floor(band).filter(|floor| *floor > from).map(|_| (band, FlagBound::AtLeast)),
+        FlagKind::Lower => band_ceiling(band)
+            .filter(|ceiling| *ceiling < from)
+            .map(|_| if band == FlagBand::No { (FlagBand::No, FlagBound::In) } else { (band, FlagBound::AtMost) }),
     }
 }
 
@@ -1212,15 +1222,20 @@ mod tests {
     fn ratchet_turns_held_directions_into_the_band_reached() {
         use FlagBand::*;
         use FlagBound::*;
-        assert_eq!(ratchet(FlagKind::Higher, 0.95), Some((Definitely, AtLeast)));
-        assert_eq!(ratchet(FlagKind::Higher, 0.8), Some((Understandable, AtLeast)));
-        assert_eq!(ratchet(FlagKind::Higher, 0.6), Some((Stretch, AtLeast)));
-        assert_eq!(ratchet(FlagKind::Higher, 0.3), None, "at least No asks nothing");
-        assert_eq!(ratchet(FlagKind::Lower, 0.3), Some((No, In)));
-        assert_eq!(ratchet(FlagKind::Lower, 0.6), Some((Stretch, AtMost)));
-        assert_eq!(ratchet(FlagKind::Lower, 0.8), Some((Understandable, AtMost)));
-        assert_eq!(ratchet(FlagKind::Lower, 0.95), None, "at most Definitely asks nothing");
-        assert_eq!(ratchet(FlagKind::Band, 0.95), None);
+        // Higher from 0.4: the reached band's floor must be above 0.4.
+        assert_eq!(ratchet(FlagKind::Higher, Some(0.4), 0.95), Some((Definitely, AtLeast)));
+        assert_eq!(ratchet(FlagKind::Higher, Some(0.4), 0.8), Some((Understandable, AtLeast)));
+        assert_eq!(ratchet(FlagKind::Higher, Some(0.4), 0.6), Some((Stretch, AtLeast)));
+        assert_eq!(ratchet(FlagKind::Higher, Some(0.4), 0.3), None, "at least No asks nothing");
+        assert_eq!(ratchet(FlagKind::Higher, Some(0.6), 0.65), None, "Stretch's floor 0.5 would loosen it");
+        // Lower from 0.95: the reached band's ceiling must be below 0.95.
+        assert_eq!(ratchet(FlagKind::Lower, Some(0.95), 0.3), Some((No, In)));
+        assert_eq!(ratchet(FlagKind::Lower, Some(0.95), 0.6), Some((Stretch, AtMost)));
+        assert_eq!(ratchet(FlagKind::Lower, Some(0.95), 0.8), Some((Understandable, AtMost)));
+        assert_eq!(ratchet(FlagKind::Lower, Some(0.99), 0.95), None, "at most Definitely asks nothing");
+        assert_eq!(ratchet(FlagKind::Lower, Some(0.70), 0.55), None, "Stretch's ceiling 0.75 would loosen it");
+        assert_eq!(ratchet(FlagKind::Higher, None, 0.95), None, "no starting bar, no ratchet");
+        assert_eq!(ratchet(FlagKind::Band, Some(0.1), 0.95), None);
     }
 
     #[test]
@@ -1241,7 +1256,13 @@ mod tests {
             [(up.clone(), 0.8), (down.clone(), 0.55), (broken.clone(), 0.52), (plain.clone(), 0.6)].into();
         let holding = vec![up.clone(), down.clone(), plain.clone()];
 
-        accept_lines(&conn, MOOD, &current, &["new words".to_string()], &holding, &reached).unwrap();
+        let converted = accept_lines(&conn, MOOD, &current, &["new words".to_string()], &holding, &reached).unwrap();
+        // Only `up` changed, and it comes back as it was, for Undo.
+        assert_eq!(converted.len(), 1);
+        assert_eq!(
+            (converted[0].entry_id.as_str(), converted[0].kind, converted[0].bar_at_flag),
+            (up.as_str(), FlagKind::Higher, Some(0.5))
+        );
 
         let flags = flags_for_mood(&conn, MOOD).unwrap();
         let get = |id: &str| flags.iter().find(|f| f.entry_id == id).unwrap().clone();
@@ -1250,12 +1271,20 @@ mod tests {
         assert_eq!((u.kind, u.band, u.bound), (FlagKind::Band, Some(FlagBand::Understandable), FlagBound::AtLeast));
         assert_eq!((u.bar_at_flag, u.calibrated_at.as_deref(), u.lines_sig.as_str()), (None, None, new_sig.as_str()));
         let d = get(&down);
-        assert_eq!((d.kind, d.band, d.bound), (FlagKind::Band, Some(FlagBand::Stretch), FlagBound::AtMost));
+        assert_eq!(d.kind, FlagKind::Lower, "0.70 → 0.55 would loosen it to Stretch or less: it stays a Lower flag");
         let b = get(&broken);
         assert_eq!(b.kind, FlagKind::Higher, "a flag that does not hold stays a direction");
         assert_ne!(b.lines_sig, new_sig);
         let p = get(&plain);
         assert_eq!((p.kind, p.band, p.bound), (FlagKind::Band, Some(FlagBand::Stretch), FlagBound::In));
+        assert_eq!(mood_flags::flags_newest_first(&conn, MOOD).unwrap(), order_before);
+
+        // Undo puts the converted row back as it was.
+        for f in converted {
+            mood_flags::restore_flag(&conn, &f).unwrap();
+        }
+        let u = flags_for_mood(&conn, MOOD).unwrap().into_iter().find(|f| f.entry_id == up).unwrap();
+        assert_eq!((u.kind, u.band, u.bar_at_flag, u.calibrated_at.as_deref()), (FlagKind::Higher, None, Some(0.5), Some(NOW)));
         assert_eq!(mood_flags::flags_newest_first(&conn, MOOD).unwrap(), order_before);
     }
 

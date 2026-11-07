@@ -270,7 +270,10 @@ pub fn run() {
             commands::accept_tuned_lines,
             commands::accept_tuned_split,
             commands::load_mood_tune_prefs,
-            commands::save_mood_tune_prefs,
+            commands::restore_mood_flags,
+            commands::rescore_moods,
+            commands::add_never_suggest,
+            commands::remove_never_suggest,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LuteDrop");

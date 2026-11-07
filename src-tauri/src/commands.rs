@@ -3,7 +3,7 @@ use tauri::State;
 use std::sync::Arc;
 use crate::actions;
 use crate::models::{
-    AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodResetImpact, MoodTunePrefs, MoodVocabulary,
+    AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodResetImpact, MoodTunePrefs, MoodVocabulary, AcceptedLines, MoodFlagRow,
     Role, SceneConfig, TrackUpdates, ScryHit, ScryPoint, EnergyPreview, TuneMode, TuneResult};
 use crate::autotag::tune::TuneInputs;
 use crate::state::AppStateContainer;
@@ -383,8 +383,18 @@ pub fn accept_tuned_lines(
     lines: Vec<String>,
     holding_entry_ids: Vec<String>,
     reached_bars: Option<std::collections::HashMap<String, f64>>,
-) -> Result<AppState, String> {
+) -> Result<AcceptedLines, String> {
     actions::accept_tuned_lines(&state, mood_id, lines_tuned_from, lines, holding_entry_ids, reached_bars.unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn restore_mood_flags(state: State<'_, Arc<AppStateContainer>>, rows: Vec<MoodFlagRow>) -> Result<AppState, String> {
+    actions::restore_mood_flags(&state, rows)
+}
+
+#[tauri::command]
+pub fn rescore_moods(state: State<'_, Arc<AppStateContainer>>) -> Result<(), String> {
+    actions::rescore_moods(&state)
 }
 
 #[tauri::command]
@@ -395,11 +405,21 @@ pub fn load_mood_tune_prefs(
 }
 
 #[tauri::command]
-pub fn save_mood_tune_prefs(
+pub fn add_never_suggest(
     state: State<'_, Arc<AppStateContainer>>,
-    prefs: std::collections::BTreeMap<String, MoodTunePrefs>,
-) -> Result<(), String> {
-    actions::save_mood_tune_prefs(&state, prefs)
+    mood: String,
+    words: Vec<String>,
+) -> Result<std::collections::BTreeMap<String, MoodTunePrefs>, String> {
+    actions::add_never_suggest(&state, mood, words)
+}
+
+#[tauri::command]
+pub fn remove_never_suggest(
+    state: State<'_, Arc<AppStateContainer>>,
+    mood: String,
+    word: String,
+) -> Result<std::collections::BTreeMap<String, MoodTunePrefs>, String> {
+    actions::remove_never_suggest(&state, mood, word)
 }
 
 #[tauri::command]

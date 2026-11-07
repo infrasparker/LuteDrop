@@ -224,6 +224,63 @@ pub fn convert_to_band(
     Ok(())
 }
 
+/// Puts a flag row back exactly as given (Undo of an accept's ratchet),
+/// keeping when the flag was set if the row still exists.
+pub fn restore_flag(conn: &Connection, f: &StoredFlag) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO mood_flags
+             (library_entry_id, mood, kind, band, bound, bar_at_flag, calibrated_at, lines_sig, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT (library_entry_id, mood) DO UPDATE SET
+             kind = excluded.kind, band = excluded.band, bound = excluded.bound,
+             bar_at_flag = excluded.bar_at_flag, calibrated_at = excluded.calibrated_at,
+             lines_sig = excluded.lines_sig",
+        params![
+            f.entry_id,
+            f.mood,
+            f.kind.as_db_str(),
+            f.band.map(FlagBand::as_db_str),
+            f.bound.as_db_str(),
+            f.bar_at_flag,
+            f.calibrated_at,
+            f.lines_sig,
+            now_millis_i64(),
+        ],
+    )
+    .map_err(|e| format!("Failed to restore flag: {e}"))?;
+    Ok(())
+}
+
+impl From<StoredFlag> for crate::models::MoodFlagRow {
+    fn from(f: StoredFlag) -> Self {
+        Self {
+            entry_id: f.entry_id,
+            mood: f.mood,
+            kind: f.kind,
+            band: f.band,
+            bound: f.bound,
+            bar_at_flag: f.bar_at_flag,
+            calibrated_at: f.calibrated_at,
+            lines_sig: f.lines_sig,
+        }
+    }
+}
+
+impl From<crate::models::MoodFlagRow> for StoredFlag {
+    fn from(f: crate::models::MoodFlagRow) -> Self {
+        Self {
+            entry_id: f.entry_id,
+            mood: f.mood,
+            kind: f.kind,
+            band: f.band,
+            bound: f.bound,
+            bar_at_flag: f.bar_at_flag,
+            calibrated_at: f.calibrated_at,
+            lines_sig: f.lines_sig,
+        }
+    }
+}
+
 fn read_row(row: &rusqlite::Row) -> rusqlite::Result<StoredFlag> {
     let bad = |what: &str, v: &str| {
         rusqlite::Error::FromSqlConversionFailure(

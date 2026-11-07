@@ -24,6 +24,8 @@ export type { MoodDef } from "./MoodDef";
 export type { MoodValue } from "./MoodValue";
 export type { MoodVocabulary } from "./MoodVocabulary";
 export type { MoodTunePrefs } from "./MoodTunePrefs";
+export type { MoodFlagRow } from "./MoodFlagRow";
+export type { AcceptedLines } from "./AcceptedLines";
 export type { RelinkCandidate } from "./RelinkCandidate";
 export type { Role } from "./Role";
 export type { SceneConfig } from "./SceneConfig";

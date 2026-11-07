@@ -521,8 +521,9 @@ fn run_steps(
         // a reference for older prompts or another set.
         (Some(r), _) => Some(r),
         // No reference offered (older analyzer or no prompts match): keep
-        // what is stored, library or reference.
-        (None, Some(_)) => None,
+        // what is stored; a library calibration gains statistics for moods
+        // whose lines changed, so those are rescored and nothing else moves.
+        (None, Some(s)) => plan::extend_library_calibration(s, &response.mood, &mood_vocabulary),
         // Nothing stored and no reference: take the library's own, if it
         // covers enough music.
         (None, None) => plan::calibrate(&response.mood, &mood_vocabulary, now_millis()),
@@ -1426,18 +1427,25 @@ pub(crate) mod tests {
         let heroic_before = mood_of(&db, &ids[1], "heroic");
         let grim_before = mood_of(&db, &ids[1], "grim");
 
-        // Heroic's prompts change; a run with different raw scores leaves
-        // Heroic as it was (it waits for Recalibrate) and rescores the rest.
+        // Heroic's prompts change; the next run adds Heroic's statistics
+        // from the library and rescores it, and the others keep theirs.
         let mut edited = vocab.clone();
         edited.moods[7].prompts = vec!["fanfare".into()];
         library::save_mood_vocabulary(&db.lock().unwrap(), &edited).unwrap();
-        let mood: HashMap<String, MoodRaw> = mood.keys().map(|h| (h.clone(), raw_mood(0.5, 0.5, 0.5))).collect();
+        let mood: HashMap<String, MoodRaw> = mood
+            .keys()
+            .enumerate()
+            .map(|(k, h)| (h.clone(), raw_mood(0.5 + (k % 2) as f64 * 0.1, 0.5, 0.5)))
+            .collect();
         let fake = FakeAnalyzer { gate, mood, ..Default::default() };
         run_once(&db, &fake, &[], &no_progress);
         let sent = fake.last_score.lock().unwrap().clone().unwrap();
         assert_eq!(sent.mood_prompts.unwrap()["heroic"], ["fanfare"]);
-        assert_eq!(mood_of(&db, &ids[1], "heroic"), heroic_before);
+        assert_ne!(mood_of(&db, &ids[1], "heroic"), heroic_before);
         assert_ne!(mood_of(&db, &ids[1], "grim"), grim_before);
+        let cal = stored_calibration(&db);
+        assert_eq!(cal.prompts["heroic"], ["fanfare"]);
+        assert!(!plan::needs_recalibration(Some(&cal), &edited.normalized().unwrap()));
     }
 
     #[test]

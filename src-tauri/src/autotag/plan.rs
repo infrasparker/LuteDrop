@@ -320,6 +320,44 @@ pub fn reference_calibration(
     })
 }
 
+/// A library calibration with statistics added for the ids it cannot score
+/// (a mood added, or its prompts changed, since it was taken), computed from
+/// this response's raw scores for those ids alone; every other id keeps its
+/// statistics. So after a mood's lines change, the next run rescores that
+/// mood without touching the others. `None` when there is nothing to add,
+/// the calibration is a reference one (the reference set is offered whole),
+/// or an id lacks `CALIBRATION_MIN_TRACKS` scores or spread.
+pub fn extend_library_calibration(
+    stored: &MoodCalibration,
+    mood: &HashMap<String, MoodRaw>,
+    vocabulary: &MoodVocabulary,
+) -> Option<MoodCalibration> {
+    if stored.source != CalibrationSource::Library {
+        return None;
+    }
+    let scorable: HashSet<String> = scorable_ids(stored, vocabulary).into_iter().collect();
+    let missing: Vec<String> = vocabulary.ids().into_iter().filter(|id| !scorable.contains(id)).collect();
+    if missing.is_empty() {
+        return None;
+    }
+    let mut out = stored.clone();
+    for id in missing {
+        let values: Vec<f64> = mood.values().filter_map(|m| raw_score(m, &id)).collect();
+        if values.len() < CALIBRATION_MIN_TRACKS {
+            return None;
+        }
+        let n = values.len() as f64;
+        let mean = values.iter().sum::<f64>() / n;
+        let sd = (values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n).sqrt();
+        if !sd.is_finite() || sd <= 1e-12 {
+            return None;
+        }
+        out.prompts.insert(id.clone(), vocabulary.prompt_signature(&id)?);
+        out.stats.insert(id, MoodStat { mean, sd });
+    }
+    Some(out)
+}
+
 /// True when two floats are equal up to rounding noise: within a relative
 /// 1e-12 (or an absolute 1e-12 for values near zero).
 fn approx_eq(a: f64, b: f64) -> bool {
@@ -986,6 +1024,30 @@ mod tests {
         );
         assert_eq!(json["energy_prompts"]["positive"][0], "energetic, exciting, intense, upbeat, powerful");
         assert_eq!(json["energy_prompts"]["negative"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn extend_library_calibration_adds_only_the_changed_mood() {
+        let stored = flat_calibration(0.2, 0.05);
+        let mut v = MoodVocabulary::defaults();
+        assert_eq!(extend_library_calibration(&stored, &HashMap::new(), &v), None, "nothing to add");
+        v.moods[7].prompts = vec!["fanfare".into()];
+        let id = v.moods[7].id.clone();
+        let mood: HashMap<String, MoodRaw> = (0..CALIBRATION_MIN_TRACKS)
+            .map(|k| (format!("h{k}"), with_moods([0.5 + (k % 2) as f64 * 0.1; N])))
+            .collect();
+        let out = extend_library_calibration(&stored, &mood, &v).unwrap();
+        assert_eq!(out.prompts[&id], vec!["fanfare"]);
+        assert!((out.stats[&id].mean - 0.55).abs() < 1e-9 && (out.stats[&id].sd - 0.05).abs() < 1e-9);
+        for other in ids().into_iter().filter(|x| *x != id) {
+            assert_eq!(out.stats[&other], stored.stats[&other], "{other} keeps its stats");
+        }
+        assert!(!needs_recalibration(Some(&out), &v));
+        // Too few tracks, or a reference calibration: nothing.
+        let few: HashMap<String, MoodRaw> = mood.into_iter().take(CALIBRATION_MIN_TRACKS - 1).collect();
+        assert_eq!(extend_library_calibration(&stored, &few, &v), None);
+        let reference = MoodCalibration { source: CalibrationSource::Reference, ..stored };
+        assert_eq!(extend_library_calibration(&reference, &HashMap::new(), &v), None);
     }
 
     #[test]
