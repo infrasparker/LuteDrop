@@ -727,6 +727,31 @@ pub fn accept_lines(
     Ok(converted)
 }
 
+/// Undo of an accept, in one transaction: the mood's lines go back from
+/// `lines_tuned_from` (the accepted ones) to `lines`, the flags of
+/// `holding_entry_ids` are refreshed to them, and the rows the accept's
+/// ratchet converted are put back exactly (`restore`).
+pub fn undo_accept(
+    conn: &Connection,
+    mood_id: &str,
+    lines_tuned_from: &[String],
+    lines: &[String],
+    holding_entry_ids: &[String],
+    restore: &[(StoredFlag, Option<i64>)],
+) -> Result<(), String> {
+    let (mut vocabulary, i) = tuned_mood(conn, mood_id, lines_tuned_from)?;
+    vocabulary.moods[i].prompts = lines.to_vec();
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin undo transaction: {e}"))?;
+    let saved = library::write_mood_vocabulary(conn, &vocabulary)?;
+    refresh_holding(conn, &saved, mood_id, holding_entry_ids)?;
+    for (row, created_at) in restore {
+        mood_flags::restore_flag(conn, row, *created_at)?;
+    }
+    tx.commit().map_err(|e| format!("Failed to commit undo transaction: {e}"))
+}
+
 /// The band flag a held direction flag becomes once its song's bar reaches
 /// `bar`: Higher → at least the band reached (Stretch or more,
 /// Understandable, Definitely); Lower → at most the band reached
@@ -1294,10 +1319,10 @@ mod tests {
         assert_eq!((p.kind, p.band, p.bound), (FlagKind::Band, Some(FlagBand::Stretch), FlagBound::In));
         assert_eq!(mood_flags::flags_newest_first(&conn, MOOD).unwrap(), order_before);
 
-        // Undo puts the converted row back as it was.
-        for f in converted {
-            mood_flags::restore_flag(&conn, &f).unwrap();
-        }
+        // Undo puts the lines back and the converted row as it was, at once.
+        let restore: Vec<(StoredFlag, Option<i64>)> = converted.into_iter().map(|f| (f, None)).collect();
+        undo_accept(&conn, MOOD, &["new words".to_string()], &current, &holding, &restore).unwrap();
+        assert_eq!(prompts_of(&conn, MOOD).unwrap(), current);
         let u = flags_for_mood(&conn, MOOD).unwrap().into_iter().find(|f| f.entry_id == up).unwrap();
         assert_eq!((u.kind, u.band, u.bar_at_flag, u.calibrated_at.as_deref()), (FlagKind::Higher, None, Some(0.5), Some(NOW)));
         assert_eq!(mood_flags::flags_newest_first(&conn, MOOD).unwrap(), order_before);

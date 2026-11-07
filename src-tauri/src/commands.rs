@@ -3,7 +3,7 @@ use tauri::State;
 use std::sync::Arc;
 use crate::actions;
 use crate::models::{
-    AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodResetImpact, MoodTunePrefs, MoodVocabulary, AcceptedLines, MoodFlagRow,
+    AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodResetImpact, MoodTunePrefs, MoodVocabulary, AcceptedLines, MoodFlagRow, ClearedFlag,
     Role, SceneConfig, TrackUpdates, ScryHit, ScryPoint, EnergyPreview, TuneMode, TuneResult};
 use crate::autotag::tune::TuneInputs;
 use crate::state::AppStateContainer;
@@ -324,7 +324,7 @@ pub fn clear_mood_flag(
     state: State<'_, Arc<AppStateContainer>>,
     entry_id: String,
     mood: String,
-) -> Result<AppState, String> {
+) -> Result<ClearedFlag, String> {
     actions::clear_mood_flag(&state, entry_id, mood)
 }
 
@@ -390,6 +390,18 @@ pub fn accept_tuned_lines(
 #[tauri::command]
 pub fn restore_mood_flags(state: State<'_, Arc<AppStateContainer>>, rows: Vec<MoodFlagRow>) -> Result<AppState, String> {
     actions::restore_mood_flags(&state, rows)
+}
+
+#[tauri::command]
+pub fn undo_tuned_lines(
+    state: State<'_, Arc<AppStateContainer>>,
+    mood_id: String,
+    lines_tuned_from: Vec<String>,
+    lines: Vec<String>,
+    holding_entry_ids: Vec<String>,
+    restore: Vec<MoodFlagRow>,
+) -> Result<AppState, String> {
+    actions::undo_tuned_lines(&state, mood_id, lines_tuned_from, lines, holding_entry_ids, restore)
 }
 
 #[tauri::command]

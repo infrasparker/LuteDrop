@@ -272,6 +272,7 @@ pub fn run() {
             commands::load_mood_tune_prefs,
             commands::restore_mood_flags,
             commands::rescore_moods,
+            commands::undo_tuned_lines,
             commands::add_never_suggest,
             commands::remove_never_suggest,
         ])

@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use super::settings;
 use crate::autotag::plan::MoodStat;
@@ -224,17 +224,34 @@ pub fn convert_to_band(
     Ok(())
 }
 
-/// Puts a flag row back exactly as given (Undo of an accept's ratchet),
-/// keeping when the flag was set if the row still exists.
-pub fn restore_flag(conn: &Connection, f: &StoredFlag) -> Result<(), String> {
+/// Removes a song's flag on a mood and returns it whole (with when it was
+/// set), for Undo; `None` when there was none.
+pub fn take_flag(conn: &Connection, entry_id: &str, mood: &str) -> Result<Option<crate::models::MoodFlagRow>, String> {
+    let row = conn
+        .query_row(
+            &format!("{SELECT_FLAGS_WITH_TIME} WHERE library_entry_id = ?1 AND mood = ?2"),
+            params![entry_id, mood],
+            |r| Ok((read_row(r)?, r.get::<_, i64>(8)?)),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to read flag: {e}"))?;
+    clear_flag(conn, entry_id, mood)?;
+    Ok(row.map(|(f, at)| crate::models::MoodFlagRow { created_at: Some(at.to_string()), ..f.into() }))
+}
+
+/// Puts a flag row back exactly as given (Undo of an accept's ratchet or of
+/// a removal). `created_at` (Unix ms) is written when given; otherwise an
+/// existing row keeps its own, and a new one gets now.
+pub fn restore_flag(conn: &Connection, f: &StoredFlag, created_at: Option<i64>) -> Result<(), String> {
     conn.execute(
         "INSERT INTO mood_flags
              (library_entry_id, mood, kind, band, bound, bar_at_flag, calibrated_at, lines_sig, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, COALESCE(?10, ?9))
          ON CONFLICT (library_entry_id, mood) DO UPDATE SET
              kind = excluded.kind, band = excluded.band, bound = excluded.bound,
              bar_at_flag = excluded.bar_at_flag, calibrated_at = excluded.calibrated_at,
-             lines_sig = excluded.lines_sig",
+             lines_sig = excluded.lines_sig,
+             created_at = COALESCE(?10, mood_flags.created_at)",
         params![
             f.entry_id,
             f.mood,
@@ -245,6 +262,7 @@ pub fn restore_flag(conn: &Connection, f: &StoredFlag) -> Result<(), String> {
             f.calibrated_at,
             f.lines_sig,
             now_millis_i64(),
+            created_at,
         ],
     )
     .map_err(|e| format!("Failed to restore flag: {e}"))?;
@@ -262,6 +280,7 @@ impl From<StoredFlag> for crate::models::MoodFlagRow {
             bar_at_flag: f.bar_at_flag,
             calibrated_at: f.calibrated_at,
             lines_sig: f.lines_sig,
+            created_at: None,
         }
     }
 }
@@ -309,6 +328,8 @@ fn read_row(row: &rusqlite::Row) -> rusqlite::Result<StoredFlag> {
 
 const SELECT_FLAGS: &str =
     "SELECT library_entry_id, mood, kind, band, bound, bar_at_flag, calibrated_at, lines_sig FROM mood_flags";
+const SELECT_FLAGS_WITH_TIME: &str =
+    "SELECT library_entry_id, mood, kind, band, bound, bar_at_flag, calibrated_at, lines_sig, created_at FROM mood_flags";
 
 /// Every flag of one mood.
 pub fn flags_for_mood(conn: &Connection, mood: &str) -> Result<Vec<StoredFlag>, String> {
@@ -758,6 +779,28 @@ mod tests {
         assert!(set_flag_for_entry(&conn, &a, "peaceful", FlagKind::Higher, Some(FlagBand::No)).is_err());
         assert!(set_flag_for_entry(&conn, &a, "peaceful", FlagKind::Lower, Some(FlagBand::No)).is_err());
         assert_eq!(count(&conn), 0);
+    }
+
+    #[test]
+    fn take_then_restore_puts_the_flag_back_exactly() {
+        let conn = open_memory_db();
+        let a = entry(&conn, "a");
+        set_flag(&conn, &a, "peaceful", FlagKind::Lower, None, FlagBound::AtMost, Some(0.7), Some("0.1|0.2"), "old lines").unwrap();
+        let at = |conn: &Connection| -> i64 {
+            conn.query_row("SELECT created_at FROM mood_flags WHERE library_entry_id = ?1", params![a], |r| r.get(0)).unwrap()
+        };
+        conn.execute("UPDATE mood_flags SET created_at = 1234", []).unwrap();
+        let before = flags_for_mood(&conn, "peaceful").unwrap();
+
+        let row = take_flag(&conn, &a, "peaceful").unwrap().unwrap();
+        assert!(flags_for_mood(&conn, "peaceful").unwrap().is_empty());
+        assert_eq!(row.created_at.as_deref(), Some("1234"));
+        assert_eq!(take_flag(&conn, &a, "peaceful").unwrap(), None, "nothing left to take");
+
+        let created = row.created_at.as_deref().and_then(|t| t.parse().ok());
+        restore_flag(&conn, &row.into(), created).unwrap();
+        assert_eq!(flags_for_mood(&conn, "peaceful").unwrap(), before);
+        assert_eq!(at(&conn), 1234);
     }
 
     #[test]

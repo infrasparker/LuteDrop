@@ -15,7 +15,7 @@ use crate::database::settings as autotag_settings;
 use crate::models::{
     AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
     FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodResetImpact, MoodVocabulary, Role, SceneConfig, Track, TrackUpdates, ScryHit,
-    ScryPoint, EnergyPreview, TuneResult, MoodTunePrefs, AcceptedLines, MoodFlagRow};
+    ScryPoint, EnergyPreview, TuneResult, MoodTunePrefs, AcceptedLines, MoodFlagRow, ClearedFlag};
 use crate::relink;
 use crate::state::AppStateContainer;
 use rusqlite::params;
@@ -450,8 +450,14 @@ pub fn set_mood_flag(
 }
 
 /// Removes the flag a song has for a mood.
-pub fn clear_mood_flag(container: &AppStateContainer, entry_id: String, mood: String) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| mood_flags::clear_flag(conn, &entry_id, &mood))
+/// The removed row comes back whole, for Undo (`restore_mood_flags`).
+pub fn clear_mood_flag(container: &AppStateContainer, entry_id: String, mood: String) -> Result<ClearedFlag, String> {
+    let mut removed = None;
+    let state = mutate_and_reload(container, |conn| {
+        removed = mood_flags::take_flag(conn, &entry_id, &mood)?;
+        Ok(())
+    })?;
+    Ok(ClearedFlag { state, removed })
 }
 
 /// "Keep" on a stale flag: it counts as made against the mood's current lines.
@@ -504,9 +510,31 @@ pub fn accept_tuned_lines(
 pub fn restore_mood_flags(container: &AppStateContainer, rows: Vec<MoodFlagRow>) -> Result<AppState, String> {
     mutate_and_reload(container, |conn| {
         for row in rows {
-            mood_flags::restore_flag(conn, &row.into())?;
+            let created_at = row.created_at.as_deref().and_then(|t| t.parse().ok());
+            mood_flags::restore_flag(conn, &row.into(), created_at)?;
         }
         Ok(())
+    })
+}
+
+/// Undo of Use, in one transaction (see `tune::undo_accept`).
+pub fn undo_tuned_lines(
+    container: &AppStateContainer,
+    mood_id: String,
+    lines_tuned_from: Vec<String>,
+    lines: Vec<String>,
+    holding_entry_ids: Vec<String>,
+    restore: Vec<MoodFlagRow>,
+) -> Result<AppState, String> {
+    let rows: Vec<_> = restore
+        .into_iter()
+        .map(|r| {
+            let created_at = r.created_at.as_deref().and_then(|t| t.parse().ok());
+            (r.into(), created_at)
+        })
+        .collect();
+    mutate_and_reload(container, |conn| {
+        tune::undo_accept(conn, &mood_id, &lines_tuned_from, &lines, &holding_entry_ids, &rows)
     })
 }
 

@@ -500,6 +500,20 @@ pub struct MoodFlagRow {
     pub bar_at_flag: Option<f64>,
     pub calibrated_at: Option<String>,
     pub lines_sig: String,
+    /// When the flag was set (Unix milliseconds as a string, like
+    /// `created_at` elsewhere); `None` keeps the row's own (or now).
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+/// What removing a flag returns: the new state, and the row removed, whole,
+/// so Undo can put it back exactly (see `restore_mood_flags`).
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct ClearedFlag {
+    pub state: AppState,
+    pub removed: Option<MoodFlagRow>,
 }
 
 /// What accepting tuned lines returns: the new state, and the flag rows the

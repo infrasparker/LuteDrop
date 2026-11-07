@@ -7,4 +7,9 @@ import type { FlagKind } from "./FlagKind";
  * A flag row as stored, whole: what Use's undo puts back for the direction
  * flags the accept turned into band flags (see `tune::accept_lines`).
  */
-export type MoodFlagRow = { entryId: string, mood: string, kind: FlagKind, band: FlagBand | null, bound: FlagBound, barAtFlag: number | null, calibratedAt: string | null, linesSig: string, };
+export type MoodFlagRow = { entryId: string, mood: string, kind: FlagKind, band: FlagBand | null, bound: FlagBound, barAtFlag: number | null, calibratedAt: string | null, linesSig: string, 
+/**
+ * When the flag was set (Unix milliseconds as a string, like
+ * `created_at` elsewhere); `None` keeps the row's own (or now).
+ */
+createdAt: string | null, };
