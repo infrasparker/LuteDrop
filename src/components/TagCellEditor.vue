@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, nextTick } from 'vue';
-import type { AutoTag } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import TagChip from './TagChip.vue';
 
@@ -11,7 +10,6 @@ import TagChip from './TagChip.vue';
 const props = defineProps<{
   entryId: string;
   tags: string[];
-  autoTags: AutoTag[];
 }>();
 
 const store = useAppStore();
@@ -19,18 +17,11 @@ const store = useAppStore();
 const editing = ref(false);
 const inputRef = ref<{ focus: () => void } | null>(null);
 
-function autoFor(tag: string): AutoTag | null {
-  return props.autoTags.find((a) => a.tag === tag) ?? null;
-}
-
-// `seenAutoTags` tells the backend which auto tags this list was built from,
-// so only the ones the user actually removed become rejections.
 async function persist(tags: string[]): Promise<void> {
   const clean = [...new Set(tags.map((t) => t.trim()).filter((t) => t.length > 0))];
   await store.command('update_library_entry_tags', {
     entryId: props.entryId,
     tags: clean,
-    seenAutoTags: props.autoTags.map((a) => a.tag),
   });
 }
 
@@ -83,9 +74,6 @@ function onChange(tags: string[]): void {
       <template #chip="{ index }">
         <TagChip
           :tag="tags[index]"
-          :auto="autoFor(tags[index])"
-          :entry-id="entryId"
-          :confirmable="false"
           closable
           @remove="persist(tags.filter((_, i) => i !== index))"
         />
@@ -96,8 +84,6 @@ function onChange(tags: string[]): void {
         v-for="tag in tags"
         :key="tag"
         :tag="tag"
-        :auto="autoFor(tag)"
-        :entry-id="entryId"
         closable
         @remove="removeTag(tag)"
       />

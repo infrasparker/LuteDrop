@@ -4,21 +4,19 @@ import { storeToRefs } from 'pinia';
 import FilterChip from './FilterChip.vue';
 import { chipState, cycleChip, emptyChipSelection, type ChipSelection } from '../utils/moods';
 
-/// Tag chips for filtering, plus Untagged and Has auto tags. A tag chip
+/// Tag chips for filtering, plus Untagged. A tag chip
 /// cycles off → include → exclude: an entry passes with at least one
 /// included tag (when any is included) and none of the excluded ones.
-/// Untagged and Has auto tags are plain on/off constraints on top.
+/// Untagged is a plain on/off constraint on top.
 
 const props = defineProps<{
   selection: ChipSelection;
   untagged?: boolean;
-  hasAuto?: boolean;
 }>();
 
 const emit = defineEmits<{
   'update:selection': [value: ChipSelection];
   'update:untagged': [value: boolean];
-  'update:hasAuto': [value: boolean];
 }>();
 
 const store = useAppStore();
@@ -27,10 +25,6 @@ const { tags } = storeToRefs(store);
 function cycleTag(tag: string): void {
   if (props.untagged) emit('update:untagged', false);
   emit('update:selection', cycleChip(props.selection, tag));
-}
-
-function toggleHasAuto(): void {
-  emit('update:hasAuto', !props.hasAuto);
 }
 
 function toggleUntagged(): void {
@@ -53,16 +47,6 @@ function toggleUntagged(): void {
       @click="toggleUntagged"
     >
       Untagged
-    </VChip>
-    <VChip
-      :color="hasAuto ? 'primary' : undefined"
-      :variant="hasAuto ? 'flat' : 'outlined'"
-      size="small"
-      clickable
-      prepend-icon="mdi-creation"
-      @click="toggleHasAuto"
-    >
-      Has auto tags
     </VChip>
     <FilterChip
       v-for="tag in tags"

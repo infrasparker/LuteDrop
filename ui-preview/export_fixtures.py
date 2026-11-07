@@ -158,17 +158,10 @@ ANALYSIS = {"embedded": "embedded", "failed": "failed", "unreachable_path": "unr
 
 def library_entries(conn, v, cal):
     tags = {}
-    for eid, name, auto, vote in conn.execute(
-        "SELECT let.library_entry_id, t.name, let.auto_score, let.user_vote FROM library_entry_tags let "
+    for eid, name in conn.execute(
+        "SELECT let.library_entry_id, t.name FROM library_entry_tags let "
         "JOIN tags t ON t.id = let.tag_id ORDER BY t.name ASC"):
-        t = tags.setdefault(eid, {"shown": [], "auto": [], "rejected": []})
-        if vote == 0:
-            t["rejected"].append(name)
-        elif vote is not None:
-            t["shown"].append(name)
-        elif auto is not None:
-            t["auto"].append({"tag": name, "score": auto})
-            t["shown"].append(name)
+        tags.setdefault(eid, []).append(name)
 
     analysis = {
         eid: {"status": ANALYSIS.get(status, "pending"), "scoredAt": at, "error": err}
@@ -199,23 +192,19 @@ def library_entries(conn, v, cal):
     out, real_paths = [], {}
     for row in conn.execute(
         "SELECT id, file_path, content_hash, name, duration, sample_rate, file_size, volume, trim_start, trim_end, "
-        "loop_start, loop_end, created_at, entry_type, role_auto, role_auto_score, role_user, mood_reviewed_at "
+        "loop_start, loop_end, created_at, entry_type, role_user, mood_reviewed_at "
         "FROM library_entries ORDER BY name ASC"):
-        (eid, path, chash, name, dur, sr, size, vol, ts, te, ls, le, created, etype,
-         role_auto, role_auto_score, role_user, reviewed) = row
+        (eid, path, chash, name, dur, sr, size, vol, ts, te, ls, le, created, etype, role_user, reviewed) = row
         etype = "ambiance" if etype == "ambiance" else "music"
-        role_auto = ROLE.get(role_auto)
         role_user = ROLE.get(role_user)
-        t = tags.get(eid, {"shown": [], "auto": [], "rejected": []})
         stored = moods.get(eid, {})
         real_paths[eid] = path
         out.append({
             "id": eid, "filePath": cut_path(path), "contentHash": chash, "name": name, "duration": dur,
             "sampleRate": sr, "fileSize": size, "volume": vol, "trimStart": ts, "trimEnd": te,
-            "loopStart": ls, "loopEnd": le, "createdAt": created, "tags": t["shown"], "entryType": etype,
-            "autoTags": t["auto"], "rejectedTags": t["rejected"], "analysis": analysis.get(eid),
-            "role": (role_user or role_auto or "nonCombat") if etype == "music" else None,
-            "roleAuto": role_auto, "roleAutoScore": role_auto_score if role_auto else None, "roleUser": role_user,
+            "loopStart": ls, "loopEnd": le, "createdAt": created, "tags": tags.get(eid, []), "entryType": etype,
+            "analysis": analysis.get(eid),
+            "role": (role_user or "nonCombat") if etype == "music" else None, "roleUser": role_user,
             "moods": [
                 {"mood": m, "auto": stored.get(m, (None, None))[0], "user": stored.get(m, (None, None))[1],
                  "flag": flags.get((eid, m))}
@@ -276,8 +265,7 @@ def app_state(conn, m):
     entries, real_paths = library_entries(conn, v, cal)
     config_id = m.get("active_configuration_id", "")
     tag_names = [r[0] for r in conn.execute(
-        "SELECT DISTINCT t.name FROM tags t JOIN library_entry_tags lt ON lt.tag_id = t.id "
-        "WHERE (lt.user_vote = 1 OR (lt.user_vote IS NULL AND lt.auto_score IS NOT NULL)) ORDER BY t.name ASC")]
+        "SELECT DISTINCT t.name FROM tags t JOIN library_entry_tags lt ON lt.tag_id = t.id ORDER BY t.name ASC")]
     configs = [{"id": i, "name": n, "createdAt": c} for i, n, c in conn.execute(
         "SELECT id, name, created_at FROM configurations ORDER BY sort_order ASC, created_at ASC")]
     # Missing files: checked against the real paths now, like the app's startup scan.

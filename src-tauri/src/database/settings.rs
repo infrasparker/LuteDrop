@@ -9,7 +9,7 @@ use uuid::Uuid;
 use crate::autotag::plan::MoodCalibration;
 use std::collections::BTreeMap;
 
-use crate::models::{AutoTagSettings, MoodTunePrefs, MoodVocabulary, SceneConfig};
+use crate::models::{AutoTagSettings, MoodTunePrefs, MoodVocabulary};
 
 const KEY_ENABLED: &str = "broadcast_enabled";
 const KEY_PORT: &str = "broadcast_port";
@@ -21,7 +21,6 @@ const KEY_AUTOTAG_URL: &str = "autotag_url";
 const KEY_AUTOTAG_TOKEN: &str = "autotag_token";
 const KEY_AUTOTAG_LOCAL_PREFIX: &str = "autotag_local_prefix";
 const KEY_AUTOTAG_REMOTE_PREFIX: &str = "autotag_remote_prefix";
-const KEY_AUTOTAG_SCENE: &str = "autotag_scene_encounter";
 pub(crate) const KEY_MOOD_CALIBRATION: &str = "mood_calibration";
 pub(crate) const KEY_MOOD_VOCABULARY: &str = "mood_vocabulary";
 const KEY_MOOD_TUNE_PREFS: &str = "mood_tune_prefs";
@@ -157,24 +156,6 @@ pub fn save_autotag(conn: &Connection, s: &AutoTagSettings) -> Result<(), String
     write_meta(conn, KEY_AUTOTAG_LOCAL_PREFIX, &s.local_prefix)?;
     write_meta(conn, KEY_AUTOTAG_REMOTE_PREFIX, &s.remote_prefix)?;
     Ok(())
-}
-
-/// Loads the scene configuration, stored as JSON. A missing or unparseable
-/// value gives `SceneConfig::default()`.
-pub fn load_scene_config(conn: &Connection) -> Result<SceneConfig, String> {
-    let Some(text) = read_meta(conn, KEY_AUTOTAG_SCENE)? else {
-        return Ok(SceneConfig::default());
-    };
-    Ok(serde_json::from_str(&text).unwrap_or_else(|e| {
-        log::warn!("Invalid stored {KEY_AUTOTAG_SCENE}: {e}; using default scene config");
-        SceneConfig::default()
-    }))
-}
-
-/// Saves the scene configuration as JSON.
-pub fn save_scene_config(conn: &Connection, c: &SceneConfig) -> Result<(), String> {
-    let text = serde_json::to_string(c).map_err(|e| format!("Failed to encode scene config: {e}"))?;
-    write_meta(conn, KEY_AUTOTAG_SCENE, &text)
 }
 
 /// Loads the Moods page's per-mood Tune preferences (`MoodTunePrefs`, by
@@ -324,49 +305,6 @@ pub fn save_mood_calibration(conn: &Connection, calibration: &MoodCalibration) -
     let text = serde_json::to_string(calibration)
         .map_err(|e| format!("Failed to encode mood calibration: {e}"))?;
     write_meta(conn, KEY_MOOD_CALIBRATION, &text)
-}
-
-/// Replaces a saved scene configuration with `SceneConfig::default()`. A
-/// database that never saved one already loads the default and is left as is.
-/// Used by the v6→v7 migration, hence the rusqlite error type.
-pub(crate) fn reset_saved_scene_config(conn: &Connection) -> rusqlite::Result<()> {
-    let text = serde_json::to_string(&SceneConfig::default())
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-    conn.execute(
-        "UPDATE meta SET value = ?1 WHERE key = ?2",
-        params![text, KEY_AUTOTAG_SCENE],
-    )?;
-    Ok(())
-}
-
-/// Removes `word` from a saved scene configuration's vocabulary, matching
-/// names the way tags are stored (trimmed, lowercase). Every other field of
-/// the saved JSON is kept. A database that never saved one, or saved one that
-/// does not parse, is left as is: it loads the default anyway. Used by the
-/// v9→v10 migration, hence the rusqlite error type.
-pub(crate) fn remove_from_saved_vocabulary(conn: &Connection, word: &str) -> rusqlite::Result<()> {
-    let text: Option<String> = conn
-        .query_row("SELECT value FROM meta WHERE key = ?1", [KEY_AUTOTAG_SCENE], |r| r.get(0))
-        .optional()?;
-    let Some(text) = text else { return Ok(()) };
-    let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return Ok(());
-    };
-    let Some(words) = config.get_mut("vocabulary").and_then(|v| v.as_array_mut()) else {
-        return Ok(());
-    };
-    let before = words.len();
-    words.retain(|w| !matches!(w.as_str(), Some(w) if w.trim().to_lowercase() == word));
-    if words.len() == before {
-        return Ok(());
-    }
-    let text = serde_json::to_string(&config)
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-    conn.execute(
-        "UPDATE meta SET value = ?1 WHERE key = ?2",
-        params![text, KEY_AUTOTAG_SCENE],
-    )?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -528,72 +466,6 @@ mod tests {
         };
         save_autotag(&conn, &s).unwrap();
         assert_eq!(load_autotag(&conn).unwrap(), s);
-    }
-
-    #[test]
-    fn scene_config_defaults_when_missing_or_corrupt() {
-        let conn = Connection::open_in_memory().unwrap();
-        init_schema(&conn).unwrap();
-        assert_eq!(load_scene_config(&conn).unwrap(), SceneConfig::default());
-
-        write_meta(&conn, KEY_AUTOTAG_SCENE, "{not json").unwrap();
-        assert_eq!(load_scene_config(&conn).unwrap(), SceneConfig::default());
-
-        let custom = SceneConfig { vocabulary: vec!["folk".into()] };
-        save_scene_config(&conn, &custom).unwrap();
-        assert_eq!(load_scene_config(&conn).unwrap(), custom);
-    }
-
-    #[test]
-    fn scene_config_loads_legacy_json_keeping_vocabulary() {
-        let conn = Connection::open_in_memory().unwrap();
-        init_schema(&conn).unwrap();
-        // The shape saved before the config was reduced to its vocabulary.
-        let legacy = r#"{"scene":"encounter","gateTag":"encounter",
-            "negativeSceneTags":["tavern","mood"],"vocabulary":["brass","Dark","folk"]}"#;
-        write_meta(&conn, KEY_AUTOTAG_SCENE, legacy).unwrap();
-        assert_eq!(
-            load_scene_config(&conn).unwrap(),
-            SceneConfig { vocabulary: vec!["brass".into(), "Dark".into(), "folk".into()] }
-        );
-    }
-
-    #[test]
-    fn remove_from_saved_vocabulary_keeps_the_rest() {
-        let conn = Connection::open_in_memory().unwrap();
-        init_schema(&conn).unwrap();
-        // Nothing saved: nothing to do.
-        remove_from_saved_vocabulary(&conn, "driving").unwrap();
-        assert_eq!(read_meta(&conn, KEY_AUTOTAG_SCENE).unwrap(), None);
-
-        write_meta(
-            &conn,
-            KEY_AUTOTAG_SCENE,
-            r#"{"gateTag":"encounter","vocabulary":["folk"," Driving ","brass","driving"]}"#,
-        )
-        .unwrap();
-        remove_from_saved_vocabulary(&conn, "driving").unwrap();
-        assert_eq!(
-            load_scene_config(&conn).unwrap(),
-            SceneConfig { vocabulary: vec!["folk".into(), "brass".into()] }
-        );
-        let saved: serde_json::Value =
-            serde_json::from_str(&read_meta(&conn, KEY_AUTOTAG_SCENE).unwrap().unwrap()).unwrap();
-        assert_eq!(saved["gateTag"], "encounter");
-
-        // An unparseable value is left alone.
-        write_meta(&conn, KEY_AUTOTAG_SCENE, "not json").unwrap();
-        remove_from_saved_vocabulary(&conn, "driving").unwrap();
-        assert_eq!(read_meta(&conn, KEY_AUTOTAG_SCENE).unwrap().as_deref(), Some("not json"));
-    }
-
-    #[test]
-    fn scene_config_default_vocabulary() {
-        let words: Vec<String> = ["folk", "electronic", "playful"]
-        .iter()
-        .map(|w| w.to_string())
-        .collect();
-        assert_eq!(SceneConfig::default().vocabulary, words);
     }
 
     #[test]

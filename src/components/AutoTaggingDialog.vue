@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { useAppStore } from '../stores/appStore';
 import { useToast } from '../composables/useToast';
 import { useAutoTagEvents } from '../composables/useAutoTagEvents';
-import type { AutoTagReport, AutoTagSettings, SceneConfig, TagQuality } from '@generated/index';
+import type { AutoTagReport, AutoTagSettings } from '@generated/index';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -14,12 +13,8 @@ const emit = defineEmits<{
   'update:modelValue': [value: boolean];
 }>();
 
-const store = useAppStore();
 const toast = useToast();
 const { progress, completedRuns } = useAutoTagEvents();
-
-// Examples needed per side before a tag can be trusted.
-const MIN_EXAMPLES = 5;
 
 // --- State ---
 
@@ -30,13 +25,10 @@ const settings = ref<AutoTagSettings>({
   localPrefix: '',
   remotePrefix: '',
 });
-const scene = ref<SceneConfig | null>(null);
-const vocabulary = ref<string[]>([]);
 const report = ref<AutoTagReport | null>(null);
 
 const loading = ref(false);
 const saving = ref(false);
-const savingVocabulary = ref(false);
 const testing = ref(false);
 const starting = ref(false);
 // Result of the last connection test: the analyzer's status line, or the error text.
@@ -51,19 +43,16 @@ async function loadAll(): Promise<void> {
   const id = ++requestId;
   loading.value = true;
   try {
-    const [s, sc, r] = await Promise.all([
+    const [s, r] = await Promise.all([
       invoke<AutoTagSettings>('get_autotag_settings'),
-      invoke<SceneConfig>('get_scene_config'),
       invoke<AutoTagReport>('get_autotag_report'),
     ]);
     if (id !== requestId) return;
     settings.value = s;
-    scene.value = sc;
-    vocabulary.value = [...sc.vocabulary];
     report.value = r;
   } catch (e) {
     if (id !== requestId) return;
-    toast.showError(`Could not load auto-tagging settings: ${e}`);
+    toast.showError(`Could not load the analyzer settings: ${e}`);
   } finally {
     if (id === requestId) loading.value = false;
   }
@@ -73,7 +62,7 @@ async function loadReport(): Promise<void> {
   try {
     report.value = await invoke<AutoTagReport>('get_autotag_report');
   } catch (e) {
-    toast.showError(`Could not load the auto-tagging report: ${e}`);
+    toast.showError(`Could not load the analysis report: ${e}`);
   }
 }
 
@@ -114,9 +103,9 @@ async function saveSettings(): Promise<void> {
   saving.value = true;
   try {
     await invoke('save_autotag_settings', { settings: settings.value });
-    toast.showSuccess('Auto-tagging settings saved');
+    toast.showSuccess('Analyzer settings saved');
   } catch (e) {
-    toast.showError(`Could not save auto-tagging settings: ${e}`);
+    toast.showError(`Could not save the analyzer settings: ${e}`);
   } finally {
     saving.value = false;
   }
@@ -136,7 +125,7 @@ const phaseLabel = computed(() => {
     case 'embedding':
       return 'Analyzing audio';
     case 'scoring':
-      return 'Scoring tags';
+      return 'Scoring moods';
     case 'error':
       return 'Error';
     default:
@@ -170,56 +159,10 @@ const summary = computed(() => {
   if (!r) return [];
   return [
     { label: 'Analyzed', value: r.analyzed },
-    { label: 'Tags added', value: r.added },
-    { label: 'Tags removed', value: r.removed },
     { label: 'Failed', value: r.failed },
     { label: 'Unreachable', value: r.unreachable },
   ];
 });
-
-// --- Quality table ---
-
-// The role gate (Combat vs non-combat) first, then each vocabulary tag.
-const qualityRows = computed<TagQuality[]>(() => {
-  const r = report.value;
-  if (!r) return [];
-  return [...(r.gate ? [r.gate] : []), ...r.tags];
-});
-
-function reason(q: TagQuality): string {
-  if (q.trusted) return '';
-  if (q.pos < MIN_EXAMPLES || q.neg < MIN_EXAMPLES) {
-    const needed = Math.max(MIN_EXAMPLES - q.pos, MIN_EXAMPLES - q.neg);
-    return `needs ${needed} more examples`;
-  }
-  return 'not distinctive enough yet';
-}
-
-// --- Vocabulary ---
-
-const vocabularyChanged = computed(
-  () => !!scene.value && vocabulary.value.join('|') !== scene.value.vocabulary.join('|'),
-);
-
-function cleanVocabulary(tags: string[]): string[] {
-  return [...new Set(tags.map((t) => t.trim()).filter((t) => t.length > 0))];
-}
-
-async function saveVocabulary(): Promise<void> {
-  if (!scene.value) return;
-  const config: SceneConfig = { ...scene.value, vocabulary: cleanVocabulary(vocabulary.value) };
-  savingVocabulary.value = true;
-  try {
-    await invoke('save_scene_config', { config });
-    scene.value = config;
-    vocabulary.value = [...config.vocabulary];
-    toast.showSuccess('Vocabulary saved');
-  } catch (e) {
-    toast.showError(`Could not save the vocabulary: ${e}`);
-  } finally {
-    savingVocabulary.value = false;
-  }
-}
 
 function close(): void {
   emit('update:modelValue', false);
@@ -228,7 +171,7 @@ function close(): void {
 
 <template>
   <VDialog :model-value="modelValue" max-width="760" scrollable @update:model-value="(v) => emit('update:modelValue', v)">
-    <VCard title="Auto-tagging" prepend-icon="mdi-creation">
+    <VCard title="Analyzer" prepend-icon="mdi-creation">
       <VCardText>
         <div v-if="loading" class="d-flex justify-center pa-8">
           <VProgressCircular indeterminate />
@@ -238,7 +181,7 @@ function close(): void {
           <!-- Connection settings -->
           <VSwitch
             v-model="settings.enabled"
-            label="Enable auto-tagging"
+            label="Enable the analyzer"
             color="primary"
             density="compact"
             hide-details
@@ -318,7 +261,7 @@ function close(): void {
               prepend-icon="mdi-waveform"
               :loading="starting"
               :disabled="running || !settings.enabled"
-              :title="settings.enabled ? undefined : 'Enable and save auto-tagging first'"
+              :title="settings.enabled ? undefined : 'Enable and save the analyzer first'"
               @click="analyze"
             >
               Analyze library
@@ -358,71 +301,6 @@ function close(): void {
           </div>
           <div v-else class="text-caption text-medium-emphasis mb-2">No run yet.</div>
 
-          <VDivider class="my-4" />
-
-          <!-- Quality table -->
-          <div class="text-subtitle-2 mb-2">Tag quality</div>
-          <VTable v-if="qualityRows.length > 0" density="compact" class="quality-table">
-            <thead>
-              <tr>
-                <th>Tag</th>
-                <th class="text-right">Pos</th>
-                <th class="text-right">Neg</th>
-                <th class="text-right">AUC</th>
-                <th>Trusted</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="q in qualityRows" :key="q.tag">
-                <td>
-                  {{ q === report?.gate ? 'Combat vs non-combat' : q.tag }}
-                  <VChip v-if="q === report?.gate" size="x-small" class="ml-1">role</VChip>
-                </td>
-                <td class="text-right">{{ q.pos }}</td>
-                <td class="text-right">{{ q.neg }}</td>
-                <td class="text-right">{{ q.auc === null ? '-' : q.auc.toFixed(2) }}</td>
-                <td>
-                  <VIcon v-if="q.trusted" color="success" size="small">mdi-check</VIcon>
-                  <span v-else class="text-caption text-medium-emphasis">{{ reason(q) }}</span>
-                </td>
-              </tr>
-            </tbody>
-          </VTable>
-          <div v-else class="text-caption text-medium-emphasis">
-            Tag quality appears after the first analysis.
-          </div>
-
-          <VDivider class="my-4" />
-
-          <!-- Vocabulary -->
-          <div class="text-subtitle-2 mb-1">Vocabulary</div>
-          <div class="text-caption text-medium-emphasis mb-2">
-            Tags that can be applied automatically to music entries.
-          </div>
-          <div class="d-flex align-start ga-3">
-            <VCombobox
-              v-model="vocabulary"
-              :items="store.tags"
-              label="Vocabulary tags"
-              variant="outlined"
-              density="compact"
-              hide-details
-              multiple
-              chips
-              closable-chips
-              :disabled="!scene"
-            />
-            <VBtn
-              variant="tonal"
-              size="small"
-              class="mt-1"
-              :disabled="!vocabularyChanged"
-              :loading="savingVocabulary"
-              @click="saveVocabulary"
-            >
-              Save vocabulary
-            </VBtn>
-          </div>
         </template>
       </VCardText>
       <VDivider />
@@ -438,10 +316,5 @@ function close(): void {
 .sample-errors {
   padding-left: 20px;
   word-break: break-all;
-}
-
-.quality-table {
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 4px;
 }
 </style>

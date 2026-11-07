@@ -13,8 +13,8 @@
 //! 5. **Broadcast restore**: Short-lived; turns the live stream back on if it
 //!    was on at last exit (the stream's own encoder/server threads then run
 //!    until it is turned off).
-//! 6. **Auto-tag worker**: Sleeps until imports, tag edits or "Analyze
-//!    library" give it work, then calls the analyzer service (see `autotag`).
+//! 6. **Analyzer worker** (`autotag`): Sleeps until imports or "Analyze
+//!    library" give it work, then has the analyzer embed tracks and score moods.
 //!
 //! ## Tauri Events Emitted to Frontend
 //! - `playback-state-update`: Per-track playback position and state (every 50ms; listened: useAudio.ts).
@@ -215,9 +215,6 @@ pub fn run() {
             commands::bulk_import_library_entries,
             commands::scan_folder_for_audio,
             commands::update_library_entry_tags,
-            commands::keep_auto_tags,
-            commands::reject_auto_tags,
-            commands::reset_entry_tag_votes,
             commands::set_entry_role,
             commands::set_entry_mood_level,
             commands::set_mood_flag,
@@ -255,12 +252,9 @@ pub fn run() {
             commands::regenerate_broadcast_key,
             commands::get_autotag_settings,
             commands::save_autotag_settings,
-            commands::get_scene_config,
-            commands::save_scene_config,
             commands::test_autotag_connection,
             commands::analyze_library,
             commands::get_autotag_report,
-            commands::get_entry_tag_scores,
             commands::similar_entries,
             commands::search_scry,
             commands::scry_map,

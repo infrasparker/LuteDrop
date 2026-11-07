@@ -5,7 +5,6 @@ import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
 import WaveformEditor from './WaveformEditor.vue';
 import TagChip from './TagChip.vue';
-import TagScoresPanel from './TagScoresPanel.vue';
 import RoleControl from './RoleControl.vue';
 import MoodProfile from './MoodProfile.vue';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -60,9 +59,6 @@ async function toggleLoop(): Promise<void> {
 // Local editable fields
 const editName = ref('');
 const editTags = ref<string[]>([]);
-// Auto tag names currently shown; sent with each save so only auto tags
-// removed in this dialog are rejected.
-const seenAutoTags = ref<string[]>([]);
 const editEntryType = ref('music');
 const { local: localGain } = useLocalVolume(() => entry.value?.volume);
 
@@ -93,14 +89,12 @@ watch(() => props.modelValue, (open) => {
 }, { immediate: true });
 
 // Tag edits save immediately, so the store is the source of truth: keep the
-// combobox and the seen auto tags in step with it (this also picks up Keep /
-// Remove on an auto chip and auto-tag runs finishing while the dialog is open).
+// combobox in step with it.
 watch(
-  () => [entry.value?.tags.join('|'), entry.value?.autoTags.map((a) => a.tag).join('|')],
+  () => entry.value?.tags.join('|'),
   () => {
     if (!entry.value) return;
     editTags.value = [...entry.value.tags];
-    seenAutoTags.value = entry.value.autoTags.map((a) => a.tag);
   },
   { immediate: true },
 );
@@ -128,7 +122,6 @@ async function saveTags(): Promise<void> {
   await store.command('update_library_entry_tags', {
     entryId: props.entryId,
     tags,
-    seenAutoTags: seenAutoTags.value,
   });
 }
 
@@ -328,24 +321,17 @@ async function relocateFile(): Promise<void> {
           <template #chip="{ index }">
             <TagChip
               :tag="editTags[index]"
-              :auto="entry?.autoTags.find((a) => a.tag === editTags[index]) ?? null"
-              :entry-id="props.entryId"
               closable
               @remove="removeEditTag(index)"
             />
           </template>
         </VCombobox>
 
-        <!-- Role and the mood profile (music only). Role: label | options | status grid -->
+        <!-- Role and the mood profile (music only) -->
         <template v-if="editEntryType === 'music'">
-          <div class="facet-grid mb-3">
+          <div class="d-flex align-center ga-3 mb-3">
             <span class="text-caption text-medium-emphasis">Role</span>
-            <RoleControl
-              :entry-ids="[props.entryId]"
-              :role-auto="entry.roleAuto"
-              :role-auto-score="entry.roleAutoScore"
-              :role-user="entry.roleUser"
-            />
+            <RoleControl :entry-ids="[props.entryId]" :role-user="entry.roleUser" />
           </div>
           <div class="text-caption text-medium-emphasis mb-1">Moods</div>
           <MoodProfile :key="entry.id" :entries="[entry]" class="mb-4" />
@@ -466,23 +452,7 @@ async function relocateFile(): Promise<void> {
             </div>
           </template>
         </div>
-
-        <TagScoresPanel :entry-id="entryId" :is-ambiance="editEntryType === 'ambiance'" />
       </VCardText>
     </VCard>
   </VDialog>
 </template>
-
-<style scoped>
-/* Label | options | status. Each facet control renders its options and status
-   as two cells (display: contents), so the columns line up across rows. */
-.facet-grid {
-  display: grid;
-  /* The options take one line when the dialog has room and wrap (down to
-     their widest button) when it has not; the status never wraps. */
-  grid-template-columns: max-content minmax(min-content, max-content) minmax(max-content, 1fr);
-  align-items: center;
-  column-gap: 12px;
-  row-gap: 12px;
-}
-</style>

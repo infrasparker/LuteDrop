@@ -1,5 +1,3 @@
-import json
-import logging
 import os
 import re
 import threading
@@ -9,8 +7,6 @@ from typing import Protocol
 import numpy as np
 
 from . import config
-
-log = logging.getLogger(__name__)
 
 _SAFE_HASH = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -123,26 +119,6 @@ class EmbeddingCache:
             np.save(f, np.asarray(windows, dtype=np.float32))
         os.replace(tmp, path)
 
-    def _rhythm_path(self, hash: str) -> Path:
-        return self._path(hash).with_name(f"{hash}.rhythm.json")
-
-    def has_rhythm(self, hash: str) -> bool:
-        try:
-            return self._rhythm_path(hash).is_file()
-        except ValueError:
-            return False
-
-    def get_rhythm(self, hash: str) -> dict[str, float] | None:
-        if not self.has_rhythm(hash):
-            return None
-        return json.loads(self._rhythm_path(hash).read_text())
-
-    def put_rhythm(self, hash: str, feats: dict[str, float]) -> None:
-        path = self._rhythm_path(hash)
-        tmp = path.with_name(f"{hash}.{os.getpid()}.{threading.get_ident()}.rhythm.tmp")
-        tmp.write_text(json.dumps({k: float(v) for k, v in feats.items()}))
-        os.replace(tmp, path)
-
     def count(self) -> int:
         return sum(1 for _ in self.root.glob("*.npy"))
 
@@ -172,17 +148,7 @@ def load_windows(path: str) -> np.ndarray:
     return _cut_windows(_decode(path))
 
 
-def decode_track(path: str) -> tuple[np.ndarray, dict[str, float] | None]:
-    """One decode, two products: the embedding windows and the track's rhythm
-    features. Runs in a worker process. A rhythm failure must not cost the
-    embedding, so it is logged and the features come back as None."""
-    from . import rhythm
-
-    y = _decode(path)
-    windows = _cut_windows(y)
-    try:
-        feats = rhythm.track_features(y, config.SAMPLE_RATE)
-    except Exception:
-        log.exception("Rhythm features failed for %s", path)
-        feats = None
-    return windows, feats
+def decode_track(path: str) -> np.ndarray:
+    """The embedding windows for one file, as `load_windows`. Runs in a
+    worker process (see app.create_app)."""
+    return load_windows(path)

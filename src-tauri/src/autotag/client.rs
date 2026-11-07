@@ -17,7 +17,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
 /// `/embed` decodes and embeds up to 32 files, which can take minutes.
 const EMBED_TIMEOUT: Duration = Duration::from_secs(300);
-/// `/score` trains and scores every classifier from cached embeddings.
+/// `/score` scores the moods of every target from cached embeddings.
 const SCORE_TIMEOUT: Duration = Duration::from_secs(120);
 /// `/similar` ranks cached embeddings against a centroid.
 const SIMILAR_TIMEOUT: Duration = Duration::from_secs(30);
@@ -60,7 +60,7 @@ pub trait AnalyzerClient: Send + Sync {
     fn health(&self) -> Result<String, String>;
     /// Embeds up to 32 files, given as (content hash, path on the analyzer host).
     fn embed(&self, items: &[(String, String)]) -> Result<Vec<EmbedResult>, String>;
-    /// Trains on the examples in `req` and scores its targets.
+    /// Scores the moods of the targets in `req`.
     fn score(&self, req: &ScoreRequest) -> Result<ScoreResponse, String>;
     /// Ranks `candidates` by closeness to the centroid of the `query` hashes,
     /// best first, at most `limit` of them. Query hashes are left out of the

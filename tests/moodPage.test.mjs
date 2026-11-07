@@ -296,8 +296,8 @@ test('rescore problem: why the bars were not updated', () => {
   const ok = { error: null, needsRecalibration: false, linesAtStart: 'a', linesNow: 'a' };
   assert.equal(rescoreProblem(ok), null);
   assert.equal(
-    rescoreProblem({ ...ok, error: 'Turn on auto-tagging first: the analyzer rescores the moods' }),
-    'Bars not updated: auto-tagging is off',
+    rescoreProblem({ ...ok, error: 'Turn on the analyzer first: it rescores the moods' }),
+    'Bars not updated: the analyzer is off',
   );
   assert.equal(rescoreProblem({ ...ok, needsRecalibration: true, linesNow: 'b' }), 'Bars not updated: words changed, run again');
   assert.equal(rescoreProblem({ ...ok, needsRecalibration: true }), 'Bars not updated: not enough analyzed tracks');

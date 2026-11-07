@@ -50,20 +50,14 @@ def test_cache_mean_is_normalized_window_mean(tmp_path):
     assert np.isclose(np.linalg.norm(v), 1.0)
 
 
-def test_decode_track_survives_rhythm_failure(tmp_path, monkeypatch, caplog):
-    from tagger import embed, rhythm
+def test_decode_track_returns_windows_only(tmp_path):
+    from tagger import embed
 
     p = tmp_path / "t.wav"
     write_tone(p, 3)
-
-    def boom(y, sr):
-        raise RuntimeError("beat tracker exploded")
-
-    monkeypatch.setattr(rhythm, "track_features", boom)
-    windows, feats = embed.decode_track(str(p))
-    assert windows.shape[0] == 1
-    assert feats is None
-    assert "beat tracker exploded" in caplog.text
+    windows = embed.decode_track(str(p))
+    assert isinstance(windows, np.ndarray)
+    assert windows.shape == (1, config.WINDOW_SECONDS * config.SAMPLE_RATE)
 
 
 def test_embed_text_runs_the_model_once_per_text(monkeypatch):

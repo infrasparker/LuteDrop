@@ -31,8 +31,6 @@ const props = defineProps<{
   selectedIds: string[];
   seedIds: string[];
   playingId: string | null;
-  // Analyzer vocabulary tags; every other tag on an entry is shown as a game tag.
-  vocabulary: Set<string>;
 }>();
 
 const emit = defineEmits<{
@@ -119,10 +117,6 @@ function barWidth(score: number): string {
 
 const selectedSet = computed(() => new Set(props.selectedIds));
 const seedSet = computed(() => new Set(props.seedIds));
-
-function gameTags(entry: LibraryEntry): string[] {
-  return entry.tags.filter((t) => !props.vocabulary.has(t));
-}
 
 function toggle(id: string): void {
   if (selectedSet.value.has(id)) {
@@ -287,15 +281,14 @@ onBeforeUnmount(() => {
         />
         <div class="flex-grow-1" style="min-width: 0;">
           <div class="text-body-2 text-truncate" :title="entry.name">{{ entry.name }}</div>
-          <div v-if="gameTags(entry).length > 0" class="d-flex ga-1 overflow-hidden">
-            <VChip v-for="tag in gameTags(entry)" :key="tag" size="x-small" variant="tonal" label>{{ tag }}</VChip>
+          <div v-if="entry.tags.length > 0" class="d-flex ga-1 overflow-hidden">
+            <VChip v-for="tag in entry.tags" :key="tag" size="x-small" variant="tonal" label>{{ tag }}</VChip>
           </div>
         </div>
         <VIcon
           v-if="entry.role"
           size="small"
-          :color="entry.roleUser === null ? undefined : 'primary'"
-          :title="roleLabel(entry.role) + (entry.roleUser === null ? ' · Suggested' : '')"
+          :title="roleLabel(entry.role)"
         >
           {{ entry.role === 'combat' ? 'mdi-sword-cross' : 'mdi-music-note' }}
         </VIcon>

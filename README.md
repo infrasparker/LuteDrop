@@ -36,18 +36,15 @@ installer fetches it automatically, the portable build assumes it's present).
   - Set loop points (start/end)
 - **Fix missing files** (next to Import) walks through entries whose audio file has moved or been deleted, searches a folder for files with a matching name (your library's folder by default), and relinks each with one click. Skipping an entry leaves it for next time.
 
-## Auto-tagging
+## Analyzer
 
-Auto-tagging suggests a role and tags for music entries by comparing how they sound with entries that were classified by hand. It needs the analyzer service, a separate service that needs a GPU host; see [`tagger/README.md`](tagger/README.md) for how to run it. The **Auto-tagging** button in the Library toolbar opens the settings.
+The analyzer listens to music entries: it suggests their mood values and powers Scry. It needs the analyzer service, a separate service that needs a GPU host; see [`tagger/README.md`](tagger/README.md) for how to run it. The **Analyzer** button in the Library toolbar opens the settings. Tags and roles are always set by hand.
 
 ### Role
 
-Every music entry has a role, **Combat** or **Non-combat**; there is no "no role" state. The role shown is the one you set, else the analyzer's suggestion, else **Non-combat** by default. Ambiance entries have no role. The analyzer scores the Combat probability of each entry. Its suggestion is Combat when the probability reaches the Combat threshold, Non-combat when one minus the probability reaches the Non-combat threshold, and otherwise there is none (the default shows). An auto role is suggested only once the role classifier is trusted.
+Every music entry has a role, **Combat** or **Non-combat**; there is no "no role" state. An entry is **Non-combat** until you set it to Combat. Ambiance entries have no role.
 
-- A role set by hand always wins. Auto-tagging never changes it.
-- A suggested role (the analyzer's, or the default) is shown as **✨ Suggested**, with the analyzer's score when there is one. **Confirm** makes it yours; a role you set reads **Set by you**, and **↺** goes back to the suggestion.
-- The Library has a Role column and a Role filter (Any role, Combat, Non-combat). The entry editor has a Combat / Non-combat control, and the bulk bar can set the role on several music entries at once or send them back to the suggestion.
-- Only entries whose role was set by hand count as examples. Auto roles never do, and neither does the Non-combat default.
+- The Library has a Role column and a Role filter (Any role, Combat, Non-combat). The entry editor has a Combat / Non-combat control, and the bulk bar can set the role on several music entries at once.
 
 ### Moods
 
@@ -58,7 +55,7 @@ A mood is a **lens**, not a label: picking a mood ranks the whole music library 
 
 Each music track has a **mood profile**: one value from 0 to 1 per mood, plus one for Energy. Ambiance entries have no moods.
 
-The analyzer suggests every value by comparing the track's sound with a few descriptions of each mood. The bars are measured against a fixed reference set of 300 soundtrack-style tracks (Kevin MacLeod, incompetech.com, CC BY 4.0) that ships with the analyzer, so they mean the same thing in any library: 0.5 is about the top quarter of soundtrack music for that mood, 0.75 the top 10% ("could be heard as this"), and 0.9 the top 3% ("for sure"). Most tracks sit below 0.5 in most moods. Energy is two-sided, so its bar reads 0.5 at the average soundtrack energy. Adding or removing tracks never changes a bar. After you edit a mood's words, the lens row shows **Needs recalibration** until the next analysis run, which recalibrates against the reference set for the current words and clears the marker by itself (this needs auto-tagging on); **Recalibrate** just does that run now. The ranking never depends on this mapping, only the number shown.
+The analyzer suggests every value by comparing the track's sound with a few descriptions of each mood. The bars are measured against a fixed reference set of 300 soundtrack-style tracks (Kevin MacLeod, incompetech.com, CC BY 4.0) that ships with the analyzer, so they mean the same thing in any library: 0.5 is about the top quarter of soundtrack music for that mood, 0.75 the top 10% ("could be heard as this"), and 0.9 the top 3% ("for sure"). Most tracks sit below 0.5 in most moods. Energy is two-sided, so its bar reads 0.5 at the average soundtrack energy. Adding or removing tracks never changes a bar. After you edit a mood's words, the lens row shows **Needs recalibration** until the next analysis run, which recalibrates against the reference set for the current words and clears the marker by itself (this needs the analyzer on); **Recalibrate** just does that run now. The ranking never depends on this mapping, only the number shown.
 
 With an older analyzer that has no reference set, the bars fall back to your library: a calibration taken once, from the first analysis run that covers at least 50 music tracks (until then no moods are suggested). A mood's bar then reads 0.5 half a standard deviation above the library's average for that mood, and Energy reads 0.5 at the library average. Edited words then need a Recalibrate.
 
@@ -70,7 +67,7 @@ Upgrading from the pools release clears the old pools; the next analysis run fil
 - **Energy bands.** After the mood chips, set a little apart, are three Energy chips: **Low** (below 0.375), **Mid** (0.375 to 0.625) and **High** (above 0.625), using the Energy you set, else the suggested one. So the levels 0 and 0.25 are Low, 0.5 is Mid, 0.75 and 1 are High. Any combination can be on, and a track shows when its Energy is in any of them. With none on there is no Energy filter; with any on, tracks without an Energy value are hidden. The bands only filter; they never change the order.
 - Ambiance is hidden while any mood or Energy band is on.
 - **Sorting** is done from the column headers only. The Library sorts by status (missing files first), Type, Name, Role, Energy, Duration, and Match while a mood is on; Scry by Name, Energy, Search (how close a track is to the search or seeds) and Match. Click a header to sort by it, again to flip the direction. Turning on the first mood sorts by Match, highest first; turning off the last one goes back to the view's default sort (Name in the Library, Search in Scry). While a mood is on, the Energy header does not sort, so the order never depends on Energy then; use the bands to narrow by Energy. Levels you set are coarse, so tracks set to the same level tie: within a level, Match and Energy order them by the analyzer's suggestion behind the level (the value shown does not change), and any tie left goes by name. The filter bar also has the Role filter.
-- Tag chips have three states, **off → include → exclude**, one per click: an entry passes when it has at least one included tag (if any is included) and none of the excluded ones (red outline, struck through). **Untagged** and **Has auto tags** are plain on/off filters on top.
+- Tag chips have three states, **off → include → exclude**, one per click: an entry passes when it has at least one included tag (if any is included) and none of the excluded ones (red outline, struck through). **Untagged** is a plain on/off filter on top.
 
 #### Mood vocabulary
 
@@ -82,18 +79,7 @@ Upgrading from the pools release clears the old pools; the next analysis run fil
 - **Save** stores the vocabulary. Removing a mood deletes its values on every track; when that includes levels set by you, Save asks first and says how many.
 - **Recalibrate** clears the calibration and every suggested mood value (levels set by you stay) and starts an analysis run, which suggests every mood again from the current prompts. The new calibration comes from the analyzer's reference set when it has one, otherwise from your library. The panel shows which of the two the bars are measured against, and how many tracks it was taken from.
 - **Reset to defaults** puts back the shipped mood list and prompts. Levels set by you stay for moods still in the list; moods not in the defaults lose their values, and the confirm dialog says how many. It also works when the stored list is unreadable (when Save is blocked). If prompts changed, it then offers to recalibrate.
-- After you change a mood's prompts (or add a mood), Save offers to recalibrate. Until you do (or, with the reference set and auto-tagging on, until the next analysis run), the lens row shows **Needs recalibration**, and the changed moods keep their old suggestions; the others are still suggested as before.
-
-### Auto tags
-
-Auto tags are learned from the tags the user applied by hand.
-
-- A tag's positive examples are music entries that carry it. Its negative examples are music entries with a hand-set role but without the tag, plus entries where it was removed as an auto tag. Auto tags never count as examples.
-- A tag is applied only when the analyzer can predict it reliably (trusted): at least 5 positive and 5 negative examples, and good separation when tested on them. The tag quality table in the settings dialog shows each tag's example counts, AUC and, for tags not yet trusted, what is missing.
-- Auto tags are marked on their chip. **Keep** turns one into a normal tag. **Remove** takes it off and stops it being applied to that track again.
-- Auto-tagging never overwrites or removes a tag applied by hand.
-- The Library's tag filter can show only entries with auto tags, and bulk actions can keep or remove auto tags on several entries at once.
-- In the entry editor, the **Tag scores** panel shows each tag's score against its threshold and whether the entry's tag was applied by hand or automatically.
+- After you change a mood's prompts (or add a mood), Save offers to recalibrate. Until you do (or, with the reference set and the analyzer on, until the next analysis run), the lens row shows **Needs recalibration**, and the changed moods keep their old suggestions; the others are still suggested as before.
 
 ### Scry
 
@@ -111,11 +97,10 @@ The Library search box also matches the album and artist folder names of an entr
 
 ### Settings
 
-- **Enable auto-tagging.** Turning it on starts analyzing the library right away. New imports are analyzed as they arrive.
+- **Enable the analyzer.** Turning it on starts analyzing the library right away. New imports are analyzed as they arrive.
 - **Analyzer URL** and **Token** identify the service. **Test connection** reports the service's model, whether it has finished loading, and how many embeddings it has cached, or the error.
 - **Local path prefix** and **Analyzer path prefix** map the library folder on this machine to the same folder as the analyzer sees it. For example, a library opened here as `Z:\media\audio` that the analyzer sees as `/media/audio` uses local prefix `Z:\media\audio` and analyzer prefix `/media/audio`. Entries outside the local prefix are counted as unreachable.
 - **Analyze library** analyzes every entry that has no current analysis, with a progress bar and a summary of the last run. The summary lists up to five entries that failed or were unreachable, with the reason for each.
-- **Vocabulary** lists the tags that can be applied automatically.
 
 ## Building Soundscapes
 
