@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import { useAppStore } from '../stores/appStore';
 import FilterChip from './FilterChip.vue';
 import {
@@ -17,7 +18,7 @@ import {
 /// The filter bar shared by the Library and Scry: a lens chip per mood of the
 /// vocabulary, then the three Energy band chips (Low, Mid, High), then the
 /// Role toggle. While the vocabulary needs recalibrating, a marker after the
-/// chips says so and opens the Moods settings.
+/// chips says so and opens the Moods page.
 ///
 /// Every chip here is on/off. Moods that are on rank the list by the weakest
 /// of their scores. Energy bands only filter: a track shows when its Energy
@@ -37,6 +38,7 @@ const props = defineProps<{
 }>();
 
 const store = useAppStore();
+const router = useRouter();
 const moods = computed(() => moodsOnly());
 
 // A lens that is not a mood of the vocabulary (removed, or Energy) is dropped.
@@ -104,7 +106,7 @@ function setRole(role: MoodFilters['role']): void {
       color="warning"
       prepend-icon="mdi-alert-circle-outline"
       class="text-none"
-      @click="store.moodSettingsOpen = true"
+      @click="router.push('/moods')"
     >
       Needs recalibration
       <VTooltip activator="parent" location="top" open-delay="300">

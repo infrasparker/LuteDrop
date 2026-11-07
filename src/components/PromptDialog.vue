@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 
 const props = withDefaults(
   defineProps<{
@@ -9,8 +9,11 @@ const props = withDefaults(
     initial?: string;
     confirmLabel?: string;
     maxWidth?: number | string;
+    /// Says what is wrong with the text (shown under the field, and the
+    /// dialog stays open), or null when it is fine.
+    validate?: (text: string) => string | null;
   }>(),
-  { initial: '', confirmLabel: 'Save', maxWidth: 400 },
+  { initial: '', confirmLabel: 'Save', maxWidth: 400, validate: undefined },
 );
 
 const emit = defineEmits<{
@@ -19,6 +22,7 @@ const emit = defineEmits<{
 }>();
 
 const text = ref(props.initial);
+const problem = computed(() => (props.validate && text.value.trim() ? props.validate(text.value) : null));
 
 // Reset the field to `initial` each time the dialog opens.
 watch(
@@ -28,7 +32,7 @@ watch(
 
 function onSubmit(): void {
   const trimmed = text.value.trim();
-  if (!trimmed) return;
+  if (!trimmed || problem.value) return;
   emit('submit', trimmed);
   emit('update:modelValue', false);
 }
@@ -43,6 +47,7 @@ function onSubmit(): void {
           :label="label"
           variant="outlined"
           autofocus
+          :error-messages="problem ?? undefined"
           @keydown.enter="onSubmit"
         />
       </VCardText>
@@ -50,7 +55,7 @@ function onSubmit(): void {
       <VCardActions>
         <VSpacer />
         <VBtn text="Cancel" variant="plain" @click="emit('update:modelValue', false)" />
-        <VBtn :text="confirmLabel" color="primary" variant="tonal" @click="onSubmit" />
+        <VBtn :text="confirmLabel" color="primary" variant="tonal" :disabled="problem !== null" @click="onSubmit" />
       </VCardActions>
     </VCard>
   </VDialog>

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from tagger import app as app_module, moods, rhythm
+from tagger import app as app_module, moods, rhythm, tune, tune_phrases, tune_vocab
 from tagger.app import create_app
 from tagger.embed import EmbeddingCache
 from tagger.reference import ReferenceSet, reference_stats
@@ -833,3 +833,398 @@ def test_health_reports_reference(ref_client, client):
     got = ref_client.get("/health", headers=HEADERS).json()
     assert got["reference"] == {"set": "test-set", "tracks": 6}
     assert client.get("/health", headers=HEADERS).json()["reference"] is None
+
+
+# --- /tune ---------------------------------------------------------------------
+
+REPORT_KEYS = {
+    "lines", "loss", "flags", "top", "top_before", "risers", "fallers", "fires_before",
+    "fires_after", "overlap", "loo", "names", "unsatisfied", "stability", "line_sources",
+    "out_ranks",
+}
+
+
+class TuneEmbedder(FakeEmbedder):
+    """Prompt texts mentioning "alpha" point along axis 0 and "beta" along axis 1;
+    every other text gets its own fixed random direction."""
+
+    @staticmethod
+    def vec(text):
+        v = np.random.default_rng(zlib.crc32(text.encode())).normal(size=DIM) * 0.3
+        if "alpha" in text:
+            v[0] += 3.0
+        if "beta" in text:
+            v[1] += 3.0
+        return v / np.linalg.norm(v)
+
+    def embed_text(self, texts):
+        return np.vstack([self.vec(t) for t in texts])
+
+
+def _tune_library(cache):
+    # s0..s2 lean towards axis 0 (alpha songs), s3..s11 towards axis 1 (beta songs); a
+    # minority group, so its z-scored bars can clear the 0.75 floor.
+    rng = np.random.default_rng(5)
+    for i in range(12):
+        v = rng.normal(size=DIM) * 0.3
+        v[0 if i < 3 else 1] += 2.0
+        cache.put(f"s{i}", v[None, :].astype(np.float32))
+
+
+def _tune_body(**over):
+    body = {
+        "mood_id": "sorrowful", "name": "Sad", "current_lines": ["beta"],
+        "flags": [
+            {"hash": "s0", "min": 0.75, "max": None, "weight": 1.0, "fresh": True, "side": "high"},
+            {"hash": "s1", "min": 0.75, "max": None, "weight": 1.0, "fresh": True, "side": "high"},
+            {"hash": "s6", "min": None, "max": 0.5, "weight": 1.0, "fresh": True, "side": "low"},
+            {"hash": "s7", "min": None, "max": 0.5, "weight": 0.5, "fresh": False, "side": "low"},
+        ],
+        "targets": [f"s{i}" for i in range(12)],
+        "bank": ["alpha", "beta", "gamma, delta"],
+        "other_moods": {"grim": {"name": "Grim", "lines": ["alpha beta"]}},
+        "calibration": {"source": "library", "midpoint_z": 0.5, "slope": 1.5},
+    }
+    body.update(over)
+    return body
+
+
+@pytest.fixture
+def client_tune(tmp_path):
+    cache = EmbeddingCache(tmp_path)
+    _tune_library(cache)
+    app = create_app(TuneEmbedder(), cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2))
+    return TestClient(app)
+
+
+def test_tune_returns_report_shape(client_tune):
+    r = client_tune.post("/tune", json=_tune_body(), headers=HEADERS)
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body) == {"baseline", "proposals", "split", "skipped"}
+    assert body["skipped"] == [] and body["split"] is None
+    for report in [body["baseline"], *body["proposals"]]:
+        assert set(report) == REPORT_KEYS
+        assert [f["hash"] for f in report["flags"]] == ["s0", "s1", "s6", "s7"]
+        assert set(report["flags"][0]) == {"hash", "before", "after", "holds", "fresh", "focus"}
+        assert len(report["top"]) == 12 and len(report["top_before"]) == 12   # only 12 songs
+        assert [o["mood_id"] for o in report["overlap"]] == ["grim"]
+        assert set(report["loo"]) == {"held", "total"}
+    assert body["baseline"]["lines"] == ["beta"]
+    assert body["baseline"]["stability"] == 0.0               # the current lines move nothing
+    assert 1 <= len(body["proposals"]) <= 3
+    assert body["proposals"][0]["loo"]["total"] == 3          # three fresh flags
+
+
+def test_tune_marks_the_focused_flag(client_tune):
+    flags = _tune_body()["flags"]
+    flags[1] = {**flags[1], "focus": True}
+    body = client_tune.post("/tune", json=_tune_body(flags=flags), headers=HEADERS).json()
+    for report in [body["baseline"], *body["proposals"]]:
+        assert [f["focus"] for f in report["flags"]] == [False, True, False, False]
+
+
+def test_tune_focus_defaults_to_false(client_tune):
+    body = client_tune.post("/tune", json=_tune_body(), headers=HEADERS).json()
+    assert not any(f["focus"] for f in body["baseline"]["flags"])
+
+
+def test_tune_reports_where_each_line_comes_from(client_tune):
+    body = _tune_body(bank=["beta", "gamma, delta", "alpha"], extra_words=["alpha"])
+    out = client_tune.post("/tune", json=body, headers=HEADERS).json()
+    reports = [out["baseline"], *out["proposals"]]
+    for r in reports:
+        assert len(r["line_sources"]) == len(r["lines"])
+        assert all(r["line_sources"]), r
+    assert out["baseline"]["line_sources"] == [["word bank", "current lines"]]
+    by_line = {line: src for r in reports for line, src in zip(r["lines"], r["line_sources"])}
+    if "alpha" in by_line:
+        assert by_line["alpha"] == ["your extra words"]
+    for line, src in by_line.items():
+        if "," in line and line not in tune_phrases.PHRASES:
+            assert src[0] == "blend", (line, src)
+
+
+def test_tune_labels_other_moods_and_phrases(client_tune):
+    # With only other moods' lines and the phrase list to draw from, each line names one.
+    body = _tune_body(bank=[], current_lines=["zeta"])
+    out = client_tune.post("/tune", json=body, headers=HEADERS).json()
+    sources = {s for r in out["proposals"] for line in r["line_sources"] for s in line}
+    assert sources <= {"Grim words", "phrase list", "built-in vocabulary", "blend", "current lines", "mood name"}
+    assert out["proposals"]
+    for r in out["proposals"]:
+        for line, src in zip(r["lines"], r["line_sources"]):
+            if line in [p.lower() for p in tune_phrases.PHRASES]:
+                assert "phrase list" in src, (line, src)
+
+
+def test_tune_still_accepts_other_moods_as_plain_line_lists(client_tune):
+    r = client_tune.post("/tune", json=_tune_body(other_moods={"grim": ["alpha beta"]}), headers=HEADERS)
+    assert r.status_code == 200
+    assert [o["mood_id"] for o in r.json()["baseline"]["overlap"]] == ["grim"]
+
+
+def test_tune_leaves_out_excluded_words(client_tune, monkeypatch):
+    searched = []
+    real = tune.beam_search
+
+    def spy(U_lib, U_ref, units, flags, m, **kw):
+        searched.append(list(units))
+        return real(U_lib, U_ref, units, flags, m, **kw)
+
+    monkeypatch.setattr(app_module.tune, "beam_search", spy)
+    bank = ["alpha", "alpha strings", "alphabet soup", "beta", "gamma, delta"]
+    client_tune.post("/tune", json=_tune_body(bank=bank), headers=HEADERS)
+    assert {"alpha", "alpha strings"} <= set(searched[0])
+    searched.clear()
+    out = client_tune.post("/tune", json=_tune_body(bank=bank, exclude=["Alpha"]), headers=HEADERS).json()
+    # Every search (the main one, leave-one-out, blends included) saw no unit with the word.
+    assert searched and not any(tune.excluded(u, ["alpha"]) for units in searched for u in units)
+    assert "alphabet soup" in searched[0]                     # whole words only
+    lines = [line for p in out["proposals"] for line in p["lines"]]
+    assert not any(tune.excluded(line, ["alpha"]) for line in lines), lines
+
+
+def _spy_search(monkeypatch):
+    """Records the units of every beam search."""
+    searched = []
+    real = tune.beam_search
+
+    def spy(U_lib, U_ref, units, flags, m, **kw):
+        searched.append(list(units))
+        return real(U_lib, U_ref, units, flags, m, **kw)
+
+    monkeypatch.setattr(app_module.tune, "beam_search", spy)
+    return searched
+
+
+def test_tune_adds_the_built_in_vocabulary(client_tune, monkeypatch):
+    monkeypatch.setattr(tune_vocab, "VOCAB", ["alpha vocab", "beta vocab", "zeta vocab"])
+    searched = _spy_search(monkeypatch)
+    out = client_tune.post("/tune", json=_tune_body(), headers=HEADERS).json()
+    assert {"alpha vocab", "beta vocab", "zeta vocab"} <= set(searched[0])
+    for r in out["proposals"]:
+        for line, src in zip(r["lines"], r["line_sources"]):
+            if line.endswith(" vocab"):
+                assert src == ["built-in vocabulary"]
+
+
+def test_tune_vocabulary_respects_exclude_and_keeps_only_its_best(client_tune, monkeypatch):
+    monkeypatch.setattr(tune_vocab, "VOCAB", ["alpha vocab", "beta vocab", "zeta vocab", "gamma vocab"])
+    monkeypatch.setattr(app_module, "VOCAB_KEEP", 2)
+    searched = _spy_search(monkeypatch)
+    client_tune.post("/tune", json=_tune_body(exclude=["zeta"]), headers=HEADERS)
+    kept = [u for u in searched[0] if u.endswith(" vocab")]
+    assert len(kept) == 2 and "zeta vocab" not in kept
+    assert "alpha vocab" in kept          # the flagged high songs are alpha songs
+
+
+def test_tune_compare_reports_each_version_in_order_without_searching(client_tune, monkeypatch):
+    searched = _spy_search(monkeypatch)
+    calls = []
+    monkeypatch.setattr(app_module.tune, "leave_one_out", lambda *a, **k: calls.append("loo") or (0, 0))
+    monkeypatch.setattr(app_module.tune, "try_split", lambda *a, **k: calls.append("split"))
+    versions = [["beta"], ["zeta", "gamma"], ["alpha"]]
+    r = client_tune.post("/tune", json=_tune_body(mode="compare", candidates=versions), headers=HEADERS)
+    assert r.status_code == 200
+    out = r.json()
+    assert searched == [] and calls == []
+    # In input order, even the ones no better than the current lines.
+    assert [p["lines"] for p in out["proposals"]] == versions
+    assert out["proposals"][0]["loss"] == pytest.approx(out["baseline"]["loss"])
+    assert out["split"] is None
+    for p in out["proposals"]:
+        assert set(p) == REPORT_KEYS
+        assert p["line_sources"] == [["your version"]] * len(p["lines"])
+        assert p["loo"] == {"held": 0, "total": 0}
+    assert out["proposals"][2]["unsatisfied"] == []       # the alpha version lifts the alpha songs
+
+
+def test_tune_compare_works_without_flags(client_tune):
+    # The Moods page evaluates versions of a mood nobody has flagged yet.
+    r = client_tune.post("/tune", json=_tune_body(mode="compare", flags=[], candidates=[["alpha"]]), headers=HEADERS)
+    assert r.status_code == 200
+    out = r.json()
+    assert [p["lines"] for p in out["proposals"]] == [["alpha"]]
+    assert out["proposals"][0]["flags"] == [] and out["baseline"]["flags"] == []
+    assert len(out["proposals"][0]["top"]) > 0
+
+
+def test_tune_compare_needs_a_version_and_at_most_eight(client_tune):
+    assert client_tune.post("/tune", json=_tune_body(mode="compare"), headers=HEADERS).status_code == 422
+    nine = [["beta"]] * 9
+    r = client_tune.post("/tune", json=_tune_body(mode="compare", candidates=nine), headers=HEADERS)
+    assert r.status_code == 422
+
+
+def test_tune_arrange_searches_only_the_typed_words_and_current_lines(client_tune, monkeypatch):
+    monkeypatch.setattr(tune_vocab, "VOCAB", ["alpha vocab"])
+    searched = _spy_search(monkeypatch)
+    body = _tune_body(mode="arrange", extra_words=["alpha, zeta", "eta"], current_lines=["beta, theta"])
+    out = client_tune.post("/tune", json=body, headers=HEADERS).json()
+    pool = {u for u in searched[0] if not u.count(",") or u in {"alpha, zeta", "beta, theta"}}
+    assert {"alpha", "zeta", "eta", "beta", "theta", "alpha, zeta", "beta, theta"} <= set(searched[0])
+    assert pool <= {"alpha", "zeta", "eta", "beta", "theta", "alpha, zeta", "beta, theta"}, pool
+    # Nothing from the bank, other moods, the phrase list or the vocabulary; blends are of the pool.
+    for u in searched[0]:
+        assert set(p.strip() for p in u.split(",")) <= {"alpha", "zeta", "eta", "beta", "theta"}, u
+    labels = {s for p in out["proposals"] for line in p["line_sources"] for s in line}
+    assert labels <= {"your words", "current lines", "blend"}
+
+
+def test_tune_arrange_keeps_typed_lines_as_written(client_tune, monkeypatch):
+    searched = _spy_search(monkeypatch)
+    body = _tune_body(mode="arrange", extra_words=["Alpha, Zeta"], current_lines=["beta"])
+    out = client_tune.post("/tune", json=body, headers=HEADERS).json()
+    assert "Alpha, Zeta" in searched[0] and "alpha" in searched[0]
+    by_line = {line: src for p in out["proposals"] for line, src in zip(p["lines"], p["line_sources"])}
+    if "Alpha, Zeta" in by_line:
+        assert by_line["Alpha, Zeta"] == ["your words"]
+
+
+def test_tune_credits_a_line_only_to_sources_that_added_it(client_tune):
+    # "a sad farewell" is also in the phrase list, but the current lines brought it.
+    out = client_tune.post("/tune", json=_tune_body(current_lines=["a sad farewell"]), headers=HEADERS).json()
+    assert out["baseline"]["line_sources"] == [["current lines"]]
+
+
+def test_tune_mode_defaults_to_suggest(client_tune, monkeypatch):
+    monkeypatch.setattr(tune_vocab, "VOCAB", ["alpha vocab"])
+    searched = _spy_search(monkeypatch)
+    client_tune.post("/tune", json=_tune_body(), headers=HEADERS)
+    assert "alpha vocab" in searched[0] and "gamma" in searched[0]
+
+
+def test_tune_skips_unknown_hashes(client_tune):
+    flags = _tune_body()["flags"] + [
+        {"hash": "nope", "min": 0.75, "max": None, "weight": 1.0, "fresh": True, "side": "high"}
+    ]
+    r = client_tune.post("/tune", json=_tune_body(flags=flags), headers=HEADERS)
+    assert r.status_code == 200
+    assert r.json()["skipped"] == ["nope"]
+    assert "nope" not in [f["hash"] for f in r.json()["baseline"]["flags"]]
+
+
+def test_tune_requires_token(client_tune):
+    assert client_tune.post("/tune", json=_tune_body()).status_code == 401
+
+
+def test_tune_proposes_nothing_worse_than_baseline(client_tune):
+    body = client_tune.post("/tune", json=_tune_body(), headers=HEADERS).json()
+    assert body["proposals"]
+    assert all(p["loss"] < body["baseline"]["loss"] for p in body["proposals"])
+    assert [p["loss"] for p in body["proposals"]] == sorted(p["loss"] for p in body["proposals"])
+    # The best proposal fixes every flag the current lines break.
+    assert len(body["proposals"][0]["unsatisfied"]) < len(body["baseline"]["unsatisfied"])
+
+
+def test_tune_offers_no_proposals_when_the_current_lines_are_already_best(client_tune):
+    body = client_tune.post("/tune", json=_tune_body(current_lines=["alpha"]), headers=HEADERS).json()
+    assert body["baseline"]["unsatisfied"] == []
+    assert body["proposals"] == []
+
+
+def test_tune_offers_no_split_when_the_current_lines_are_already_best(client_tune, monkeypatch):
+    # Even if the search's own winner leaves a flag out, the dialog shows the baseline,
+    # which breaks nothing, so there is nothing to split.
+    offer = {"a": tune.Combo(("alpha",), 0.0), "b": tune.Combo(("beta",), 0.0),
+             "a_flags": [0], "b_flags": [1], "rho": 0.25}
+    monkeypatch.setattr(app_module.tune, "try_split", lambda *a, **k: offer)
+    body = client_tune.post("/tune", json=_tune_body(current_lines=["alpha"]), headers=HEADERS).json()
+    assert body["proposals"] == [] and body["split"] is None
+
+
+def test_tune_accepts_comma_lines_and_never_proposes_the_current_lines(client_tune):
+    current = ["alpha, gamma", "beta"]
+    body = client_tune.post("/tune", json=_tune_body(current_lines=current), headers=HEADERS).json()
+    assert body["baseline"]["lines"] == current
+    assert all(sorted(p["lines"]) != sorted(current) for p in body["proposals"])
+    assert all(p["loss"] < body["baseline"]["loss"] for p in body["proposals"])
+
+
+def test_tune_seeds_the_search_with_the_current_lines_whole(client_tune, monkeypatch):
+    # Each current line, as written, is a unit, and the search starts from their
+    # combination, so "the current lines plus or minus one" is always explored.
+    seen = []
+    real = tune.beam_search
+
+    def spy(U_lib, U_ref, units, flags, m, **kw):
+        seen.append(sorted(units[i] for i in next(iter(kw.get("seeds", [()])), ())))
+        return real(U_lib, U_ref, units, flags, m, **kw)
+
+    monkeypatch.setattr(app_module.tune, "beam_search", spy)
+    current = ["Alpha, zeta", "beta"]
+    client_tune.post("/tune", json=_tune_body(current_lines=current), headers=HEADERS)
+    assert seen[0] == sorted(current)
+
+
+def test_tune_reference_source_needs_a_reference_set(client_tune):
+    cal = {"source": "reference", "midpoint_z": 0.5, "slope": 1.5}
+    r = client_tune.post("/tune", json=_tune_body(calibration=cal), headers=HEADERS)
+    assert r.status_code == 409
+    assert r.json()["detail"] == "The analyzer has no reference set"
+
+
+def test_tune_reads_bars_against_the_reference_set(tmp_path):
+    cache = EmbeddingCache(tmp_path)
+    _tune_library(cache)
+    ref = np.random.default_rng(9).normal(size=(20, DIM))
+    ref /= np.linalg.norm(ref, axis=1, keepdims=True)
+    app = create_app(
+        TuneEmbedder(), cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2),
+        reference=ReferenceSet("test-set", "fake@test", ref),
+    )
+    cal = {"source": "reference", "midpoint_z": 0.5, "slope": 1.5}
+    ref_body = TestClient(app).post("/tune", json=_tune_body(calibration=cal), headers=HEADERS).json()
+    lib_body = TestClient(app).post("/tune", json=_tune_body(), headers=HEADERS).json()
+    # Same prompts, different yardstick: the baseline's bars differ.
+    assert ref_body["baseline"]["top_before"] != lib_body["baseline"]["top_before"]
+
+
+def test_tune_without_cached_targets_is_a_conflict(client_tune):
+    r = client_tune.post("/tune", json=_tune_body(targets=["zzz"], flags=[]), headers=HEADERS)
+    assert r.status_code == 409
+
+
+def test_tune_while_model_fails_to_load_answers_503(tmp_path):
+    class Broken(TuneEmbedder):
+        def load(self):
+            raise RuntimeError("no weights")
+
+    cache = EmbeddingCache(tmp_path)
+    _tune_library(cache)
+    app = create_app(Broken(), cache, TOKEN, executor_factory=lambda: ThreadPoolExecutor(2))
+    r = TestClient(app).post("/tune", json=_tune_body(), headers=HEADERS)
+    assert r.status_code == 503
+
+
+def test_tune_reports_an_offered_split(client_tune, monkeypatch):
+    # try_split's own rules are tested in test_tune.py; this checks the endpoint turns
+    # an offer into two reports, each holding its high flags plus every low/mid flag.
+    offer = {"a": tune.Combo(("alpha",), 0.0), "b": tune.Combo(("beta",), 0.0),
+             "a_flags": [0], "b_flags": [1], "rho": 0.25}
+    monkeypatch.setattr(app_module.tune, "try_split", lambda *a, **k: offer)
+    # A split is only looked for while a fresh flag stays broken; no bar reaches 0.99.
+    flags = _tune_body()["flags"] + [
+        {"hash": "s3", "min": 0.99, "max": None, "weight": 1.0, "fresh": True, "side": "mid"}
+    ]
+    # Every word reads alike, in candidate order, so the current name ("alpha") would be
+    # a top suggestion for either half.
+    monkeypatch.setattr(app_module.tune, "name_suggestions",
+                        lambda U, units, cands, raw, k=3: [(w, 0.0) for w in dict.fromkeys(cands)][:k])
+    body = _tune_body(flags=flags, name="Alpha")
+    split = client_tune.post("/tune", json=body, headers=HEADERS).json()["split"]
+    assert set(split) == {"keep", "new", "keep_hashes", "new_hashes", "rho"}
+    assert split["rho"] == 0.25
+    # Which half keeps the name is decided by the name ranking; either way each report
+    # belongs with its own group.
+    by_lines = {"alpha": ["s0"], "beta": ["s1"]}
+    assert split["keep_hashes"] == by_lines[split["keep"]["lines"][0]]
+    assert split["new_hashes"] == by_lines[split["new"]["lines"][0]]
+    assert {split["keep"]["lines"][0], split["new"]["lines"][0]} == {"alpha", "beta"}
+    for half in (split["keep"], split["new"]):
+        assert [f["hash"] for f in half["flags"]][1:] == ["s6", "s7", "s3"]
+        assert set(half) == REPORT_KEYS
+    # The new mood needs its own name: never the current mood's.
+    assert "alpha" not in [n["word"] for n in split["new"]["names"]]
+    assert len(split["new"]["names"]) == 3

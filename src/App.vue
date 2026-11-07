@@ -11,7 +11,6 @@ import TransportBar from './components/TransportBar.vue';
 import WaveformEditorDialog from './components/WaveformEditorDialog.vue';
 import RemoteInfoDialog from './components/RemoteInfoDialog.vue';
 import BroadcastDialog from './components/BroadcastDialog.vue';
-import MoodSettingsDialog from './components/MoodSettingsDialog.vue';
 
 const store = useAppStore();
 const toast = useToast();
@@ -38,7 +37,7 @@ const showEditorDialog = computed({
 });
 
 // Views that preview library sounds; leaving one stops the preview.
-const PREVIEW_ROUTES = ['/library', '/scry'];
+const PREVIEW_ROUTES = ['/library', '/scry', '/moods'];
 
 watch(() => router.currentRoute.value.path, (newPath, oldPath) => {
   if (PREVIEW_ROUTES.includes(oldPath) && newPath !== oldPath) {
@@ -81,16 +80,18 @@ onMounted(async () => {
           title="Scry"
           aria-label="Scry"
         />
+        <VListItem
+          prepend-icon="mdi-palette-outline"
+          to="/moods"
+          :active="$route.path === '/moods'"
+          color="primary"
+          title="Moods"
+          aria-label="Moods"
+        />
       </VList>
 
       <template #append>
         <VList nav density="compact">
-          <VListItem
-            prepend-icon="mdi-palette-outline"
-            title="Moods"
-            aria-label="Moods"
-            @click="store.moodSettingsOpen = true"
-          />
           <VListItem
             prepend-icon="mdi-broadcast"
             title="Broadcast"
@@ -125,19 +126,20 @@ onMounted(async () => {
 
     <RemoteInfoDialog v-model="showRemoteInfo" />
     <BroadcastDialog v-model="showBroadcast" />
-    <MoodSettingsDialog v-model="store.moodSettingsOpen" />
 
     <!-- Top of the window so it never covers the floating selection bars or
-         the transport. Click anywhere on it, or the x, to dismiss. -->
+         the transport. Click anywhere on it, or the x, to dismiss; an action
+         button (such as Undo) runs its action instead. -->
     <VSnackbar
       v-model="toast.visible.value"
-      :color="toast.color.value"
+      :color="toast.color.value || undefined"
       :timeout="toast.timeout.value"
       location="top"
       @click="toast.hide()"
     >
       {{ toast.message.value }}
       <template #actions>
+        <VBtn v-if="toast.action.value" variant="text" @click.stop="toast.runAction()">{{ toast.action.value.label }}</VBtn>
         <VBtn icon="mdi-close" size="small" variant="text" aria-label="Dismiss" @click.stop="toast.hide()" />
       </template>
     </VSnackbar>

@@ -6,13 +6,16 @@ use crate::database;
 use crate::database::{configurations, hierarchy, library, DbError};
 use crate::autotag::client::{AnalyzerClient, HttpAnalyzer};
 use crate::autotag::scry;
+use crate::autotag::tune;
+use crate::autotag::case_import;
+use crate::database::mood_flags;
 use crate::database::autotag_db;
 use crate::database::settings::{self as broadcast_settings, BroadcastSettings};
 use crate::database::settings as autotag_settings;
 use crate::models::{
-    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
+    AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryTagScores, EntryType,
     FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodResetImpact, MoodVocabulary, Role, SceneConfig, Track, TrackUpdates, ScryHit,
-    ScryPoint, EnergyPreview};
+    ScryPoint, EnergyPreview, TuneResult, MoodTunePrefs, AcceptedLines, MoodFlagRow, ClearedFlag};
 use crate::relink;
 use crate::state::AppStateContainer;
 use rusqlite::params;
@@ -435,11 +438,170 @@ pub fn set_entry_mood_level(
     mutate_and_reload(container, |conn| library::set_user_mood_level(conn, &entry_ids, &mood, level))
 }
 
+/// Flags one song's value for a mood (see `mood_flags::set_flag_for_entry`).
+pub fn set_mood_flag(
+    container: &AppStateContainer,
+    entry_id: String,
+    mood: String,
+    kind: FlagKind,
+    band: Option<FlagBand>,
+) -> Result<AppState, String> {
+    mutate_and_reload(container, |conn| mood_flags::set_flag_for_entry(conn, &entry_id, &mood, kind, band))
+}
+
+/// Removes the flag a song has for a mood.
+/// The removed row comes back whole, for Undo (`restore_mood_flags`).
+pub fn clear_mood_flag(container: &AppStateContainer, entry_id: String, mood: String) -> Result<ClearedFlag, String> {
+    let mut removed = None;
+    let state = mutate_and_reload(container, |conn| {
+        removed = mood_flags::take_flag(conn, &entry_id, &mood)?;
+        Ok(())
+    })?;
+    Ok(ClearedFlag { state, removed })
+}
+
+/// "Keep" on a stale flag: it counts as made against the mood's current lines.
+pub fn keep_mood_flag(container: &AppStateContainer, entry_id: String, mood: String) -> Result<AppState, String> {
+    mutate_and_reload(container, |conn| mood_flags::keep_flag(conn, &entry_id, &mood))
+}
+
+/// One-off: imports the case-study file at `path` as flags.
+pub fn import_case_studies(container: &AppStateContainer, path: String) -> Result<CaseImportReport, String> {
+    let json = std::fs::read_to_string(&path).map_err(|e| format!("Could not read {path}: {e}"))?;
+    with_db(container, |conn| case_import::import_into(conn, &json))
+}
+
 /// Saves the mood vocabulary from Settings → Moods (see
 /// `library::save_mood_vocabulary`): removed moods lose their rows, changed
 /// prompts wait for Recalibrate.
 pub fn set_mood_vocabulary(container: &AppStateContainer, vocabulary: MoodVocabulary) -> Result<AppState, String> {
     mutate_and_reload(container, |conn| library::save_mood_vocabulary(conn, &vocabulary).map(|_| ()))
+}
+
+/// Runs Tune on a mood (see `tune::tune` and `tune::build_tune_request`;
+/// `focus_entry_id` `None` focuses the newest flag, `Some("")` nothing):
+/// saves nothing. Blocks while the analyzer searches, which can take tens
+/// of seconds.
+pub fn tune_mood(container: &AppStateContainer, mood_id: &str, inputs: &tune::TuneInputs) -> Result<TuneResult, String> {
+    let client = scry::client_for(&container.db)?;
+    tune::tune(&container.db, &client, mood_id, inputs)
+}
+
+/// Accepts a Tune proposal: the mood's lines become `lines` and the holding
+/// flags are refreshed (see `tune::accept_lines`), refused if the lines
+/// changed since Tune ran.
+pub fn accept_tuned_lines(
+    container: &AppStateContainer,
+    mood_id: String,
+    lines_tuned_from: Vec<String>,
+    lines: Vec<String>,
+    holding_entry_ids: Vec<String>,
+    reached_bars: HashMap<String, f64>,
+) -> Result<AcceptedLines, String> {
+    let mut converted = Vec::new();
+    let state = mutate_and_reload(container, |conn| {
+        converted = tune::accept_lines(conn, &mood_id, &lines_tuned_from, &lines, &holding_entry_ids, &reached_bars)?;
+        Ok(())
+    })?;
+    Ok(AcceptedLines { state, converted: converted.into_iter().map(Into::into).collect() })
+}
+
+/// Undo of an accept's ratchet: puts the given flag rows back as they were.
+pub fn restore_mood_flags(container: &AppStateContainer, rows: Vec<MoodFlagRow>) -> Result<AppState, String> {
+    mutate_and_reload(container, |conn| {
+        for row in rows {
+            let created_at = row.created_at.as_deref().and_then(|t| t.parse().ok());
+            mood_flags::restore_flag(conn, &row.into(), created_at)?;
+        }
+        Ok(())
+    })
+}
+
+/// Undo of Use, in one transaction (see `tune::undo_accept`).
+pub fn undo_tuned_lines(
+    container: &AppStateContainer,
+    mood_id: String,
+    lines_tuned_from: Vec<String>,
+    lines: Vec<String>,
+    holding_entry_ids: Vec<String>,
+    restore: Vec<MoodFlagRow>,
+) -> Result<AppState, String> {
+    let rows: Vec<_> = restore
+        .into_iter()
+        .map(|r| {
+            let created_at = r.created_at.as_deref().and_then(|t| t.parse().ok());
+            (r.into(), created_at)
+        })
+        .collect();
+    mutate_and_reload(container, |conn| {
+        tune::undo_accept(conn, &mood_id, &lines_tuned_from, &lines, &holding_entry_ids, &rows)
+    })
+}
+
+/// Rescores after a mood's lines changed, without clearing anything: starts
+/// an analysis run, which rescores the changed moods (see
+/// `plan::extend_library_calibration`; a reference set is offered whole)
+/// and leaves every other mood's bars as they are.
+pub fn rescore_moods(container: &AppStateContainer) -> Result<(), String> {
+    if !autotag_enabled(container) {
+        return Err("Turn on auto-tagging first: the analyzer rescores the moods".to_string());
+    }
+    container.autotag.analyze_library();
+    Ok(())
+}
+
+/// The Moods page's per-mood Tune preferences (never-suggest words).
+pub fn load_mood_tune_prefs(
+    container: &AppStateContainer,
+) -> Result<std::collections::BTreeMap<String, MoodTunePrefs>, String> {
+    with_db(container, autotag_settings::load_mood_tune_prefs)
+}
+
+pub fn add_never_suggest(
+    container: &AppStateContainer,
+    mood: String,
+    words: Vec<String>,
+) -> Result<std::collections::BTreeMap<String, MoodTunePrefs>, String> {
+    with_db(container, |conn| autotag_settings::add_never_suggest(conn, &mood, &words))
+}
+
+pub fn remove_never_suggest(
+    container: &AppStateContainer,
+    mood: String,
+    word: String,
+) -> Result<std::collections::BTreeMap<String, MoodTunePrefs>, String> {
+    with_db(container, |conn| autotag_settings::remove_never_suggest(conn, &mood, &word))
+}
+
+/// Accepts a Tune split: the mood keeps `keep_lines` and a new mood takes
+/// the rest (see `tune::accept_split`).
+#[allow(clippy::too_many_arguments)]
+pub fn accept_tuned_split(
+    container: &AppStateContainer,
+    mood_id: String,
+    lines_tuned_from: Vec<String>,
+    keep_lines: Vec<String>,
+    new_id: String,
+    new_name: String,
+    new_lines: Vec<String>,
+    move_entry_ids: Vec<String>,
+    keep_holding_entry_ids: Vec<String>,
+    new_holding_entry_ids: Vec<String>,
+) -> Result<AppState, String> {
+    mutate_and_reload(container, |conn| {
+        tune::accept_split(
+            conn,
+            &mood_id,
+            &lines_tuned_from,
+            &keep_lines,
+            &new_id,
+            &new_name,
+            &new_lines,
+            &move_entry_ids,
+            &keep_holding_entry_ids,
+            &new_holding_entry_ids,
+        )
+    })
 }
 
 /// What Reset to defaults would delete, for its confirm dialog.

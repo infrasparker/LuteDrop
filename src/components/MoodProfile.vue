@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed, reactive } from 'vue';
-import type { LibraryEntry, MoodId } from '@generated/index';
+import type { FlagBand, FlagKind, LibraryEntry, MoodFlag, MoodId } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
+import { useRouter } from 'vue-router';
+import { flagControlVisible, flagLabel, flagMark } from '../utils/moodFlags';
+import MoodFlagMenu from './MoodFlagMenu.vue';
+import { useFlagRemoval } from '../composables/useFlagRemoval';
 import { MOOD_LEVELS, moodLayers, moodList, snapLevel, stepLevel } from '../utils/moods';
 
 /// The mood profile of one or more music entries: one row per mood of the
@@ -15,10 +19,14 @@ import { MOOD_LEVELS, moodLayers, moodList, snapLevel, stepLevel } from '../util
 ///   suggestion, as does the ↺ button.
 /// - With several entries (bulk), a click sets the level on every one, and a
 ///   row whose entries differ shows "mixed".
+/// - With one entry, a flag button next to each mood bar says the bar looks
+///   wrong (a band it belongs in, or higher / lower); the analyzer learns
+///   from flags when the moods are tuned. A flagged bar shows a flag marker.
 /// Every change saves at once.
 const props = defineProps<{ entries: LibraryEntry[] }>();
 
 const store = useAppStore();
+const { removeFlag } = useFlagRemoval();
 
 // Moods only exist on music; ambiance in a bulk selection is left out.
 const music = computed(() => props.entries.filter((e) => e.entryType === 'music'));
@@ -46,6 +54,10 @@ interface Row {
   mixed: boolean;
   setState: SetState;
   hint: string;
+  /// Whether the flag button shows (one song, not Energy).
+  flaggable: boolean;
+  /// The flag on this song and mood, if any.
+  flag: MoodFlag | null;
 }
 
 const fmt = (v: number): string => v.toFixed(2);
@@ -86,7 +98,10 @@ const rows = computed<Row[]>(() =>
     }
     if (mixed) hint = `Mixed: ${range(known)} · ${hint}`;
 
-    return { id, name, value: mixed ? null : min, min, max, mixed, setState, hint };
+    const flaggable = flagControlVisible(music.value.length, id);
+    const flag = flaggable ? (music.value[0]?.moods.find((m) => m.mood === id)?.flag ?? null) : null;
+
+    return { id, name, value: mixed ? null : min, min, max, mixed, setState, hint, flaggable, flag };
   }),
 );
 
@@ -106,6 +121,31 @@ function save(mood: MoodId, level: number | null): void {
       pending.delete(key);
     }
   });
+}
+
+/// Flag, or remove the flag from, the one song shown. A failure (such as a
+/// higher / lower flag on a song with no suggestion yet) shows as a toast.
+function setFlag(mood: MoodId, kind: FlagKind, band: FlagBand | null): void {
+  const entryId = ids.value[0];
+  if (entryId === undefined) return;
+  void store.command('set_mood_flag', { entryId, mood, kind, band });
+}
+function clearFlag(mood: MoodId): void {
+  const entryId = ids.value[0];
+  if (entryId === undefined) return;
+  void removeFlag(entryId, mood);
+}
+
+/// "Open in Moods": closes the song editor and opens the Moods page on this
+/// mood, with this song's flag (if any) as the focus for Arrange / Suggest.
+const router = useRouter();
+function openInMoods(mood: MoodId, flagged: boolean): void {
+  const entryId = ids.value[0];
+  if (entryId === undefined) return;
+  store.moodsSelectedId = mood;
+  store.moodFocus = flagged ? { moodId: mood, entryId } : null;
+  store.editEntryId = null;
+  void router.push('/moods');
 }
 
 function onBarClick(row: Row, e: MouseEvent): void {
@@ -189,6 +229,34 @@ const pct = (v: number): string => `${Math.round(v * 1000) / 10}%`;
         <VTooltip activator="parent" location="top" open-delay="300">Back to the suggestion</VTooltip>
       </VBtn>
       <span v-else class="reset-placeholder" />
+      <VMenu v-if="row.flaggable" location="bottom end">
+        <template #activator="{ props: menuProps }">
+          <VBtn
+            v-bind="menuProps"
+            icon
+            size="x-small"
+            variant="text"
+            density="comfortable"
+            :color="row.flag ? 'warning' : undefined"
+            :class="{ 'flag-idle': !row.flag, 'flag-stale': row.flag?.stale }"
+            :aria-label="row.flag ? `${row.name}: flagged ${flagLabel(row.flag)}` : `${row.name}: flag this bar`"
+          >
+            <VIcon size="small">{{ row.flag ? 'mdi-flag' : 'mdi-flag-outline' }}</VIcon>
+            <span v-if="row.flag" class="flag-mark" aria-hidden="true">{{ flagMark(row.flag) }}</span>
+            <VTooltip activator="parent" location="top" open-delay="300">
+              {{ row.flag ? flagLabel(row.flag) : 'Flag this bar as wrong' }}
+            </VTooltip>
+          </VBtn>
+        </template>
+        <MoodFlagMenu
+          :flagged="row.flag !== null"
+          open-in-moods
+          @set="(kind, band) => setFlag(row.id, kind, band)"
+          @open="openInMoods(row.id, row.flag !== null)"
+          @remove="clearFlag(row.id)"
+        />
+      </VMenu>
+      <span v-else class="reset-placeholder" />
     </div>
   </div>
 </template>
@@ -196,7 +264,7 @@ const pct = (v: number): string => `${Math.round(v * 1000) / 10}%`;
 <style scoped>
 .mood-profile {
   display: grid;
-  grid-template-columns: 96px minmax(160px, 1fr) 48px 28px;
+  grid-template-columns: 96px minmax(160px, 1fr) 48px 28px 28px;
   align-items: center;
   column-gap: 12px;
   row-gap: 2px;
@@ -295,6 +363,28 @@ const pct = (v: number): string => `${Math.round(v * 1000) / 10}%`;
   text-align: right;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+.flag-idle {
+  opacity: 0.45;
+}
+.flag-idle:hover,
+.flag-idle:focus-visible {
+  opacity: 1;
+}
+/* The band initial or arrow, tucked into the flag button's corner. */
+.flag-mark {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+/* A stale flag: dashed ring, so it never reads as the faded idle button. */
+.flag-stale {
+  outline: 1px dashed rgb(var(--v-theme-warning));
+  outline-offset: -2px;
+  opacity: 0.75;
 }
 .reset-placeholder {
   display: inline-block;

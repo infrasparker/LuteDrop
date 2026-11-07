@@ -324,6 +324,31 @@ the phone-remote dev server (port 3333) alongside it:
 npm run dev:all
 ```
 
+### UI preview (no backend)
+
+```sh
+npm run preview:ui   # http://localhost:1440
+```
+
+Runs the real frontend in a plain browser with Tauri's IPC mocked (`vite.preview.config.ts`,
+`ui-preview/main.ts`), for looking at and screenshotting screens without the Rust side. Commands
+answer from `ui-preview/fixtures/`, exported from a real library; flags, levels and accepted Tune
+lines change in memory until a reload. `tune_mood` compares any lines through a stub
+(`ui-preview/stubTune.ts`: the library's bars nudged by a hash of the lines), and answers Arrange /
+Suggest with the recorded analyzer runs for Sorrowful and Horror (suggest), or a stub proposal for
+other moods.
+There is no audio. It does not affect `npm run build` or the Tauri build.
+
+To refresh the fixtures from your library (the app may stay open):
+
+```sh
+python ui-preview/export_fixtures.py             # add --no-tune to skip the analyzer calls
+```
+
+The script opens `%APPDATA%\com.lutedrop\lutedrop.db` read-only and works on a backup-API copy,
+cuts file paths down to artist / album / file, and leaves out the analyzer token and the
+broadcast key. The Tune runs it records are listed in `TUNE_RUNS` at its top.
+
 ### Tests
 
 ```sh

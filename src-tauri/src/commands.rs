@@ -3,8 +3,9 @@ use tauri::State;
 use std::sync::Arc;
 use crate::actions;
 use crate::models::{
-    AppState, AutoTagReport, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodResetImpact, MoodVocabulary,
-    Role, SceneConfig, TrackUpdates, ScryHit, ScryPoint, EnergyPreview};
+    AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, EntryTagScores, LibraryEntryUsage, MoodResetImpact, MoodTunePrefs, MoodVocabulary, AcceptedLines, MoodFlagRow, ClearedFlag,
+    Role, SceneConfig, TrackUpdates, ScryHit, ScryPoint, EnergyPreview, TuneMode, TuneResult};
+use crate::autotag::tune::TuneInputs;
 use crate::state::AppStateContainer;
 use crate::waveform;
 
@@ -308,11 +309,157 @@ pub fn set_entry_mood_level(
 }
 
 #[tauri::command]
+pub fn set_mood_flag(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_id: String,
+    mood: String,
+    kind: FlagKind,
+    band: Option<FlagBand>,
+) -> Result<AppState, String> {
+    actions::set_mood_flag(&state, entry_id, mood, kind, band)
+}
+
+#[tauri::command]
+pub fn clear_mood_flag(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_id: String,
+    mood: String,
+) -> Result<ClearedFlag, String> {
+    actions::clear_mood_flag(&state, entry_id, mood)
+}
+
+#[tauri::command]
+pub fn keep_mood_flag(
+    state: State<'_, Arc<AppStateContainer>>,
+    entry_id: String,
+    mood: String,
+) -> Result<AppState, String> {
+    actions::keep_mood_flag(&state, entry_id, mood)
+}
+
+#[tauri::command]
+pub fn import_case_studies(
+    state: State<'_, Arc<AppStateContainer>>,
+    path: String,
+) -> Result<CaseImportReport, String> {
+    actions::import_case_studies(&state, path)
+}
+
+#[tauri::command]
 pub fn set_mood_vocabulary(
     state: State<'_, Arc<AppStateContainer>>,
     vocabulary: MoodVocabulary,
 ) -> Result<AppState, String> {
     actions::set_mood_vocabulary(&state, vocabulary)
+}
+
+/// Runs Tune on a mood in one of its modes (see `TuneMode`). The analyzer's
+/// search can take tens of seconds, so it runs on a worker thread like the
+/// previews.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn tune_mood(
+    state: State<'_, Arc<AppStateContainer>>,
+    mood_id: String,
+    extra_words: Vec<String>,
+    bank: Vec<String>,
+    focus_entry_id: Option<String>,
+    exclude_words: Vec<String>,
+    mode: TuneMode,
+    candidates: Vec<Vec<String>>,
+) -> Result<TuneResult, String> {
+    let container = state.inner().clone();
+    let inputs = TuneInputs { extra_words, bank, focus_entry_id, exclude_words, mode, candidates };
+    tokio::task::spawn_blocking(move || actions::tune_mood(&container, &mood_id, &inputs))
+        .await
+        .map_err(|e| format!("Tune failed: {e}"))?
+}
+
+#[tauri::command]
+pub fn accept_tuned_lines(
+    state: State<'_, Arc<AppStateContainer>>,
+    mood_id: String,
+    lines_tuned_from: Vec<String>,
+    lines: Vec<String>,
+    holding_entry_ids: Vec<String>,
+    reached_bars: Option<std::collections::HashMap<String, f64>>,
+) -> Result<AcceptedLines, String> {
+    actions::accept_tuned_lines(&state, mood_id, lines_tuned_from, lines, holding_entry_ids, reached_bars.unwrap_or_default())
+}
+
+#[tauri::command]
+pub fn restore_mood_flags(state: State<'_, Arc<AppStateContainer>>, rows: Vec<MoodFlagRow>) -> Result<AppState, String> {
+    actions::restore_mood_flags(&state, rows)
+}
+
+#[tauri::command]
+pub fn undo_tuned_lines(
+    state: State<'_, Arc<AppStateContainer>>,
+    mood_id: String,
+    lines_tuned_from: Vec<String>,
+    lines: Vec<String>,
+    holding_entry_ids: Vec<String>,
+    restore: Vec<MoodFlagRow>,
+) -> Result<AppState, String> {
+    actions::undo_tuned_lines(&state, mood_id, lines_tuned_from, lines, holding_entry_ids, restore)
+}
+
+#[tauri::command]
+pub fn rescore_moods(state: State<'_, Arc<AppStateContainer>>) -> Result<(), String> {
+    actions::rescore_moods(&state)
+}
+
+#[tauri::command]
+pub fn load_mood_tune_prefs(
+    state: State<'_, Arc<AppStateContainer>>,
+) -> Result<std::collections::BTreeMap<String, MoodTunePrefs>, String> {
+    actions::load_mood_tune_prefs(&state)
+}
+
+#[tauri::command]
+pub fn add_never_suggest(
+    state: State<'_, Arc<AppStateContainer>>,
+    mood: String,
+    words: Vec<String>,
+) -> Result<std::collections::BTreeMap<String, MoodTunePrefs>, String> {
+    actions::add_never_suggest(&state, mood, words)
+}
+
+#[tauri::command]
+pub fn remove_never_suggest(
+    state: State<'_, Arc<AppStateContainer>>,
+    mood: String,
+    word: String,
+) -> Result<std::collections::BTreeMap<String, MoodTunePrefs>, String> {
+    actions::remove_never_suggest(&state, mood, word)
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn accept_tuned_split(
+    state: State<'_, Arc<AppStateContainer>>,
+    mood_id: String,
+    lines_tuned_from: Vec<String>,
+    keep_lines: Vec<String>,
+    new_id: String,
+    new_name: String,
+    new_lines: Vec<String>,
+    move_entry_ids: Vec<String>,
+    keep_holding_entry_ids: Vec<String>,
+    new_holding_entry_ids: Vec<String>,
+) -> Result<AppState, String> {
+    actions::accept_tuned_split(
+        &state,
+        mood_id,
+        lines_tuned_from,
+        keep_lines,
+        new_id,
+        new_name,
+        new_lines,
+        move_entry_ids,
+        keep_holding_entry_ids,
+        new_holding_entry_ids,
+    )
 }
 
 #[tauri::command]

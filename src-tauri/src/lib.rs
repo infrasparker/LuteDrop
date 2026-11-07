@@ -220,6 +220,10 @@ pub fn run() {
             commands::reset_entry_tag_votes,
             commands::set_entry_role,
             commands::set_entry_mood_level,
+            commands::set_mood_flag,
+            commands::clear_mood_flag,
+            commands::keep_mood_flag,
+            commands::import_case_studies,
             commands::set_mood_vocabulary,
             commands::recalibrate_moods,
             commands::mood_reset_impact,
@@ -262,6 +266,15 @@ pub fn run() {
             commands::scry_map,
             commands::preview_mood_prompts,
             commands::preview_energy_prompts,
+            commands::tune_mood,
+            commands::accept_tuned_lines,
+            commands::accept_tuned_split,
+            commands::load_mood_tune_prefs,
+            commands::restore_mood_flags,
+            commands::rescore_moods,
+            commands::undo_tuned_lines,
+            commands::add_never_suggest,
+            commands::remove_never_suggest,
         ])
         .run(tauri::generate_context!())
         .expect("error while running LuteDrop");

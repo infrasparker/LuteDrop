@@ -7,7 +7,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use crate::autotag::plan::MoodCalibration;
-use crate::models::{AutoTagSettings, MoodVocabulary, SceneConfig};
+use std::collections::BTreeMap;
+
+use crate::models::{AutoTagSettings, MoodTunePrefs, MoodVocabulary, SceneConfig};
 
 const KEY_ENABLED: &str = "broadcast_enabled";
 const KEY_PORT: &str = "broadcast_port";
@@ -22,6 +24,8 @@ const KEY_AUTOTAG_REMOTE_PREFIX: &str = "autotag_remote_prefix";
 const KEY_AUTOTAG_SCENE: &str = "autotag_scene_encounter";
 pub(crate) const KEY_MOOD_CALIBRATION: &str = "mood_calibration";
 pub(crate) const KEY_MOOD_VOCABULARY: &str = "mood_vocabulary";
+const KEY_MOOD_TUNE_PREFS: &str = "mood_tune_prefs";
+const KEY_MOOD_TUNE_PREFS_BAD: &str = "mood_tune_prefs_bad";
 
 /// Where the analyzer host mounts the audio folder until the user says otherwise.
 pub const DEFAULT_REMOTE_PREFIX: &str = "/media/audio";
@@ -171,6 +175,78 @@ pub fn load_scene_config(conn: &Connection) -> Result<SceneConfig, String> {
 pub fn save_scene_config(conn: &Connection, c: &SceneConfig) -> Result<(), String> {
     let text = serde_json::to_string(c).map_err(|e| format!("Failed to encode scene config: {e}"))?;
     write_meta(conn, KEY_AUTOTAG_SCENE, &text)
+}
+
+/// Loads the Moods page's per-mood Tune preferences (`MoodTunePrefs`, by
+/// mood id), stored as JSON. Missing gives an empty map. A stored value that
+/// does not parse is first copied to `mood_tune_prefs_bad` (once: an earlier
+/// copy is never overwritten), and only then read as empty, so the next
+/// write cannot lose it.
+pub fn load_mood_tune_prefs(conn: &Connection) -> Result<BTreeMap<String, MoodTunePrefs>, String> {
+    let Some(text) = read_meta(conn, KEY_MOOD_TUNE_PREFS)? else {
+        return Ok(BTreeMap::new());
+    };
+    match serde_json::from_str(&text) {
+        Ok(prefs) => Ok(prefs),
+        Err(e) => {
+            log::warn!("Invalid stored {KEY_MOOD_TUNE_PREFS}: {e}; kept as {KEY_MOOD_TUNE_PREFS_BAD}");
+            if read_meta(conn, KEY_MOOD_TUNE_PREFS_BAD)?.is_none() {
+                write_meta(conn, KEY_MOOD_TUNE_PREFS_BAD, &text)?;
+            }
+            Ok(BTreeMap::new())
+        }
+    }
+}
+
+/// Adds words to one mood's never-suggest list (trimmed, repeats ignoring
+/// case dropped); returns every mood's list.
+pub fn add_never_suggest(
+    conn: &Connection,
+    mood: &str,
+    words: &[String],
+) -> Result<BTreeMap<String, MoodTunePrefs>, String> {
+    let mut prefs = load_mood_tune_prefs(conn)?;
+    prefs.entry(mood.to_string()).or_default().never_suggest.extend(words.iter().cloned());
+    save_mood_tune_prefs(conn, &prefs)?;
+    load_mood_tune_prefs(conn)
+}
+
+/// Removes one word (ignoring case) from a mood's never-suggest list;
+/// returns every mood's list.
+pub fn remove_never_suggest(
+    conn: &Connection,
+    mood: &str,
+    word: &str,
+) -> Result<BTreeMap<String, MoodTunePrefs>, String> {
+    let mut prefs = load_mood_tune_prefs(conn)?;
+    if let Some(p) = prefs.get_mut(mood) {
+        let w = word.trim().to_lowercase();
+        p.never_suggest.retain(|x| x.trim().to_lowercase() != w);
+    }
+    save_mood_tune_prefs(conn, &prefs)?;
+    load_mood_tune_prefs(conn)
+}
+
+/// Saves the per-mood Tune preferences as JSON. Words are trimmed, blanks
+/// and repeats (ignoring case) dropped, and moods left with nothing are
+/// left out.
+pub fn save_mood_tune_prefs(conn: &Connection, prefs: &BTreeMap<String, MoodTunePrefs>) -> Result<(), String> {
+    let cleaned: BTreeMap<String, MoodTunePrefs> = prefs
+        .iter()
+        .map(|(id, p)| {
+            let mut seen = std::collections::HashSet::new();
+            let never_suggest = p
+                .never_suggest
+                .iter()
+                .map(|w| w.trim().to_string())
+                .filter(|w| !w.is_empty() && seen.insert(w.to_lowercase()))
+                .collect();
+            (id.clone(), MoodTunePrefs { never_suggest })
+        })
+        .filter(|(_, p)| !p.never_suggest.is_empty())
+        .collect();
+    let text = serde_json::to_string(&cleaned).map_err(|e| format!("Failed to encode Tune preferences: {e}"))?;
+    write_meta(conn, KEY_MOOD_TUNE_PREFS, &text)
 }
 
 /// Loads the frozen mood calibration (see `MoodCalibration`). `None` until
@@ -329,6 +405,43 @@ mod tests {
         save_mood_calibration(&conn, &cal).unwrap();
         clear_mood_calibration(&conn).unwrap();
         assert_eq!(load_mood_calibration(&conn).unwrap(), None);
+    }
+
+    #[test]
+    fn mood_tune_prefs_round_trip_cleaned_and_survive_bad_json() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        assert!(load_mood_tune_prefs(&conn).unwrap().is_empty());
+
+        let mut prefs = BTreeMap::new();
+        prefs.insert("sorrowful".to_string(), MoodTunePrefs { never_suggest: vec![" sad ".into(), "Sad".into(), "".into(), "slow".into()] });
+        prefs.insert("serene".to_string(), MoodTunePrefs { never_suggest: vec![" ".into()] });
+        save_mood_tune_prefs(&conn, &prefs).unwrap();
+        let back = load_mood_tune_prefs(&conn).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back["sorrowful"].never_suggest, vec!["sad", "slow"]);
+        let text = read_meta(&conn, KEY_MOOD_TUNE_PREFS).unwrap().unwrap();
+        assert_eq!(text, r#"{"sorrowful":{"neverSuggest":["sad","slow"]}}"#);
+
+        // Add and remove one mood's words; other moods stay.
+        let after = add_never_suggest(&conn, "serene", &["calm".into(), " Calm ".into()]).unwrap();
+        assert_eq!(after["serene"].never_suggest, vec!["calm"]);
+        assert_eq!(after["sorrowful"].never_suggest, vec!["sad", "slow"]);
+        let after = remove_never_suggest(&conn, "sorrowful", "SAD").unwrap();
+        assert_eq!(after["sorrowful"].never_suggest, vec!["slow"]);
+        let after = remove_never_suggest(&conn, "serene", "calm").unwrap();
+        assert!(!after.contains_key("serene"), "an emptied list goes");
+
+        // Unreadable: kept as mood_tune_prefs_bad before anything replaces it.
+        write_meta(&conn, KEY_MOOD_TUNE_PREFS, "{oops").unwrap();
+        assert!(load_mood_tune_prefs(&conn).unwrap().is_empty());
+        assert_eq!(read_meta(&conn, KEY_MOOD_TUNE_PREFS_BAD).unwrap().as_deref(), Some("{oops"));
+        add_never_suggest(&conn, "grim", &["fear".into()]).unwrap();
+        assert_eq!(read_meta(&conn, KEY_MOOD_TUNE_PREFS_BAD).unwrap().as_deref(), Some("{oops"));
+        // A later bad value never overwrites the first copy.
+        write_meta(&conn, KEY_MOOD_TUNE_PREFS, "{second").unwrap();
+        load_mood_tune_prefs(&conn).unwrap();
+        assert_eq!(read_meta(&conn, KEY_MOOD_TUNE_PREFS_BAD).unwrap().as_deref(), Some("{oops"));
     }
 
     #[test]

@@ -336,6 +336,307 @@ pub struct MoodValue {
     /// The level the user set, one of `MOOD_LEVELS`; `None` means the
     /// suggestion shows.
     pub user: Option<f64>,
+    /// The user's note on this song and mood, a tuning target; it never
+    /// changes the shown value. `None` when there is no flag.
+    pub flag: Option<MoodFlag>,
+}
+
+/// What a flag says: the bar belongs in `band`, or should be `higher` or
+/// `lower` than it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "snake_case")]
+pub enum FlagKind {
+    Band,
+    Higher,
+    Lower,
+}
+
+/// The bands a `band` flag can name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "snake_case")]
+pub enum FlagBand {
+    Definitely,
+    Understandable,
+    Stretch,
+    No,
+}
+
+/// Whether the band is exact (`in`) or a limit (`at_least`, `at_most`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "snake_case")]
+pub enum FlagBound {
+    In,
+    AtLeast,
+    AtMost,
+}
+
+/// Why a flag is stale. `Wording`: the mood's prompt lines changed since the
+/// flag was set or last kept. `Calibration`: a higher / lower flag whose
+/// mood has been recalibrated since, so the bar it was made at is on another
+/// scale. A flag stale both ways reads as `Calibration`, the one that changes
+/// how Tune reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "snake_case")]
+pub enum StaleReason {
+    Wording,
+    Calibration,
+}
+
+/// A flag on one song and mood. `stale` is true when `stale_reason` is set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct MoodFlag {
+    pub kind: FlagKind,
+    pub band: Option<FlagBand>,
+    pub bound: FlagBound,
+    /// The bar the song showed when flagged.
+    pub bar_at_flag: Option<f64>,
+    /// For a higher / lower flag, its mood's calibration when flagged or last
+    /// kept, as "mean|sd" (see `mood_flags::calibration_mark`).
+    pub calibrated_at: Option<String>,
+    pub stale: bool,
+    pub stale_reason: Option<StaleReason>,
+}
+
+/// What the one-off case-study import did: how many flags it wrote, the
+/// tracks it could not find in the library, the moods in the file that are
+/// not in the vocabulary, and how many (track, mood) labels it left out
+/// because the case lists that mood as `settled` (a target let go of).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct CaseImportReport {
+    pub imported: usize,
+    pub unmatched: Vec<String>,
+    pub skipped_moods: Vec<String>,
+    pub settled_skipped: usize,
+}
+
+/// A song in a Tune review: the analyzer's content hash resolved to a
+/// library entry. `album` is "Artist / Album" from the file's two parent
+/// folders, as the Moods panel previews show it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneSong {
+    pub entry_id: String,
+    pub name: String,
+    pub album: String,
+}
+
+/// A flagged song's bar under the mood's current lines (`before`) and under
+/// the reviewed lines (`after`), and whether its flag holds under them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneFlagOutcome {
+    pub song: TuneSong,
+    pub before: f64,
+    pub after: f64,
+    pub holds: bool,
+    /// False for a flag made under older wording or calibration.
+    pub fresh: bool,
+    /// The flag Tune focused on (counted three times over in the search).
+    pub focus: bool,
+}
+
+/// One of the songs a set of lines ranks highest, with its bar.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneTopSong {
+    pub song: TuneSong,
+    pub bar: f64,
+}
+
+/// An unflagged song whose bar moves the most between the current and the
+/// reviewed lines.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneMovedSong {
+    pub song: TuneSong,
+    pub before: f64,
+    pub after: f64,
+}
+
+/// How alike another mood's ranking is to this one's (rank correlation),
+/// under the current and under the reviewed lines.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneOverlap {
+    pub mood_id: String,
+    pub before: f64,
+    pub after: f64,
+}
+
+/// Leave-one-out: how many flags still hold when each is left out of the
+/// search in turn. `0 / 0` on the baseline.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneLeaveOneOut {
+    pub held: u32,
+    pub total: u32,
+}
+
+/// A flag row as stored, whole: what Use's undo puts back for the direction
+/// flags the accept turned into band flags (see `tune::accept_lines`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct MoodFlagRow {
+    pub entry_id: String,
+    pub mood: String,
+    pub kind: FlagKind,
+    pub band: Option<FlagBand>,
+    pub bound: FlagBound,
+    pub bar_at_flag: Option<f64>,
+    pub calibrated_at: Option<String>,
+    pub lines_sig: String,
+    /// When the flag was set (Unix milliseconds as a string, like
+    /// `created_at` elsewhere); `None` keeps the row's own (or now).
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+/// What removing a flag returns: the new state, and the row removed, whole,
+/// so Undo can put it back exactly (see `restore_mood_flags`).
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct ClearedFlag {
+    pub state: AppState,
+    pub removed: Option<MoodFlagRow>,
+}
+
+/// What accepting tuned lines returns: the new state, and the flag rows the
+/// direction-flag ratchet changed, as they were before.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct AcceptedLines {
+    pub state: AppState,
+    pub converted: Vec<MoodFlagRow>,
+}
+
+/// The Moods page's per-mood preferences for Tune: words never to suggest
+/// (sent as `exclude` for Arrange and Suggest). Stored as JSON in the meta
+/// key `mood_tune_prefs`, a map from mood id to this.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase", default)]
+pub struct MoodTunePrefs {
+    pub never_suggest: Vec<String>,
+}
+
+/// A suggested name word, with how closely its own ranking follows the lines'.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneNameIdea {
+    pub word: String,
+    pub rho: f64,
+}
+
+/// The review of one set of lines (the mood's current ones, a proposal, or a
+/// split half). Lower `loss` is better; it includes `stability`, what the
+/// lines cost for moving unflagged songs (0 for the current lines).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneReview {
+    pub lines: Vec<String>,
+    /// Where each line came from ("word bank", "phrase list", "Mysterious
+    /// words", "blend" then its parts' sources, ...), aligned with `lines`.
+    pub line_sources: Vec<Vec<String>>,
+    pub loss: f64,
+    pub stability: f64,
+    pub flags: Vec<TuneFlagOutcome>,
+    pub top: Vec<TuneTopSong>,
+    pub top_before: Vec<TuneTopSong>,
+    pub risers: Vec<TuneMovedSong>,
+    pub fallers: Vec<TuneMovedSong>,
+    /// How many songs reach 0.5 under the current and the reviewed lines.
+    pub fires_before: u32,
+    pub fires_after: u32,
+    pub overlap: Vec<TuneOverlap>,
+    pub loo: TuneLeaveOneOut,
+    pub names: Vec<TuneNameIdea>,
+    /// Fresh flags that do not hold under the reviewed lines.
+    pub unsatisfied: Vec<TuneSong>,
+    /// The songs that left the top list, with their rank in the whole new
+    /// ranking (empty from an older analyzer).
+    pub out_ranks: Vec<TuneOutRank>,
+}
+
+/// A song that left the top list, and where it ranks now.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneOutRank {
+    pub song: TuneSong,
+    pub rank: u32,
+    /// Its new bar, when the analyzer reports it.
+    pub bar: Option<f64>,
+}
+
+/// A suggested split of the mood in two: `keep` stays the mood, `new` becomes
+/// a new one, each with the flagged songs that go with it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneSplitReview {
+    pub keep: TuneReview,
+    pub new: TuneReview,
+    pub keep_songs: Vec<TuneSong>,
+    pub new_songs: Vec<TuneSong>,
+    /// Rank correlation between the two halves' rankings.
+    pub rho: f64,
+}
+
+/// How Tune works: compare reviews the user's own versions of the lines as
+/// written; arrange searches only the words the user typed and the current
+/// lines; suggest also searches the word bank, other moods' words, the
+/// phrase list and the analyzer's built-in vocabulary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "lowercase")]
+pub enum TuneMode {
+    Compare,
+    Arrange,
+    #[default]
+    Suggest,
+}
+
+/// What Tune found for a mood: the current lines' review, the proposals
+/// that beat it (best first), an optional split, and the flagged songs
+/// left out. `lines_tuned_from` goes back with an accept, which is refused
+/// if the mood's lines have changed since.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TuneResult {
+    pub baseline: TuneReview,
+    pub proposals: Vec<TuneReview>,
+    pub split: Option<TuneSplitReview>,
+    /// Flagged songs the analyzer has no embedding for.
+    pub skipped: Vec<TuneSong>,
+    pub lines_tuned_from: Vec<String>,
+    /// Flags left out of the request: songs never analyzed (no hash), and
+    /// flags that cannot be read or ask nothing of the bar.
+    pub skipped_flags: usize,
+    /// The song whose flag the search focused on, if any.
+    pub focus_entry_id: Option<String>,
+    /// The mode Tune ran in; in compare mode `proposals` are the user's
+    /// versions, in order, whether or not they beat the current lines.
+    pub mode: TuneMode,
 }
 
 /// Which layer a shown value comes from: the user's, or the analyzer's.

@@ -1017,14 +1017,23 @@ pub const MOOD_VOCABULARY_UNREADABLE: &str = "Stored mood list is unreadable; fi
 /// the stored vocabulary is unreadable: the app then shows the defaults, and
 /// saving a list built from them would delete the rows of the real moods.
 pub fn save_mood_vocabulary(conn: &Connection, vocabulary: &MoodVocabulary) -> Result<MoodVocabulary, String> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("Failed to begin vocabulary transaction: {e}"))?;
+    let vocabulary = write_mood_vocabulary(conn, vocabulary)?;
+    tx.commit().map_err(|e| format!("Failed to commit vocabulary transaction: {e}"))?;
+    Ok(vocabulary)
+}
+
+/// `save_mood_vocabulary`'s work without its own transaction, for a caller
+/// that writes more in the same one (the Tune split). The caller must hold
+/// a transaction, or a failure can leave the rows and the list out of step.
+pub fn write_mood_vocabulary(conn: &Connection, vocabulary: &MoodVocabulary) -> Result<MoodVocabulary, String> {
     if let Some(problem) = settings::mood_vocabulary_problem(conn)? {
         log::warn!("Refusing to save the mood vocabulary over an unreadable one: {problem}");
         return Err(MOOD_VOCABULARY_UNREADABLE.to_string());
     }
     let vocabulary = vocabulary.normalized()?;
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| format!("Failed to begin vocabulary transaction: {e}"))?;
     let kept = serde_json::to_string(&vocabulary.ids()).map_err(|e| format!("Failed to encode mood ids: {e}"))?;
     conn.execute(
         "DELETE FROM library_entry_moods WHERE mood NOT IN (SELECT value FROM json_each(?1))",
@@ -1032,7 +1041,6 @@ pub fn save_mood_vocabulary(conn: &Connection, vocabulary: &MoodVocabulary) -> R
     )
     .map_err(|e| format!("Failed to delete removed moods: {e}"))?;
     settings::save_mood_vocabulary(conn, &vocabulary)?;
-    tx.commit().map_err(|e| format!("Failed to commit vocabulary transaction: {e}"))?;
     Ok(vocabulary)
 }
 

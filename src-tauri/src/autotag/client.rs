@@ -6,6 +6,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use super::plan::{ScoreRequest, ScoreResponse};
+use super::tune::{TuneRequest, TuneResponse};
 
 /// Header that carries the shared secret the analyzer checks.
 const TOKEN_HEADER: &str = "X-LuteDrop-Token";
@@ -26,6 +27,9 @@ const SEARCH_TIMEOUT: Duration = Duration::from_secs(60);
 const PREVIEW_TIMEOUT: Duration = Duration::from_secs(60);
 /// `/map` runs t-SNE over the whole library the first time it is asked.
 const MAP_TIMEOUT: Duration = Duration::from_secs(120);
+/// `/tune` runs many searches (one per flag for leave-one-out), which can
+/// take tens of seconds on a real library, and can wait on the model loading.
+const TUNE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// The analyzer's verdict on one item of an `/embed` call.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -72,6 +76,9 @@ pub trait AnalyzerClient: Send + Sync {
     /// prompts, keyed by hash. Hashes the analyzer has not embedded are left
     /// out. Fails while the analyzer's model is still loading.
     fn preview(&self, prompts: &[String], targets: &[String]) -> Result<HashMap<String, f64>, String>;
+    /// Searches for prompt lines that fit a mood's flags and reviews the
+    /// best against the current lines. Fails while the model is loading.
+    fn tune(&self, req: &TuneRequest) -> Result<TuneResponse, String>;
 }
 
 /// `AnalyzerClient` over HTTP, using blocking `ureq` calls.
@@ -290,6 +297,17 @@ impl AnalyzerClient for HttpAnalyzer {
             .set(TOKEN_HEADER, &self.token)
             .timeout(PREVIEW_TIMEOUT)
             .send_json(&PreviewRequest { prompts, targets })
+            .map_err(describe)?;
+        read_json(response)
+    }
+
+    fn tune(&self, req: &TuneRequest) -> Result<TuneResponse, String> {
+        let response = self
+            .agent
+            .post(&self.url("/tune")?)
+            .set(TOKEN_HEADER, &self.token)
+            .timeout(TUNE_TIMEOUT)
+            .send_json(req)
             .map_err(describe)?;
         read_json(response)
     }
