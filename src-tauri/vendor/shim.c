@@ -11,7 +11,7 @@
 #undef STB_VORBIS_HEADER_ONLY
 #include "stb_vorbis.c"
 // stb_vorbis leaves these one-letter macros defined; Windows headers included
-// after this point use them as identifiers.
+// after this point (Media Foundation's) use them as field names.
 #undef L
 #undef C
 #undef R
@@ -20,6 +20,8 @@
 #include "miniaudio_libopus.c"
 #include "miniaudio_vorbis_pull.h"
 #include "miniaudio_vorbis_pull.c"
+#include "miniaudio_mf.h"
+#include "miniaudio_mf.c"
 #include "shim.h"
 #include <stdlib.h>
 
@@ -29,6 +31,8 @@
 //   1. libopus: Ogg Opus (.opus, and .ogg files that hold Opus).
 //   2. stb_vorbis in pull mode: Ogg Vorbis, with exact length and fast seeks
 //      (see miniaudio_vorbis_pull.h for why not miniaudio's built-in one).
+//   3. Media Foundation: AAC, ALAC, WMA. Claims only MP4/ADTS/ASF content, so
+//      MP3/WAV/FLAC still fall through to miniaudio's built-ins.
 // Both Ogg backends check the codec header and reject the other codec, so an
 // .ogg file reaches the right one whichever it contains.
 //
@@ -38,7 +42,7 @@
 // NOTE: each `ld_decoding_backend_*` / `ma_decoding_backend_libopus` is declared
 // as `extern ma_decoding_backend_vtable*` -- ALREADY a pointer, so the array
 // holds it directly (NOT its address).
-#define LD_BACKENDS { ma_decoding_backend_libopus, ld_decoding_backend_vorbis }
+#define LD_BACKENDS { ma_decoding_backend_libopus, ld_decoding_backend_vorbis, ld_decoding_backend_mf }
 
 // Path is a wide (UTF-16) string and we call miniaudio's `_w` file APIs. On
 // Windows, miniaudio's narrow file APIs route the path through fopen, which
