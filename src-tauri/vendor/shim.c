@@ -1,26 +1,74 @@
+// stb_vorbis (Ogg Vorbis decoder) is a single file: declarations first, the
+// implementation further down. Its declarations must come before miniaudio.h,
+// which switches on its own built-in Vorbis decoder when it sees them.
+#define STB_VORBIS_HEADER_ONLY
+#include "stb_vorbis.c"
+
 #define MINIAUDIO_IMPLEMENTATION
 #define MA_NO_GENERATION
 #include "miniaudio.h"
+
+// stb_vorbis's implementation, with its assert() calls compiled out: they
+// check stream invariants a malformed .ogg can break, and a failed assert
+// aborts the whole app. With them off, stb_vorbis reports the bad stream as a
+// decode error instead. NDEBUG is what turns assert() off; <assert.h> re-reads
+// it each time it is included, so asserts are switched back on (if they were
+// on) for everything after this block.
+#undef STB_VORBIS_HEADER_ONLY
+#ifndef NDEBUG
+#define LD_ASSERTS_WERE_ON
+#define NDEBUG
+#endif
+#include "stb_vorbis.c"
+#ifdef LD_ASSERTS_WERE_ON
+#undef NDEBUG
+#undef LD_ASSERTS_WERE_ON
+#endif
+#include <assert.h>
+// stb_vorbis leaves these one-letter macros defined; Windows headers included
+// after this point (Media Foundation's) use them as field names.
+#undef L
+#undef C
+#undef R
+
 #include "miniaudio_libopus.h"
 #include "miniaudio_libopus.c"
+#include "miniaudio_vorbis_pull.h"
+#include "miniaudio_vorbis_pull.c"
+#include "miniaudio_mf.h"
+#include "miniaudio_mf.c"
 #include "shim.h"
 #include <stdlib.h>
 
-// Registers the libopus backend so .opus decodes alongside built-ins.
+// The custom decoding backends, in the order miniaudio tries them. miniaudio
+// offers every file to these BEFORE its built-in WAV/FLAC/MP3/Vorbis decoders,
+// moving to the next backend when one rejects the file:
+//   1. libopus: Ogg Opus (.opus, and .ogg files that hold Opus).
+//   2. stb_vorbis in pull mode: Ogg Vorbis, with exact length and fast seeks
+//      (see miniaudio_vorbis_pull.h for why not miniaudio's built-in one).
+//   3. Media Foundation: AAC, ALAC, WMA. Claims only MP4/ADTS/ASF content, so
+//      MP3/WAV/FLAC still fall through to miniaudio's built-ins.
+// Both Ogg backends check the codec header and reject the other codec, so an
+// .ogg file reaches the right one whichever it contains.
 //
-// NOTE: `ma_decoding_backend_libopus` is declared in miniaudio_libopus.h as
-// `extern ma_decoding_backend_vtable*` -- it is ALREADY a pointer, so the
-// backends array holds it directly (NOT its address).
+// Both decoder setups below (ld_make_decoder for analysis, the resource
+// manager for playback) must use this same list.
+//
+// NOTE: each `ld_decoding_backend_*` / `ma_decoding_backend_libopus` is declared
+// as `extern ma_decoding_backend_vtable*` -- ALREADY a pointer, so the array
+// holds it directly (NOT its address).
+#define LD_BACKENDS { ma_decoding_backend_libopus, ld_decoding_backend_vorbis, ld_decoding_backend_mf }
+
 // Path is a wide (UTF-16) string and we call miniaudio's `_w` file APIs. On
 // Windows, miniaudio's narrow file APIs route the path through fopen, which
 // interprets the bytes in the ANSI/locale codepage rather than UTF-8 -- so any
 // non-ASCII UTF-8 path fails to open. The wide APIs go straight to _wfopen, so
 // Unicode paths (smart quotes, accents, CJK, etc.) open correctly.
 static ma_result ld_make_decoder(const wchar_t* path, ma_decoder* dec) {
-    ma_decoding_backend_vtable* backends[] = { ma_decoding_backend_libopus };
+    ma_decoding_backend_vtable* backends[] = LD_BACKENDS;
     ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 0, 0);
     cfg.ppCustomBackendVTables = backends;
-    cfg.customBackendCount = 1;
+    cfg.customBackendCount = sizeof(backends) / sizeof(backends[0]);
     return ma_decoder_init_file_w(path, &cfg, dec);
 }
 
@@ -48,6 +96,31 @@ void ld_decoder_close(ld_decoder* d) {
     if (d == NULL) return;
     ma_decoder_uninit(&d->dec);
     free(d);
+}
+
+int ld_decoder_seek(ld_decoder* d, uint64_t frame) {
+    if (d == NULL) return -1;
+    return (ma_decoder_seek_to_pcm_frame(&d->dec, frame) == MA_SUCCESS) ? 0 : -1;
+}
+
+uint64_t ld_decoder_length(ld_decoder* d) {
+    ma_uint64 total = 0;
+    if (d == NULL || ma_decoder_get_length_in_pcm_frames(&d->dec, &total) != MA_SUCCESS) return 0;
+    return total;
+}
+
+ld_decoder* ld_decoder_open_callbacks(const wchar_t* path, uint32_t* out_channels, uint32_t* out_sample_rate) {
+    ld_decoder* d = (ld_decoder*)malloc(sizeof(ld_decoder));
+    if (d == NULL) return NULL;
+    ma_decoding_backend_vtable* backends[] = LD_BACKENDS;
+    ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 0, 0);
+    cfg.ppCustomBackendVTables = backends;
+    cfg.customBackendCount = sizeof(backends) / sizeof(backends[0]);
+    // The call the resource manager makes (with its default VFS = NULL).
+    if (ma_decoder_init_vfs_w(NULL, path, &cfg, &d->dec) != MA_SUCCESS) { free(d); return NULL; }
+    *out_channels = d->dec.outputChannels;
+    *out_sample_rate = d->dec.outputSampleRate;
+    return d;
 }
 
 double ld_file_duration_secs(const wchar_t* path) {
@@ -211,15 +284,16 @@ static ld_engine* ld_engine_create_impl(int silent) {
         e->has_context = 1;
     }
 
-    // Register the libopus backend on the resource manager so streamed .opus
-    // decodes natively. `ma_decoding_backend_libopus` is ALREADY a
-    // ma_decoding_backend_vtable* (a pointer) -- store it directly (NO &).
-    ma_decoding_backend_vtable* backends[] = { ma_decoding_backend_libopus };
+    // Same custom backends as ld_make_decoder (see LD_BACKENDS). The resource
+    // manager opens files through ma_decoder_init_vfs_w, which only calls each
+    // backend's onInit (read/seek/tell callbacks), never onInitFileW.
+    // miniaudio copies this array, so a stack array is fine.
+    ma_decoding_backend_vtable* backends[] = LD_BACKENDS;
 
     ma_resource_manager_config rmcfg = ma_resource_manager_config_init();
     rmcfg.decodedFormat = ma_format_f32;
     rmcfg.ppCustomDecodingBackendVTables = backends;
-    rmcfg.customDecodingBackendCount = 1;
+    rmcfg.customDecodingBackendCount = sizeof(backends) / sizeof(backends[0]);
     if (ma_resource_manager_init(&rmcfg, &e->resource_manager) != MA_SUCCESS) {
         if (e->has_context) ma_context_uninit(&e->context);
         free(e);

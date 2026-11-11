@@ -81,8 +81,10 @@ fn build_audio_shim() {
     let include = vcpkg_installed.join("include");
     let lib = vcpkg_installed.join("lib");
 
-    // Compile the C shim: miniaudio impl + ma_libopus backend + the ld_* shim
-    // API (decoder + playback).
+    // Compile the C shim: miniaudio impl + the custom decoding backends
+    // (libopus, stb_vorbis, Media Foundation) + the ld_* shim API (decoder +
+    // playback). shim.c #includes the backend .c files, so it is the only
+    // translation unit.
     cc::Build::new()
         .file("vendor/shim.c")
         .include("vendor") // miniaudio.h, miniaudio_libopus.h/.c, shim.h
@@ -98,8 +100,22 @@ fn build_audio_shim() {
     println!("cargo:rustc-link-lib=static=opus");
     println!("cargo:rustc-link-lib=static=ogg");
 
+    // Windows Media Foundation (AAC/ALAC/WMA decoding, vendor/miniaudio_mf.c).
+    // These are import libraries for system DLLs that ship with Windows, so
+    // nothing extra is bundled. mfplat: core MF (MFStartup, byte streams,
+    // media types); mfreadwrite: IMFSourceReader; mfuuid and uuid: the GUID
+    // constants (interface and attribute IDs); ole32: COM itself.
+    for lib in ["mfplat", "mfreadwrite", "mfuuid", "uuid", "ole32"] {
+        println!("cargo:rustc-link-lib=dylib={lib}");
+    }
+
     println!("cargo:rerun-if-changed=vendor/shim.c");
     println!("cargo:rerun-if-changed=vendor/shim.h");
     println!("cargo:rerun-if-changed=vendor/miniaudio_libopus.c");
     println!("cargo:rerun-if-changed=vendor/miniaudio_libopus.h");
+    println!("cargo:rerun-if-changed=vendor/stb_vorbis.c");
+    println!("cargo:rerun-if-changed=vendor/miniaudio_vorbis_pull.c");
+    println!("cargo:rerun-if-changed=vendor/miniaudio_vorbis_pull.h");
+    println!("cargo:rerun-if-changed=vendor/miniaudio_mf.c");
+    println!("cargo:rerun-if-changed=vendor/miniaudio_mf.h");
 }

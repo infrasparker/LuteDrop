@@ -175,6 +175,13 @@ pub fn run() {
                 actions::backfill_replaygain(&replaygain_container);
             });
 
+            // Entries imported while their file could not be decoded have no
+            // duration; measure them again. Own thread: it decodes files.
+            let duration_container = container.clone();
+            std::thread::spawn(move || {
+                actions::backfill_durations(&duration_container);
+            });
+
             // Turn the live broadcast back on if it was on at last exit. On its
             // own thread so a slow start never delays the window opening.
             let broadcast_container = container.clone();

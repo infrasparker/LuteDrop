@@ -296,6 +296,21 @@ pub fn entries_without_replaygain(conn: &Connection) -> Result<Vec<(String, Stri
     Ok(rows)
 }
 
+/// `(id, file_path)` of every entry with no duration stored: its file could
+/// not be decoded when it was imported (offline share, or a format the
+/// decoder did not support yet). The startup backfill measures them again.
+pub fn entries_without_duration(conn: &Connection) -> Result<Vec<(String, String)>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id, file_path FROM library_entries WHERE duration IS NULL ORDER BY name")
+        .map_err(|e| format!("Failed to prepare duration backfill query: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|e| format!("Failed to query duration backfill: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to read duration backfill rows: {e}"))?;
+    Ok(rows)
+}
+
 /// Finds the entry (if any) that already owns `file_path`. Returns (id, name).
 /// `file_path` is UNIQUE, so at most one entry can match.
 pub fn find_entry_name_by_file_path(

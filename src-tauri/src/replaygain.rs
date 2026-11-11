@@ -369,6 +369,19 @@ mod tests {
         assert_eq!(rg, ReplayGain { track_gain_db: Some(-2.5), track_peak: Some(0.912) });
     }
 
+    /// Untagged files in every decodable format read as "no tags", except WMA:
+    /// lofty has no ASF support, so that is an error, which import logs and
+    /// treats as "no tags" too (`read_replaygain_logged`). Neither may panic.
+    #[test]
+    fn untagged_files_of_each_format_read_cleanly() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        for file in ["vorbis.ogg", "opus_in.ogg", "aac.m4a", "adts.aac", "alac.m4a"] {
+            let rg = read_file(&dir.join(file)).unwrap_or_else(|e| panic!("{file}: {e}"));
+            assert_eq!(rg, ReplayGain::default(), "{file}");
+        }
+        assert!(read_file(&dir.join("wma.wma")).is_err());
+    }
+
     #[test]
     fn missing_file_is_an_error() {
         assert!(read_file(Path::new("Z:/definitely/missing.opus")).is_err());

@@ -902,6 +902,56 @@ pub fn backfill_replaygain(container: &AppStateContainer) {
     }
 }
 
+/// Startup backfill: measures the duration of every entry that has none
+/// stored. Duration is otherwise measured only at import, so an entry whose
+/// file could not be decoded then (offline share, or a format added to the
+/// decoder later) would stay without a duration for good. Runs on its own
+/// thread; each file is decoded without holding the DB lock. Files that still
+/// cannot be decoded are tried again on the next start.
+pub fn backfill_durations(container: &AppStateContainer) {
+    let todo = match with_db(container, library::entries_without_duration) {
+        Ok(rows) => rows,
+        Err(e) => {
+            log::warn!("Duration backfill: {e}");
+            return;
+        }
+    };
+    if todo.is_empty() {
+        return;
+    }
+    let filled = backfill_duration_rows(&container.db, &todo, crate::audio::util::probe_duration);
+    log::info!("Duration backfill: {} of {} files measured", filled, todo.len());
+    if filled > 0 {
+        container.mark_state_dirty();
+        container.emit("library-durations-updated", ());
+    }
+}
+
+/// The body of [`backfill_durations`], with the probe passed in so a test can
+/// drive it. Returns how many durations were stored.
+pub fn backfill_duration_rows(
+    db: &std::sync::Mutex<rusqlite::Connection>,
+    rows: &[(String, String)],
+    probe: impl Fn(&str) -> Option<f64>,
+) -> usize {
+    let mut filled = 0;
+    for (id, path) in rows {
+        let Some(dur) = probe(path) else {
+            log::debug!("Duration backfill: {path}: could not decode");
+            continue;
+        };
+        let stored = db
+            .lock()
+            .map_err(|e| e.to_string())
+            .and_then(|conn| library::update_library_entry_duration(&conn, id, dur, None));
+        match stored {
+            Ok(()) => filled += 1,
+            Err(e) => log::warn!("Duration backfill: {path}: {e}"),
+        }
+    }
+    filled
+}
+
 /// Counts from one backfill pass.
 #[derive(Debug, Default, PartialEq)]
 pub struct BackfillReport {
@@ -1679,6 +1729,7 @@ mod tests {
         relocate_library_entry, get_autotag_settings, save_autotag_settings,
         restore_broadcast_on_startup, sanitize_volume, scan_missing_files, set_broadcast_enabled,
         set_broadcast_settings, with_db, backfill_replaygain_rows, BackfillReport, load_data,
+        backfill_duration_rows,
         get_normalize_music_loudness, set_normalize_music_loudness,
     };
     use crate::database::{self, library};
@@ -1792,6 +1843,33 @@ mod tests {
         let result = hash_file("Z:\\this\\path\\does\\not\\exist\\lutedrop_missing.bin");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Failed to open file for hashing"));
+    }
+
+    /// The duration backfill fills in what it can measure and leaves the rest
+    /// NULL, so only those are tried again on the next start.
+    #[test]
+    fn duration_backfill_fills_measurable_entries() {
+        let c = test_container();
+        let ok = add_entry(&c, "/ok.ogg", "h1", "Ok", 1);
+        let _bad = add_entry(&c, "/bad.ogg", "h2", "Bad", 1);
+        let todo = with_db(&c, library::entries_without_duration).unwrap();
+        assert_eq!(todo.len(), 2);
+
+        let filled = backfill_duration_rows(&c.db, &todo, |path| (path == "/ok.ogg").then_some(194.8));
+        assert_eq!(filled, 1);
+
+        let stored: Option<f64> = with_db(&c, |conn| {
+            conn.query_row("SELECT duration FROM library_entries WHERE id = ?1", [&ok], |r| r.get(0))
+                .map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert_eq!(stored, Some(194.8));
+        let left: Vec<String> = with_db(&c, library::entries_without_duration)
+            .unwrap()
+            .into_iter()
+            .map(|(_, path)| path)
+            .collect();
+        assert_eq!(left, vec!["/bad.ogg".to_string()]);
     }
 
     /// The backfill stores what each file has, counts files without the tag

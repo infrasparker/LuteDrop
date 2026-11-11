@@ -48,15 +48,17 @@ watch(() => router.currentRoute.value.path, (newPath, oldPath) => {
   }
 });
 
-// The startup ReplayGain backfill stored new loudness values: reload state so
-// the entries carry their new loudness factors.
-listen('library-loudness-updated', async () => {
+// A startup backfill stored new values (ReplayGain loudness, or durations of
+// entries that could not be decoded at import): reload state to show them.
+async function reloadAfterBackfill(): Promise<void> {
   try {
     store.hydrate(await invoke<AppState>('load_data'));
   } catch (e) {
-    console.warn('Reload after loudness update failed', e);
+    console.warn('Reload after backfill failed', e);
   }
-});
+}
+listen('library-loudness-updated', reloadAfterBackfill);
+listen('library-durations-updated', reloadAfterBackfill);
 
 onMounted(async () => {
   const state = await invoke<AppState>('load_data');
