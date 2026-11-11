@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../stores/appStore';
 import { useToast } from './useToast';
-import type { TrackPlaybackState } from '@generated/index';
+import type { AppState, TrackPlaybackState } from '@generated/index';
 import { LIBRARY_PLAYBACK_ID } from '../shared/playback';
 
 let listenerRegistered = false;
@@ -87,6 +87,7 @@ export function useAudio() {
   async function playTrackClip(trackId: string, clipId: string): Promise<void> {
     try {
       await invoke('play_track_clip', { trackId, clipId });
+      useAppStore().setMix(trackId, { selectedClipId: clipId });
     } catch (e) {
       toast.showError(String(e));
     }
@@ -119,6 +120,7 @@ export function useAudio() {
   async function setTrackVolume(trackId: string, volume: number): Promise<void> {
     try {
       await invoke('set_track_volume', { trackId, volume });
+      useAppStore().setMix(trackId, { volume });
     } catch (e) {
       toast.showError(String(e));
     }
@@ -127,6 +129,9 @@ export function useAudio() {
   async function setClipVolume(clipId: string, volume: number): Promise<void> {
     try {
       await invoke('set_clip_volume', { clipId, volume });
+      // Expanded clip rows are recreated on reopen, so the confirmed value
+      // must live in the shared model as well as the slider's local ref.
+      useAppStore().setClipVolume(clipId, volume);
     } catch (e) {
       toast.showError(String(e));
     }
@@ -140,33 +145,34 @@ export function useAudio() {
     }
   }
 
-  async function activateComp(compId: string): Promise<void> {
+  async function activateScene(sceneId: string, addToMix = false): Promise<void> {
     try {
-      await invoke('activate_comp', { compId });
+      await invoke('activate_scene', { sceneId, addToMix });
+      useAppStore().hydrate(await invoke<AppState>('load_data'));
     } catch (e) {
       toast.showError(String(e));
     }
   }
 
-  async function stopComp(compId: string): Promise<void> {
+  async function stopScene(sceneId: string): Promise<void> {
     try {
-      await invoke('stop_comp', { compId });
+      await invoke('stop_scene', { sceneId });
     } catch (e) {
       toast.showError(String(e));
     }
   }
 
-  async function pauseComp(compId: string): Promise<void> {
+  async function pauseScene(sceneId: string): Promise<void> {
     try {
-      await invoke('pause_comp', { compId });
+      await invoke('pause_scene', { sceneId });
     } catch (e) {
       toast.showError(String(e));
     }
   }
 
-  async function resumeComp(compId: string): Promise<void> {
+  async function resumeScene(sceneId: string): Promise<void> {
     try {
-      await invoke('resume_comp', { compId });
+      await invoke('resume_scene', { sceneId });
     } catch (e) {
       toast.showError(String(e));
     }
@@ -266,15 +272,15 @@ export function useAudio() {
     }
   }
 
-  async function toggleCompMute(compId: string): Promise<void> {
+  async function toggleSceneMute(sceneId: string): Promise<void> {
     try {
-      const muted = await invoke<boolean>('toggle_comp_mute', { compId });
+      const muted = await invoke<boolean>('toggle_scene_mute', { sceneId });
       const appStore = useAppStore();
-      // Update all tracks in the comp
-      const comp = appStore.findComp(compId);
-      if (comp) {
-        for (const track of comp.tracks) {
-          appStore.setTrackMuted(track.id, muted);
+      // Update all tracks in the scene
+      const scene = appStore.findScene(sceneId);
+      if (scene) {
+        for (const track of scene.tracks) {
+          appStore.setTrackMuted(track.trackId, muted);
         }
       }
     } catch (e) {
@@ -293,10 +299,10 @@ export function useAudio() {
     setTrackVolume,
     setClipVolume,
     setLibraryVolume,
-    activateComp,
-    stopComp,
-    pauseComp,
-    resumeComp,
+    activateScene,
+    stopScene,
+    pauseScene,
+    resumeScene,
     stopAll,
     pauseAll,
     resumeAll,
@@ -305,6 +311,6 @@ export function useAudio() {
     toggleMasterMute,
     toggleTrackMute,
     toggleClipMute,
-    toggleCompMute,
+    toggleSceneMute,
   };
 }

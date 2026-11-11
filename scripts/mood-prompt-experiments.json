@@ -1,0 +1,17 @@
+{
+  "mood": "battle",
+  "compareTo": "heroic",
+  "candidates": {
+    "Battle (without fanfare)": ["combat, battle, warlike, fierce, clash, war drums, fantasy battle music"],
+    "Fierce": ["fierce, aggressive, ferocious, relentless, threatening, violent music"],
+    "Driving": ["driving, propulsive, relentless rhythm, urgent, insistent, pounding percussion"],
+    "Urgent": ["urgent, frantic, tense, danger, pursuit, chase, racing pulse"],
+    "Martial": ["martial, militaristic, warlike, marching, war drums, clashing armies"],
+    "Tense": ["tense, suspenseful, anxious, nervous, uneasy, imminent danger"],
+    "Combative": ["aggressive combat music, relentless percussion, clashing rhythms, violent confrontation"],
+    "Fierce (word)": ["fierce"],
+    "Driving (word)": ["driving"],
+    "Urgent (word)": ["urgent"],
+    "Aggressive (word)": ["aggressive"]
+  }
+}

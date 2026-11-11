@@ -223,40 +223,52 @@ def transition(ttype, gmin, gmax):
     return {"type": "gapless"}
 
 
-def groups(conn, config_id, entries):
+def soundstage(conn, config_id, entries):
+    """Export v18 shared definitions and scene presets by identity."""
     by_id = {e["id"]: e for e in entries}
-    out = []
-    for gid, gname in conn.execute(
-        "SELECT id, name FROM groups WHERE configuration_id = ? ORDER BY sort_order", (config_id,)):
-        comps = []
-        for cid, cname in conn.execute("SELECT id, name FROM comps WHERE group_id = ? ORDER BY sort_order", (gid,)):
-            tracks = []
-            for (tid, tname, vol, mode, repeat, ttype, gmin, gmax, fin, fout) in conn.execute(
-                "SELECT id, name, volume, mode_type, repeat, transition_type, transition_gap_min, "
-                "transition_gap_max, fade_in, fade_out FROM tracks WHERE comp_id = ? ORDER BY sort_order", (cid,)):
-                clips = []
-                for clid, eid, cvol in conn.execute(
-                    "SELECT id, library_entry_id, volume FROM clips WHERE track_id = ? ORDER BY sort_order", (tid,)):
-                    e = by_id.get(eid)
-                    clips.append({
-                        "id": clid, "name": e["name"] if e else "[missing]", "filePath": e["filePath"] if e else "",
-                        "volume": cvol, "libraryEntryId": eid, "libraryVolume": e["volume"] if e else 1.0,
-                        "trimStart": e["trimStart"] if e else None, "trimEnd": e["trimEnd"] if e else None,
-                    })
-                rep = bool(repeat)
-                if mode == "seamless":
-                    first = by_id.get(clips[0]["libraryEntryId"]) if clips else None
-                    loops = (first["loopStart"], first["loopEnd"]) if first and first["loopStart"] is not None \
-                        and first["loopEnd"] is not None else (0.0, 0.0)
-                    tmode = {"type": "seamless", "loopStart": loops[0], "loopEnd": loops[1]}
-                else:
-                    tmode = {"type": "shuffle" if mode == "shuffle" else "sequence", "repeat": rep,
-                             "transition": transition(ttype or "gapless", gmin, gmax)}
-                tracks.append({"id": tid, "name": tname, "clips": clips, "volume": vol, "mode": tmode,
-                               "fadeIn": fin, "fadeOut": fout})
-            comps.append({"id": cid, "name": cname, "tracks": tracks})
-        out.append({"id": gid, "name": gname, "comps": comps})
-    return out
+    tracks = []
+    for tid, name, volume, mode, repeat, ttype, gmin, gmax, fin, fout in conn.execute(
+            "SELECT id,name,volume,mode_type,repeat,transition_type,transition_gap_min,"
+            "transition_gap_max,fade_in,fade_out FROM tracks ORDER BY sort_order,id"):
+        clips = []
+        for cid, eid, cvol in conn.execute(
+                "SELECT id,library_entry_id,volume FROM clips WHERE track_id=? ORDER BY sort_order,id", (tid,)):
+            entry = by_id.get(eid)
+            clips.append({
+                "id": cid, "name": entry["name"] if entry else "[missing]",
+                "filePath": entry["filePath"] if entry else "", "volume": cvol,
+                "libraryEntryId": eid, "libraryVolume": entry["volume"] if entry else 1.0,
+                "loudnessFactor": 1.0,
+                "trimStart": entry["trimStart"] if entry else None,
+                "trimEnd": entry["trimEnd"] if entry else None,
+            })
+        if mode == "seamless":
+            first = by_id.get(clips[0]["libraryEntryId"]) if clips else None
+            tmode = {"type": "seamless", "loopStart": (first["loopStart"] or 0) if first else 0,
+                     "loopEnd": (first["loopEnd"] or 0) if first else 0}
+        elif mode == "oneShot":
+            tmode = {"type": "oneShot"}
+        else:
+            tmode = {"type": mode, "repeat": bool(repeat), "transition": transition(ttype, gmin, gmax)}
+        tracks.append({"id": tid, "name": name, "clips": clips, "volume": volume,
+                       "mode": tmode, "fadeIn": fin, "fadeOut": fout})
+    boards = []
+    for bid, name in conn.execute(
+            "SELECT id,name FROM boards WHERE configuration_id=? ORDER BY sort_order,id", (config_id,)):
+        scenes = []
+        for sid, scene_name in conn.execute(
+                "SELECT id,name FROM scenes WHERE board_id=? ORDER BY sort_order,id", (bid,)):
+            refs = [{"trackId": tid, "enabled": bool(enabled), "volume": vol, "selectedClipId": clip}
+                    for tid, enabled, vol, clip in conn.execute(
+                        "SELECT track_id,enabled,volume,selected_clip_id FROM scene_tracks "
+                        "WHERE scene_id=? ORDER BY sort_order,track_id", (sid,))]
+            scenes.append({"id": sid, "name": scene_name, "tracks": refs})
+        ids = [r[0] for r in conn.execute(
+            "SELECT track_id FROM board_tracks WHERE board_id=? ORDER BY sort_order,track_id", (bid,))]
+        boards.append({"id": bid, "name": name, "scenes": scenes, "trackIds": ids})
+    mix = [{"trackId": tid, "volume": vol, "selectedClipId": clip}
+           for tid, vol, clip in conn.execute("SELECT track_id,volume,selected_clip_id FROM track_mix")]
+    return {"boards": boards, "tracks": tracks, "mix": mix}
 
 
 def app_state(conn, m):
@@ -271,7 +283,8 @@ def app_state(conn, m):
     # Missing files: checked against the real paths now, like the app's startup scan.
     missing = [e["id"] for e in entries if not os.path.exists(real_paths[e["id"]])]
     return {
-        "groups": groups(conn, config_id, entries),
+        **soundstage(conn, config_id, entries),
+        "activeSceneId": m.get("active_scene_id"),
         "libraryEntries": entries,
         "tags": tag_names,
         "configurations": configs,
@@ -348,7 +361,7 @@ def case_import_report(conn, v):
 
 BAND_FLOOR = {"definitely": 0.9, "understandable": 0.75, "stretch": 0.5, "no": None}
 BAND_CEIL = {"definitely": None, "understandable": 0.9, "stretch": 0.75, "no": 0.5}
-APP_BOUND = {"definitely": "at_least", "understandable": "at_least", "stretch": "in", "no": "in"}
+APP_BOUND = {"definitely": "at_least", "understandable": "at_least", "stretch": "at_most", "no": "in"}
 DIRECTION_MARGIN, STALE_WEIGHT, MAX_BANK = 0.1, 0.5, 1000
 REFERENCE_MIDPOINT_Z, MOOD_MIDPOINT_Z, MOOD_SLOPE = 0.674, 0.5, 1.5
 

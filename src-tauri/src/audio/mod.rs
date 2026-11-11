@@ -320,7 +320,7 @@ impl AudioEngine {
         new_state
     }
 
-    pub fn toggle_comp_mute(&mut self, track_ids: &[String]) -> bool {
+    pub fn toggle_scene_mute(&mut self, track_ids: &[String]) -> bool {
         let all_muted = track_ids.iter().all(|id| {
             self.mute_state.tracks.get(id).copied().unwrap_or(false)
         });
@@ -991,6 +991,50 @@ mod tests {
             fade_in: 0.0,
             fade_out: 0.0,
         }
+    }
+
+    #[test]
+    fn shared_track_updates_preserve_queued_gap_and_clip_identity() {
+        let mut audio=AudioEngine::new().unwrap();
+        let mut config=three_clip_track();
+        config.mode=TrackMode::Shuffle{repeat:true,transition:TrackTransition::Gap{min:10.0,max:20.0}};
+        audio.setup_track(&config).unwrap();
+        {
+            let track=audio.tracks.get_mut("t1").unwrap();
+            track.current_clip_index=Some(0);
+            track.next_clip_index=Some(1);
+            track.transitions.schedule_gap(1,15.0);
+        }
+        config.volume=0.4;
+        audio.update_track_config(&config);
+        assert!(audio.tracks["t1"].transitions.has_pending());
+        assert_eq!(audio.tracks["t1"].next_clip_index,Some(1));
+        config.clips.swap(0,1);
+        audio.update_track_config(&config);
+        let track=&audio.tracks["t1"];
+        assert!(track.transitions.has_pending(),"reorder cancelled pending thunder");
+        assert_eq!(track.current_clip_index,Some(1));
+        assert_eq!(track.next_clip_index,Some(0));
+    }
+
+    #[test]
+    fn one_shot_does_not_queue_another_clip() {
+        let mut audio=AudioEngine::new().unwrap();
+        let mut config=three_clip_track();
+        config.mode=TrackMode::OneShot;
+        config.volume=0.0;
+        for clip in &mut config.clips { clip.trim_end=Some(0.05); }
+        audio.setup_track(&config).unwrap();
+        audio.play_track_clip("t1","c1").unwrap();
+        assert_eq!(audio.tracks["t1"].next_clip_index,None);
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(10));
+            audio.poll();
+            assert_ne!(audio.tracks["t1"].current_clip_index,Some(1),"one shot advanced to another clip");
+        }
+        let state=audio.get_all_playback_states().into_iter().find(|s|s.track_id=="t1").unwrap();
+        assert!(!state.is_playing);
+        assert_eq!(audio.tracks["t1"].next_clip_index,None);
     }
 
     /// The scrubber's seek (`play_track_from` with a clip id) plays the given

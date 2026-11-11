@@ -5,13 +5,13 @@ export type { AutoTagSettings } from "./AutoTagSettings";
 export type { BroadcastStatus } from "./BroadcastStatus";
 export type { BulkImportProgress } from "./BulkImportProgress";
 export type { Clip } from "./Clip";
-export type { Comp } from "./Comp";
+export type { Scene } from "./Scene";
 export type { Configuration } from "./Configuration";
 export type { EnergyPreview } from "./EnergyPreview";
 export type { EnergyPrompts } from "./EnergyPrompts";
 export type { EntryType } from "./EntryType";
 export type { FixMissingReport } from "./FixMissingReport";
-export type { Group } from "./Group";
+export type { Board } from "./Board";
 export type { LibraryEntry } from "./LibraryEntry";
 export type { LibraryEntryUsage } from "./LibraryEntryUsage";
 export type { MatchKind } from "./MatchKind";
@@ -19,6 +19,9 @@ export type { MissingEntryCandidates } from "./MissingEntryCandidates";
 export type { MoodCalibrationInfo } from "./MoodCalibrationInfo";
 export type { MoodResetImpact } from "./MoodResetImpact";
 export type { MoodDef } from "./MoodDef";
+export type { LearnedMoodProfile } from "./LearnedMoodProfile";
+export type { LocalMoodCorrection } from "./LocalMoodCorrection";
+export type { LearnedWordAxis } from "./LearnedWordAxis";
 export type { MoodValue } from "./MoodValue";
 export type { MoodVocabulary } from "./MoodVocabulary";
 export type { MoodTunePrefs } from "./MoodTunePrefs";
@@ -55,4 +58,8 @@ export type { TuneTopSong } from "./TuneTopSong";
 /** A mood id of the vocabulary (`AppState.moodVocabulary`), or `"energy"`. */
 export type MoodId = string;
 
-export type CompStatus = "active" | "partial" | "paused" | "inactive";
+export type SceneStatus = "active" | "partial" | "paused" | "inactive";
+
+export type { SceneTrack } from "./SceneTrack";
+export type { SceneReference } from "./SceneReference";
+export type { TrackMix } from "./TrackMix";

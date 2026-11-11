@@ -21,8 +21,8 @@ const { local: localVolume, set: setVolume } = useLocalVolume(() => props.clip.v
 
 <template>
   <div
-    class="clip-row d-flex align-center ga-2 py-2 px-1"
-    :class="{ 'clip-active': isCurrentClip, 'clip-missing': isMissing }"
+    class="clip-row mixer-surface d-flex align-center ga-2 py-2 px-1"
+    :class="{ 'mixer-active': isCurrentClip, 'mixer-missing': isMissing }"
   >
     <VBtn
       v-if="isMissing"
@@ -42,7 +42,7 @@ const { local: localVolume, set: setVolume } = useLocalVolume(() => props.clip.v
     />
     <span
       class="text-body-2 flex-grow-1 text-truncate"
-      :class="{ 'text-primary': isCurrentClip }"
+
       :style="{ opacity: isMissing ? 0.5 : 1 }"
     >{{ clip.name }}</span>
     <VBtn
@@ -65,16 +65,5 @@ const { local: localVolume, set: setVolume } = useLocalVolume(() => props.clip.v
 </template>
 
 <style scoped>
-.clip-row {
-  border-bottom: 1px solid rgba(232, 228, 220, 0.05);
-  border-left: 3px solid transparent;
-}
-.clip-active {
-  border-left: 3px solid #F0A830;
-  background: rgba(240, 168, 48, 0.08);
-}
-.clip-missing {
-  border-left: 3px solid rgb(var(--v-theme-warning));
-  background: rgba(var(--v-theme-warning), 0.08);
-}
+.clip-row { margin-top: 6px; }
 </style>

@@ -383,7 +383,7 @@ function close(): void {
     <VList density="compact" class="candidate-list pa-0 mb-2" max-height="220">
       <VListItem v-for="usage in removeUsage" :key="usage.clipId" density="compact">
         <VListItemTitle>
-          {{ usage.compName }} <VIcon size="x-small">mdi-chevron-right</VIcon> {{ usage.trackName }}
+          {{ usage.sceneName }} <VIcon size="x-small">mdi-chevron-right</VIcon> {{ usage.trackName }}
         </VListItemTitle>
       </VListItem>
     </VList>

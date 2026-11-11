@@ -5,6 +5,7 @@
 import { mockIPC, mockWindows } from '@tauri-apps/api/mocks';
 import type { AppState, FlagBand, FlagBound, FlagKind, MoodDef, MoodTunePrefs, TuneMode, TuneResult } from '@generated/index';
 import { stubBars, stubTune } from './stubTune';
+import { soundstageCommand } from './soundstage';
 import { stubScryMap, stubSimilar } from './stubScry';
 import stateFixture from './fixtures/state.json';
 import tuneFixture from './fixtures/tune.json';
@@ -29,6 +30,8 @@ function peaks(width: number): number[] {
 }
 
 async function handle(cmd: string, a: Args): Promise<unknown> {
+  const soundstageResult = soundstageCommand(state, cmd, a);
+  if (soundstageResult !== undefined) return soundstageResult;
   switch (cmd) {
     case 'load_data':
       return state;
@@ -83,6 +86,9 @@ async function handle(cmd: string, a: Args): Promise<unknown> {
       if (v?.flag) v.flag = { ...v.flag, stale: false, staleReason: null };
       return state;
     }
+    case 'set_entry_role':
+      for (const id of a.entryIds as string[]) { const e = entry(id); if (e?.entryType === 'music') e.role = a.role as 'combat' | 'nonCombat'; }
+      return state;
     case 'set_entry_mood_level':
       for (const id of a.entryIds as string[]) {
         const v = moodValue(id, a.mood);
@@ -186,7 +192,7 @@ async function handle(cmd: string, a: Args): Promise<unknown> {
     case 'toggle_master_mute':
     case 'toggle_track_mute':
     case 'toggle_clip_mute':
-    case 'toggle_comp_mute':
+    case 'toggle_scene_mute':
       return false;
 
     // --- Plugins ---
@@ -194,7 +200,7 @@ async function handle(cmd: string, a: Args): Promise<unknown> {
       return 'L:/calibration-case-studies.json';
   }
   if (cmd.startsWith('plugin:')) return null;
-  if (/^(play|pause|stop|resume|set_(master|track|clip|library)_volume|activate_comp|save_|analyze_)/.test(cmd)) return null;
+  if (/^(play|pause|stop|resume|set_(master|track|clip|library)_volume|activate_scene|save_|analyze_)/.test(cmd)) return null;
   if (cmd.startsWith('scry')) return [];
   // Everything else is a state command: a no-op that returns the state.
   return state;

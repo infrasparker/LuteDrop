@@ -2,7 +2,7 @@
 //! which mood values its raw scores earn. Nothing here touches the database
 //! or the network.
 
-use crate::models::{EnergyPrompts, MoodVocabulary, ENERGY_ID};
+use crate::models::{EnergyPrompts, MoodVocabulary, LearnedMoodProfile, ENERGY_ID};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -18,6 +18,8 @@ pub struct EntryFacts {
 /// Body of the analyzer's `POST /score`: the hashes to score moods for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScoreRequest {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub profiles: BTreeMap<String, LearnedMoodProfile>,
     pub targets: Vec<String>,
     /// The app's mood vocabulary: prompts per mood id. The analyzer uses its
     /// own defaults when this is left out.
@@ -32,6 +34,7 @@ impl ScoreRequest {
     /// The request with the vocabulary's prompts, so the analyzer scores the
     /// app's moods rather than its defaults.
     pub fn with_moods(mut self, vocabulary: &MoodVocabulary) -> Self {
+        self.profiles = vocabulary.moods.iter().filter_map(|m| Some((m.id.clone(), m.profile.clone()?))).collect();
         self.mood_prompts = Some(vocabulary.moods.iter().map(|m| (m.id.clone(), m.prompts.clone())).collect());
         self.energy_prompts = Some(vocabulary.energy.clone());
         self
@@ -78,8 +81,10 @@ fn lenient_reference<'de, D: Deserializer<'de>>(d: D) -> Result<Option<MoodRefer
 /// similarity). Any other field the analyzer sends (`pools`, or the scales
 /// `bright`, `grand`, `sad`, `scary` and `light`, from older analyzers) is
 /// ignored.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MoodRaw {
+    #[serde(default)]
+    pub learned: HashMap<String, f64>,
     pub moods: HashMap<String, f64>,
     pub energy: f64,
 }
@@ -369,13 +374,15 @@ pub fn mood_score(id: &str, raw: f64, stat: MoodStat, source: CalibrationSource)
 /// Rule: moods never depend on Role. Only the entry's raw scores and the
 /// frozen calibration go in; a combat track can be Peaceful.
 ///
-/// Learned mood heads are out of scope for this release: the user's levels
-/// are recorded in `library_entry_moods.user_level` for a later release to
-/// regress heads on, and the values here are zero-shot only.
+/// Learned profiles return final personal-fit bars; these never receive the
+/// reference logistic a second time. Other moods retain word calibration.
 pub fn auto_moods(mood: &MoodRaw, calibration: &MoodCalibration, ids: &[String]) -> Option<Vec<(String, f64)>> {
     let out: Vec<(String, f64)> = ids
         .iter()
         .filter_map(|id| {
+            if let Some(value) = mood.learned.get(id).filter(|v| v.is_finite() && **v >= 0.0 && **v <= 1.0) {
+                return Some((id.clone(), *value));
+            }
             let raw = raw_score(mood, id)?;
             let stat = *calibration.stats.get(id)?;
             Some((id.clone(), mood_score(id, raw, stat, calibration.source)))
@@ -433,6 +440,7 @@ pub fn build_score_request(entries: &[EntryFacts], embedded: &HashSet<String>) -
         .cloned()
         .collect();
     ScoreRequest {
+        profiles: BTreeMap::new(),
         targets,
         mood_prompts: None,
         energy_prompts: None,
@@ -590,10 +598,20 @@ mod tests {
     const N: usize = 10;
     fn with_moods(raws: [f64; N]) -> MoodRaw {
         let ids = ids();
-        MoodRaw {
+        MoodRaw { learned: Default::default(),
             moods: ids[..N - 1].iter().zip(raws).map(|(m, v)| (m.clone(), v)).collect(),
             energy: raws[N - 1],
         }
+    }
+
+    #[test]
+    fn learned_bars_bypass_reference_calibration() {
+        let cal = flat_calibration(0.2, 0.05);
+        let mut raw = with_moods([0.9; N]);
+        raw.learned.insert("grim".into(), 0.31);
+        let scored = auto_moods(&raw, &cal, &ids()).unwrap();
+        assert_eq!(scored.iter().find(|(id, _)| id == "grim").unwrap().1, 0.31);
+        assert!(scored.iter().find(|(id, _)| id == "heroic").unwrap().1 > 0.99);
     }
 
     /// A calibration of the default vocabulary with the same mean and sd for
@@ -831,7 +849,7 @@ mod tests {
 
         // Changed prompts, a new mood and changed Energy prompts are not.
         v.moods[0].prompts.push("gentle".into());
-        v.moods.push(MoodDef { id: "spooky".into(), name: "Spooky".into(), prompts: vec!["ghosts".into()] });
+        v.moods.push(MoodDef { profile: None, id: "spooky".into(), name: "Spooky".into(), prompts: vec!["ghosts".into()] });
         v.energy.negative.pop();
         let ok = scorable_ids(&cal, &v);
         assert!(!ok.contains(&"peaceful".to_string()));
@@ -895,7 +913,7 @@ mod tests {
         let cal = calibrate(&library(50, 0.02), &v, "1".into()).unwrap();
         assert_eq!(cal.stats.keys().collect::<Vec<_>>(), ["energy", "peaceful", "sorrowful", "wondrous"]);
         // A mood the analyzer did not score blocks calibration.
-        v.moods.push(MoodDef { id: "spooky".into(), name: "Spooky".into(), prompts: vec!["ghosts".into()] });
+        v.moods.push(MoodDef { profile: None, id: "spooky".into(), name: "Spooky".into(), prompts: vec!["ghosts".into()] });
         assert_eq!(calibrate(&library(50, 0.02), &v, "1".into()), None);
     }
 

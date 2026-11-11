@@ -350,7 +350,7 @@ fn run_steps(
         let conn = lock(db)?;
         for entry in entries.iter().filter(|e| e.facts.is_music) {
             let id = entry.facts.id.as_str();
-            if !queued.contains(id) && !is_stale(entry) {
+            if !queued.contains(id) && !is_stale(entry) && !mood_vocabulary.moods.iter().any(|m| m.profile.is_some()) {
                 continue;
             }
             let Some(hash) = entry.facts.hash.clone() else {
@@ -524,6 +524,7 @@ fn same_prompts(a: &MoodVocabulary, b: &MoodVocabulary) -> bool {
         v.ids().into_iter().map(|id| { let sig = v.prompt_signature(&id); (id, sig) }).collect()
     };
     signatures(a) == signatures(b)
+        && a.moods.iter().map(|m| (&m.id, &m.profile)).collect::<Vec<_>>() == b.moods.iter().map(|m| (&m.id, &m.profile)).collect::<Vec<_>>()
 }
 
 /// True if the entry exists and is currently a music entry.
@@ -901,7 +902,7 @@ pub(crate) mod tests {
             MoodVocabulary::defaults().moods.into_iter().map(|m| (m.id, other)).collect();
         moods.insert("heroic".into(), heroic);
         moods.insert("wondrous".into(), wondrous);
-        MoodRaw { moods, energy: other }
+        MoodRaw { learned: Default::default(), moods, energy: other }
     }
 
     /// The entry's stored (auto_score, user_level) of one mood, `None`

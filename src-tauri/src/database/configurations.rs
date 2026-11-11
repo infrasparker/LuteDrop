@@ -41,117 +41,16 @@ pub fn set_active_configuration(conn: &Connection, id: &str) -> Result<(), Strin
     Ok(())
 }
 
-pub fn duplicate_configuration(conn: &Connection, source_id: &str, new_name: &str) -> Result<String, String> {
-    // Statements below keep running on `conn`; they participate in this
-    // connection-scoped transaction — same pattern as `run_migrations_with`.
-    let tx = conn
-        .unchecked_transaction()
-        .map_err(|e| format!("Failed to begin duplicate transaction: {e}"))?;
-
-    let new_config_id = insert_configuration(conn, new_name)?;
-
-    // Load source groups
-    let mut group_stmt = conn
-        .prepare("SELECT id, name, sort_order FROM groups WHERE configuration_id = ?1 ORDER BY sort_order")
-        .map_err(|e| format!("Failed to prepare group query: {e}"))?;
-    let source_groups: Vec<(String, String, i64)> = group_stmt
-        .query_map(params![source_id], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })
-        .map_err(|e| format!("Failed to query source groups: {e}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Failed to collect source groups: {e}"))?;
-
-    for (old_group_id, group_name, group_sort) in &source_groups {
-        let new_group_id = Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO groups (id, name, sort_order, configuration_id) VALUES (?1, ?2, ?3, ?4)",
-            params![new_group_id, group_name, group_sort, new_config_id],
-        ).map_err(|e| format!("Failed to copy group: {e}"))?;
-
-        // Copy comps
-        let mut comp_stmt = conn
-            .prepare("SELECT id, name, sort_order FROM comps WHERE group_id = ?1 ORDER BY sort_order")
-            .map_err(|e| format!("Failed to prepare comp query: {e}"))?;
-        let source_comps: Vec<(String, String, i64)> = comp_stmt
-            .query_map(params![old_group_id], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })
-            .map_err(|e| format!("Failed to query source comps: {e}"))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("Failed to collect source comps: {e}"))?;
-
-        for (old_comp_id, comp_name, comp_sort) in &source_comps {
-            let new_comp_id = Uuid::new_v4().to_string();
-            conn.execute(
-                "INSERT INTO comps (id, group_id, name, sort_order) VALUES (?1, ?2, ?3, ?4)",
-                params![new_comp_id, new_group_id, comp_name, comp_sort],
-            ).map_err(|e| format!("Failed to copy comp: {e}"))?;
-
-            // Copy tracks
-            let mut track_stmt = conn
-                .prepare(
-                    "SELECT id, name, volume, mode_type, repeat, transition_type,
-                            transition_gap_min, transition_gap_max, fade_in, fade_out, sort_order
-                     FROM tracks WHERE comp_id = ?1 ORDER BY sort_order"
-                )
-                .map_err(|e| format!("Failed to prepare track query: {e}"))?;
-            let source_tracks: Vec<(String, String, f64, String, Option<i64>, Option<String>, Option<f64>, Option<f64>, f64, f64, i64)> = track_stmt
-                .query_map(params![old_comp_id], |row| {
-                    Ok((
-                        row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
-                        row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?,
-                        row.get(8)?, row.get(9)?, row.get(10)?,
-                    ))
-                })
-                .map_err(|e| format!("Failed to query source tracks: {e}"))?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| format!("Failed to collect source tracks: {e}"))?;
-
-            for (old_track_id, track_name, volume, mode_type, repeat, transition_type,
-                 gap_min, gap_max, fade_in, fade_out, track_sort) in &source_tracks
-            {
-                let new_track_id = Uuid::new_v4().to_string();
-                conn.execute(
-                    "INSERT INTO tracks (id, comp_id, name, volume, mode_type, repeat,
-                         transition_type, transition_gap_min, transition_gap_max,
-                         fade_in, fade_out, sort_order)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                    params![
-                        new_track_id, new_comp_id, track_name, volume, mode_type,
-                        repeat, transition_type, gap_min, gap_max, fade_in, fade_out, track_sort
-                    ],
-                ).map_err(|e| format!("Failed to copy track: {e}"))?;
-
-                // Copy clips — keep same library_entry_id (library is shared)
-                let mut clip_stmt = conn
-                    .prepare(
-                        "SELECT library_entry_id, volume, sort_order
-                         FROM clips WHERE track_id = ?1 ORDER BY sort_order"
-                    )
-                    .map_err(|e| format!("Failed to prepare clip query: {e}"))?;
-                let source_clips: Vec<(String, f64, i64)> = clip_stmt
-                    .query_map(params![old_track_id], |row| {
-                        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-                    })
-                    .map_err(|e| format!("Failed to query source clips: {e}"))?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| format!("Failed to collect source clips: {e}"))?;
-
-                for (library_entry_id, clip_volume, clip_sort) in &source_clips {
-                    let new_clip_id = Uuid::new_v4().to_string();
-                    conn.execute(
-                        "INSERT INTO clips (id, track_id, library_entry_id, volume, sort_order)
-                         VALUES (?1, ?2, ?3, ?4, ?5)",
-                        params![new_clip_id, new_track_id, library_entry_id, clip_volume, clip_sort],
-                    ).map_err(|e| format!("Failed to copy clip: {e}"))?;
-                }
-            }
-        }
+pub fn duplicate_configuration(conn:&Connection,source_id:&str,new_name:&str)->Result<String,String> {
+    let tx=conn.unchecked_transaction().map_err(|e|e.to_string())?;
+    let new_id=insert_configuration(conn,new_name)?;
+    let boards=super::soundstage::load_boards(conn,source_id)?;
+    for board in boards {
+        let id=super::hierarchy::insert_board(conn,&board.name,&new_id)?;
+        for track_id in board.track_ids {super::soundstage::attach_track(conn,&id,&track_id)?;}
+        for scene in board.scenes {super::hierarchy::copy_scene_inner(conn,&scene.id,&id,&scene.name)?;}
     }
-
-    tx.commit().map_err(|e| format!("Failed to commit duplicate: {e}"))?;
-    Ok(new_config_id)
+    tx.commit().map_err(|e|e.to_string())?;Ok(new_id)
 }
 
 #[cfg(test)]
@@ -184,19 +83,19 @@ mod tests {
         let conn = open_memory_db();
         let config_id = ensure_test_config(&conn);
 
-        hierarchy::insert_group(&conn, "My Group", &config_id).expect("insert group");
+        hierarchy::insert_board(&conn, "My Board", &config_id).expect("insert board");
 
-        let group_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM groups", [], |row| row.get(0))
+        let board_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM boards", [], |row| row.get(0))
             .expect("count");
-        assert_eq!(group_count, 1);
+        assert_eq!(board_count, 1);
 
         delete_configuration(&conn, &config_id).expect("delete");
 
-        let group_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM groups", [], |row| row.get(0))
+        let board_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM boards", [], |row| row.get(0))
             .expect("count");
-        assert_eq!(group_count, 0);
+        assert_eq!(board_count, 0);
     }
 
     #[test]
@@ -218,7 +117,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_configuration_deep_copies_hierarchy() {
+    fn duplicate_configuration_copies_scenes_and_shares_tracks() {
         let conn = open_memory_db();
         let config_id = ensure_test_config(&conn);
 
@@ -226,9 +125,9 @@ mod tests {
             &conn, "/tmp/test.mp3", None, "Test Sound", None, None, None, "music",
         ).expect("insert library entry");
 
-        let group_id = hierarchy::insert_group(&conn, "Battle", &config_id).expect("group");
-        let comp_id = hierarchy::insert_comp(&conn, &group_id, "Act 1").expect("comp");
-        let track_id = hierarchy::insert_track(&conn, &comp_id, "Theme").expect("track");
+        let board_id = hierarchy::insert_board(&conn, "Battle", &config_id).expect("board");
+        let scene_id = hierarchy::insert_scene(&conn, &board_id, "Act 1").expect("scene");
+        let track_id = hierarchy::insert_track(&conn, &scene_id, "Theme").expect("track");
         let _clip_id = hierarchy::insert_clip(&conn, &track_id, &entry_id).expect("clip");
 
         let new_config_id = duplicate_configuration(&conn, &config_id, "Battle Copy").expect("duplicate");
@@ -238,9 +137,9 @@ mod tests {
             .expect("query name");
         assert_eq!(new_name, "Battle Copy");
 
-        let new_groups: Vec<(String, String)> = {
+        let new_boards: Vec<(String, String)> = {
             let mut stmt = conn
-                .prepare("SELECT id, name FROM groups WHERE configuration_id = ?1")
+                .prepare("SELECT id, name FROM boards WHERE configuration_id = ?1")
                 .expect("prepare");
             stmt.query_map(params![new_config_id], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -249,16 +148,17 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .expect("collect")
         };
-        assert_eq!(new_groups.len(), 1);
-        assert_eq!(new_groups[0].1, "Battle");
-        assert_ne!(new_groups[0].0, group_id, "should have a new group ID");
+        assert_eq!(new_boards.len(), 1);
+        assert_eq!(new_boards[0].1, "Battle");
+        assert_ne!(new_boards[0].0, board_id, "should have a new board ID");
 
         let clip_entry: String = conn
             .query_row(
                 "SELECT c.library_entry_id FROM clips c
                  JOIN tracks t ON c.track_id = t.id
-                 JOIN comps co ON t.comp_id = co.id
-                 JOIN groups g ON co.group_id = g.id
+                 JOIN scene_tracks st ON st.track_id=t.id
+                 JOIN scenes co ON st.scene_id = co.id
+                 JOIN boards g ON co.board_id = g.id
                  WHERE g.configuration_id = ?1",
                 params![new_config_id],
                 |row| row.get(0),
@@ -266,13 +166,13 @@ mod tests {
             .expect("query clip entry");
         assert_eq!(clip_entry, entry_id, "clip should reference the same library entry");
 
-        let orig_group_count: i64 = conn
+        let orig_board_count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM groups WHERE configuration_id = ?1",
+                "SELECT COUNT(*) FROM boards WHERE configuration_id = ?1",
                 params![config_id],
                 |row| row.get(0),
             )
             .expect("count");
-        assert_eq!(orig_group_count, 1);
+        assert_eq!(orig_board_count, 1);
     }
 }

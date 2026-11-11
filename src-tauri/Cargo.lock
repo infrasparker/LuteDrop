@@ -2045,6 +2045,7 @@ name = "lutedrop"
 version = "0.16.1"
 dependencies = [
  "axum",
+ "base64 0.22.1",
  "bytes",
  "cc",
  "chrono",

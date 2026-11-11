@@ -3,4 +3,4 @@
 /**
  * One location (clip) where a library entry is referenced.
  */
-export type LibraryEntryUsage = { clipId: string, compName: string, trackName: string, };
+export type LibraryEntryUsage = { clipId: string, sceneName: string, trackName: string, };

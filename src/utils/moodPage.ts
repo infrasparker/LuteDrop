@@ -26,10 +26,11 @@ export const MAX_PAGE_VERSIONS = 6;
 export const SHAKY_LOO = 0.7;
 
 /// How a version column's lines came about.
-export type VersionSource = 'typed' | 'arranged' | 'suggested' | 'before';
+export type VersionSource = 'typed' | 'arranged' | 'suggested' | 'learned' | 'before';
 
-/// What a version column shows (MoodVersionColumn.vue).
+/// The scoring version shown by the editor and comparison tabs.
 export interface ColumnModel {
+  profile?: import('@generated/index').LearnedMoodProfile | null;
   key: number | 'current';
   name: string;
   kind: 'current' | 'version' | 'before' | 'split';
@@ -39,7 +40,7 @@ export interface ColumnModel {
   /// The verdict was made from other lines (or another Current): greyed.
   stale: boolean;
   evaluating: boolean;
-  running: 'arrange' | 'suggest' | null;
+  running: 'arrange' | 'suggest' | 'learn' | null;
   error: string | null;
   regressionCount: number;
   /// A suggested column whose search found a split.
@@ -63,9 +64,10 @@ export function bandWord(flag: Pick<MoodFlag, 'kind' | 'band' | 'bound'> | null,
   if (flag.kind === 'lower') return 'Lower';
   const band = flag.band ?? '';
   const word = (short ? SHORT : LONG)[band] ?? '';
-  const top = band === 'definitely' || band === 'understandable';
-  if (flag.bound === 'at_least' && !top) return short ? `≥${word}` : `${word} or more`;
-  if (flag.bound === 'at_most' && band !== 'no') return short ? `≤${word}` : `${word} or less`;
+
+
+  if (flag.bound === 'at_most' && ['definitely','understandable'].includes(band)) return `${word} or less`;
+  if (flag.bound === 'at_least' && ['stretch','no'].includes(band)) return `${word} or more`;
   return word;
 }
 
@@ -97,7 +99,7 @@ export function flagBounds(flag: FlagLike | null, level: number | null, bar: num
     if (level === null) return null;
     const band = levelBand(level);
     const atLeast = band === 'definitely' || band === 'understandable';
-    return { min: FLOOR[band], max: atLeast ? null : CEILING[band] };
+    return { min: atLeast ? FLOOR[band] : null, max: atLeast ? null : CEILING[band] };
   }
   if (flag.kind === 'higher' || flag.kind === 'lower') {
     const from = flag.staleReason === 'calibration' ? (bar ?? flag.barAtFlag) : flag.barAtFlag;
@@ -159,24 +161,13 @@ export interface Regression {
 export function regressions(
   review: Outcomes & Partial<Pick<TuneReview, 'top' | 'topBefore'>>,
   baseline: Outcomes,
-  highIds: Set<string>,
+  _highIds: Set<string>,
 ): Regression[] {
   const heldBefore = new Set(baseline.flags.filter((f) => f.holds).map((f) => f.song.entryId));
   const out: Regression[] = review.flags
     .filter((f) => f.fresh && !f.holds && heldBefore.has(f.song.entryId))
     .map((outcome) => ({ outcome, leftTop: false }));
-  const seen = new Set(out.map((r) => r.outcome.song.entryId));
-  if (review.top && review.topBefore) {
-    const { out: left } = mergeTop(review.top, review.topBefore);
-    for (const o of left) {
-      if (!highIds.has(o.entryId) || seen.has(o.entryId) || !heldBefore.has(o.entryId)) continue;
-      const f = review.flags.find((x) => x.song.entryId === o.entryId);
-      if (f?.fresh) {
-        out.push({ outcome: f, leftTop: true });
-        seen.add(o.entryId);
-      }
-    }
-  }
+
   return out;
 }
 
@@ -227,16 +218,16 @@ export function reachedBars(review: Outcomes): Record<string, number> {
   return Object.fromEntries(review.flags.filter((f) => f.fresh && f.holds).map((f) => [f.song.entryId, f.after]));
 }
 
-export const confirmTitle = (n: number): string => `Break ${n} flag${n === 1 ? '' : 's'}?`;
+export const confirmTitle = (n: number): string => `Review ${n} preference tradeoff${n === 1 ? '' : 's'}`;
 
 const fmt = (v: number): string => v.toFixed(2);
 
 export const confirmLine = (name: string, before: number, after: number, band: string, leftTop = false): string =>
   `${name}: ${fmt(before)} → ${fmt(after)} (${band}${leftTop ? ', out of top 15' : ''})`;
 
-export const useLabel = (regressionCount: number): string => (regressionCount > 0 ? 'Use anyway' : 'Use');
+export const useLabel = (_regressionCount: number): string => 'Apply preview';
 
-export const breaksLabel = (n: number): string => `${n} break${n === 1 ? '' : 's'}`;
+export const breaksLabel = (n: number): string => `${n} newly outside preferences`;
 
 // --- Verdict and chips ---
 
@@ -245,10 +236,10 @@ export const breaksLabel = (n: number): string => `${n} break${n === 1 ? '' : 's
 /// broken" (its song count is in the page header), or nothing without flags.
 export function verdictText(r: Outcomes & Pick<TuneReview, 'firesBefore' | 'firesAfter'>, isCurrent: boolean): string {
   const holding = r.flags.filter((f) => f.holds).length;
-  const held = r.flags.length === 0 ? '' : `${holding}/${r.flags.length} hold`;
+  const held = r.flags.length === 0 ? '' : `${holding}/${r.flags.length} within preferences`;
   if (isCurrent) {
     const broken = r.flags.length - holding;
-    return broken > 0 ? `${held} · ${broken} broken` : held;
+    return broken > 0 ? `${held} · ${broken} outside` : held;
   }
   const n = r.firesAfter;
   const d = r.firesAfter - r.firesBefore;

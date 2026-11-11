@@ -6,7 +6,8 @@
 // the search score ("Search") as a short bar, and an "Add as seed" action. Clicking the row itself opens the entry's
 // details.
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
-import type { LibraryEntry, Role, ScryHit } from '@generated/index';
+import type { LibraryEntry, ScryHit } from '@generated/index';
+import RoleToggle from './RoleToggle.vue';
 import MoodFilters from './MoodFilters.vue';
 import {
   LENS_COLUMN_TITLE,
@@ -141,11 +142,6 @@ function toggleAllVisible(): void {
     for (const id of visibleIds) if (!selectedSet.value.has(id)) next.push(id);
     emit('update:selectedIds', next);
   }
-}
-
-/// Music always has a role (ambiance has none and shows no role cell).
-function roleLabel(role: Role): string {
-  return role === 'combat' ? 'Combat' : 'Non-combat';
 }
 
 // --- Reveal a row (e.g. after a map click) ---
@@ -285,13 +281,7 @@ onBeforeUnmount(() => {
             <VChip v-for="tag in entry.tags" :key="tag" size="x-small" variant="tonal" label>{{ tag }}</VChip>
           </div>
         </div>
-        <VIcon
-          v-if="entry.role"
-          size="small"
-          :title="roleLabel(entry.role)"
-        >
-          {{ entry.role === 'combat' ? 'mdi-sword-cross' : 'mdi-music-note' }}
-        </VIcon>
+        <RoleToggle v-if="entry.role" :entry="entry" />
         <span v-else class="role-placeholder" />
         <div v-if="lensOn" class="lens-cell" :title="lensLabel(filters)">
           <template v-if="lensScore(entry, filters) !== null">

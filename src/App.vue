@@ -8,6 +8,7 @@ import { useToast } from './composables/useToast';
 import { useAutoTagEvents } from './composables/useAutoTagEvents';
 import { useRouter } from 'vue-router';
 import type { AppState } from '@generated/index';
+import TrackEditorDialog from './components/TrackEditorDialog.vue';
 import TransportBar from './components/TransportBar.vue';
 import WaveformEditorDialog from './components/WaveformEditorDialog.vue';
 import RemoteInfoDialog from './components/RemoteInfoDialog.vue';
@@ -77,13 +78,16 @@ onMounted(async () => {
         <VListItem
           prepend-icon="mdi-tune-vertical"
           to="/"
+          title="Soundstage" aria-label="Soundstage"
           :active="$route.path === '/'"
           color="primary"
           exact
         />
+        <VListItem prepend-icon="mdi-playlist-music" to="/tracks" :active="$route.path === '/tracks'" title="Tracks" aria-label="Tracks" color="primary" />
         <VListItem
           prepend-icon="mdi-bookshelf"
           to="/library"
+          title="Audio Library" aria-label="Audio Library"
           :active="$route.path === '/library'"
           color="primary"
         />
@@ -138,6 +142,7 @@ onMounted(async () => {
     </VMain>
 
     <TransportBar />
+    <TrackEditorDialog />
 
     <WaveformEditorDialog
       v-if="store.editEntryId"

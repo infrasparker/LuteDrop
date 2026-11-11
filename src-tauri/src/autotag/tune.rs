@@ -12,6 +12,7 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::client::AnalyzerClient;
 use super::plan::{midpoint_z, slope, CalibrationSource};
@@ -21,6 +22,7 @@ use crate::database::{library, settings};
 use crate::models::{
     FlagBand, FlagBound, FlagKind, MoodDef, MoodVocabulary, StaleReason, TuneFlagOutcome, TuneLeaveOneOut, TuneMode,
     TuneMovedSong, TuneNameIdea, TuneOutRank, TuneOverlap, TuneResult, TuneReview, TuneSong, TuneSplitReview, TuneTopSong,
+    LearnedMoodProfile,
 };
 
 // --- The `/tune` HTTP contract (snake_case on the wire) ---
@@ -41,6 +43,14 @@ pub enum FlagSide {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TuneFlag {
     pub hash: String,
+    #[serde(default)]
+    pub target: Option<f64>,
+    #[serde(default)]
+    pub polarity: Option<i8>,
+    #[serde(default)]
+    pub confidence: f64,
+    #[serde(default)]
+    pub pivot: f64,
     pub min: Option<f64>,
     pub max: Option<f64>,
     pub weight: f64,
@@ -65,10 +75,21 @@ pub struct TuneCalibration {
 pub struct OtherMood {
     pub name: String,
     pub lines: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<LearnedMoodProfile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TuneRequest {
+    pub scoring_version: u32,
+    #[serde(default)]
+    pub rebuild: bool,
+    #[serde(default)]
+    pub comparisons: Vec<[String; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_profile: Option<LearnedMoodProfile>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profile_versions: Vec<Option<LearnedMoodProfile>>,
     pub mood_id: String,
     pub name: String,
     pub current_lines: Vec<String>,
@@ -129,6 +150,12 @@ pub struct TuneOverlapRaw {
 // the wire (snake_case) and the UI (camelCase) spell them the same.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TuneReport {
+    #[serde(default)]
+    pub validation_mae: Option<f64>,
+    #[serde(default)]
+    pub validation_loss: Option<f64>,
+    #[serde(default)]
+    pub profile: Option<LearnedMoodProfile>,
     pub lines: Vec<String>,
     pub loss: f64,
     pub flags: Vec<TuneFlagResult>,
@@ -199,6 +226,8 @@ const MAX_VERSIONS: usize = 8;
 /// in the dialog, the app's word bank, the focus and the words to leave out.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TuneInputs {
+    pub rebuild: bool,
+    pub profile_versions: Vec<Option<LearnedMoodProfile>>,
     /// "Extra words to try" (suggest) or "your words and lines" (arrange).
     pub extra_words: Vec<String>,
     pub bank: Vec<String>,
@@ -237,6 +266,18 @@ fn band_ceiling(band: FlagBand) -> Option<f64> {
 /// flag aims `DIRECTION_MARGIN` past `bar`, within 0..1. `None` for a flag
 /// that cannot be read (a band flag with no band, a direction flag with no
 /// bar).
+fn feedback_polarity(flag: &StoredFlag) -> Option<i8> {
+    match flag.kind {
+        FlagKind::Higher => Some(1), FlagKind::Lower => Some(-1),
+        FlagKind::Band => match (flag.band?, flag.bound) {
+            (FlagBand::Definitely | FlagBand::Understandable, FlagBound::AtMost) => None,
+            (FlagBand::Stretch | FlagBand::No, FlagBound::AtLeast) => None,
+            (FlagBand::Definitely | FlagBand::Understandable, _) => Some(1),
+            (FlagBand::Stretch | FlagBand::No, _) => Some(-1),
+        },
+    }
+}
+
 fn flag_target(flag: &StoredFlag, bar: Option<f64>) -> Option<(Option<f64>, Option<f64>, FlagSide)> {
     match flag.kind {
         FlagKind::Higher => bar.map(|b| (Some((b + DIRECTION_MARGIN).min(1.0)), None, FlagSide::High)),
@@ -325,11 +366,12 @@ pub fn build_tune_request(
 ) -> Result<BuiltRequest, String> {
     let (extra_words, bank) = match inputs.mode {
         TuneMode::Compare => (&[][..], &[][..]),
+        TuneMode::Learn => (&inputs.extra_words[..], &[][..]),
         TuneMode::Arrange => (&inputs.extra_words[..], &[][..]),
         TuneMode::Suggest => (&inputs.extra_words[..], &inputs.bank[..]),
     };
     let candidates: Vec<Vec<String>> = match inputs.mode {
-        TuneMode::Compare => inputs
+        TuneMode::Compare | TuneMode::Arrange | TuneMode::Suggest => inputs
             .candidates
             .iter()
             .map(|v| v.iter().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect::<Vec<_>>())
@@ -351,12 +393,14 @@ pub fn build_tune_request(
         .ok_or_else(|| format!("There is no mood \"{mood_id}\" to tune"))?;
     let calibration = settings::load_mood_calibration(conn)?
         .ok_or("Run an analysis first so the moods are calibrated")?;
-    let current_sig = lines_sig(&mood.prompts);
+    let current_sig = lines_sig(&vocabulary.flag_signature(mood_id).unwrap_or_default());
     let current_stat = calibration.stats.get(mood_id).copied();
 
+    let comparisons = settings::load_mood_tune_prefs(conn)?.get(mood_id).map(|p| p.comparisons.clone()).unwrap_or_default();
     let mut flags = mood_flags::flags_for_mood(conn, mood_id)?;
     let flagged: HashSet<String> = flags.iter().map(|f| f.entry_id.clone()).collect();
-    for (entry_id, level) in user_levels(conn, mood_id)? {
+    let manual_levels = user_levels(conn, mood_id)?;
+    for (entry_id, level) in manual_levels.clone() {
         if flagged.contains(&entry_id) {
             continue;
         }
@@ -373,7 +417,7 @@ pub fn build_tune_request(
         });
     }
     // Compare reviews versions as written, so it works with no flags at all.
-    if flags.is_empty() && inputs.mode != TuneMode::Compare {
+    if flags.is_empty() && comparisons.is_empty() && !matches!(inputs.mode, TuneMode::Compare | TuneMode::Learn) {
         return Err("Flag a few songs on this mood first: Tune needs to know which songs belong".to_string());
     }
 
@@ -388,7 +432,8 @@ pub fn build_tune_request(
             unanalyzed += 1;
             continue;
         };
-        let reason = mood_flags::stale_reason(f, &current_sig, current_stat);
+        let stable_preference = mood.profile.as_ref().is_some_and(|p| p.version >= 2);
+        let reason = if stable_preference { None } else { mood_flags::stale_reason(f, &current_sig, current_stat) };
         let stale = reason.is_some();
         let bar = if reason == Some(StaleReason::Calibration) { bar_now.or(f.bar_at_flag) } else { f.bar_at_flag };
         let (min, max, side) = match flag_target(f, bar) {
@@ -399,11 +444,17 @@ pub fn build_tune_request(
             Some(target) => target,
         };
         out_ids.push(&f.entry_id);
+        let manual = !flagged.contains(&f.entry_id);
+        let polarity = if manual { None } else { feedback_polarity(f) };
         out.push(TuneFlag {
+            target: if manual { manual_levels.iter().find(|(id,_)| id == &f.entry_id).map(|(_,v)| *v) } else { None },
+            polarity,
+            confidence: if manual || matches!(f.band, Some(FlagBand::Definitely | FlagBand::No)) { 4.0 } else { 1.0 },
+            pivot: if matches!(f.kind, FlagKind::Higher | FlagKind::Lower) { bar.unwrap_or(0.5) } else { 0.5 },
             hash,
             min,
             max,
-            weight: if stale { STALE_WEIGHT } else { 1.0 },
+            weight: if stale && inputs.mode != TuneMode::Learn { STALE_WEIGHT } else { 1.0 },
             fresh: !stale,
             side,
             focus: false,
@@ -420,7 +471,7 @@ pub fn build_tune_request(
         out[i].focus = true;
         out_ids[i].to_string()
     });
-    if out.is_empty() && inputs.mode != TuneMode::Compare {
+    if out.is_empty() && comparisons.is_empty() && !matches!(inputs.mode, TuneMode::Compare | TuneMode::Learn) {
         return Err(if unusable == 0 {
             "None of the songs flagged on this mood have been analyzed yet".to_string()
         } else {
@@ -450,6 +501,15 @@ pub fn build_tune_request(
 
     let music = MusicIndex::read(conn)?;
     let request = TuneRequest {
+        scoring_version: 8,
+        rebuild: inputs.rebuild,
+        comparisons: comparisons.iter().filter_map(|pair| {
+            let a = hash_and_bar(conn, &pair[0], mood_id).ok()?.0?;
+            let b = hash_and_bar(conn, &pair[1], mood_id).ok()?.0?;
+            (a != b).then_some([a,b])
+        }).collect(),
+        active_profile: mood.profile.clone(),
+        profile_versions: inputs.profile_versions.clone(),
         mood_id: mood.id.clone(),
         name: mood.name.clone(),
         current_lines: mood.prompts.clone(),
@@ -461,7 +521,7 @@ pub fn build_tune_request(
             .moods
             .iter()
             .filter(|m| m.id != mood_id)
-            .map(|m| (m.id.clone(), OtherMood { name: m.name.clone(), lines: m.prompts.clone() }))
+            .map(|m| (m.id.clone(), OtherMood { name: m.name.clone(), lines: m.prompts.clone(), profile: m.profile.clone() }))
             .collect(),
         exclude: trimmed(exclude_words),
         calibration: TuneCalibration {
@@ -578,6 +638,10 @@ impl Songs {
 
     fn review(&self, r: TuneReport) -> TuneReview {
         TuneReview {
+            validation_mae: r.validation_mae,
+            validation_loss: r.validation_loss,
+            target_signature: String::new(),
+            profile: r.profile,
             flags: r
                 .flags
                 .into_iter()
@@ -635,15 +699,27 @@ pub fn tune(
         (built, Songs::read(&conn, mood_id)?)
     };
     let BuiltRequest { request, skipped: skipped_flags, focus_entry_id } = built;
+    if request.mode == TuneMode::Learn || request.active_profile.is_some() || request.profile_versions.iter().any(Option::is_some) {
+        prepare_features(db, client)?;
+    }
     let response = client.tune(&request)?;
+    let signature = request_signature(&request)?;
+    let review = |r| {
+        let mut value = songs.review(r);
+        value.target_signature = signature.clone();
+        if request.mode == TuneMode::Learn {
+            if let Some(profile) = &mut value.profile { profile.training_signature = signature.clone(); }
+        }
+        value
+    };
     Ok(TuneResult {
-        baseline: songs.review(response.baseline),
-        proposals: response.proposals.into_iter().map(|r| songs.review(r)).collect(),
+        baseline: review(response.baseline),
+        proposals: response.proposals.into_iter().map(review).collect(),
         split: response.split.map(|s| TuneSplitReview {
             keep_songs: songs.all(&s.keep_hashes),
             new_songs: songs.all(&s.new_hashes),
-            keep: songs.review(s.keep),
-            new: songs.review(s.new),
+            keep: review(s.keep),
+            new: review(s.new),
             rho: s.rho,
         }),
         skipped: songs.all(&response.skipped),
@@ -652,6 +728,48 @@ pub fn tune(
         focus_entry_id,
         mode: request.mode,
     })
+}
+
+fn request_signature(request: &TuneRequest) -> Result<String, String> {
+    let mut flags = request.flags.clone();
+    flags.sort_by(|a, b| a.hash.cmp(&b.hash));
+    // Sign the actual judgments, not view focus or derived age weights. Learn
+    // gives all examples equal weight, while legacy wording tools may discount
+    // old wording. Both must validate against the same saved judgments.
+    for flag in &mut flags { flag.focus = false; flag.weight = 1.0; flag.fresh = true; }
+    let data = serde_json::to_vec(&(request.scoring_version, &request.comparisons, &request.current_lines, flags, &request.calibration, request.active_profile.as_ref().map(|p| &p.id)))
+        .map_err(|e| format!("Failed to sign tuning review: {e}"))?;
+    Ok(format!("{:x}", Sha256::digest(data)))
+}
+
+pub fn current_signature(conn: &Connection, mood_id: &str) -> Result<String, String> {
+    let vocabulary = settings::load_mood_vocabulary(conn)?;
+    let lines = vocabulary.moods.iter().find(|m| m.id == mood_id).ok_or("Mood no longer exists")?.prompts.clone();
+    let built = build_tune_request(conn, mood_id, &TuneInputs { mode: TuneMode::Compare, candidates: vec![lines], ..Default::default() })?;
+    request_signature(&built.request)
+}
+
+fn prepare_features(db: &Mutex<Connection>, client: &dyn AnalyzerClient) -> Result<(), String> {
+    let items = {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let config = settings::load_autotag(&conn)?;
+        let mut stmt = conn.prepare("SELECT content_hash, file_path FROM library_entries WHERE entry_type = 'music' AND content_hash IS NOT NULL")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
+        let mut items = Vec::new();
+        for row in rows {
+            let (hash, path) = row.map_err(|e| e.to_string())?;
+            if let Some(path) = super::plan::map_path(&path, &config.local_prefix, &config.remote_prefix) { items.push((hash, path)); }
+        }
+        items
+    };
+    for batch in items.chunks(32) {
+        let results = client.embed(batch)?;
+        if let Some(failed) = results.iter().find(|r| !r.ok) {
+            return Err(format!("Could not prepare audio features: {}", failed.error.as_deref().unwrap_or("embedding failed")));
+        }
+    }
+    Ok(())
 }
 
 // --- Accepting ---
@@ -675,7 +793,7 @@ fn tuned_mood(conn: &Connection, mood_id: &str, lines_tuned_from: &[String]) -> 
 /// Marks the flags of `entry_ids` on `mood` as made against the mood's
 /// saved lines, so they are fresh under the new wording.
 fn refresh_holding(conn: &Connection, saved: &MoodVocabulary, mood: &str, entry_ids: &[String]) -> Result<(), String> {
-    let lines = saved.prompt_signature(mood).ok_or_else(|| format!("The mood \"{mood}\" was not saved"))?;
+    let lines = saved.flag_signature(mood).ok_or_else(|| format!("The mood \"{mood}\" was not saved"))?;
     let sig = lines_sig(&lines);
     for id in entry_ids {
         mood_flags::refresh_flag(conn, id, mood, &sig)?;
@@ -694,6 +812,7 @@ fn refresh_holding(conn: &Connection, saved: &MoodVocabulary, mood: &str, entry_
 /// `lines` is in `reached_bars` becomes a band flag for where the song now
 /// is (see `ratchet`), so the next tuning keeps that gain instead of asking
 /// for "higher" again from a new starting point.
+#[cfg(test)]
 pub fn accept_lines(
     conn: &Connection,
     mood_id: &str,
@@ -702,8 +821,26 @@ pub fn accept_lines(
     holding_entry_ids: &[String],
     reached_bars: &HashMap<String, f64>,
 ) -> Result<Vec<StoredFlag>, String> {
+    accept_version(conn, mood_id, lines_tuned_from, lines, holding_entry_ids, reached_bars, None, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn accept_version(
+    conn: &Connection, mood_id: &str, lines_tuned_from: &[String], lines: &[String],
+    holding_entry_ids: &[String], reached_bars: &HashMap<String, f64>,
+    profile: Option<LearnedMoodProfile>, review_signature: Option<&str>,
+) -> Result<Vec<StoredFlag>, String> {
     let (mut vocabulary, i) = tuned_mood(conn, mood_id, lines_tuned_from)?;
+    if let Some(signature) = review_signature {
+        if current_signature(conn, mood_id)? != signature {
+            return Err("The mood or its flags changed since this review; evaluate it again".into());
+        }
+    } else if profile.is_some() || vocabulary.moods[i].profile.is_some() {
+        return Err("Evaluate this version before applying it".into());
+    }
+    if let Some(profile) = &profile { profile.validate()?; }
     vocabulary.moods[i].prompts = lines.to_vec();
+    vocabulary.moods[i].profile = profile;
     // Dropped without a commit (any error below), the transaction rolls back.
     let tx = conn
         .unchecked_transaction()
@@ -711,12 +848,15 @@ pub fn accept_lines(
     let before_rows = mood_flags::flags_for_mood(conn, mood_id)?;
     let saved = library::write_mood_vocabulary(conn, &vocabulary)?;
     refresh_holding(conn, &saved, mood_id, holding_entry_ids)?;
-    let sig = lines_sig(&saved.prompt_signature(mood_id).unwrap_or_default());
+    let sig = lines_sig(&saved.flag_signature(mood_id).unwrap_or_default());
     let holding: HashSet<&str> = holding_entry_ids.iter().map(String::as_str).collect();
     // The flags as they were before the accept, for Undo.
     let before: HashMap<String, StoredFlag> = before_rows.into_iter().map(|f| (f.entry_id.clone(), f)).collect();
     let mut converted = Vec::new();
     for f in mood_flags::flags_for_mood(conn, mood_id)? {
+        // A reviewed v2 fit must not silently replace a directional preference
+        // with a different band or move its original numeric anchor.
+        if saved.moods[i].profile.as_ref().is_some_and(|p| p.version >= 2) { continue; }
         if !holding.contains(f.entry_id.as_str()) {
             continue;
         }
@@ -734,6 +874,7 @@ pub fn accept_lines(
 /// `lines_tuned_from` (the accepted ones) to `lines`, the flags of
 /// `holding_entry_ids` are refreshed to them, and the rows the accept's
 /// ratchet converted are put back exactly (`restore`).
+#[cfg(test)]
 pub fn undo_accept(
     conn: &Connection,
     mood_id: &str,
@@ -742,8 +883,22 @@ pub fn undo_accept(
     holding_entry_ids: &[String],
     restore: &[(StoredFlag, Option<i64>)],
 ) -> Result<(), String> {
+    undo_version(conn, mood_id, lines_tuned_from, lines, holding_entry_ids, restore, None, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn undo_version(
+    conn: &Connection, mood_id: &str, lines_tuned_from: &[String], lines: &[String],
+    holding_entry_ids: &[String], restore: &[(StoredFlag, Option<i64>)],
+    profile: Option<LearnedMoodProfile>, expected_profile_id: Option<&str>,
+) -> Result<(), String> {
     let (mut vocabulary, i) = tuned_mood(conn, mood_id, lines_tuned_from)?;
+    if vocabulary.moods[i].profile.as_ref().map(|p| p.id.as_str()) != expected_profile_id {
+        return Err("This mood's scorer changed since Use; choose the previous version to review it again".into());
+    }
+    if let Some(profile) = &profile { profile.validate()?; }
     vocabulary.moods[i].prompts = lines.to_vec();
+    vocabulary.moods[i].profile = profile;
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("Failed to begin undo transaction: {e}"))?;
@@ -796,7 +951,7 @@ pub fn accept_split(
 ) -> Result<(), String> {
     let (mut vocabulary, i) = tuned_mood(conn, mood_id, lines_tuned_from)?;
     vocabulary.moods[i].prompts = keep_lines.to_vec();
-    vocabulary.moods.push(MoodDef {
+    vocabulary.moods.push(MoodDef { profile: None,
         id: new_id.to_string(),
         name: new_name.to_string(),
         prompts: new_lines.to_vec(),
@@ -888,6 +1043,8 @@ mod tests {
     /// Suggest-mode inputs (the mode Tune had before compare and arrange).
     fn inputs(extra: &[String], bank: &[String], focus: Option<&str>, exclude: &[String]) -> TuneInputs {
         TuneInputs {
+            rebuild: false,
+            profile_versions: vec![],
             extra_words: extra.to_vec(),
             bank: bank.to_vec(),
             focus_entry_id: focus.map(str::to_string),
@@ -952,6 +1109,166 @@ mod tests {
         }
     }
 
+    fn learned_profile() -> LearnedMoodProfile {
+        LearnedMoodProfile {
+            version: 1, id: "frozen-profile".into(), evidence: "fixed-evidence".into(), created_at: "1".into(),
+            training_signature: String::new(), training_count: 5, bias: 0.2, audio_weights: vec![0.0; 8],
+            method: None, local: None, word_version: None, adjustment: None,
+            word_axes: (0..8).map(|i| crate::models::LearnedWordAxis { label: format!("axis{i}"), prompts: vec!["eerie".into()], mean: 0.1, sd: 0.2, weight: 0.0 }).collect(),
+        }
+    }
+
+    #[test]
+    fn portable_local_profile_round_trips_and_rejects_corrupt_audio() {
+        use base64::Engine;
+        let mut profile = learned_profile();
+        profile.version = 6;
+        profile.method = Some("local".into());
+        profile.local = Some(crate::models::LocalMoodCorrection {
+            width: 0.05, dimensions: 2, coefficients: vec![1.],
+            vectors: base64::engine::general_purpose::STANDARD.encode([1f32.to_le_bytes(),0f32.to_le_bytes()].concat()),
+        });
+        profile.validate().unwrap();
+        let saved: LearnedMoodProfile = serde_json::from_str(&serde_json::to_string(&profile).unwrap()).unwrap();
+        assert_eq!(saved,profile);
+        profile.local.as_mut().unwrap().dimensions = 3;
+        assert!(profile.validate().is_err());
+        profile.local.as_mut().unwrap().dimensions = 2;
+        profile.local.as_mut().unwrap().vectors = base64::engine::general_purpose::STANDARD.encode([f32::NAN.to_le_bytes(),0f32.to_le_bytes()].concat());
+        assert!(profile.validate().is_err());
+        profile.local = None;
+        assert!(profile.validate().is_err());
+        profile.method = Some("words".into());
+        profile.validate().unwrap();
+    }
+
+    #[test]
+    fn stable_feedback_profile_keeps_global_foundation_and_validates_residual() {
+        use base64::Engine;
+        let mut profile = learned_profile();
+        profile.version = 8;
+        profile.word_version = Some(6);
+        profile.method = Some("global".into());
+        profile.adjustment = Some(crate::models::LocalMoodCorrection {
+            width: 0.05, dimensions: 2, coefficients: vec![-1.],
+            vectors: base64::engine::general_purpose::STANDARD.encode([1f32.to_le_bytes(),0f32.to_le_bytes()].concat()),
+        });
+        profile.validate().unwrap();
+        let saved: LearnedMoodProfile = serde_json::from_str(&serde_json::to_string(&profile).unwrap()).unwrap();
+        assert_eq!(saved, profile);
+        profile.version = 7;
+        assert!(profile.validate().is_err());
+        profile.version = 8;
+        profile.adjustment.as_mut().unwrap().dimensions = 3;
+        assert!(profile.validate().is_err());
+    }
+
+    #[test]
+    fn strength_targets_and_comparisons_preserve_feedback_and_invalidate_reviews() {
+        let db = setup(); calibrate(&db, CalibrationSource::Library);
+        let a = add(&db, "stronger", "music");
+        let b = add(&db, "weaker", "music");
+        band(&db, &a, FlagBand::Definitely, FlagBound::AtLeast, "old words");
+        band(&db, &b, FlagBand::No, FlagBound::In, "old words");
+        let conn = db.lock().unwrap();
+        let signature = current_signature(&conn, MOOD).unwrap();
+        let original = mood_flags::flags_for_mood(&conn, MOOD).unwrap();
+        settings::set_mood_comparisons(&conn, MOOD, vec![[a.clone(), b.clone()], [a.clone(), b.clone()]]).unwrap();
+        let built = build_tune_request(&conn, MOOD, &TuneInputs {mode:TuneMode::Learn, ..Default::default()}).unwrap();
+        assert_ne!(signature, current_signature(&conn, MOOD).unwrap());
+        assert_eq!(built.request.comparisons, vec![["h-stronger".to_string(), "h-weaker".to_string()]]);
+        assert_eq!(built.request.flags.iter().find(|f| f.hash == "h-stronger").unwrap().polarity, Some(1));
+        assert_eq!(built.request.flags.iter().find(|f| f.hash == "h-weaker").unwrap().polarity, Some(-1));
+        assert_eq!(settings::load_mood_tune_prefs(&conn).unwrap()[MOOD].comparisons.len(), 1);
+        assert!(settings::set_mood_comparisons(&conn, MOOD, vec![[a.clone(),a.clone()]]).is_err());
+        assert!(settings::set_mood_comparisons(&conn, MOOD, vec![[a.clone(),b.clone()],[b,a]]).is_err());
+        settings::set_mood_comparisons(&conn, MOOD, vec![]).unwrap();
+        assert_eq!(signature, current_signature(&conn, MOOD).unwrap());
+        let after = mood_flags::flags_for_mood(&conn, MOOD).unwrap();
+        assert_eq!(original, after);
+    }
+
+    #[test]
+    fn general_preferences_keep_weight_and_can_be_applied_after_an_old_definition() {
+        let db = setup();
+        calibrate(&db, CalibrationSource::Library);
+        let a = add(&db, "general-example", "music");
+        band(&db, &a, FlagBand::Definitely, FlagBound::AtLeast, "an earlier description");
+        let conn = db.lock().unwrap();
+        let lines = settings::load_mood_vocabulary(&conn).unwrap().moods.iter().find(|m| m.id == MOOD).unwrap().prompts.clone();
+        let edited = vec!["quiet, thoughtful".into(), "- ominous, threatening".into()];
+        let learned = build_tune_request(&conn, MOOD, &TuneInputs { mode: TuneMode::Learn, extra_words: edited.clone(), ..Default::default() }).unwrap();
+        assert_eq!(learned.request.extra_words, edited, "Preview must use the actual edited description");
+        assert_eq!(learned.request.flags[0].weight, 1.0);
+        assert_eq!(request_signature(&learned.request).unwrap(), current_signature(&conn, MOOD).unwrap());
+        let mut profile = learned_profile(); profile.version = 2;
+        profile.audio_weights = vec![0.; 19]; profile.word_axes.truncate(1);
+        profile.validate().unwrap();
+        let sig = current_signature(&conn, MOOD).unwrap();
+        accept_version(&conn, MOOD, &lines, &lines, &[], &HashMap::new(), Some(profile), Some(&sig)).unwrap();
+        let vocabulary = settings::load_mood_vocabulary(&conn).unwrap();
+        let flags = mood_flags::load_flags(&conn, &vocabulary).unwrap();
+        assert!(!flags[&(a, MOOD.into())].stale, "an absolute preference does not weaken when a fit misses it");
+    }
+
+    #[test]
+    fn general_direction_preferences_retain_their_original_numeric_anchor() {
+        let db = setup(); calibrate(&db, CalibrationSource::Library);
+        let a = add(&db, "anchored", "music");
+        let conn = db.lock().unwrap();
+        let mut vocabulary = settings::load_mood_vocabulary(&conn).unwrap();
+        let mut profile = learned_profile(); profile.version = 2;
+        vocabulary.moods.iter_mut().find(|m| m.id == MOOD).unwrap().profile = Some(profile);
+        library::write_mood_vocabulary(&conn, &vocabulary).unwrap();
+        drop(conn);
+        direction(&db, &a, FlagKind::Lower, 0.8, "older calibration", "older words");
+        set_bar(&db, &a, 0.4);
+        let (req, _) = request(&db);
+        assert_eq!(target(&req, "h-anchored"), (None, Some(0.7), 1.0, true, FlagSide::Low));
+    }
+
+    #[test]
+    fn saved_profile_is_explicit_stable_and_undoable_with_flag_provenance() {
+        let db = setup();
+        calibrate(&db, CalibrationSource::Library);
+        let a = add(&db, "a", "music");
+        let b = add(&db, "b", "music");
+        let sig = current_sig(&db);
+        band(&db, &a, FlagBand::No, FlagBound::In, &sig);
+        band(&db, &b, FlagBand::Definitely, FlagBound::AtLeast, &sig);
+        let before = { let conn = db.lock().unwrap(); current_signature(&conn, MOOD).unwrap() };
+        add(&db, "unflagged-import", "music");
+        let conn = db.lock().unwrap();
+        assert_eq!(current_signature(&conn, MOOD).unwrap(), before, "new unflagged music cannot invalidate a frozen fit");
+        let lines = settings::load_mood_vocabulary(&conn).unwrap().moods.iter().find(|m| m.id == MOOD).unwrap().prompts.clone();
+        let profile = learned_profile();
+        accept_version(&conn, MOOD, &lines, &lines, std::slice::from_ref(&a), &HashMap::new(), Some(profile.clone()), Some(&before)).unwrap();
+        let saved = settings::load_mood_vocabulary(&conn).unwrap();
+        assert_eq!(saved.moods.iter().find(|m| m.id == MOOD).unwrap().profile.as_ref(), Some(&profile));
+        let loaded = mood_flags::load_flags(&conn, &saved).unwrap();
+        assert!(!loaded[&(a.clone(), MOOD.into())].stale);
+        assert!(loaded[&(b.clone(), MOOD.into())].stale, "an unmet flag must remember it was made under the previous scorer");
+        mood_flags::set_flag_for_entry(&conn, &a, MOOD, FlagKind::Band, Some(FlagBand::Stretch)).unwrap();
+        assert_eq!(settings::load_mood_vocabulary(&conn).unwrap().moods.iter().find(|m| m.id == MOOD).unwrap().profile.as_ref(), Some(&profile), "feedback does not refit weights");
+        assert!(accept_version(&conn, MOOD, &lines, &lines, &[], &HashMap::new(), None, Some(&before)).is_err(), "a stale review cannot replace a scorer");
+        undo_version(&conn, MOOD, &lines, &lines, &[], &[], None, Some(&profile.id)).unwrap();
+        assert!(settings::load_mood_vocabulary(&conn).unwrap().moods.iter().find(|m| m.id == MOOD).unwrap().profile.is_none());
+    }
+
+    #[test]
+    fn app_stretch_flag_sends_only_a_ceiling_and_preserves_explicit_ranges() {
+        let db = setup();
+        calibrate(&db, CalibrationSource::Library);
+        let app = add(&db, "app", "music");
+        mood_flags::set_flag_for_entry(&db.lock().unwrap(), &app, MOOD, FlagKind::Band, Some(FlagBand::Stretch)).unwrap();
+        let exact = add(&db, "exact", "music");
+        band(&db, &exact, FlagBand::Stretch, FlagBound::In, &current_sig(&db));
+
+        let (req, _) = request(&db);
+        assert_eq!(target(&req, "h-app"), (None, Some(0.75), 1.0, true, Low));
+        assert_eq!(target(&req, "h-exact"), (Some(0.5), Some(0.75), 1.0, true, Mid));
+    }
+
     #[test]
     fn request_treats_user_levels_as_flags_and_real_flags_win() {
         let db = setup();
@@ -959,7 +1276,7 @@ mod tests {
         let levels = [
             ("one", 1.0, (Some(0.9), None, High)),
             ("threequarters", 0.75, (Some(0.75), None, High)),
-            ("half", 0.5, (Some(0.5), Some(0.75), Mid)),
+            ("half", 0.5, (None, Some(0.75), Low)),
             ("quarter", 0.25, (None, Some(0.5), Low)),
             ("zero", 0.0, (None, Some(0.5), Low)),
         ];
@@ -1055,7 +1372,7 @@ mod tests {
         assert!(want.iter().all(|id| req.other_moods.contains_key(*id)));
         assert!(!req.other_moods.contains_key("energy"));
         for m in vocabulary.moods.iter().filter(|m| m.id != MOOD) {
-            assert_eq!(req.other_moods[&m.id], OtherMood { name: m.name.clone(), lines: m.prompts.clone() });
+            assert_eq!(req.other_moods[&m.id], OtherMood { name: m.name.clone(), lines: m.prompts.clone(), profile: m.profile.clone() });
         }
         assert!(req.exclude.is_empty());
     }
@@ -1199,23 +1516,24 @@ mod tests {
     }
 
     #[test]
-    fn request_arrange_sends_only_the_typed_words() {
+    fn request_arrange_preserves_signed_words_and_prior_proposals() {
         let db = setup();
         calibrate(&db, CalibrationSource::Library);
         let a = add(&db, "a", "music");
         band(&db, &a, FlagBand::No, FlagBound::In, "x");
         let inputs = TuneInputs {
             mode: TuneMode::Arrange,
-            extra_words: strings(&["grief, funeral, dark sadness, cello", " sad piano "]),
+            extra_words: strings(&["grief, funeral, dark sadness, cello", " sad piano ", "- uplifting, triumphant"]),
             bank: strings(&["calm", "gentle"]),
-            candidates: vec![strings(&["ignored"])],
+            candidates: vec![strings(&["previous alternative"])],
             ..Default::default()
         };
         let req = build_tune_request(&db.lock().unwrap(), MOOD, &inputs).unwrap().request;
         assert_eq!(req.mode, TuneMode::Arrange);
         assert!(req.bank.is_empty());
-        assert!(req.candidates.is_empty());
-        assert_eq!(req.extra_words, strings(&["grief, funeral, dark sadness, cello", "sad piano"]));
+        assert_eq!(req.scoring_version, 8);
+        assert_eq!(req.candidates, vec![strings(&["previous alternative"])]);
+        assert_eq!(req.extra_words, strings(&["grief, funeral, dark sadness, cello", "sad piano", "- uplifting, triumphant"]));
     }
 
     #[test]
@@ -1481,12 +1799,13 @@ mod tests {
         let split: TuneSplit = serde_json::from_str(&split).unwrap();
         assert_eq!((split.keep_hashes, split.new_hashes), (vec!["h".to_string()], vec!["g".to_string()]));
 
-        let req = TuneRequest {
+        let req = TuneRequest { scoring_version: 5, rebuild: false, comparisons: vec![], active_profile: None, profile_versions: vec![],
             mood_id: "sad".into(),
             name: "Sad".into(),
             current_lines: vec!["sad".into()],
             flags: vec![TuneFlag {
                 hash: "h".into(),
+                target: None, polarity: Some(1), confidence: 1.0, pivot: 0.5,
                 min: Some(0.5),
                 max: None,
                 weight: 1.0,
@@ -1497,7 +1816,7 @@ mod tests {
             targets: vec!["h".into()],
             bank: vec![],
             extra_words: vec![],
-            other_moods: BTreeMap::from([("grim".to_string(), OtherMood { name: "Grim".into(), lines: vec!["dark".into()] })]),
+            other_moods: BTreeMap::from([("grim".to_string(), OtherMood { name: "Grim".into(), lines: vec!["dark".into()], profile: None })]),
             exclude: vec!["ambient".into()],
             mode: TuneMode::Arrange,
             candidates: vec![],

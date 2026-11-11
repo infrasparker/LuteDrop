@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
+import ClipRemovalDialog from './ClipRemovalDialog.vue';
+import ReorderGrip from './ReorderGrip.vue';
 import type { Clip } from '@generated/index';
 import { useAppStore } from '../stores/appStore';
 import { useAudio } from '../composables/useAudio';
@@ -26,9 +28,7 @@ function playClip(): void {
   audio.playTrackClip(props.trackId, props.clip.id);
 }
 
-async function remove(): Promise<void> {
-  await store.command('delete_clip', { trackId: props.trackId, clipId: props.clip.id });
-}
+const showRemove = ref(false);
 
 // A press that starts on a control (e.g. a slider drag released elsewhere in
 // the row) makes the browser fire `click` on the row; ignore that click.
@@ -73,12 +73,12 @@ function toggleMute(): void {
 
 <template>
   <div
-    class="clip-row d-flex align-center ga-2 py-2 px-1"
-    :class="{ 'clip-active': isCurrentClip, 'clip-missing': isMissing }"
+    class="clip-row mixer-surface d-flex align-center ga-2 py-2 px-1"
+    :class="{ 'mixer-active': isCurrentClip, 'mixer-missing': isMissing }"
     @pointerdown="onRowPointerDown"
     @click="onRowClick"
   >
-    <VIcon size="small" class="text-medium-emphasis drag-handle" style="cursor: grab;" @click.stop>mdi-drag</VIcon>
+    <ReorderGrip class="drag-handle" :label="`Drag clip ${clip.name} to reorder`" />
     <VBtn
       v-if="isMissing"
       icon="mdi-alert"
@@ -91,6 +91,7 @@ function toggleMute(): void {
     <VBtn
       v-else
       :icon="isPlaying ? 'mdi-pause' : 'mdi-play'"
+      :aria-label="`${isPlaying ? 'Pause' : 'Play'} ${clip.name}`"
       variant="text"
       size="x-small"
       :color="isCurrentClip ? 'primary' : undefined"
@@ -98,7 +99,6 @@ function toggleMute(): void {
     />
     <span
       class="text-body-2 flex-grow-1 text-truncate"
-      :class="{ 'text-primary': isCurrentClip }"
       :style="{ opacity: isMuted || isMissing ? 0.5 : 1 }"
     >{{ clip.name }}</span>
     <VBtn
@@ -128,25 +128,13 @@ function toggleMute(): void {
       title="Edit in Library"
       @click.stop="editLibraryEntry"
     />
-    <VBtn icon="mdi-delete" variant="text" size="x-small" color="error" @click.stop="remove" />
+    <ClipRemovalDialog v-model="showRemove" :track-id="trackId" :clip="clip" />
+    <VBtn icon="mdi-delete" variant="text" size="x-small" color="error" :aria-label="`Remove ${clip.name}`" @click.stop="showRemove = true" />
   </div>
 </template>
 
 <style scoped>
 .clip-row {
   cursor: pointer;
-  border-bottom: 1px solid rgba(232, 228, 220, 0.05);
-  border-left: 3px solid transparent;
-}
-.clip-row:hover {
-  background: rgba(var(--v-theme-on-surface), var(--v-hover-opacity));
-}
-.clip-active {
-  border-left: 3px solid #F0A830;
-  background: rgba(240, 168, 48, 0.08);
-}
-.clip-missing {
-  border-left: 3px solid rgb(var(--v-theme-warning));
-  background: rgba(var(--v-theme-warning), 0.08);
 }
 </style>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Browse music by sound: a text search or seed tracks give ranked results,
 // and a map shows every analyzed music track. Selected tracks become clips:
-// on a new comp (one shuffle track) or appended to an existing track. With `?target=<trackId>`
+// on a new reusable shuffle track or appended to an existing track. With `?target=<trackId>`
 // (Find similar on a Soundstage track) results leave out what that track
 // already holds and selections are added straight to it.
 import { computed, ref, watch } from 'vue';
@@ -42,18 +42,14 @@ const analyzedCount = computed(
 
 // --- Target track (Find similar from the Soundstage) ---
 
-// The comp and track named by `?target=`; null when absent or unknown, which
+// The scene and track named by `?target=`; null when absent or unknown, which
 // leaves the view in its normal mode.
 const target = computed(() => {
   const id = route.query.target;
   if (typeof id !== 'string' || !id) return null;
-  for (const group of store.groups) {
-    for (const comp of group.comps) {
-      const track = comp.tracks.find((t) => t.id === id);
-      if (track) return { comp, track };
-    }
-  }
-  return null;
+  const track = store.findTrack(id);
+  const board = store.boards.find((item) => item.trackIds.includes(id));
+  return track ? { track, boardName: board?.name ?? 'Track inventory' } : null;
 });
 
 // If the target track is deleted while the page is open, leave target mode.
@@ -66,8 +62,6 @@ watch(target, (now, before) => {
 });
 
 const targetEntryIds = computed(() => new Set(target.value?.track.clips.map((c) => c.libraryEntryId) ?? []));
-// A seamless track plays a single clip, so results are not added to it.
-const targetIsSeamless = computed(() => target.value?.track.mode.type === 'seamless');
 
 // Back to where the user came from (the Soundstage keeps its place), or to
 // the Soundstage when there is no history entry to return to.
@@ -398,7 +392,7 @@ function openPlaylistDialog(target: 'new' | 'existing'): void {
 const suggestedName = computed(() => {
   if (query.value?.kind === 'search') return query.value.text;
   if (query.value?.kind === 'seeds' && seeds.value.length > 0) return `Like ${seedName(seeds.value[0])}`;
-  return 'Scry comp';
+  return 'Scry scene';
 });
 
 // --- Adding to the target track ---
@@ -476,12 +470,10 @@ const showAnalyzer = ref(false);
       <VBtn prepend-icon="mdi-arrow-left" variant="text" size="small" @click="goBack">Back</VBtn>
       <VIcon size="small" color="primary">mdi-compass-outline</VIcon>
       <span class="text-body-2 text-truncate">
-        Finding tracks for <strong>{{ target.comp.name }}</strong> &rsaquo; <strong>{{ target.track.name }}</strong>
+        Finding tracks for <strong>{{ target.boardName }}</strong> &rsaquo; <strong>{{ target.track.name }}</strong>
       </span>
       <VSpacer />
-      <span v-if="targetIsSeamless" class="text-caption text-medium-emphasis" style="white-space: nowrap;">
-        Seamless tracks hold one clip
-      </span>
+
     </div>
 
     <!-- Nothing analyzed yet: explain where the data comes from. -->
@@ -611,7 +603,7 @@ const showAnalyzer = ref(false);
         </span>
         <VSpacer />
         <VBtn
-          v-if="target && !targetIsSeamless"
+          v-if="target"
           prepend-icon="mdi-plus"
           color="primary"
           variant="flat"
@@ -624,12 +616,12 @@ const showAnalyzer = ref(false);
         </VBtn>
         <VBtn
           prepend-icon="mdi-playlist-plus"
-          :color="target && !targetIsSeamless ? undefined : 'primary'"
+          :color="target ? undefined : 'primary'"
           variant="tonal"
           size="small"
           @click="openPlaylistDialog('new')"
         >
-          New comp
+          New scene
         </VBtn>
         <VBtn prepend-icon="mdi-playlist-music" variant="tonal" size="small" @click="openPlaylistDialog('existing')">
           Add to track

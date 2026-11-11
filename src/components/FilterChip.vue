@@ -2,14 +2,13 @@
 import { computed } from 'vue';
 import type { ChipState } from '../utils/moods';
 
-/// A filter chip. With `toggle` it is a plain on/off chip (mood lenses and
-/// Energy bands): `state` is 'include' when on, 'off' when off. Without it it
-/// is tri-state (tags): off → include → exclude → off on each click.
-/// On/included is filled in the accent colour; excluded is a red outline with
-/// the label struck through. The state is also in aria-pressed and the
-/// aria-label, so it does not rely on colour alone.
+/// Energy chips toggle on/off. Tags cycle include/exclude/off; moods use
+/// the same cycle for high/low/off, with direction arrows instead of exclusion
+/// styling. Right-click cycles backwards. Accessible labels describe the state.
 const props = defineProps<{
   label: string;
+  /// High/low mood preference rather than include/exclude tags.
+  polarity?: boolean;
   state: ChipState;
   size?: 'x-small' | 'small';
   /// The chip's look when off ('tonal' for tags, 'outlined' for lenses).
@@ -20,9 +19,10 @@ const props = defineProps<{
   detail?: string;
 }>();
 
-const emit = defineEmits<{ cycle: [] }>();
+const emit = defineEmits<{ cycle: [direction: 1 | -1] }>();
 
 const ariaLabel = computed(() => {
+  if (props.polarity) return `${props.label}, ${props.state === 'include' ? 'high' : props.state === 'exclude' ? 'low' : 'off'}`;
   if (props.toggle) return props.state === 'include' ? `${props.label}, on` : props.label;
   if (props.state === 'include') return `${props.label}, included`;
   if (props.state === 'exclude') return `${props.label}, excluded`;
@@ -31,10 +31,12 @@ const ariaLabel = computed(() => {
 
 const hint = computed(() => {
   let text: string;
-  if (props.toggle) text = props.state === 'include' ? 'On. Click to turn off' : 'Click to turn on';
+  if (props.polarity) text = `${props.state === 'include' ? 'High' : props.state === 'exclude' ? 'Low' : 'Off'}. Click: off, high, low. Right-click: reverse` ;
+  else if (props.toggle) text = props.state === 'include' ? 'On. Click to turn off' : 'Click to turn on';
   else if (props.state === 'include') text = 'Included. Click to exclude';
   else if (props.state === 'exclude') text = 'Excluded. Click to clear';
   else text = 'Click to include';
+  if (!props.toggle && !props.polarity) text += '. Right-click to cycle backwards';
   return props.detail ? `${props.detail}. ${text}` : text;
 });
 
@@ -46,18 +48,20 @@ const ariaPressed = computed(() => {
 
 <template>
   <VChip
-    :color="state === 'include' ? 'primary' : state === 'exclude' ? 'error' : undefined"
+    role="button"
+    :color="state === 'include' ? 'primary' : state === 'exclude' ? (polarity ? 'secondary' : 'error') : undefined"
     :variant="state === 'include' ? 'flat' : state === 'exclude' ? 'outlined' : offVariant ?? 'tonal'"
     :size="size ?? 'small'"
-    :class="{ 'is-excluded': state === 'exclude' }"
+    :class="{ 'is-excluded': state === 'exclude' && !polarity }"
     :aria-pressed="ariaPressed"
     :aria-label="ariaLabel"
     :title="hint"
     :data-state="state"
     clickable
-    @click="emit('cycle')"
+    @click="emit('cycle', 1)"
+    @contextmenu.prevent="emit('cycle', -1)"
   >
-    <span class="chip-label">{{ label }}</span>
+    <span v-if="polarity && state !== 'off'" class="mr-1" aria-hidden="true">{{ state === 'include' ? '↑' : '↓' }}</span><span class="chip-label">{{ label }}</span>
   </VChip>
 </template>
 

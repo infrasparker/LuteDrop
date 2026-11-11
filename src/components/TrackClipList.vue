@@ -19,8 +19,6 @@ const emit = defineEmits<{
 
 const store = useAppStore();
 
-const hasClips = computed(() => props.track.clips.length > 0);
-const seamlessClip = computed(() => props.track.clips[0] ?? null);
 
 function addClips(): void {
   emit('open-library-browser', props.track.id);
@@ -44,10 +42,11 @@ const router = useRouter();
 const ui = useSoundstageUiStore();
 function findSimilar(): void {
   ui.focusTrackId = props.track.id;
+  ui.editTrackId = null;
   router.push({ name: 'scry', query: { seed: similarSeeds.value, target: props.track.id } });
 }
 
-// --- SortableJS for sequence/shuffle clip reordering ---
+// --- Clip reordering ---
 
 const clipsContainer = ref<HTMLElement | null>(null);
 let sortableInstance: Sortable | null = null;
@@ -57,13 +56,13 @@ function initSortable(): void {
     sortableInstance.destroy();
     sortableInstance = null;
   }
-  if (!clipsContainer.value || props.isSeamless) return;
+  if (!clipsContainer.value) return;
   sortableInstance = Sortable.create(clipsContainer.value, {
     handle: '.drag-handle',
     animation: 200,
     forceFallback: true,
-    fallbackClass: 'sortable-fallback',
-    ghostClass: 'sortable-ghost',
+    fallbackClass: 'stage-drag-preview',
+    ghostClass: 'stage-drag-placeholder',
     fallbackOnBody: true,
     onStart: () => {
       document.body.classList.add('sortable-dragging');
@@ -71,6 +70,9 @@ function initSortable(): void {
     onEnd: async (event) => {
       document.body.classList.remove('sortable-dragging');
       if (event.oldIndex === undefined || event.newIndex === undefined) return;
+      // Restore Sortable's DOM move before Vue applies the authoritative order.
+      const siblings = [...event.from.children].filter((el) => el !== event.item);
+      event.from.insertBefore(event.item, siblings[event.oldIndex] ?? null);
       const clips = [...props.track.clips];
       const [moved] = clips.splice(event.oldIndex, 1);
       clips.splice(event.newIndex, 0, moved);
@@ -96,32 +98,8 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <!-- Seamless mode: single clip -->
-  <div v-if="isSeamless">
-    <div class="d-flex align-center mb-2">
-      <span class="text-subtitle-2">Clip</span>
-      <VSpacer />
-      <FindSimilarButton :disabled="similarSeeds.length === 0" @click="findSimilar" />
-      <VBtn
-        v-if="!hasClips"
-        prepend-icon="mdi-plus"
-        variant="tonal"
-        rounded="xl"
-        @click="addClips"
-      >
-        Add Clip
-      </VBtn>
-    </div>
-    <div v-if="hasClips">
-      <ClipRow :clip="seamlessClip!" :track-id="track.id" />
-    </div>
-    <div v-else class="text-caption text-medium-emphasis">
-      No clip yet. Seamless mode uses a single clip.
-    </div>
-  </div>
-
-  <!-- Sequence/Shuffle mode: clips list with drag reorder -->
-  <div v-else>
+  <div>
+    <p v-if="isSeamless" class="text-caption text-medium-emphasis mb-3">Every clip is an alternative. Choose one from the track card to loop it.</p>
     <div class="d-flex align-center mb-2">
       <span class="text-subtitle-2">Clips</span>
       <VSpacer />
@@ -131,7 +109,7 @@ onUnmounted(() => {
       </VBtn>
     </div>
 
-    <div ref="clipsContainer">
+    <div ref="clipsContainer" class="clip-list">
       <ClipRow
         v-for="clip in track.clips"
         :key="clip.id"
@@ -145,3 +123,6 @@ onUnmounted(() => {
     </div>
   </div>
 </template>
+<style scoped>
+.clip-list { display: flex; flex-direction: column; gap: 6px; }
+</style>

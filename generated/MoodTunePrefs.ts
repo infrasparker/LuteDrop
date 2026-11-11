@@ -5,4 +5,8 @@
  * (sent as `exclude` for Arrange and Suggest). Stored as JSON in the meta
  * key `mood_tune_prefs`, a map from mood id to this.
  */
-export type MoodTunePrefs = { neverSuggest: Array<string>, };
+export type MoodTunePrefs = { neverSuggest: Array<string>, 
+/**
+ * Entry IDs, [stronger, weaker]. Explicit preferences, never inferred from playback.
+ */
+comparisons: Array<[string, string]>, };

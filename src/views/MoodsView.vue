@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { open as openFile } from '@tauri-apps/plugin-dialog';
 import { useDisplay } from 'vuetify';
@@ -8,12 +8,8 @@ import { useAppStore, type MoodDraft } from '../stores/appStore';
 import { useToast } from '../composables/useToast';
 import { useAutoTagEvents } from '../composables/useAutoTagEvents';
 import {
-  bandWord,
-  confirmLine,
-  confirmTitle,
   MAX_PAGE_VERSIONS,
   nextVersionName,
-  neverSuggestWords,
   parseLines,
   reachedBars,
   regressions,
@@ -34,15 +30,13 @@ import {
 import { newMoodId, WORD_BANK } from '../utils/moodWords';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import PromptDialog from '../components/PromptDialog.vue';
-import MoodVersionColumn from '../components/moods/MoodVersionColumn.vue';
+import { feedbackPreference, feedbackDisagreement } from '../utils/moodFlags';
+import { splitDescription, joinDescription } from '../utils/moodDescription';
 import MoodFlagsPanel from '../components/moods/MoodFlagsPanel.vue';
 import MoodTopPanel from '../components/moods/MoodTopPanel.vue';
 
-/// The Moods page: the mood list on the left (Energy pinned last), and for
-/// the selected mood its versions as columns (Current, then drafts), the
-/// Flags panel and the Top 15 panel. Nothing changes until a version is
-/// used; Use asks only when it would break a flag that holds now, then
-/// rescores (recalibrates) on its own.
+/// Saved and proposed scoring versions share one signed editor. Edits fork a
+/// draft; searches produce independent proposals. Only Apply changes saved data.
 const store = useAppStore();
 const toast = useToast();
 const autotag = useAutoTagEvents();
@@ -50,6 +44,7 @@ const { width } = useDisplay();
 const narrow = computed(() => width.value < 1200);
 
 const ENERGY = 'energy';
+const prefs = ref<Record<string, MoodTunePrefs>>({});
 const moods = computed(() => store.moodVocabulary.moods);
 const selectedId = computed<string>({
   get: () => {
@@ -63,7 +58,6 @@ const selectedId = computed<string>({
 });
 const isEnergy = computed(() => selectedId.value === ENERGY);
 const mood = computed<MoodDef | null>(() => moods.value.find((m) => m.id === selectedId.value) ?? null);
-const moodNameOf = (id: string): string => moods.value.find((m) => m.id === id)?.name ?? id;
 const currentText = computed(() => mood.value?.prompts.join('\n') ?? '');
 
 const flagCount = (id: string): number => flaggedEntries(store.libraryEntries, id).length;
@@ -83,14 +77,11 @@ const highIds = computed(() => {
   }
   return out;
 });
-const bandOf = (entryId: string): string => {
-  const v = store.findLibraryEntry(entryId)?.moods.find((m) => m.mood === selectedId.value);
-  return v ? bandWord(v.flag, v.flag ? null : v.user) : '';
-};
+
 
 // --- Drafts (version columns) ---
 
-let nextKey = 1;
+let nextKey = Math.max(0, ...Object.values(store.moodDrafts).flat().map(d => d.key)) + 1;
 const drafts = computed<MoodDraft[]>(() => store.moodDrafts[selectedId.value] ?? []);
 function draftList(moodId: string): MoodDraft[] {
   if (!store.moodDrafts[moodId]) store.moodDrafts[moodId] = [];
@@ -164,7 +155,6 @@ watch(
     if (!stillFlagged) store.moodFocus = null;
   },
 );
-const otherMoodNames = computed(() => moods.value.filter((m) => m.id !== selectedId.value).map((m) => m.name));
 
 const baseline = computed(() => {
   const b = store.moodBaselines[selectedId.value];
@@ -184,7 +174,7 @@ function clearTimer(key: number): void {
   timers.delete(key);
 }
 
-function compare(moodId: string, lines: string[]): Promise<TuneResult> {
+function compare(moodId: string, lines: string[], profile: import('@generated/index').LearnedMoodProfile | null = null): Promise<TuneResult> {
   const focus = store.moodFocus && store.moodFocus.moodId === moodId ? store.moodFocus.entryId : null;
   return invoke<TuneResult>('tune_mood', {
     moodId,
@@ -194,6 +184,7 @@ function compare(moodId: string, lines: string[]): Promise<TuneResult> {
     focusEntryId: focus,
     excludeWords: [],
     candidates: [lines],
+    profileVersions: [profile],
   });
 }
 
@@ -220,7 +211,7 @@ async function evaluateCurrent(): Promise<void> {
 
 async function evaluate(moodId: string, d: MoodDraft): Promise<void> {
   clearTimer(d.key);
-  if (d.source === 'split' || d.running) return;
+  if (d.source === 'split' || d.running || (!d.profile && d.source === 'learned')) return;
   const lines = parseLines(d.text);
   if (lines.length === 0) {
     d.review = null;
@@ -238,7 +229,7 @@ async function evaluate(moodId: string, d: MoodDraft): Promise<void> {
   // The flags this review is made against (they may change meanwhile).
   const sig = flagSig.value;
   try {
-    const r = await compare(moodId, lines);
+    const r = await compare(moodId, lines, d.profile ?? null);
     if (tokens.get(d.key) !== t) return;
     d.review = r.proposals[0] ?? null;
     d.reviewedLines = lines.join('\n');
@@ -252,14 +243,20 @@ async function evaluate(moodId: string, d: MoodDraft): Promise<void> {
   }
 }
 
-function schedule(d: MoodDraft): void {
-  clearTimer(d.key);
-  const moodId = selectedId.value;
-  timers.set(d.key, window.setTimeout(() => void evaluate(moodId, d), 600));
-}
 
 const isStale = (d: MoodDraft): boolean =>
   draftStale(d, { text: d.text, current: currentText.value, flags: flagSig.value });
+
+/// The selected mood's flags and hand-set levels, so a change re-evaluates.
+const flagSig = computed(() =>
+  store.libraryEntries
+    .map((e) => {
+      const v = e.moods.find((m) => m.mood === selectedId.value);
+      return v && (v.flag || v.user !== null) ? `${e.id}:${JSON.stringify(v.flag)}:${v.user}` : '';
+    })
+    .filter(Boolean)
+    .join('|') + `|profile:${mood.value?.profile?.id ?? ''}|pairs:${JSON.stringify(prefs.value[selectedId.value]?.comparisons ?? [])}`,
+);
 
 /// Everything the selected mood shows, evaluated again: on opening a mood,
 /// after its lines change, and after its flags change.
@@ -285,16 +282,6 @@ watch(
   { immediate: true },
 );
 
-/// The selected mood's flags and hand-set levels, so a change re-evaluates.
-const flagSig = computed(() =>
-  store.libraryEntries
-    .map((e) => {
-      const v = e.moods.find((m) => m.mood === selectedId.value);
-      return v && (v.flag || v.user !== null) ? `${e.id}:${JSON.stringify(v.flag)}:${v.user}` : '';
-    })
-    .filter(Boolean)
-    .join('|'),
-);
 let flagTimer: number | undefined;
 watch(flagSig, (now, before) => {
   if (before === undefined || now === before) return;
@@ -302,11 +289,12 @@ watch(flagSig, (now, before) => {
   flagTimer = window.setTimeout(refreshAll, 300);
 });
 
-// --- Columns ---
+// --- Version models ---
 
 const currentColumn = computed<ColumnModel>(() => ({
+  profile: mood.value?.profile ?? null,
   key: 'current',
-  name: 'Current',
+  name: 'Saved',
   kind: 'current',
   source: null,
   text: currentText.value,
@@ -332,6 +320,7 @@ const columns = computed<ColumnModel[]>(() => [
   currentColumn.value,
   ...drafts.value.map(
     (d): ColumnModel => ({
+      profile: d.profile ?? null,
       key: d.key,
       name: d.name,
       kind: d.source === 'before' ? 'before' : d.source === 'split' ? 'split' : 'version',
@@ -352,99 +341,77 @@ const columns = computed<ColumnModel[]>(() => [
 /// The columns the Flags panel shows a value for (not a split).
 const flagColumns = computed(() =>
   columns.value
-    .filter((c) => c.kind !== 'split')
+    .filter((c) => c.kind !== 'split' && (c.key === 'current' || c.key === selectedKey.value))
     .map((c) => {
       const d = drafts.value.find((x) => x.key === c.key);
       const ids = new Set(d ? regressionsOf(d).map((r) => r.outcome.song.entryId) : []);
-      return { key: c.key, name: c.name, review: c.review, stale: c.stale, regressionIds: ids };
+      return { key: c.key, name: `${c.name}${c.profile && c.profile.version<6 ? ' · earlier' : ''}`, review: c.review, stale: c.stale, regressionIds: ids, comparable: (c.profile?.version ?? 0) === (mood.value?.profile?.version ?? 0) };
     }),
 );
 const selectedColumn = computed(() => columns.value.find((c) => c.key === selectedKey.value) ?? currentColumn.value);
 const topReview = computed(() => {
   const c = selectedColumn.value;
   if (c.kind === 'split') return c.split?.keep ?? null;
-  return c.review;
+  return c.review ?? baseline.value?.review ?? null;
 });
 
-const colRefs = new Map<number | 'current', InstanceType<typeof MoodVersionColumn>>();
-function setColRef(key: number | 'current', el: unknown): void {
-  if (el) colRefs.set(key, el as InstanceType<typeof MoodVersionColumn>);
-  else colRefs.delete(key);
-}
-
-function onText(d: MoodDraft, text: string): void {
-  d.text = text;
-  selectedKey.value = d.key;
-  schedule(d);
-}
-function onCommit(d: MoodDraft): void {
-  if (isStale(d) || (d.review === null && parseLines(d.text).length > 0)) void evaluate(selectedId.value, d);
-}
-
-/// Typing into Current makes a new version holding the edit.
-async function onFork(text: string, line: number, caret: number): Promise<void> {
-  if (!canAdd.value) {
-    toast.showInfo(`${MAX_PAGE_VERSIONS} versions at most`);
-    return;
+const editorText = computed(() => selectedDraft.value?.text ?? currentText.value);
+function editDescription(text: string): void {
+  let d = selectedDraft.value;
+  if (!d || d.source === 'before') {
+    if (!canAdd.value) return;
+    d = addDraft(selectedId.value, { source: 'learned', name: 'Draft', text });
+    selectedKey.value = d.key;
+  } else {
+    bump(d.key);
+    d.evaluating = false;
+    d.source = 'learned';
+    d.name = 'Draft';
+    d.text = text;
+    d.profile = null;
+    d.review = null;
+    d.error = null;
   }
-  const d = addDraft(selectedId.value, { source: 'typed', text });
-  selectedKey.value = d.key;
-  schedule(d);
-  await nextTick();
-  colRefs.get(d.key)?.focusLine(line, caret);
 }
-
-/// Typing into the ghost column starts a new version.
-const ghostText = ref('');
-async function onGhostInput(e: Event): Promise<void> {
-  const el = e.target as HTMLTextAreaElement;
-  const text = el.value;
-  el.value = '';
-  ghostText.value = '';
-  if (!canAdd.value || text.trim() === '') return;
-  const d = addDraft(selectedId.value, { source: 'typed', text });
-  selectedKey.value = d.key;
-  schedule(d);
-  await nextTick();
-  colRefs.get(d.key)?.focusLine(0, text.length);
-}
-
+const moreText = computed({ get: () => splitDescription(editorText.value).more, set: (text: string) => editDescription(joinDescription(text, lessText.value)) });
+const lessText = computed({ get: () => splitDescription(editorText.value).less, set: (text: string) => editDescription(joinDescription(moreText.value, text)) });
+const searchBusy = computed(() => drafts.value.some(d => d.running !== null));
+const runningDraft = computed(() => drafts.value.find(d => d.running !== null) ?? null);
+const canPreview = computed(() => canAdd.value || (selectedDraft.value?.source === 'learned' && !selectedDraft.value.profile));
+const canApply = computed(() => !!selectedDraft.value?.profile && !!selectedDraft.value?.review && !isStale(selectedDraft.value));
+const selectedFit = computed(() => {
+  const review = selectedColumn.value.review;
+  if (!review?.flags.length) return null;
+  const distances = review.flags.flatMap(f => {
+    const value = store.findLibraryEntry(f.song.entryId)?.moods.find(v => v.mood === selectedId.value);
+    const preference = value ? feedbackPreference(value.flag, value.flag ? null : value.user, value.auto) : null;
+    return preference === null ? [] : [{loss:feedbackDisagreement(f.after,preference),weight:preference.confidence}];
+  });
+  return { within: review.flags.filter(f => f.holds).length, total: review.flags.length, miss: distances.reduce((a,b) => a+b.loss*b.weight, 0)/Math.max(1, distances.reduce((a,b) => a+b.weight,0)) };
+});
+function discard(key: number): void { removeDraft(selectedId.value, key); }
 function copySelected(): void {
-  if (!canAdd.value || isEnergy.value) return;
-  const c = selectedColumn.value;
-  const text = c.kind === 'split' ? (c.split?.keep.lines.join('\n') ?? '') : c.text;
-  const d = addDraft(selectedId.value, { source: 'typed', text, review: c.review, reviewedLines: c.review ? parseLines(text).join('\n') : null, reviewedAgainst: c.review ? currentText.value : null, reviewedFlags: c.review ? flagSig.value : null });
-  selectedKey.value = d.key;
-  void scrollToColumn(d.key);
+  editDescription(editorText.value);
+  document.getElementById('mood-more')?.focus();
 }
 
-function discard(key: number | 'current'): void {
-  if (key === 'current') return;
-  removeDraft(selectedId.value, key);
-}
-
-function rename(d: MoodDraft, name: string): void {
-  d.name = name;
-}
-
-// --- Arrange / Suggest ---
+// --- Independent wording proposals ---
 
 /// Arrange and Suggest search against flags: with none they are off.
-const canSearch = computed(() => canAdd.value && flaggedIds.value.size > 0);
+const canSearch = computed(() => canAdd.value && (flaggedIds.value.size > 0 || comparisons.value.length > 0));
 
-async function scrollToColumn(key: number): Promise<void> {
-  await nextTick();
-  document.querySelector(`[data-col="${key}"]`)?.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
-}
 
-async function search(kind: 'arrange' | 'suggest'): Promise<void> {
+
+async function search(kind: 'arrange' | 'suggest' | 'learn', rebuild = false): Promise<void> {
   const m = mood.value;
-  if (!m || !canSearch.value) return;
-  const from = selectedColumn.value;
-  const extra = from.kind === 'version' || from.kind === 'before' ? parseLines(from.text) : [];
-  const d = addDraft(m.id, { source: kind === 'arrange' ? 'arranged' : 'suggested', running: kind });
-  selectedKey.value = d.key;
-  void scrollToColumn(d.key);
+  if (!m || searchBusy.value || !(canAdd.value || (kind === 'learn' && selectedDraft.value?.source === 'learned' && !selectedDraft.value.profile))) return;
+  const extra = parseLines(editorText.value);
+  if (!extra.length) return;
+  const reusable = kind === 'learn' && selectedDraft.value?.source === 'learned' && !selectedDraft.value.profile ? selectedDraft.value : null;
+  const d = reusable ?? addDraft(m.id, { source: kind === 'learn' ? 'learned' : kind === 'arrange' ? 'arranged' : 'suggested', name: `${kind === 'learn' ? 'Preview' : kind === 'arrange' ? 'Recombined' : 'Suggestion'} ${drafts.value.length + 1}`, text: extra.join('\n') });
+  d.running = kind;
+  if (rebuild) d.name = `Rebuild ${drafts.value.length}`;
+  if (kind === 'learn') selectedKey.value = d.key;
   const t = bump(d.key);
   // Flags may change while the search runs; then its review is out of date.
   const sigAtStart = flagSig.value;
@@ -452,21 +419,24 @@ async function search(kind: 'arrange' | 'suggest'): Promise<void> {
     const r = await invoke<TuneResult>('tune_mood', {
       moodId: m.id,
       mode: kind,
+      rebuild,
       extraWords: extra,
       bank: kind === 'suggest' ? WORD_BANK : [],
       focusEntryId: pinnedFocus.value,
       excludeWords: prefs.value[m.id]?.neverSuggest ?? [],
-      candidates: [],
+      candidates: drafts.value.filter(x => x.key !== d.key && x.text.trim()).map(x => parseLines(x.text)),
     });
     if (tokens.get(d.key) !== t) return;
     const p = r.proposals[0];
     if (!p) {
       removeDraft(m.id, d.key);
-      toast.showInfo('Nothing beat Current');
+      toast.showInfo('No new wording proposal');
       return;
     }
+    if (d.name === 'Draft') d.name = `Preview ${d.key}`;
     d.text = p.lines.join('\n');
     d.review = p;
+    d.profile = p.profile;
     d.reviewedLines = p.lines.join('\n');
     d.reviewedAgainst = r.linesTunedFrom.join('\n');
     d.reviewedFlags = sigAtStart;
@@ -487,31 +457,12 @@ function cancelSearch(key: number): void {
 
 // --- Split ---
 
-function openSplit(d: MoodDraft): void {
-  if (!d.split) return;
-  const existing = drafts.value.find((x) => x.source === 'split');
-  if (existing) removeDraft(selectedId.value, existing.key);
-  const at = drafts.value.findIndex((x) => x.key === d.key) + 1;
-  const s = addDraft(selectedId.value, { source: 'split', name: 'Split', split: d.split, reviewedAgainst: d.reviewedAgainst }, at);
-  selectedKey.value = s.key;
-}
-
 // --- Use ---
 
-const confirm = reactive({ open: false, title: '', lines: [] as string[], action: null as null | (() => void) });
 const using = ref(false);
 
-function askBreak(broken: Regression[], action: () => void): void {
-  if (broken.length === 0) {
-    action();
-    return;
-  }
-  confirm.title = confirmTitle(broken.length);
-  confirm.lines = broken.map((r) =>
-    confirmLine(r.outcome.song.name, r.outcome.before, r.outcome.after, bandOf(r.outcome.song.entryId), r.leftTop),
-  );
-  confirm.action = action;
-  confirm.open = true;
+function askBreak(_tradeoffs: Regression[], action: () => void): void {
+  action();
 }
 
 async function onUse(key: number | 'current'): Promise<void> {
@@ -537,6 +488,7 @@ async function useLines(moodId: string, d: MoodDraft): Promise<void> {
   const review = d.review;
   if (!m || !review) return;
   const oldLines = [...m.prompts];
+  const oldProfile = m.profile ?? null;
   const freshBefore = (store.moodBaselines[moodId]?.review.flags ?? []).filter((f) => f.fresh).map((f) => f.song.entryId);
   using.value = true;
   let converted: MoodFlagRow[] = [];
@@ -547,6 +499,8 @@ async function useLines(moodId: string, d: MoodDraft): Promise<void> {
       lines: review.lines,
       holdingEntryIds: holdingEntryIds(review),
       reachedBars: reachedBars(review),
+      profile: review.profile,
+      reviewSignature: review.targetSignature,
     });
     store.hydrate(out.state);
     converted = out.converted;
@@ -556,15 +510,15 @@ async function useLines(moodId: string, d: MoodDraft): Promise<void> {
   } finally {
     using.value = false;
   }
-  const used = { name: d.name, source: d.source, text: d.text };
+  const used = { name: d.name, source: d.source, text: d.text, profile: d.profile };
   const at = draftList(moodId).findIndex((x) => x.key === d.key);
   removeDraft(moodId, d.key);
   for (const b of draftList(moodId).filter((x) => x.source === 'before')) removeDraft(moodId, b.key);
-  addDraft(moodId, { source: 'before', name: 'Before', text: oldLines.join('\n') }, 0);
+  addDraft(moodId, { source: 'before', name: 'Before', text: oldLines.join('\n'), profile: oldProfile }, 0);
   selectedKeyByMood[moodId] = 'current';
   toast.showSuccess(`${m.name} updated`, {
     label: 'Undo',
-    run: () => void undo(moodId, review.lines, oldLines, freshBefore, converted, used, at),
+    run: () => void undo(moodId, review.lines, oldLines, freshBefore, converted, used, at, oldProfile, review.profile?.id ?? null),
   });
   void rescore(moodId);
 }
@@ -577,8 +531,10 @@ async function undo(
   oldLines: string[],
   freshBefore: string[],
   converted: MoodFlagRow[],
-  used: Pick<MoodDraft, 'name' | 'source' | 'text'>,
+  used: Pick<MoodDraft, 'name' | 'source' | 'text' | 'profile'>,
   at: number,
+  oldProfile: import('@generated/index').LearnedMoodProfile | null,
+  expectedProfileId: string | null,
 ): Promise<void> {
   try {
     // One transaction: the lines go back and the converted flags with them.
@@ -589,6 +545,8 @@ async function undo(
         lines: oldLines,
         holdingEntryIds: freshBefore,
         restore: converted,
+        profile: oldProfile,
+        expectedProfileId,
       }),
     );
   } catch (e) {
@@ -709,7 +667,7 @@ async function recalibrateAll(): Promise<void> {
 
 // --- Never suggest (per-mood prefs) ---
 
-const prefs = ref<Record<string, MoodTunePrefs>>({});
+
 /// The preferences could be read; until then (or after a failure) Never
 /// suggest is off, so nothing overwrites what is stored.
 const prefsOk = ref(false);
@@ -722,30 +680,26 @@ onMounted(async () => {
   }
 });
 const neverList = computed(() => prefs.value[selectedId.value]?.neverSuggest ?? []);
-async function neverSuggest(line: string): Promise<void> {
-  if (!prefsOk.value) return;
-  const id = selectedId.value;
-  const have = new Set(neverList.value.map((w) => w.toLowerCase()));
-  const words = neverSuggestWords(line).filter((w) => !have.has(w.toLowerCase()));
-  if (words.length === 0) return;
-  try {
-    prefs.value = await invoke<Record<string, MoodTunePrefs>>('add_never_suggest', { mood: id, words });
-    toast.showInfo(`Never suggest: ${words.join(', ')}`, {
-      label: 'Undo',
-      run: async () => {
-        for (const w of words) await removeNeverSuggest(id, w);
-      },
-    });
-  } catch (e) {
-    toast.showError(String(e));
-  }
-}
 async function removeNeverSuggest(id: string, word: string): Promise<void> {
   try {
     prefs.value = await invoke<Record<string, MoodTunePrefs>>('remove_never_suggest', { mood: id, word });
   } catch (e) {
     toast.showError(String(e));
   }
+}
+const comparisons = computed(() => prefs.value[selectedId.value]?.comparisons ?? []);
+const higherSong = ref<string | null>(null);
+const lowerSong = ref<string | null>(null);
+const comparisonSongs = computed(() => store.libraryEntries.filter(e => e.entryType === 'music').map(e => ({title: e.name, value:e.id})).sort((a,b) => a.title.localeCompare(b.title)));
+const comparisonName = (id: string) => store.findLibraryEntry(id)?.name ?? 'Removed song';
+async function saveComparisons(pairs: [string,string][]): Promise<void> {
+  const id = selectedId.value;
+  try {
+    prefs.value = await invoke<Record<string, MoodTunePrefs>>('set_mood_comparisons', {mood:id,pairs});
+    for (const d of drafts.value) d.review = null;
+    delete store.moodBaselines[id];
+    higherSong.value = lowerSong.value = null;
+  } catch (e) { toast.showError(String(e)); }
 }
 const neverOpen = ref(false);
 
@@ -879,13 +833,13 @@ function onKeydown(e: KeyboardEvent): void {
     void moveMood(e.key === 'ArrowUp' ? -1 : 1);
     return;
   }
-  if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+  if ((e.altKey || (e.target as HTMLElement)?.closest('[role="tablist"]')) && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
     e.preventDefault();
     const keys = columns.value.map((c) => c.key);
     const i = keys.indexOf(selectedKey.value);
     const next = keys[Math.max(0, Math.min(keys.length - 1, i + (e.key === 'ArrowLeft' ? -1 : 1)))];
     selectedKey.value = next;
-    document.querySelector<HTMLElement>(`[data-col="${next}"] .col-head`)?.focus();
+    document.querySelector<HTMLElement>(`[data-version-key="${next}"]`)?.focus();
     return;
   }
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'd' || e.key === 'D')) {
@@ -898,8 +852,7 @@ function onKeydown(e: KeyboardEvent): void {
     const d = selectedDraft.value;
     if (e.shiftKey) {
       if (d) void onUse(d.key);
-    } else if (d) void evaluate(selectedId.value, d);
-    else void evaluateCurrent();
+    } else void search('learn');
   }
 }
 onBeforeUnmount(() => {
@@ -954,7 +907,7 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
         />
         <h1 v-else class="mood-title">{{ selectedName }}</h1>
         <span v-if="!isEnergy" class="counts text-body-2 text-medium-emphasis">
-          {{ songCount }} songs · {{ flagCount(selectedId) }} flags
+          {{ songCount }} songs · {{ flagCount(selectedId) }} examples
         </span>
         <span v-if="updating" class="updating text-caption text-medium-emphasis">
           <VProgressCircular indeterminate size="12" width="2" class="mr-1" />Updating bars…
@@ -1004,67 +957,59 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
       </section>
 
       <template v-else-if="mood">
-        <!-- Versions -->
-        <div class="versions-row">
-          <div class="versions-scroll">
-            <MoodVersionColumn
-              v-for="c in columns"
-              :key="c.key"
-              :ref="(el) => setColRef(c.key, el)"
-              :col="c"
-              :selected="c.key === selectedKey"
-              :current-lines="mood.prompts"
-              :mood-name="mood.name"
-              :mood-name-of="moodNameOf"
-              :other-mood-names="otherMoodNames"
-              :never-suggest-off="!prefsOk"
-              :busy="using"
-              @select="selectedKey = c.key"
-              @rename="(n) => { const d = drafts.find((x) => x.key === c.key); if (d) rename(d, n); }"
-              @discard="discard(c.key)"
-              @update:text="(t) => { const d = drafts.find((x) => x.key === c.key); if (d) onText(d, t); }"
-              @commit="() => { const d = drafts.find((x) => x.key === c.key); if (d) onCommit(d); }"
-              @fork="onFork"
-              @use="onUse(c.key)"
-              @cancel="cancelSearch(c.key as number)"
-              @never-suggest="neverSuggest"
-              @open-split="() => { const d = drafts.find((x) => x.key === c.key); if (d) openSplit(d); }"
-            />
-            <!-- Ghost last column: type a new version, or make one -->
-            <section class="ghost-col" aria-label="New version">
-              <textarea
-                class="ghost-input"
-                rows="2"
-                placeholder="Type a version"
-                :disabled="!canAdd"
-                aria-label="Type a version"
-                @input="onGhostInput"
-              />
-              <div class="ghost-actions">
-                <span class="ghost-btn">
-                  <VBtn size="small" variant="tonal" :disabled="!canAdd" @click="copySelected">Copy</VBtn>
-                  <VTooltip activator="parent" location="top" open-on-focus>
-                    {{ canAdd ? 'Copy the selected column (Ctrl+D)' : `${MAX_PAGE_VERSIONS} versions at most` }}
-                  </VTooltip>
-                </span>
-                <span class="ghost-btn">
-                  <VBtn size="small" variant="tonal" :disabled="!canSearch" @click="search('arrange')">Arrange</VBtn>
-                  <VTooltip activator="parent" location="top" open-on-focus>
-                    {{ flaggedIds.size === 0 ? 'Flag a few songs first' : "Search the selected column's words and Current's" }}
-                  </VTooltip>
-                </span>
-                <span class="ghost-btn">
-                  <VBtn size="small" variant="tonal" :disabled="!canSearch" @click="search('suggest')">Suggest</VBtn>
-                  <VTooltip activator="parent" location="top" open-on-focus>
-                    {{ flaggedIds.size === 0 ? 'Flag a few songs first' : 'Search new words too' }}
-                  </VTooltip>
-                </span>
-              </div>
-              <div v-if="!canAdd" class="ghost-cap text-caption text-medium-emphasis">{{ versionCount }}/{{ MAX_PAGE_VERSIONS }}</div>
-            </section>
+        <div class="version-toolbar">
+          <div class="version-tabs" role="tablist" aria-label="Scoring versions">
+            <button v-for="c in columns.filter(c => c.kind !== 'split')" :key="c.key" :data-version-key="c.key" type="button" role="tab" :aria-selected="c.key === selectedKey" :tabindex="c.key === selectedKey ? 0 : -1" :class="{ active: c.key === selectedKey }" @click="selectedKey = c.key">
+              {{ c.key === 'current' ? 'Saved' : c.kind === 'before' ? 'Previous' : c.name }}
+              <span v-if="c.running" class="text-caption">…</span>
+            </button>
           </div>
+          <VBtn v-if="selectedDraft" variant="text" size="small" :disabled="searchBusy || using" @click="discard(selectedDraft.key)">Discard</VBtn>
         </div>
-
+        <section class="description-editor" aria-label="Mood description">
+          <VTextarea id="mood-more" v-model="moreText" label="More like" variant="outlined" density="compact" rows="2" auto-grow hide-details :disabled="using || searchBusy || (!canAdd && (!selectedDraft || selectedDraft.source === 'before'))" />
+          <VTextarea v-model="lessText" label="Less like" variant="outlined" density="compact" rows="2" auto-grow hide-details :disabled="using || searchBusy || (!canAdd && (!selectedDraft || selectedDraft.source === 'before'))" />
+        </section>
+        <div class="preview-toolbar">
+          <VMenu>
+            <template #activator="{ props: menuProps }"><VBtn v-bind="menuProps" variant="text" size="small" append-icon="mdi-chevron-down" :disabled="!canSearch || searchBusy">Wording</VBtn></template>
+            <VList density="compact">
+              <VListItem title="Suggest alternatives" @click="search('suggest')" />
+              <VListItem title="Recombine these words" @click="search('arrange')" />
+              <VDivider />
+              <VListItem title="Rebuild from wording" subtitle="Relearn the whole mood" @click="search('learn', true)" />
+            </VList>
+          </VMenu>
+          <VProgressCircular v-if="searchBusy || selectedColumn.evaluating" indeterminate size="18" width="2" />
+          <span v-if="selectedFit" class="text-caption text-medium-emphasis">Feedback disagreement {{ selectedFit.miss.toFixed(3) }}</span>
+          <VChip v-if="selectedColumn.profile && selectedColumn.profile.version < 6" size="x-small" variant="tonal">Earlier scoring<VTooltip activator="parent">This version predates evidence-controlled learning; compare its numerical scores with care.</VTooltip></VChip>
+          <VChip v-if="selectedColumn.profile && selectedColumn.profile.trainingCount !== flaggedIds.size" size="x-small" color="primary" variant="tonal">Feedback changed</VChip>
+          <VSpacer />
+          <VBtn v-if="runningDraft" variant="text" size="small" @click="cancelSearch(runningDraft.key)">Cancel</VBtn>
+          <VBtn v-else-if="canApply" color="primary" variant="tonal" :disabled="using" @click="onUse(selectedKey)">{{ selectedDraft?.source === 'before' ? 'Restore version' : 'Apply' }}</VBtn>
+          <VBtn v-else color="primary" variant="tonal" :disabled="using || searchBusy || !canPreview || !moreText.trim()" @click="search('learn')">Preview</VBtn>
+          <VBtn v-if="canApply && selectedDraft?.source !== 'before'" variant="text" size="small" :disabled="using || searchBusy" @click="search('learn')">Refit</VBtn>
+        </div>
+        <div v-if="selectedColumn.error" role="alert" class="text-body-2 text-error">{{ selectedColumn.error }}</div>
+        <details v-if="selectedColumn.profile" class="scoring-details">
+          <summary>Scoring details</summary>
+          <div class="text-caption text-medium-emphasis">{{ selectedColumn.profile.trainingCount }} examples · {{ selectedColumn.profile.adjustment ? 'Saved model + local feedback' : selectedColumn.profile.method === 'local' ? 'Similar sounds' : selectedColumn.profile.method === 'global' ? 'Broad pattern' : selectedColumn.profile.method === 'words' ? 'Words only' : `${selectedColumn.profile.audioWeights.length} audio signals` }}</div>
+          <div v-if="selectedColumn.review?.validationMae != null" class="text-caption text-medium-emphasis">Earlier rating error {{ selectedColumn.review.validationMae.toFixed(3) }}</div>
+          <div v-if="selectedColumn.review?.validationLoss != null" class="text-caption text-medium-emphasis">Held-out disagreement {{ selectedColumn.review.validationLoss.toFixed(3) }}</div>
+          <div v-for="axis in selectedColumn.profile.wordAxes" :key="axis.label" class="text-caption">{{ axis.weight.toFixed(3) }} · {{ axis.prompts.join(', ') }}</div>
+        </details>
+        <details class="mb-4">
+          <summary>Comparisons<span v-if="comparisons.length"> · {{ comparisons.length }}</span></summary>
+          <div v-for="(pair,i) in comparisons" :key="pair.join(':')" class="d-flex align-center ga-2 mt-2">
+            <span class="text-body-2">{{ comparisonName(pair[0]) }} <span class="text-medium-emphasis">more {{ mood.name }} than</span> {{ comparisonName(pair[1]) }}</span>
+            <VBtn icon="mdi-close" size="x-small" variant="text" aria-label="Remove comparison" @click="saveComparisons(comparisons.filter((_,n) => n !== i))" />
+          </div>
+          <div class="d-flex align-center ga-3 mt-3">
+            <VAutocomplete v-model="higherSong" :items="comparisonSongs" label="More" density="compact" hide-details />
+            <VAutocomplete v-model="lowerSong" :items="comparisonSongs" label="Less" density="compact" hide-details />
+            <VBtn :disabled="!prefsOk || !higherSong || !lowerSong || higherSong === lowerSong" @click="higherSong && lowerSong && saveComparisons([...comparisons, [higherSong,lowerSong]])">Add</VBtn>
+          </div>
+        </details>
         <!-- Flags and Top 15 -->
         <div class="bottom">
           <MoodFlagsPanel
@@ -1078,8 +1023,8 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
             class="panel"
             :mood-id="mood.id"
             :review="topReview"
-            :is-current="selectedColumn.kind === 'current'"
-            :version-name="selectedColumn.name"
+            :is-current="selectedColumn.kind === 'current' || !selectedColumn.review"
+            :version-name="selectedColumn.review ? selectedColumn.name : 'Saved'"
             :flagged-ids="flaggedIds"
             :high-ids="highIds"
           />
@@ -1088,18 +1033,6 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
     </main>
 
     <!-- Dialogs -->
-    <VDialog v-model="confirm.open" max-width="560">
-      <VCard :title="confirm.title">
-        <VCardText>
-          <div v-for="l in confirm.lines" :key="l" class="text-body-2">{{ l }}</div>
-        </VCardText>
-        <VCardActions>
-          <VSpacer />
-          <VBtn variant="plain" @click="confirm.open = false">Cancel</VBtn>
-          <VBtn color="error" variant="flat" @click="confirm.open = false; confirm.action?.()">Use anyway</VBtn>
-        </VCardActions>
-      </VCard>
-    </VDialog>
     <PromptDialog
       v-model="askSplitNameOpen"
       title="New mood name"
@@ -1184,10 +1117,22 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
 </template>
 
 <style scoped>
+ .description-editor { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; flex: 0 0 auto; }
+.version-toolbar, .preview-toolbar { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.version-tabs { display: flex; flex: 1; overflow-x: auto; gap: 4px; }
+.version-tabs button { appearance: none; background: transparent; border: 0; border-bottom: 2px solid transparent; color: rgba(var(--v-theme-on-surface), .6); padding: 8px 12px; white-space: nowrap; font-size: .875rem; }
+.version-tabs button.active { color: rgb(var(--v-theme-primary)); border-bottom-color: currentColor; }
+.version-tabs button:focus-visible { outline: 1px solid currentColor; }
+.scoring-details { font-size: .75rem; color: rgba(var(--v-theme-on-surface), .6); }
+.scoring-details[open] { padding-bottom: 12px; }
+@media (max-width: 850px) { .description-editor { grid-template-columns: 1fr; } }
+
+
 .moods-page {
   height: calc(100vh - var(--v-layout-top, 0px) - var(--v-layout-bottom, 0px));
   display: grid;
   grid-template-columns: 200px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   /* clip, not hidden: nothing (such as scrollIntoView) may scroll the page itself. */
   overflow: clip;
 }
@@ -1248,7 +1193,8 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
   flex-direction: column;
   min-height: 0;
   min-width: 0;
-  padding: 8px 12px 10px;
+  padding: 8px 16px 16px;
+  overflow: hidden;
   gap: 8px;
 }
 .main-head {
@@ -1270,54 +1216,6 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
   display: inline-flex;
   align-items: center;
 }
-.versions-row {
-  display: flex;
-  gap: 8px;
-  flex: 0 1 auto;
-  min-height: 180px;
-  height: 36%;
-}
-.versions-scroll {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  min-width: 0;
-  flex: 1 1 auto;
-  align-items: stretch;
-  padding-bottom: 4px;
-  scroll-snap-type: x proximity;
-  /* Snapped and scrolled-to columns land right of the sticky Current. */
-  scroll-padding-left: 288px;
-}
-.ghost-col {
-  flex: 0 0 270px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px;
-  border: 1px dashed rgba(var(--v-theme-on-surface), 0.2);
-  border-radius: 6px;
-  scroll-snap-align: start;
-}
-.ghost-input {
-  resize: none;
-  font: inherit;
-  font-size: 0.875rem;
-  color: inherit;
-  background: transparent;
-  border: 0;
-  outline: none;
-  min-height: 44px;
-}
-.ghost-input::placeholder {
-  color: rgba(var(--v-theme-on-surface), 0.45);
-}
-.ghost-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
 .focus-pin {
   display: inline-flex;
   align-items: center;
@@ -1334,23 +1232,14 @@ const selectedName = computed(() => (isEnergy.value ? 'Energy' : (mood.value?.na
   grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
   gap: 12px;
 }
-/* Narrow: the page scrolls; the two panels stack, each scrolling on its own. */
-.narrow .mood-main {
-  overflow-y: auto;
-}
-.narrow .versions-row {
-  flex: 0 0 auto;
-  height: 380px;
-  max-height: none;
-}
+/* One scroll surface per result panel; the editor stays in place. */
 .narrow .bottom {
-  flex: 0 0 auto;
   grid-template-columns: minmax(0, 1fr);
-}
-.narrow .panel {
-  max-height: 360px;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
 }
 .panel {
+  min-height: 0;
+  overflow: auto;
   border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
   border-radius: 6px;
 }

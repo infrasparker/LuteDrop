@@ -41,7 +41,7 @@ struct RemoteCommand {
     #[serde(default)]
     track_id: Option<String>,
     #[serde(default)]
-    comp_id: Option<String>,
+    scene_id: Option<String>,
     #[serde(default)]
     clip_id: Option<String>,
     #[serde(default)]
@@ -201,14 +201,14 @@ fn handle_remote_command(container: &AppStateContainer, text: &str) {
             require_volume(cmd.volume)
                 .and_then(|v| actions::set_clip_volume(container, id, v))
         }),
-        "activate_comp" => require_id(&cmd.comp_id, "compId")
-            .and_then(|id| actions::activate_comp_audio(container, id)),
-        "stop_comp" => require_id(&cmd.comp_id, "compId")
-            .and_then(|id| actions::stop_comp_audio(container, id)),
-        "pause_comp" => require_id(&cmd.comp_id, "compId")
-            .and_then(|id| actions::pause_comp_audio(container, id)),
-        "resume_comp" => require_id(&cmd.comp_id, "compId")
-            .and_then(|id| actions::resume_comp_audio(container, id)),
+        "activate_scene" => require_id(&cmd.scene_id, "sceneId")
+            .and_then(|id| actions::activate_scene_audio(container, id)),
+        "stop_scene" => require_id(&cmd.scene_id, "sceneId")
+            .and_then(|id| actions::stop_scene_audio(container, id)),
+        "pause_scene" => require_id(&cmd.scene_id, "sceneId")
+            .and_then(|id| actions::pause_scene_audio(container, id)),
+        "resume_scene" => require_id(&cmd.scene_id, "sceneId")
+            .and_then(|id| actions::resume_scene_audio(container, id)),
         "stop_all" => actions::stop_all_audio(container),
         "pause_all" => actions::pause_all_audio(container),
         "resume_all" => actions::resume_all_audio(container),

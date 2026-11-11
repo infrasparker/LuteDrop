@@ -22,9 +22,9 @@ const emit = defineEmits<{
 const store = useAppStore();
 const { tags } = storeToRefs(store);
 
-function cycleTag(tag: string): void {
+function cycleTag(tag: string, direction: 1 | -1): void {
   if (props.untagged) emit('update:untagged', false);
-  emit('update:selection', cycleChip(props.selection, tag));
+  emit('update:selection', cycleChip(props.selection, tag, direction));
 }
 
 function toggleUntagged(): void {
@@ -53,7 +53,7 @@ function toggleUntagged(): void {
       :key="tag"
       :label="tag"
       :state="chipState(selection, tag)"
-      @cycle="cycleTag(tag)"
+      @cycle="(direction) => cycleTag(tag, direction)"
     />
     <span v-if="tags.length === 0 && !untagged" class="text-caption text-medium-emphasis align-self-center">No tags yet</span>
   </div>

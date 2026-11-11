@@ -345,19 +345,20 @@ pub fn update_library_entry_file_info(
 }
 
 /// Returns every clip that references the given library entry, with the
-/// enclosing comp and track names for display. Empty vec when unreferenced.
+/// enclosing scene and track names for display. Empty vec when unreferenced.
 pub fn get_entry_usage(
     conn: &Connection,
     entry_id: &str,
 ) -> Result<Vec<LibraryEntryUsage>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT clips.id, comps.name, tracks.name
+            "SELECT clips.id, COALESCE(scenes.name, 'Track inventory'), tracks.name
              FROM clips
              JOIN tracks ON tracks.id = clips.track_id
-             JOIN comps  ON comps.id  = tracks.comp_id
+             LEFT JOIN scene_tracks st ON st.track_id=tracks.id
+             LEFT JOIN scenes ON scenes.id=st.scene_id
              WHERE clips.library_entry_id = ?1
-             ORDER BY comps.name ASC, tracks.name ASC",
+             ORDER BY scenes.name ASC, tracks.name ASC",
         )
         .map_err(|e| format!("Failed to prepare get_entry_usage: {e}"))?;
 
@@ -365,7 +366,7 @@ pub fn get_entry_usage(
         .query_map(params![entry_id], |row| {
             Ok(LibraryEntryUsage {
                 clip_id: row.get::<_, String>(0)?,
-                comp_name: row.get::<_, String>(1)?,
+                scene_name: row.get::<_, String>(1)?,
                 track_name: row.get::<_, String>(2)?,
             })
         })
@@ -384,6 +385,7 @@ pub fn delete_library_entry(conn: &Connection, id: &str) -> Result<(), String> {
         .unchecked_transaction()
         .map_err(|e| format!("Failed to begin delete transaction: {e}"))?;
 
+    tx.execute("UPDATE scene_tracks SET selected_clip_id=NULL,enabled=0 WHERE selected_clip_id IN (SELECT id FROM clips WHERE library_entry_id=?1)", params![id]).map_err(|e|e.to_string())?;
     tx.execute(
         "DELETE FROM clips WHERE library_entry_id = ?1",
         params![id],
@@ -686,7 +688,14 @@ pub fn save_mood_vocabulary(conn: &Connection, vocabulary: &MoodVocabulary) -> R
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("Failed to begin vocabulary transaction: {e}"))?;
-    let vocabulary = write_mood_vocabulary(conn, vocabulary)?;
+    let mut vocabulary = vocabulary.clone();
+    let old = settings::load_mood_vocabulary(conn)?;
+    for mood in &mut vocabulary.moods {
+        if old.moods.iter().find(|m| m.id == mood.id).is_some_and(|m| m.prompts != mood.prompts) {
+            mood.profile = None;
+        }
+    }
+    let vocabulary = write_mood_vocabulary(conn, &vocabulary)?;
     tx.commit().map_err(|e| format!("Failed to commit vocabulary transaction: {e}"))?;
     Ok(vocabulary)
 }
@@ -932,9 +941,9 @@ mod tests {
 
     // ── 4. delete_cascades_to_clips ───────────────────────────────────────────
 
-    /// Build the `config → group → comp → track` hierarchy and return
-    /// `(config_id, group_id, comp_id, track_id, comp_name, track_name)`.
-    fn make_hierarchy(conn: &Connection, comp_name: &str, track_name: &str) -> (String, String) {
+    /// Build the `config → board → scene → track` hierarchy and return
+    /// `(config_id, board_id, scene_id, track_id, scene_name, track_name)`.
+    fn make_hierarchy(conn: &Connection, scene_name: &str, track_name: &str) -> (String, String) {
         let config_id = Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO configurations (id, name, created_at, sort_order) VALUES (?1, 'Test', '0', 1000)",
@@ -942,28 +951,30 @@ mod tests {
         )
         .expect("insert config");
 
-        let group_id = Uuid::new_v4().to_string();
+        let board_id = Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO groups (id, name, sort_order, configuration_id) VALUES (?1, 'G', 0, ?2)",
-            params![group_id, config_id],
+            "INSERT INTO boards (id, name, sort_order, configuration_id) VALUES (?1, 'G', 0, ?2)",
+            params![board_id, config_id],
         )
-        .expect("insert group");
+        .expect("insert board");
 
-        let comp_id = Uuid::new_v4().to_string();
+        let scene_id = Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO comps (id, group_id, name, sort_order) VALUES (?1, ?2, ?3, 0)",
-            params![comp_id, group_id, comp_name],
+            "INSERT INTO scenes (id, board_id, name, sort_order) VALUES (?1, ?2, ?3, 0)",
+            params![scene_id, board_id, scene_name],
         )
-        .expect("insert comp");
+        .expect("insert scene");
 
         let track_id = Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO tracks (id, comp_id, name, sort_order) VALUES (?1, ?2, ?3, 0)",
-            params![track_id, comp_id, track_name],
+            "INSERT INTO tracks (id, name, sort_order) VALUES (?1, ?2, 0)",
+            params![track_id, track_name],
         )
         .expect("insert track");
 
-        (comp_id, track_id)
+        super::super::soundstage::attach_track(conn,&board_id,&track_id).unwrap();
+        conn.execute("INSERT INTO scene_tracks(scene_id,track_id,enabled,volume,sort_order) VALUES(?1,?2,1,1,0)",params![scene_id,track_id]).unwrap();
+        (scene_id, track_id)
     }
 
     #[test]
@@ -982,7 +993,7 @@ mod tests {
         )
         .expect("insert entry");
 
-        let (_comp_id, track_id) = make_hierarchy(&conn, "Thunder Storm", "Rain");
+        let (_scene_id, track_id) = make_hierarchy(&conn, "Thunder Storm", "Rain");
 
         let clip_id = Uuid::new_v4().to_string();
         conn.execute(
@@ -1031,7 +1042,7 @@ mod tests {
         )
         .expect("insert entry");
 
-        let (_comp_id, track_id) = make_hierarchy(&conn, "Rain Scene", "Drops");
+        let (_scene_id, track_id) = make_hierarchy(&conn, "Rain Scene", "Drops");
 
         let clip_id = Uuid::new_v4().to_string();
         conn.execute(
@@ -1044,7 +1055,7 @@ mod tests {
         let usage = get_entry_usage(&conn, &entry_id).expect("query usage");
         assert_eq!(usage.len(), 1, "expected one usage row");
         assert_eq!(usage[0].clip_id, clip_id);
-        assert_eq!(usage[0].comp_name, "Rain Scene");
+        assert_eq!(usage[0].scene_name, "Rain Scene");
         assert_eq!(usage[0].track_name, "Drops");
 
         let empty = get_entry_usage(&conn, "no-such-entry").expect("query no-such-entry");
@@ -1488,7 +1499,7 @@ mod tests {
         let mut v = MoodVocabulary::defaults();
         v.moods.retain(|m| m.id != "quirky");
         v.moods.iter_mut().find(|m| m.id == "grim").unwrap().name = "Dread".into();
-        v.moods.push(crate::models::MoodDef {
+        v.moods.push(crate::models::MoodDef { profile: None,
             id: "spooky".into(),
             name: " Spooky ".into(),
             prompts: vec!["ghosts".into(), "".into()],
@@ -1518,7 +1529,7 @@ mod tests {
         let conn = open_memory_db();
         let a = music_entry(&conn, "/a.mp3");
         let mut v = MoodVocabulary::defaults();
-        v.moods.push(crate::models::MoodDef { id: "spooky".into(), name: "Spooky".into(), prompts: vec!["ghosts".into()] });
+        v.moods.push(crate::models::MoodDef { profile: None, id: "spooky".into(), name: "Spooky".into(), prompts: vec!["ghosts".into()] });
         save_mood_vocabulary(&conn, &v).unwrap();
         set_user_mood_level(&conn, std::slice::from_ref(&a), "spooky", Some(0.75)).unwrap();
 
@@ -1539,7 +1550,7 @@ mod tests {
         let mut v = MoodVocabulary::defaults();
         v.moods.retain(|m| m.id != "quirky");
         v.moods[0].prompts = vec!["calm".into()];
-        v.moods.push(crate::models::MoodDef { id: "spooky".into(), name: "Spooky".into(), prompts: vec!["ghosts".into()] });
+        v.moods.push(crate::models::MoodDef { profile: None, id: "spooky".into(), name: "Spooky".into(), prompts: vec!["ghosts".into()] });
         save_mood_vocabulary(&conn, &v).unwrap();
         apply_auto_moods(&conn, &a, &[("spooky".into(), 0.4), ("peaceful".into(), 0.6)]).unwrap();
         set_user_mood_level(&conn, std::slice::from_ref(&a), "spooky", Some(0.75)).unwrap();

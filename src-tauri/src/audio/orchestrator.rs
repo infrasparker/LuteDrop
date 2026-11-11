@@ -76,15 +76,21 @@ pub fn setup_track(
 
 pub fn update_track_config(tracks: &mut HashMap<String, ManagedTrack>, config: &Track) {
     if let Some(track) = tracks.get_mut(&config.id) {
-        track.config = config.clone();
-        // The pre-picked next index was computed against the OLD clip list; a
-        // shrunk list must not leave an out-of-range stored index (and a
-        // changed list makes the pick stale anyway). Re-picked from the live
-        // config at the next transition via start_clip.
-        track.next_clip_index = None;
-        // The stamp (if any) was for a preload target computed against the OLD
-        // config; it no longer applies (I-1).
-        track.last_preload_failure = None;
+        let current_id=track.current_clip_index.and_then(|i|track.config.clips.get(i)).map(|c|c.id.clone());
+        let list_changed=track.config.clips.iter().map(|c|&c.id).ne(config.clips.iter().map(|c|&c.id));
+        let mode_changed=serde_json::to_value(&track.config.mode).ok()!=serde_json::to_value(&config.mode).ok();
+        let next_id=track.next_clip_index.and_then(|i|track.config.clips.get(i)).map(|c|c.id.clone());
+        track.config=config.clone();
+        track.current_clip_index=current_id.and_then(|id|config.clips.iter().position(|c|c.id==id));
+        if list_changed || mode_changed {
+            track.next_clip_index=if !mode_changed {
+                next_id.and_then(|id|config.clips.iter().position(|c|c.id==id))
+            } else { None }.or_else(|| super::transitions::pick_next_clip_index(
+                &config.mode, track.current_clip_index, config.clips.len(), track.clips_played,
+            ));
+            track.last_preload_failure=None;
+            track.transitions.remap_pending(track.next_clip_index);
+        }
     }
 }
 

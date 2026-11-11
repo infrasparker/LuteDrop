@@ -1,0 +1,14 @@
+[
+  {"name":"Ominous baseline","sets":["ominous, foreboding, impending danger, threatening, dread music","ominous music suggesting that something threatening is about to happen","ominous, foreboding, dark, threatening, approaching danger instrumental music"]},
+  {"name":"Intimidating grandeur","sets":["ominous majesty, intimidating grandeur, vast, ancient, dangerous music","grand but intimidating music suggesting the scale of an indifferent and dangerous world","monumental, imposing, ominous, awe and dread instrumental music"]},
+  {"name":"Abyssal","sets":["abyssal, cavernous, vast, chilling, ancient music","music suggesting an immense and ominous subterranean abyss","abyssal, hollow, dark, resonant, forbidding instrumental music"]},
+  {"name":"Cold desolation","sets":["cold, desolate, barren, hollow, ominous music","music expressing a chilling and empty desolation without comfort or warmth","cold, desolate, brooding, spectral, forgotten instrumental music"]},
+  {"name":"Cavernous dread","sets":["cavernous, resonant, ominous, subterranean, dread music","ominous music with vast hollow echoes and a sense of approaching danger","cavernous, echoing, dark, foreboding, hollow instrumental music"]},
+  {"name":"Ancient dread","sets":["ancient, forgotten, ominous, forbidding, dread music","music suggesting dread in a vast and ancient place abandoned long ago","ancient, spectral, ominous, solemn, cold instrumental music"]},
+  {"name":"Quiet vigilance","sets":["quiet vigilance, apprehensive, tense, held breath, ominous music","music suggesting wary anticipation while navigating a dangerous and dark place","watchful, apprehensive, foreboding, restrained tension instrumental music"]},
+  {"name":"Monolithic","sets":["monolithic, immense, imposing, brooding, ominous music","music suggesting the intimidating weight of something vast and ancient","monolithic, dark, solemn, intimidating, monumental instrumental music"]},
+  {"name":"Desolate solemnity","sets":["desolate, solemn, grim, hollow, spectral music","solemn music expressing an empty and ancient desolation","desolate, grave, brooding, cold, mournful instrumental music"]},
+  {"name":"Subterranean atmosphere","sets":["subterranean, cavernous, cold, resonant, eerie music","music evoking a vast underground chasm with distant echoes and cold drones","hollow, cavernous, sparse, subterranean, glassy instrumental music"]},
+  {"name":"Ominous desolation","sets":["ominous, desolate, cavernous","foreboding, cold, hollow","brooding, spectral, ancient"]},
+  {"name":"Haunted vastness","sets":["haunted, vast, cavernous, chilling, spectral music","music suggesting a haunted and immense place filled with cold echoes","haunted, barren, ancient, eerie, hollow instrumental music"]}
+]

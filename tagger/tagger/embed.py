@@ -49,7 +49,26 @@ class MuqEmbedder:
         from muq import MuQMuLan
 
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
-        self._model = MuQMuLan.from_pretrained(config.MODEL_ID).to(self._device).eval()
+        self._model = MuQMuLan.from_pretrained(config.MODEL_ID, revision=config.MODEL_REVISION).to(self._device).eval()
+
+    def embed_audio_features(self, wavs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Search vectors and four pooled hidden layers from the same audio pass."""
+        import torch
+        final, hidden = [], []
+        with self._lock:
+            if self._model is None: self._load()
+            model = self._model; audio = model.mulan.audio
+            with torch.inference_mode():
+                for offset in range(0, len(wavs), 2):
+                    x = torch.tensor(wavs[offset:offset+2], dtype=torch.float32, device=self._device)
+                    states = audio.model(x, output_hidden_states=True).hidden_states
+                    hidden.extend(torch.stack([states[k].mean(dim=1) for k in [3, 6, 9, 12]], dim=1).cpu().numpy())
+                    projected = audio.proj(states[audio.use_layer_idx])
+                    projected, _ = audio.transformer(projected, return_all_layers=True)
+                    latent = model.mulan.audio_to_latents(projected.mean(dim=-2))
+                    latent /= torch.linalg.norm(latent, dim=-1, keepdim=True).clamp_min(1e-12)
+                    final.extend(latent.cpu().numpy())
+        return np.asarray(final), np.asarray(hidden).mean(axis=0)
 
     def embed_windows(self, wavs: np.ndarray) -> np.ndarray:
         import torch

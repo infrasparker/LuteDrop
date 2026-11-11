@@ -38,7 +38,7 @@ installer fetches it automatically, the portable build assumes it's present).
 
 ## Analyzer
 
-The analyzer listens to music entries: it suggests their mood values and powers Scry. It needs the analyzer service, a separate service that needs a GPU host; see [`tagger/README.md`](tagger/README.md) for how to run it. The **Analyzer** button in the Library toolbar opens the settings. Tags and roles are always set by hand.
+The analyzer listens to music entries: it suggests their mood values and powers Scry. It needs the analyzer service, a separate service that needs a GPU host; see [`tagger/README.md`](tagger/README.md) for how to run it. The **Analyzer** button in the Library toolbar opens the settings. Tags and roles are user-managed; the analyzer never changes them. Click a Role icon in the Library or Scry to switch between Combat and Non-combat.
 
 ### Role
 
@@ -63,23 +63,41 @@ Upgrading from the pools release clears the old pools; the next analysis run fil
 
 - **The profile.** One bar per mood, each with five levels (0, 0.25, 0.5, 0.75, 1). A bar at the analyzer's value is **Suggested** and drawn muted. Clicking a bar (or using the arrow keys on a focused bar) sets the nearest level; the bar is then **Set by you**, drawn in the accent colour, and hovering it shows "Set by you · suggested 0.62". **↺** goes back to the suggestion. A level you set always wins over the analyzer's.
 - The entry editor has a **Role** row and the mood profile under it. The Library's bulk bar has **Set mood levels…**, which opens the profile for the selected music; a click sets that level on every selected track, and a bar whose tracks differ shows "mixed".
-- **Lenses.** The Library and Scry have a row of lens chips, one per mood. Each chip is simply **on or off**. Moods that are on rank the list, highest first, by the *weaker* of their scores, so with Grim and Heroic on a track ranks high only when it is high in both. A mood never hides a track; tracks not analyzed yet stay, ranked last. The **Match** column shows the score used for ranking; hovering its header spells out the rule, for example "weakest of Heroic, Grim".
+- **Mood ranking.** The Library and Scry mood chips cycle **Off → High → Low**; right-click cycles backwards. High uses the mood score and Low uses `1 − score`. **Match** is their geometric mean: multiply those fits and take the Nth root for N preferences. This rewards a balanced fit across every chosen direction without a hard cutoff. Tracks with missing scores stay, ranked last. Manual levels take priority, with analyzer suggestions breaking ties. Arrows on the chips show the requested direction; hovering Match lists them.
 - **Energy bands.** After the mood chips, set a little apart, are three Energy chips: **Low** (below 0.375), **Mid** (0.375 to 0.625) and **High** (above 0.625), using the Energy you set, else the suggested one. So the levels 0 and 0.25 are Low, 0.5 is Mid, 0.75 and 1 are High. Any combination can be on, and a track shows when its Energy is in any of them. With none on there is no Energy filter; with any on, tracks without an Energy value are hidden. The bands only filter; they never change the order.
 - Ambiance is hidden while any mood or Energy band is on.
 - **Sorting** is done from the column headers only. The Library sorts by status (missing files first), Type, Name, Role, Energy, Duration, and Match while a mood is on; Scry by Name, Energy, Search (how close a track is to the search or seeds) and Match. Click a header to sort by it, again to flip the direction. Turning on the first mood sorts by Match, highest first; turning off the last one goes back to the view's default sort (Name in the Library, Search in Scry). While a mood is on, the Energy header does not sort, so the order never depends on Energy then; use the bands to narrow by Energy. Levels you set are coarse, so tracks set to the same level tie: within a level, Match and Energy order them by the analyzer's suggestion behind the level (the value shown does not change), and any tie left goes by name. The filter bar also has the Role filter.
-- Tag chips have three states, **off → include → exclude**, one per click: an entry passes when it has at least one included tag (if any is included) and none of the excluded ones (red outline, struck through). **Untagged** is a plain on/off filter on top.
+- Tag chips have three states, **off → include → exclude**, one per click (right-click reverses): an entry passes when it has at least one included tag (if any is included) and none of the excluded ones (red outline, struck through). **Untagged** is a plain on/off filter on top.
 
 #### Mood vocabulary
 
 **Moods** in the left rail opens the mood vocabulary: the moods the analyzer scores and the text prompts it compares each track with.
 
-- Each mood has a **name** (rename freely; stored levels stay attached through an internal id) and **prompts**, one per line. Moods can be added, removed and moved up or down; the order is the order of the lens chips and the profile. Energy is always last and has two sides of prompts: energetic and calm.
-- The **word bank** above the list holds tag words the analyzer's text model knows well. Clicking one adds it, on a line of its own, to the prompt field you were last in. Single tag words work as well as sentences, but not every word is reliable, so check with Preview.
-- **Preview** on a mood lists the 15 tracks its current prompts rank highest, with their album folder and raw similarity, without saving or recalibrating anything. It needs the analyzer. **Preview** under Energy lists the 15 most and the 15 least energetic tracks for the two sides as written (raw difference of similarities), the same way.
-- **Save** stores the vocabulary. Removing a mood deletes its values on every track; when that includes levels set by you, Save asks first and says how many.
-- **Recalibrate** clears the calibration and every suggested mood value (levels set by you stay) and starts an analysis run, which suggests every mood again from the current prompts. The new calibration comes from the analyzer's reference set when it has one, otherwise from your library. The panel shows which of the two the bars are measured against, and how many tracks it was taken from.
-- **Reset to defaults** puts back the shipped mood list and prompts. Levels set by you stay for moods still in the list; moods not in the defaults lose their values, and the confirm dialog says how many. It also works when the stored list is unreadable (when Save is blocked). If prompts changed, it then offers to recalibrate.
-- After you change a mood's prompts (or add a mood), Save offers to recalibrate. Until you do (or, with the reference set and the analyzer on, until the next analysis run), the lens row shows **Needs recalibration**, and the changed moods keep their old suggestions; the others are still suggested as before.
+The current mood editor uses one workflow for every mood: edit **More like / Less like**,
+add song **Examples**, choose **Preview**, then **Apply**. Saved and proposed
+versions have separate tabs; editing a saved version creates a draft. Wording
+search produces independent proposals and never replaces the source editor. Examples express direction and conviction: **Definitely** is a strong yes,
+**Understandable** a yes, **Stretch** a tentative no, and **No** a strong no.
+They do not request exact values. A fixed 300-recording reference safeguards the
+word meaning against broad changes inferred from a handful of selected examples.
+One-sided feedback uses a more conservative prior; additional feedback accumulates
+without treating the selected examples as the prevalence of a mood in the library.
+Agreeing more continues to reduce disagreement;
+a score above .9 is never pulled back to .9 merely because of a flag.
+**Comparisons** optionally order one song above another. All moods use the same
+rules. Earlier scoring versions are labeled when viewed beside a new preview.
+Wording search helpers are optional and produce
+previews through the same scorer. Scores remain fixed until an update is applied;
+changing feedback or importing songs does not retrain them. The smooth mapping
+preserves ranking near the endpoints. See [the analyzer's scoring details](tagger/README.md#saved-mood-profiles)
+for the exact 512D/1024D feature paths, fitting objective and compatibility rules.
+
+Each mood keeps a stable internal id, so renaming or reordering it preserves its
+scores and feedback. The mood actions menu manages names, ordering and removal.
+The Saved and Preview tabs show their own descriptions and fit summaries;
+**Previous** can restore the last scoring version. The editor and results share
+one page scroller. Technical details are collapsed by default. Energy remains a separate
+energetic-versus-calm measurement with its own existing editor.
 
 ### Scry
 
@@ -89,7 +107,7 @@ Upgrading from the pools release clears the old pools; the next analysis run fil
 - **More like this.** The action on a Library row opens Scry seeded with that track. Seeds are shown as removable chips, more can be added from the results, and the results are the tracks closest to the seeds together.
 - **Filters.** The results can be ranked by mood lens chips and filtered by Energy band and Role, and sorted from the column headers by Search, Name, Energy (while no mood is on) or Match.
 - **Map.** A scatter plot of every analyzed music track, colored by role. Hovering shows the track name and clicking plays it. Dragging draws a lasso that adds the enclosed tracks to the selection. Seeds and results are highlighted.
-- **Playlists.** The selection can become a playlist with **Create playlist**, which adds a composition with one shuffle track holding the selected tracks to a chosen group of the active configuration, or be appended to a track with **Add to existing track**.
+- **Playlists.** The selection can become a playlist with **Create playlist**, which creates a reusable shuffle track holding the selected audio files, optionally added to a board, or be appended to a track with **Add to existing track**.
 
 ### Library search
 
@@ -106,31 +124,34 @@ The Library search box also matches the album and artist folder names of an entr
 
 ### Structure
 
-Soundscapes are organized in a hierarchy:
-
-- **Configuration** — A saved state (think of it as a "project" or "session")
-- **Group** — A tab (e.g. "Combat", "Town", "Dungeon")
-- **Composition** — A scene within a group (e.g. "Tavern Interior", "Boss Fight")
-- **Track** — An audio layer within a composition (e.g. "Background Music", "Rain", "Crowd Chatter")
-- **Clip** — An audio file assigned to a track
+- **Configuration** — A campaign or session's collection of boards and scenes.
+- **Board** — A location or situation tab, such as City, Wilderness, or Battle.
+- **Scene** — A saved mix: which tracks play, their volumes, and their starting clips.
+- **Track** — A reusable sound layer with playback settings, such as Weather or Music.
+- **Clip** — An audio choice in a track, referencing an audio file in the Library.
 
 ### Creating a Soundscape
 
-1. On the **Soundstage** view, click **+** next to the group tabs to create a group.
-2. Click **Add Comp** to create a composition within the group.
-3. Select the composition, then click **Add Track**.
-4. Expand a track and click **Browse Library** to add clips from your library.
-5. Drag clips to reorder them within a track.
+1. Create a board with **+** beside the tabs.
+2. Use **All tracks** as a freeform workspace, or create an empty scene with **New scene**.
+3. Choose **Add track** to create or reuse a track in the current view. In a scene, new cards start switched off.
+4. Toggle tracks and choose clips directly on their cards. Choose **Save mix as scene** to capture the current mix.
+5. Tracks use full-width expandable rows with wide volume sliders. Click a track’s name or chevron to expand its editor. **Shared track settings** lists affected scenes; **Make independent copy for this scene** replaces just that scene’s reference with its own definition.
+6. Drag the grip at the left of a scene or track to reorder it. Scene track order belongs to that scene; All tracks has its own board order. Move up/down remains available in the action menus.
+7. Use **Tracks** in the sidebar to manage tracks even when no scene uses them.
+
+Track names, clips, order, playback mode, gaps, and fades are shared wherever that track
+is used. A single shared Music track can hold many songs, with each scene selecting its own clip. Split tracks when you need different playback settings, separate choice lists, or simultaneous layers. Names such as Travel themes or Tavern songs describe reusable collections. The inventory and track pickers show clip names and where each track is used in the current configuration; search also matches that context. Each scene saves its own on/off states, volumes, and clip selections. Duplicate
+a track to make an independent variation. Removing a scene or board keeps the tracks. Track actions use **Add to…** for scenes or boards and **Duplicate…** for an independent scene replacement or inventory copy. Existing destinations remain visible as **Already added**. Scene **Duplicate scene…** accepts a name and any destination board.
+Removing a clip used by scene selections requires choosing a replacement or disabling
+that track in the affected scenes. Audio files stay in the Library.
 
 ### Track Modes
 
-Each track has a playback mode:
-
-| Mode | Behavior |
-|------|----------|
-| **Seamless** | Loops a single clip continuously with optional loop points |
-| **Sequence** | Plays clips in order, optionally repeating |
-| **Shuffle** | Plays clips in random order, optionally repeating |
+- **Seamless** — Choose among multiple alternatives; the chosen clip loops with its Library loop points.
+- **One shot** — Play a chosen clip once, useful for cues.
+- **Sequence** — Play clips in order, optionally repeating.
+- **Shuffle** — Play clips randomly, optionally repeating; random gaps support effects such as varying thunder.
 
 ### Transitions (Sequence & Shuffle)
 
@@ -144,11 +165,16 @@ Tracks also support **fade in** and **fade out** toggles.
 
 ### Playback
 
-- **Play/Pause/Stop** individual tracks using the buttons on each track row.
-- **Activate a composition** to play all its tracks at once.
-- **Stop All / Pause All** from the transport bar at the bottom.
-- Adjust **master volume** and **per-track/clip volume** with sliders.
-- **Mute** individual tracks, clips, or entire compositions.
+- Each scene has its own card layout, including optional cards saved switched off. **All tracks** shows the complete board without changing playback.
+- Click a scene’s name to view its cards without changing playback. Its separate **Play** button loads the scene and replaces the mix. Shared tracks already playing the same clip continue without restarting, including pending random gaps.
+- Use **Add scene to mix** in the scene menu to keep other tracks playing.
+- Shuffle picks a random starting clip when loaded unless a specific starting clip was chosen in scene settings. Continuing an already-playing shared track preserves its current clip and random-gap timing.
+- Toggle tracks and choose clips directly from their cards; use **Save changes** to update the loaded scene.
+- Use **Stop All / Pause All** in the transport bar and adjust master, track, or clip volume.
+
+Existing libraries migrate automatically from Groups → Boards and Compositions → Scenes.
+Track and clip identities, playback settings, ordering, and Library references are retained.
+The app backs up the database before upgrading it. Tracks with the same name remain separate.
 
 ## Remote Control
 
@@ -162,7 +188,7 @@ LuteDrop runs a local web server so you can control playback from any device on 
    LuteDrop starts, so reopen the dialog for a fresh link after a restart.
 
 The remote provides:
-- Group tabs and composition selection
+- Board tabs, scene loading, and direct track controls
 - Play/pause/stop for tracks and compositions
 - Master, track, and clip volume control
 - Real-time status updates via WebSocket
@@ -255,7 +281,7 @@ a phone using mobile data and press play.
 
 ## Configurations
 
-Configurations save your entire soundstage state (groups, compositions, tracks, clips, and settings). Use the configuration picker in the top bar to switch between saved configurations — useful for different campaigns or sessions.
+Configurations organize boards and scene presets for different campaigns or sessions. The Tracks inventory and audio Library are shared across configurations. Duplicating a configuration copies its scene presets while reusing its tracks.
 
 ## Shortcuts
 
@@ -413,3 +439,24 @@ duplicated, so a library can be shared with other tools (e.g. Navidrome) without
 The mixer maps directly onto miniaudio's node hierarchy: master volume on the engine,
 per-track volume on a sound group, per-clip volume on the sound, and mute by zeroing the
 relevant node. Seamless loops use miniaudio's sample-accurate scheduling for crossfades.
+
+
+### Read-only prompt experiments
+
+`python scripts/compare-mood-prompts.py --out results.json` compares the saved Battle prompts and the named alternatives in `scripts/mood-prompt-experiments.json` using the live analyzer. It reads the app DB and credentials without printing credentials, uses cached embeddings, and never changes saved vocabulary, calibration, flags, or scores. The report includes ranked tracks, overlap/rank correlation with Heroic, and ranks of existing Battle flags. Edit the candidate JSON to try other wording or another mood. Lower Heroic overlap alone does not make a better mood; review the tracks and flags too. Raw scores from different prompt sets are not calibrated bars.
+
+`python scripts/tag-game-osts.py` previews a curated, exact-album OST tagging pass using embedded metadata (requires `mutagen`). With LuteDrop closed, `--apply` first backs up the database, then adds `game ost` and `ost: <series/game>` tags in one verified transaction. Existing tags and audio files are preserved; reruns do not duplicate memberships. Unknown albums are left for review.
+
+
+`python scripts/mood-spread-study.py --out <report.json>` runs a read-only library-wide vocabulary study. The candidate words/ordinary-language definitions and semantic synonym sets live in `scripts/mood-spread-words.json` and `scripts/mood-spread-phrases.json`. It tests each bare word, “X music,” the definition, and (where supplied) a synonym set, using the analyzer's frozen reference statistics to put all candidates on the same scale. Paired fit is the lower of the musical-name and semantic-anchor scores: a conservative diagnostic for wording sensitivity, not the app's combined mood ranking. Reports include every score, top tracks, rank agreement, overlap with existing moods, tracks below the strong band, and tracks absent from every current top-20 list. No names or album metadata enter the scoring request; it uses cached audio hashes only. No live vocabulary or library data is edited.
+
+
+`python scripts/refine-mood-sets.py --out <current-set-tests.json>` snapshots the **current** app vocabulary and flags, scores line/subword ablations and curated complete alternatives from `scripts/mood-set-alternatives.json`, then sends final comparisons to the live `/tune` endpoint. It also requests arrangements from each mood's own semantic word pool. The objective includes stability, so a flag-perfect current set often wins even when another set would offer a different useful profile. No proposal is accepted automatically.
+
+`python scripts/test-qualifier-sets.py --baseline <current-set-tests.json> --out <qualifiers.json>` tests additions from `scripts/qualifier-set-alternatives.json` against that same captured baseline. It sends three complete formulations per qualifier plus their actual three-line combination through `/score`. Combined scores use the app's real mean-embedding scoring and reference calibration, not an invented maximum or a renamed single-word score. The per-form range and agreement remain available to spot wording-sensitive results. Character descriptors such as Atmospheric or Choral are identified separately from feelings in the report; nothing is added to the app by running the study.
+
+
+For a focused follow-up, pass `--sets scripts/battle-identity-sets.json` to `scripts/test-qualifier-sets.py`. This tests alternative battle identities (Ferocious, Defiant, Menacing, and others) across the same frozen library. Inspect each target song's independent-form range as well as the combined bar: a qualifier can look stable library-wide while being a one-phrase match for a particular song. Keep broad Combat/Battle usefulness separate from more specific expressive identity, and avoid promoting a higher score alone into a label.
+
+
+`python scripts/audit-mood-vocabulary.py --base <battle-tests.json> --extra <qualifier-tests.json> --out <audit.json>` evaluates the complete candidate vocabulary jointly using the already-scored full library. It validates that both source studies share identical baseline scores/vocabulary and reference data, counts consistent support across albums and game/series tags, measures ranking correlation and high-match Jaccard overlap, and checks key duplicate pairs after leaving out each source group. It enumerates small one-to-three-addition trade-offs with explicit breadth and redundancy rules. Positive coactivation is treated separately from opposite rankings; semantic nesting and known vocal-proxy cases remain review constraints. These are diagnostic rules, not automatic edits or proof of emotional meaning.

@@ -1,6 +1,6 @@
 import { ref, reactive } from 'vue';
-import type { AppState, TrackPlaybackState, CompStatus } from '@generated/index';
-import { compStatus } from '../../shared/playback';
+import type { AppState, TrackPlaybackState, SceneStatus } from '@generated/index';
+import { sceneStatus } from '../../shared/playback';
 
 interface StateSnapshot {
   type: string;
@@ -15,7 +15,10 @@ interface PlaybackSnapshot {
   masterVolume: number;
 }
 
-const groups = ref<AppState['groups']>([]);
+const boards = ref<AppState['boards']>([]);
+const tracks = ref<AppState['tracks']>([]);
+const mix = ref<AppState['mix']>([]);
+const activeSceneId = ref<string | null>(null);
 const missingEntryIds = ref<Set<string>>(new Set());
 const playbackStates = reactive(new Map<string, TrackPlaybackState>());
 const connected = ref(false);
@@ -64,7 +67,10 @@ function connect(): void {
       const data: StateSnapshot | PlaybackSnapshot = JSON.parse(event.data);
       if (data.type === 'state') {
         const s = data as StateSnapshot;
-        groups.value = s.appState.groups;
+        boards.value = s.appState.boards;
+        tracks.value = s.appState.tracks;
+        mix.value = s.appState.mix;
+        activeSceneId.value = s.appState.activeSceneId;
         missingEntryIds.value = new Set(s.appState.missingEntryIds);
         applyPlaybackStates(s.playbackStates, s.masterVolume);
       } else if (data.type === 'playback') {
@@ -94,9 +100,9 @@ function send(command: Record<string, unknown>): void {
   }
 }
 
-function getCompStatus(compId: string): CompStatus {
-  const comp = groups.value.flatMap((g) => g.comps).find((c) => c.id === compId);
-  return compStatus(comp, playbackStates);
+function getSceneStatus(sceneId: string): SceneStatus {
+  const scene = boards.value.flatMap((g) => g.scenes).find((c) => c.id === sceneId);
+  return sceneStatus(scene, playbackStates);
 }
 
 export function useRemote() {
@@ -106,18 +112,21 @@ export function useRemote() {
   }
 
   return {
-    groups,
+    boards,
+    tracks,
+    mix,
+    activeSceneId,
     missingEntryIds,
     playbackStates,
     connected,
     masterVolume,
-    getCompStatus,
+    getSceneStatus,
     isEntryMissing: (entryId: string) => missingEntryIds.value.has(entryId),
 
-    activateComp: (compId: string) => send({ command: 'activate_comp', compId }),
-    stopComp: (compId: string) => send({ command: 'stop_comp', compId }),
-    pauseComp: (compId: string) => send({ command: 'pause_comp', compId }),
-    resumeComp: (compId: string) => send({ command: 'resume_comp', compId }),
+    activateScene: (sceneId: string) => send({ command: 'activate_scene', sceneId }),
+    stopScene: (sceneId: string) => send({ command: 'stop_scene', sceneId }),
+    pauseScene: (sceneId: string) => send({ command: 'pause_scene', sceneId }),
+    resumeScene: (sceneId: string) => send({ command: 'resume_scene', sceneId }),
     playTrack: (trackId: string) => send({ command: 'play_track', trackId }),
     pauseTrack: (trackId: string) => send({ command: 'pause_track', trackId }),
     stopTrack: (trackId: string) => send({ command: 'stop_track', trackId }),

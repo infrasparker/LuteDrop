@@ -3,6 +3,8 @@ pub mod backup;
 pub mod configurations;
 pub mod error;
 pub mod hierarchy;
+pub mod soundstage;
+mod legacy_schema;
 pub mod library;
 pub mod mood_flags;
 pub mod settings;
@@ -15,13 +17,18 @@ use std::path::Path;
 use uuid::Uuid;
 
 use crate::models::{
-    AnalysisStatus, AppState, Clip, Comp, Configuration, EntryAnalysis, EntryType, Group,
+    AnalysisStatus, AppState, Clip, Scene, Configuration, EntryAnalysis, EntryType, Board,
     LibraryEntry, MoodCalibrationInfo, MoodValue, MoodVocabulary, Role, Track, TrackMode, TrackTransition,
 };
 
 /// Current schema version. Bump when adding a migration below; fresh
 /// databases are stamped with this directly.
-pub const SCHEMA_VERSION: i64 = 17;
+pub const SCHEMA_VERSION: i64 = 18;
+pub type Migration = fn(&Connection) -> SqlResult<()>;
+fn migrate_v3_to_v4(conn: &Connection) -> SqlResult<()> {
+    let current: bool = conn.query_row("SELECT COUNT(*)>0 FROM sqlite_master WHERE name='board_tracks'", [], |r|r.get(0))?;
+    if current { soundstage::ensure_indexes(conn) } else { legacy_schema::add_indexes(conn) }
+}
 
 /// Spacing between sibling `sort_order` values, leaving room for insertions
 /// between neighbours without renumbering. Shared by hierarchy + configurations.
@@ -40,22 +47,6 @@ pub(crate) fn now_millis() -> String {
 
 /// Index DDL shared by init_schema (fresh DBs) and the v3→v4 migration
 /// (existing DBs). IF NOT EXISTS makes running both harmless.
-const INDEX_DDL: &str = "
-    CREATE INDEX IF NOT EXISTS idx_groups_configuration_id     ON groups(configuration_id);
-    CREATE INDEX IF NOT EXISTS idx_comps_group_id              ON comps(group_id);
-    CREATE INDEX IF NOT EXISTS idx_tracks_comp_id              ON tracks(comp_id);
-    CREATE INDEX IF NOT EXISTS idx_clips_track_id              ON clips(track_id);
-    CREATE INDEX IF NOT EXISTS idx_clips_library_entry_id      ON clips(library_entry_id);
-    CREATE INDEX IF NOT EXISTS idx_library_entry_tags_tag_id   ON library_entry_tags(tag_id);
-    CREATE INDEX IF NOT EXISTS idx_library_entries_content_hash ON library_entries(content_hash);
-";
-
-/// A migration upgrades a database from version N to N+1.
-pub type Migration = fn(&Connection) -> SqlResult<()>;
-
-fn migrate_v3_to_v4(conn: &Connection) -> SqlResult<()> {
-    conn.execute_batch(INDEX_DDL)
-}
 
 /// The analysis table as init_schema creates it (schema v16: no stored
 /// scores). IF NOT EXISTS makes running it on an existing database harmless.
@@ -751,6 +742,7 @@ const MIGRATIONS: &[(i64, Migration)] = &[
     (14, migrate_v14_to_v15),
     (15, migrate_v15_to_v16),
     (16, migrate_v16_to_v17),
+    (17, soundstage::migrate_v17_to_v18),
 ];
 
 fn read_schema_version(conn: &Connection) -> i64 {
@@ -846,7 +838,12 @@ pub fn open_db(path: &Path) -> Result<Connection, String> {
         }
     }
 
-    init_schema(&conn).map_err(|e| format!("Failed to initialise schema: {e}"))?;
+    let current_hierarchy: bool = conn.query_row("SELECT COUNT(*)>0 FROM sqlite_master WHERE name='board_tracks'", [], |r|r.get(0)).map_err(|e|e.to_string())?;
+    if fresh || read_schema_version(&conn) >= 18 || current_hierarchy {
+        init_schema(&conn)
+    } else {
+        legacy_schema::init_legacy_schema(&conn)
+    }.map_err(|e| format!("Failed to initialise schema: {e}"))?;
 
     // A pre-runner database has no schema_version row; it is backfilled to 3
     // (the last pre-migration schema) so run_migrations walks it forward. A
@@ -868,89 +865,12 @@ pub fn open_db(path: &Path) -> Result<Connection, String> {
 
 /// Creates all application tables (idempotent – uses `IF NOT EXISTS`).
 pub fn init_schema(conn: &Connection) -> SqlResult<()> {
-    conn.execute_batch("
-        CREATE TABLE IF NOT EXISTS meta (
-            key   TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS library_entries (
-            id           TEXT PRIMARY KEY,
-            file_path    TEXT NOT NULL UNIQUE,
-            content_hash TEXT,
-            name         TEXT NOT NULL,
-            duration     REAL,
-            sample_rate  INTEGER,
-            file_size    INTEGER,
-            volume       REAL NOT NULL DEFAULT 1.0,
-            trim_start   REAL,
-            trim_end     REAL,
-            loop_start   REAL,
-            loop_end     REAL,
-            created_at   TEXT NOT NULL,
-            entry_type   TEXT NOT NULL DEFAULT 'music',
-            role_user        TEXT,
-            mood_reviewed_at TEXT,
-            rg_track_gain_db REAL,
-            rg_track_peak    REAL
-        );
-
-        CREATE TABLE IF NOT EXISTS tags (
-            id   TEXT PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE
-        );
-
-        CREATE TABLE IF NOT EXISTS configurations (
-            id         TEXT PRIMARY KEY,
-            name       TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            sort_order INTEGER NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS groups (
-            id               TEXT PRIMARY KEY,
-            name             TEXT NOT NULL,
-            sort_order       INTEGER NOT NULL,
-            configuration_id TEXT NOT NULL DEFAULT '' REFERENCES configurations(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS comps (
-            id         TEXT PRIMARY KEY,
-            group_id   TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-            name       TEXT NOT NULL,
-            sort_order INTEGER NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS tracks (
-            id                 TEXT PRIMARY KEY,
-            comp_id            TEXT NOT NULL REFERENCES comps(id) ON DELETE CASCADE,
-            name               TEXT NOT NULL,
-            volume             REAL NOT NULL DEFAULT 1.0,
-            mode_type          TEXT NOT NULL DEFAULT 'sequence',
-            repeat             INTEGER DEFAULT 0,
-            transition_type    TEXT DEFAULT 'gapless',
-            transition_gap_min REAL,
-            transition_gap_max REAL,
-            fade_in            REAL NOT NULL DEFAULT 0.0,
-            fade_out           REAL NOT NULL DEFAULT 0.0,
-            sort_order         INTEGER NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS clips (
-            id               TEXT PRIMARY KEY,
-            track_id         TEXT NOT NULL REFERENCES tracks(id)          ON DELETE CASCADE,
-            library_entry_id TEXT NOT NULL REFERENCES library_entries(id),
-            volume           REAL NOT NULL DEFAULT 1.0,
-            sort_order       INTEGER NOT NULL
-        );
-    ")?;
-    conn.execute_batch(&format!(
-        "CREATE TABLE IF NOT EXISTS library_entry_tags ({LIBRARY_ENTRY_TAGS_COLUMNS});"
-    ))?;
-    conn.execute_batch(ENTRY_ANALYSIS_DDL)?;
-    conn.execute_batch(LIBRARY_ENTRY_MOODS_DDL)?;
-    conn.execute_batch(MOOD_FLAGS_DDL)?;
-    conn.execute_batch(INDEX_DDL)
+    let migrated: bool = conn.query_row("SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='board_tracks'", [], |r| r.get(0))?;
+    if !migrated {
+        legacy_schema::init_legacy_schema(conn)?;
+        soundstage::migrate_v17_to_v18(conn)?;
+    }
+    Ok(())
 }
 
 /// Ensures at least one configuration exists and active_configuration_id is set.
@@ -1051,10 +971,13 @@ pub fn load_full_state(conn: &Connection) -> Result<AppState, String> {
         .map(|e| (e.id.clone(), e))
         .collect();
 
-    let groups = load_groups(conn, &active_configuration_id, &entry_map)?;
+    let boards = load_boards(conn, &active_configuration_id, &entry_map)?;
 
     Ok(AppState {
-        groups,
+        tracks: soundstage::load_inventory(conn)?,
+        mix: soundstage::load_mix(conn)?,
+        active_scene_id: conn.query_row("SELECT value FROM meta WHERE key='active_scene_id'", [], |r| r.get(0)).ok(),
+        boards,
         library_entries,
         tags,
         configurations,
@@ -1245,177 +1168,11 @@ fn load_library_entries(conn: &Connection, vocabulary: &MoodVocabulary) -> Resul
     Ok(entries)
 }
 
-/// Queries all groups/comps/tracks/clips for the given configuration_id in
-/// four flat queries (one per level) instead of a per-parent N+1 cascade,
-/// then assembles the nested hierarchy in memory.
-fn load_groups(
-    conn: &Connection,
-    configuration_id: &str,
-    entry_map: &HashMap<String, &LibraryEntry>,
-) -> Result<Vec<Group>, String> {
-    // One query per level, each scoped to the configuration and globally
-    // ordered by sort_order — pushing rows into per-parent vecs in query
-    // order preserves the per-parent ordering.
-    let group_rows: Vec<(String, String)> = {
-        let mut stmt = conn
-            .prepare("SELECT id, name FROM groups WHERE configuration_id = ?1 ORDER BY sort_order ASC")
-            .map_err(|e| format!("Failed to prepare groups query: {e}"))?;
-        let rows = stmt
-            .query_map(params![configuration_id], |row| Ok((row.get(0)?, row.get(1)?)))
-            .map_err(|e| format!("Failed to query groups: {e}"))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("Failed to collect groups: {e}"))?;
-        rows
-    };
-
-    // comps grouped by group_id
-    let mut comps_by_group: HashMap<String, Vec<(String, String)>> = HashMap::new();
-    {
-        let mut stmt = conn
-            .prepare(
-                "SELECT c.id, c.group_id, c.name
-                 FROM comps c
-                 JOIN groups g ON g.id = c.group_id
-                 WHERE g.configuration_id = ?1
-                 ORDER BY c.sort_order ASC",
-            )
-            .map_err(|e| format!("Failed to prepare comps query: {e}"))?;
-        let rows = stmt
-            .query_map(params![configuration_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
-            })
-            .map_err(|e| format!("Failed to query comps: {e}"))?;
-        for row in rows {
-            let (id, group_id, name) = row.map_err(|e| format!("Failed to read comp row: {e}"))?;
-            comps_by_group.entry(group_id).or_default().push((id, name));
-        }
-    }
-
-    // tracks grouped by comp_id (same tuple shape the old load_tracks used)
-    type TrackRow = (String, String, f64, String, Option<i64>, Option<String>, Option<f64>, Option<f64>, f64, f64);
-    let mut tracks_by_comp: HashMap<String, Vec<TrackRow>> = HashMap::new();
-    {
-        let mut stmt = conn
-            .prepare(
-                "SELECT t.id, t.comp_id, t.name, t.volume, t.mode_type, t.repeat, t.transition_type,
-                        t.transition_gap_min, t.transition_gap_max, t.fade_in, t.fade_out
-                 FROM tracks t
-                 JOIN comps c ON c.id = t.comp_id
-                 JOIN groups g ON g.id = c.group_id
-                 WHERE g.configuration_id = ?1
-                 ORDER BY t.sort_order ASC",
-            )
-            .map_err(|e| format!("Failed to prepare tracks query: {e}"))?;
-        let rows = stmt
-            .query_map(params![configuration_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?,
-                    row.get::<_, f64>(3)?, row.get::<_, String>(4)?, row.get::<_, Option<i64>>(5)?,
-                    row.get::<_, Option<String>>(6)?, row.get::<_, Option<f64>>(7)?,
-                    row.get::<_, Option<f64>>(8)?, row.get::<_, f64>(9)?, row.get::<_, f64>(10)?,
-                ))
-            })
-            .map_err(|e| format!("Failed to query tracks: {e}"))?;
-        for row in rows {
-            let (id, comp_id, name, volume, mode_type, repeat, ttype, gmin, gmax, fin, fout) =
-                row.map_err(|e| format!("Failed to read track row: {e}"))?;
-            tracks_by_comp
-                .entry(comp_id)
-                .or_default()
-                .push((id, name, volume, mode_type, repeat, ttype, gmin, gmax, fin, fout));
-        }
-    }
-
-    // clips grouped by track_id
-    let mut clips_by_track: HashMap<String, Vec<(String, String, f64)>> = HashMap::new();
-    {
-        let mut stmt = conn
-            .prepare(
-                "SELECT cl.id, cl.track_id, cl.library_entry_id, cl.volume
-                 FROM clips cl
-                 JOIN tracks t ON t.id = cl.track_id
-                 JOIN comps c ON c.id = t.comp_id
-                 JOIN groups g ON g.id = c.group_id
-                 WHERE g.configuration_id = ?1
-                 ORDER BY cl.sort_order ASC",
-            )
-            .map_err(|e| format!("Failed to prepare clips query: {e}"))?;
-        let rows = stmt
-            .query_map(params![configuration_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, f64>(3)?))
-            })
-            .map_err(|e| format!("Failed to query clips: {e}"))?;
-        for row in rows {
-            let (id, track_id, library_entry_id, volume) =
-                row.map_err(|e| format!("Failed to read clip row: {e}"))?;
-            clips_by_track.entry(track_id).or_default().push((id, library_entry_id, volume));
-        }
-    }
-
-    // Assemble, resolving clip fields from entry_map exactly as before.
-    let mut groups = Vec::with_capacity(group_rows.len());
-    for (group_id, group_name) in group_rows {
-        let comp_rows = comps_by_group.remove(&group_id).unwrap_or_default();
-        let mut comps = Vec::with_capacity(comp_rows.len());
-        for (comp_id, comp_name) in comp_rows {
-            let track_rows = tracks_by_comp.remove(&comp_id).unwrap_or_default();
-            let mut tracks = Vec::with_capacity(track_rows.len());
-            for (track_id, name, volume, mode_type, repeat_int, ttype, gmin, gmax, fade_in, fade_out) in track_rows {
-                let clip_rows = clips_by_track.remove(&track_id).unwrap_or_default();
-                let clips: Vec<Clip> = clip_rows
-                    .into_iter()
-                    .map(|(id, library_entry_id, volume)| {
-                        let (name, file_path, library_volume, loudness_factor, trim_start, trim_end) =
-                            match entry_map.get(&library_entry_id) {
-                                Some(entry) => (entry.name.clone(), entry.file_path.clone(), entry.volume, entry.loudness_factor, entry.trim_start, entry.trim_end),
-                                None => ("[missing]".to_string(), String::new(), 1.0, 1.0, None, None),
-                            };
-                        Clip { id, name, file_path, volume, library_entry_id, library_volume, loudness_factor, trim_start, trim_end }
-                    })
-                    .collect();
-                let repeat = repeat_int.map(|v| v != 0).unwrap_or(false);
-                let ttype_str = ttype.as_deref().unwrap_or("gapless");
-                let mode = build_track_mode(&mode_type, repeat, ttype_str, gmin.unwrap_or(0.0), gmax.unwrap_or(0.0), &clips, entry_map);
-                tracks.push(Track { id: track_id, name, clips, volume, mode, fade_in, fade_out });
-            }
-            comps.push(Comp { id: comp_id, name: comp_name, tracks });
-        }
-        groups.push(Group { id: group_id, name: group_name, comps });
-    }
-    Ok(groups)
+fn load_boards(conn: &Connection, configuration_id: &str, _entry_map: &HashMap<String, &LibraryEntry>) -> Result<Vec<Board>, String> {
+    soundstage::load_boards(conn, configuration_id)
 }
 
-/// Builds a TrackMode from the raw DB columns plus the already-loaded clips.
-fn build_track_mode(
-    mode_type: &str,
-    repeat: bool,
-    transition_type: &str,
-    gap_min: f64,
-    gap_max: f64,
-    clips: &[Clip],
-    entry_map: &HashMap<String, &LibraryEntry>,
-) -> TrackMode {
-    // Loop points are SNAPSHOTTED from the first clip's library entry at load
-    // time — editing the entry's markers changes track behavior only after
-    // the next state reload (deliberate; the engine never re-reads the DB
-    // mid-playback).
-    let seamless_loops = clips
-        .first()
-        .and_then(|clip| entry_map.get(&clip.library_entry_id))
-        .and_then(|entry| {
-            if let (Some(ls), Some(le)) = (entry.loop_start, entry.loop_end) {
-                Some((ls, le))
-            } else {
-                None
-            }
-        })
-        .unwrap_or((0.0, 0.0));
-    track_mode_from_parts(mode_type, repeat, transition_type, gap_min, gap_max, seamless_loops)
-}
-
-/// Builds the non-Seamless arms (Sequence/Shuffle) shared by both loaders, and
-/// the Seamless arm from already-resolved `(loop_start, loop_end)`. Callers
-/// differ only in how they source the seamless loop points.
+/// Assemble the playback mode, resolving loop markers from the selected file.
 fn track_mode_from_parts(
     mode_type: &str,
     repeat: bool,
@@ -1425,6 +1182,7 @@ fn track_mode_from_parts(
     seamless_loops: (f64, f64),
 ) -> TrackMode {
     match mode_type {
+        "oneShot" => TrackMode::OneShot,
         "seamless" => TrackMode::Seamless { loop_start: seamless_loops.0, loop_end: seamless_loops.1 },
         "shuffle" => TrackMode::Shuffle { repeat, transition: build_transition(transition_type, gap_min, gap_max) },
         _ => TrackMode::Sequence { repeat, transition: build_transition(transition_type, gap_min, gap_max) },
@@ -1450,7 +1208,7 @@ type ClipWithLoops = (Clip, Option<f64>, Option<f64>);
 /// at the only two call sites below — no user data reaches `format!`.
 fn load_clips_resolved(
     conn: &Connection,
-    where_sql: &'static str, // "cl.track_id = ?1" | "cl.track_id IN (SELECT id FROM tracks WHERE comp_id = ?1)"
+    where_sql: &'static str, // "cl.track_id = ?1" | "cl.track_id IN (SELECT id FROM tracks WHERE scene_id = ?1)"
     param: &str,
 ) -> Result<Vec<(String, ClipWithLoops)>, String> {
     let sql = format!(
@@ -1512,8 +1270,7 @@ fn load_clips_resolved(
 }
 
 /// Builds a Track from a raw track row plus its resolved clips.
-/// Mirrors `build_track_mode`, but takes the first clip's loop markers
-/// directly (already joined) instead of an entry_map.
+/// Resolves loop markers directly from joined audio-file data.
 fn assemble_track(
     row: (String, String, f64, String, Option<i64>, Option<String>, Option<f64>, Option<f64>, f64, f64),
     clips_with_loops: Vec<ClipWithLoops>,
@@ -1523,9 +1280,7 @@ fn assemble_track(
     let clips: Vec<Clip> = clips_with_loops.into_iter().map(|(c, _, _)| c).collect();
     let repeat = repeat_int.map(|v| v != 0).unwrap_or(false);
     let ttype_str = ttype.as_deref().unwrap_or("gapless");
-    // See build_track_mode's note on the seamless loop points being a
-    // load-time snapshot; here they arrive already joined instead of via an
-    // entry_map lookup.
+    // Loop markers are snapshotted when the definition is loaded.
     let seamless_loops = match first_loops {
         Some((Some(ls), Some(le))) => (ls, le),
         _ => (0.0, 0.0),
@@ -1561,49 +1316,14 @@ pub fn load_track_by_id(conn: &Connection, track_id: &str) -> Result<Track, Stri
     Ok(assemble_track(row, clips))
 }
 
-/// Loads all tracks for a comp with their clips, without loading the rest of
+/// Loads all tracks for a scene with their clips, without loading the rest of
 /// the app state. Used on the play/pause/stop path.
-pub fn load_tracks_for_comp(conn: &Connection, comp_id: &str) -> Result<Vec<Track>, String> {
-    use rusqlite::OptionalExtension;
-    let exists: Option<String> = conn
-        .query_row("SELECT id FROM comps WHERE id = ?1", params![comp_id], |r| r.get(0))
-        .optional()
-        .map_err(|e| format!("Failed to check comp existence: {e}"))?;
-    if exists.is_none() {
-        return Err(format!("Comp not found: {}", comp_id));
-    }
-
-    let sql = format!("SELECT {TRACK_COLUMNS} FROM tracks WHERE comp_id = ?1 ORDER BY sort_order ASC");
-    let mut stmt = conn.prepare(&sql).map_err(|e| format!("Failed to prepare comp tracks query: {e}"))?;
-    let rows = stmt
-        .query_map(params![comp_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, f64>(2)?,
-                row.get::<_, String>(3)?, row.get::<_, Option<i64>>(4)?, row.get::<_, Option<String>>(5)?,
-                row.get::<_, Option<f64>>(6)?, row.get::<_, Option<f64>>(7)?,
-                row.get::<_, f64>(8)?, row.get::<_, f64>(9)?,
-            ))
-        })
-        .map_err(|e| format!("Failed to query comp tracks: {e}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Failed to collect comp tracks: {e}"))?;
-
-    let mut clips_by_track: HashMap<String, Vec<ClipWithLoops>> = HashMap::new();
-    for (track_id, cwl) in load_clips_resolved(
-        conn,
-        "cl.track_id IN (SELECT id FROM tracks WHERE comp_id = ?1)",
-        comp_id,
-    )? {
-        clips_by_track.entry(track_id).or_default().push(cwl);
-    }
-
-    Ok(rows
-        .into_iter()
-        .map(|row| {
-            let clips = clips_by_track.remove(&row.0).unwrap_or_default();
-            assemble_track(row, clips)
-        })
-        .collect())
+pub fn load_tracks_for_scene(conn: &Connection, scene_id: &str) -> Result<Vec<Track>, String> {
+    soundstage::scene_tracks(conn, scene_id)?.into_iter().filter(|state| state.enabled).map(|state| {
+        let mut track = load_track_by_id(conn, &state.track_id)?;
+        track.volume = state.volume;
+        Ok(track)
+    }).collect()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1644,14 +1364,9 @@ mod tests {
         stmt.query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap()
     }
 
-    const EXPECTED_INDEXES: [&str; 7] = [
-        "idx_clips_library_entry_id",
-        "idx_clips_track_id",
-        "idx_comps_group_id",
-        "idx_groups_configuration_id",
-        "idx_library_entries_content_hash",
-        "idx_library_entry_tags_tag_id",
-        "idx_tracks_comp_id",
+    const EXPECTED_INDEXES: [&str; 9] = [
+        "idx_board_tracks_track", "idx_boards_configuration_id", "idx_clips_library_entry_id", "idx_clips_track_id",
+        "idx_library_entries_content_hash", "idx_library_entry_tags_tag_id", "idx_scene_tracks_clip", "idx_scene_tracks_track", "idx_scenes_board_id",
     ];
 
     #[test]
@@ -1704,8 +1419,8 @@ mod tests {
             "tags",
             "library_entry_tags",
             "configurations",
-            "groups",
-            "comps",
+            "boards",
+            "scenes",
             "tracks",
             "clips",
             "library_entry_moods",
@@ -1783,7 +1498,7 @@ mod tests {
         let conn = open_memory_db();
         ensure_test_config(&conn);
         let state = load_full_state(&conn).expect("load_full_state should succeed on empty DB");
-        assert!(state.groups.is_empty(), "groups should be empty");
+        assert!(state.boards.is_empty(), "boards should be empty");
         assert!(state.library_entries.is_empty(), "library_entries should be empty");
         assert!(state.tags.is_empty(), "tags should be empty");
         assert_eq!(state.configurations.len(), 1);
@@ -1814,11 +1529,11 @@ mod tests {
         library::add_tag_to_entry(&conn, &entry_id, "ambient").expect("add ambient");
         library::add_tag_to_entry(&conn, &entry_id, "boss").expect("add boss");
 
-        // Build hierarchy: group → comp → track → clip.
+        // Build hierarchy: board → scene → track → clip.
         let config_id = ensure_test_config(&conn);
-        let group_id = hierarchy::insert_group(&conn, "Combat", &config_id).expect("insert group");
-        let comp_id = hierarchy::insert_comp(&conn, &group_id, "Act 1").expect("insert comp");
-        let track_id = hierarchy::insert_track(&conn, &comp_id, "Battle Theme").expect("insert track");
+        let board_id = hierarchy::insert_board(&conn, "Combat", &config_id).expect("insert board");
+        let scene_id = hierarchy::insert_scene(&conn, &board_id, "Act 1").expect("insert scene");
+        let track_id = hierarchy::insert_track(&conn, &scene_id, "Battle Theme").expect("insert track");
         let _clip_id = hierarchy::insert_clip(&conn, &track_id, &entry_id).expect("insert clip");
 
         // Set track to seamless mode so loop points are resolved.
@@ -1839,17 +1554,17 @@ mod tests {
         // Verify all-tags list.
         assert_eq!(state.tags, vec!["ambient", "boss"]);
 
-        // Verify group hierarchy.
-        assert_eq!(state.groups.len(), 1);
-        let group = &state.groups[0];
-        assert_eq!(group.name, "Combat");
-        assert_eq!(group.comps.len(), 1, "group should have one comp");
+        // Verify board hierarchy.
+        assert_eq!(state.boards.len(), 1);
+        let board = &state.boards[0];
+        assert_eq!(board.name, "Combat");
+        assert_eq!(board.scenes.len(), 1, "board should have one scene");
 
-        let comp = &group.comps[0];
-        assert_eq!(comp.name, "Act 1");
-        assert_eq!(comp.tracks.len(), 1, "comp should have one track");
+        let scene = &board.scenes[0];
+        assert_eq!(scene.name, "Act 1");
+        assert_eq!(scene.tracks.len(), 1, "scene should have one track");
 
-        let track = &comp.tracks[0];
+        let track = state.tracks.iter().find(|t|t.id==scene.tracks[0].track_id).unwrap();
         assert_eq!(track.name, "Battle Theme");
         assert_eq!(track.clips.len(), 1, "track should have one clip");
 
@@ -1887,18 +1602,18 @@ mod tests {
         ).expect("insert config2");
 
         conn.execute(
-            "INSERT INTO groups (id, name, sort_order, configuration_id) VALUES ('g1', 'Default Group', 1000, ?1)",
+            "INSERT INTO boards (id, name, sort_order, configuration_id) VALUES ('g1', 'Default Board', 1000, ?1)",
             params![config_id],
-        ).expect("insert group in default config");
+        ).expect("insert board in default config");
 
         conn.execute(
-            "INSERT INTO groups (id, name, sort_order, configuration_id) VALUES ('g2', 'Other Group', 1000, ?1)",
+            "INSERT INTO boards (id, name, sort_order, configuration_id) VALUES ('g2', 'Other Board', 1000, ?1)",
             params![config2_id],
-        ).expect("insert group in other config");
+        ).expect("insert board in other config");
 
         let state = load_full_state(&conn).expect("load state");
-        assert_eq!(state.groups.len(), 1, "should only see active config's groups");
-        assert_eq!(state.groups[0].name, "Default Group");
+        assert_eq!(state.boards.len(), 1, "should only see active config's boards");
+        assert_eq!(state.boards[0].name, "Default Board");
         assert_eq!(state.active_configuration_id, config_id);
         assert_eq!(state.configurations.len(), 2, "should see all configurations");
     }
@@ -1914,10 +1629,10 @@ mod tests {
         library::add_tag_to_entry(&conn, &e1, "ambient").unwrap();
         library::add_tag_to_entry(&conn, &e2, "battle").unwrap();
 
-        let g1 = hierarchy::insert_group(&conn, "G1", &config_id).unwrap();
-        let g2 = hierarchy::insert_group(&conn, "G2", &config_id).unwrap();
-        let c1 = hierarchy::insert_comp(&conn, &g1, "C1").unwrap();
-        let c2 = hierarchy::insert_comp(&conn, &g1, "C2").unwrap();
+        let g1 = hierarchy::insert_board(&conn, "G1", &config_id).unwrap();
+        let g2 = hierarchy::insert_board(&conn, "G2", &config_id).unwrap();
+        let c1 = hierarchy::insert_scene(&conn, &g1, "C1").unwrap();
+        let c2 = hierarchy::insert_scene(&conn, &g1, "C2").unwrap();
         let t1 = hierarchy::insert_track(&conn, &c1, "T1").unwrap();
         let t2 = hierarchy::insert_track(&conn, &c1, "T2").unwrap();
         hierarchy::insert_clip(&conn, &t1, &e1).unwrap();
@@ -1925,13 +1640,13 @@ mod tests {
 
         let state = load_full_state(&conn).unwrap();
 
-        assert_eq!(state.groups.len(), 2);
-        assert_eq!(state.groups[0].name, "G1");
-        assert_eq!(state.groups[1].name, "G2");
-        assert_eq!(state.groups[0].comps.len(), 2);
-        assert_eq!(state.groups[0].comps[0].name, "C1");
-        assert_eq!(state.groups[0].comps[1].name, "C2");
-        let tracks = &state.groups[0].comps[0].tracks;
+        assert_eq!(state.boards.len(), 2);
+        assert_eq!(state.boards[0].name, "G1");
+        assert_eq!(state.boards[1].name, "G2");
+        assert_eq!(state.boards[0].scenes.len(), 2);
+        assert_eq!(state.boards[0].scenes[0].name, "C1");
+        assert_eq!(state.boards[0].scenes[1].name, "C2");
+        let tracks = load_tracks_for_scene(&conn,&state.boards[0].scenes[0].id).unwrap();
         assert_eq!(tracks.len(), 2);
         assert_eq!(tracks[0].name, "T1");
         assert_eq!(tracks[1].name, "T2");
@@ -1945,9 +1660,9 @@ mod tests {
         assert_eq!(state.library_entries[0].tags, vec!["ambient", "battle"]);
         assert_eq!(state.library_entries[1].tags, vec!["battle"]);
         assert_eq!(state.tags, vec!["ambient", "battle"]);
-        // Second comp/track/group are empty but present:
-        assert!(state.groups[0].comps[1].tracks.is_empty());
-        assert!(state.groups[1].comps.is_empty());
+        // Second scene/track/board are empty but present:
+        assert!(state.boards[0].scenes[1].tracks.is_empty());
+        assert!(state.boards[1].scenes.is_empty());
         let _ = (t2, c2, g2);
     }
 
@@ -1956,27 +1671,27 @@ mod tests {
         let conn = open_memory_db();
         let config_id = ensure_test_config(&conn);
         let e1 = library::insert_library_entry(&conn, "/x.mp3", None, "X", None, None, None, "music").unwrap();
-        let g = hierarchy::insert_group(&conn, "G", &config_id).unwrap();
-        let c = hierarchy::insert_comp(&conn, &g, "C").unwrap();
+        let g = hierarchy::insert_board(&conn, "G", &config_id).unwrap();
+        let c = hierarchy::insert_scene(&conn, &g, "C").unwrap();
         let t1 = hierarchy::insert_track(&conn, &c, "T1").unwrap();
         let t2 = hierarchy::insert_track(&conn, &c, "T2").unwrap();
         hierarchy::insert_clip(&conn, &t1, &e1).unwrap();
 
         let state = load_full_state(&conn).unwrap();
-        let full_t1 = state.groups[0].comps[0].tracks[0].clone();
+        let full_t1 = state.tracks.iter().find(|track|track.id==t1).unwrap().clone();
 
         let direct = load_track_by_id(&conn, &t1).unwrap();
         assert_eq!(serde_json::to_value(&direct).unwrap(), serde_json::to_value(&full_t1).unwrap());
 
-        let comp_tracks = load_tracks_for_comp(&conn, &c).unwrap();
-        assert_eq!(comp_tracks.len(), 2);
-        assert_eq!(comp_tracks[0].id, t1);
-        assert_eq!(comp_tracks[1].id, t2);
-        assert_eq!(comp_tracks[0].clips.len(), 1);
-        assert_eq!(comp_tracks[0].clips[0].file_path, "/x.mp3");
+        let scene_tracks = load_tracks_for_scene(&conn, &c).unwrap();
+        assert_eq!(scene_tracks.len(), 2);
+        assert_eq!(scene_tracks[0].id, t1);
+        assert_eq!(scene_tracks[1].id, t2);
+        assert_eq!(scene_tracks[0].clips.len(), 1);
+        assert_eq!(scene_tracks[0].clips[0].file_path, "/x.mp3");
 
         assert!(load_track_by_id(&conn, "nope").unwrap_err().contains("Track not found"));
-        assert!(load_tracks_for_comp(&conn, "nope").unwrap_err().contains("Comp not found"));
+        assert!(load_tracks_for_scene(&conn, "nope").unwrap_err().contains("Scene not found"));
     }
 
     fn table_exists(conn: &Connection, name: &str) -> bool {
@@ -3332,7 +3047,7 @@ mod tests {
     /// The defaults as schema v12 shipped them (three sentences per mood
     /// for most, three tag words per side of Energy).
     fn v12_default_vocabulary() -> MoodVocabulary {
-        let mood = |id: &str, name: &str, prompts: &[&str]| crate::models::MoodDef {
+        let mood = |id: &str, name: &str, prompts: &[&str]| crate::models::MoodDef { profile: None,
             id: id.into(),
             name: name.into(),
             prompts: prompts.iter().map(|p| p.to_string()).collect(),
@@ -3458,7 +3173,7 @@ mod tests {
 
 
     fn v13_default_vocabulary() -> MoodVocabulary {
-        let mood = |id: &str, name: &str, prompts: &[&str]| crate::models::MoodDef {
+        let mood = |id: &str, name: &str, prompts: &[&str]| crate::models::MoodDef { profile: None,
             id: id.into(),
             name: name.into(),
             prompts: prompts.iter().map(|p| p.to_string()).collect(),
@@ -3733,7 +3448,7 @@ mod tests {
             .map(|k| {
                 let raw = 0.1 + (k % 2) as f64 * 0.02;
                 let moods = vocab.moods.iter().map(|m| (m.id.clone(), raw)).collect();
-                (format!("h{k}"), MoodRaw { moods, energy: raw })
+                (format!("h{k}"), MoodRaw { learned: Default::default(), moods, energy: raw })
             })
             .collect();
         let cal = calibrate(&mood, &vocab, "1700000000000".into()).unwrap();
@@ -3851,9 +3566,9 @@ mod tests {
         for (id, g) in [(&loud, -10.0), (&mid, -4.0), (&quiet, 2.0), (&bed, -20.0)] {
             library::set_replaygain(&conn, id, &ReplayGain { track_gain_db: Some(g), track_peak: Some(0.9) }).unwrap();
         }
-        let group = hierarchy::insert_group(&conn, "G", &config).unwrap();
-        let comp = hierarchy::insert_comp(&conn, &group, "C").unwrap();
-        let track = hierarchy::insert_track(&conn, &comp, "T").unwrap();
+        let board = hierarchy::insert_board(&conn, "G", &config).unwrap();
+        let scene = hierarchy::insert_scene(&conn, &board, "C").unwrap();
+        let track = hierarchy::insert_track(&conn, &scene, "T").unwrap();
         for id in [&loud, &mid, &bed] {
             hierarchy::insert_clip(&conn, &track, id).unwrap();
         }
@@ -3866,7 +3581,7 @@ mod tests {
         assert_eq!(factor(&quiet), 1.0);
         assert_eq!(factor(&bed), 1.0);
 
-        let clips = &state.groups[0].comps[0].tracks[0].clips;
+        let clips = &state.tracks.iter().find(|t|t.id==track).unwrap().clips;
         let targeted = load_track_by_id(&conn, &track).unwrap();
         for list in [clips, &targeted.clips] {
             let f: Vec<f64> = list.iter().map(|c| c.loudness_factor).collect();

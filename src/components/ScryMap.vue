@@ -13,7 +13,7 @@ const preferSeedView = moduleRef(true);
 // empty space asks for the tracks nearest that spot (shift-right-click clears
 // the spot and any seeds), a right-click on empty space clears the selection, a left-drag lasso adds the
 // enclosed points to the selection, and a right-click or right-drag lasso
-// removes them from it.
+// removes them from it. Shift-right-clicking a seeded point removes that seed.
 //
 // With seeds set, the map can switch to a seed view (src/utils/seedView.ts):
 // the seeds sit at the centre and each track's distance from them is its exact
@@ -25,6 +25,7 @@ const preferSeedView = moduleRef(true);
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useTheme } from 'vuetify';
 import type { LibraryEntry, ScryPoint } from '@generated/index';
+import { mapPointAction } from '../utils/mapPointer';
 import { seedViewLayout } from '../utils/seedView';
 
 const props = defineProps<{
@@ -605,8 +606,9 @@ function onPointerUp(e: PointerEvent): void {
     else emit('spot', toData(start.x, start.y));
     return;
   }
-  if (removing) emit('deselect', [hit.id]);
-  else if (e.shiftKey) emit('seed', hit.id);
+  const action = mapPointAction(e.button, e.shiftKey, seedSet.value.has(hit.id));
+  if (action === 'deselect') emit('deselect', [hit.id]);
+  else if (action === 'seed') emit('seed', hit.id);
   else {
     emit('play', hit.id);
     pinnedId.value = hit.id;
@@ -782,8 +784,8 @@ onBeforeUnmount(() => {
         <span class="swatch-ring guide" />Similarity to the seeds (closer is more similar)
       </span>
       <VSpacer />
-      <span v-if="seedViewOn">Click a dot to play, shift-click to seed · drag to select, right-drag to deselect, right-click empty space to clear · shift-right-click to clear seeds · switch to Map for spot search</span>
-      <span v-else>Click a dot to play, shift-click to seed · drag to select, right-drag to deselect, right-click empty space to clear · shift-click empty space for nearby tracks, shift-right-click to clear spot and seeds</span>
+      <span v-if="seedViewOn">Click a dot to play, shift-click to seed · drag to select, right-drag to deselect, right-click empty space to clear · shift-right-click a seed to remove it, empty space to clear seeds · switch to Map for spot search</span>
+      <span v-else>Click a dot to play, shift-click to seed · drag to select, right-drag to deselect, right-click empty space to clear · shift-click empty space for nearby tracks, shift-right-click a seed to remove it, empty space to clear spot and seeds</span>
     </div>
   </div>
 </template>

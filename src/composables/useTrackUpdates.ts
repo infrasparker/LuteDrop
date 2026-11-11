@@ -19,7 +19,9 @@ export function useTrackUpdates(trackId: () => string) {
     const track = store.findTrack(trackId());
     if (!track) return;
     let mode: TrackMode;
-    if (type === 'seamless') {
+    if (type === 'oneShot') {
+      mode = { type: 'oneShot' };
+    } else if (type === 'seamless') {
       mode = { type: 'seamless', loopStart: 0, loopEnd: 0 };
     } else {
       const transition = hasTransition(track.mode) ? track.mode.transition : { type: 'gapless' as const };

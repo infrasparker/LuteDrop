@@ -846,7 +846,7 @@ def test_tune_adds_the_built_in_vocabulary(client_tune, monkeypatch):
     assert {"alpha vocab", "beta vocab", "zeta vocab"} <= set(searched[0])
     for r in out["proposals"]:
         for line, src in zip(r["lines"], r["line_sources"]):
-            if line.endswith(" vocab"):
+            if line in tune_vocab.VOCAB:
                 assert src == ["built-in vocabulary"]
 
 
@@ -855,9 +855,12 @@ def test_tune_vocabulary_respects_exclude_and_keeps_only_its_best(client_tune, m
     monkeypatch.setattr(app_module, "VOCAB_KEEP", 2)
     searched = _spy_search(monkeypatch)
     client_tune.post("/tune", json=_tune_body(exclude=["zeta"]), headers=HEADERS)
-    kept = [u for u in searched[0] if u.endswith(" vocab")]
+    # Blends may end in a vocabulary word too; count original units only.
+    kept = [u for u in searched[0] if u in tune_vocab.VOCAB]
     assert len(kept) == 2 and "zeta vocab" not in kept
     assert "alpha vocab" in kept          # the flagged high songs are alpha songs
+    dropped = set(tune_vocab.VOCAB) - set(kept)
+    assert not any(tune.excluded(u, dropped) for u in searched[0])
 
 
 def test_tune_compare_reports_each_version_in_order_without_searching(client_tune, monkeypatch):

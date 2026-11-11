@@ -112,8 +112,8 @@ function openEditor(): void {
 
 <style scoped>
 .preview-active {
-  background: rgba(240, 168, 48, 0.08) !important;
-  border-left: 3px solid #F0A830;
+  background: var(--mixer-active-fill) !important;
+  box-shadow: inset 0 0 0 1px var(--mixer-active-border);
 }
 .entry-name {
   cursor: pointer;

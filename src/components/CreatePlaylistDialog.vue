@@ -1,10 +1,9 @@
 <script setup lang="ts">
-// Turns a set of library entries into clips: either a new comp (one shuffle
-// track holding every entry) in a group of the active configuration, or
-// clips appended to an existing track.
+// Creates a reusable shuffle track from selected audio files, or appends clips to an existing track.
 import { computed, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { AppState, TrackMode } from '@generated/index';
+import type { AppState } from '@generated/index';
+import { playbackLabel, trackLocations, trackSearchText } from '../utils/soundstage';
 import { useAppStore } from '../stores/appStore';
 import { useToast } from '../composables/useToast';
 
@@ -28,13 +27,9 @@ const emit = defineEmits<{
 const store = useAppStore();
 const toast = useToast();
 
-// New tracks are created as sequence; this switches them to shuffle with the
-// app's default transition (gapless, as `insert_track` uses).
-const SHUFFLE_MODE: TrackMode = { type: 'shuffle', repeat: true, transition: { type: 'gapless' } };
-
 const tab = ref<PlaylistTarget>('new');
 const name = ref('');
-const groupId = ref<string | null>(null);
+const boardId = ref<string | null>(null);
 const trackId = ref<string | null>(null);
 const busy = ref(false);
 const error = ref<string | null>(null);
@@ -43,19 +38,9 @@ const configurationName = computed(
   () => store.configurations.find((c) => c.id === store.activeConfigurationId)?.name ?? 'Current configuration',
 );
 
-const groupItems = computed(() => store.groups.map((g) => ({ title: g.name, value: g.id })));
+const boardItems = computed(() => store.boards.map((g) => ({ title: g.name, value: g.id })));
 
-const trackItems = computed(() =>
-  store.groups.flatMap((g) =>
-    g.comps.flatMap((c) =>
-      c.tracks.map((t) => ({
-        title: t.name,
-        subtitle: `${g.name} › ${c.name}`,
-        value: t.id,
-      })),
-    ),
-  ),
-);
+const trackItems = computed(() => store.tracks.map((track) => ({ title: track.name, subtitle: `${playbackLabel(track.mode)} · ${trackLocations(track.id, store.boards).join(' · ') || 'Not on a board in this configuration'}`, searchText: trackSearchText(track, store.boards), value: track.id })));
 
 watch(
   () => props.modelValue,
@@ -64,8 +49,8 @@ watch(
     tab.value = props.target;
     name.value = props.suggestedName;
     error.value = null;
-    if (!groupId.value || !store.groups.some((g) => g.id === groupId.value)) {
-      groupId.value = store.groups[0]?.id ?? null;
+    if (!boardId.value || !store.boards.some((g) => g.id === boardId.value)) {
+      boardId.value = store.boards[0]?.id ?? null;
     }
     if (trackId.value && !store.findTrack(trackId.value)) trackId.value = null;
   },
@@ -74,7 +59,7 @@ watch(
 
 const canSubmit = computed(() => {
   if (busy.value || props.entryIds.length === 0) return false;
-  if (tab.value === 'new') return !!groupId.value && name.value.trim().length > 0;
+  if (tab.value === 'new') return name.value.trim().length > 0;
   return !!trackId.value;
 });
 
@@ -86,38 +71,9 @@ async function run(cmd: string, args: Record<string, unknown>): Promise<AppState
   return state;
 }
 
-function compIdsIn(state: AppState, gid: string): Set<string> {
-  return new Set(state.groups.find((g) => g.id === gid)?.comps.map((c) => c.id) ?? []);
-}
-
 async function createPlaylist(): Promise<void> {
-  const gid = groupId.value!;
-  const playlistName = name.value.trim();
-  const before = new Set(store.groups.find((g) => g.id === gid)?.comps.map((c) => c.id) ?? []);
-
-  const afterComp = await run('add_comp', { groupId: gid, name: playlistName });
-  const compId = [...compIdsIn(afterComp, gid)].find((id) => !before.has(id));
-  if (!compId) throw new Error('The new comp was not found after creating it.');
-
-  try {
-    const afterTrack = await run('add_track', { compId, name: playlistName });
-    const comp = afterTrack.groups.flatMap((g) => g.comps).find((c) => c.id === compId);
-    const newTrackId = comp?.tracks[comp.tracks.length - 1]?.id;
-    if (!newTrackId) throw new Error('The new track was not found after creating it.');
-    await run('update_track', { trackId: newTrackId, updates: { mode: SHUFFLE_MODE } });
-    await run('add_clips', { trackId: newTrackId, libraryEntryIds: props.entryIds });
-  } catch (e) {
-    // Remove the half-built comp so a failure leaves nothing behind.
-    try {
-      await run('delete_comp', { compId });
-    } catch {
-      // The original error is the one worth reporting.
-    }
-    throw e;
-  }
-
-  const groupName = store.groups.find((g) => g.id === gid)?.name ?? '';
-  toast.showSuccess(`Created comp "${playlistName}" in ${groupName} with ${props.entryIds.length} clip${props.entryIds.length === 1 ? '' : 's'}`);
+  await run('add_track', { boardId: boardId.value, name: name.value.trim(), libraryEntryIds: props.entryIds, mode: 'shuffle' });
+  toast.showSuccess(`Created track “${name.value.trim()}” with ${props.entryIds.length} clips.`);
 }
 
 async function addToTrack(): Promise<void> {
@@ -157,7 +113,7 @@ async function submit(): Promise<void> {
         Add {{ entryIds.length }} as clip{{ entryIds.length === 1 ? '' : 's' }}
       </VCardTitle>
       <VTabs v-model="tab" density="compact" color="primary" class="px-2">
-        <VTab value="new" prepend-icon="mdi-playlist-plus">New comp</VTab>
+        <VTab value="new" prepend-icon="mdi-playlist-plus">New track</VTab>
         <VTab value="existing" prepend-icon="mdi-playlist-music">Existing track</VTab>
       </VTabs>
       <VDivider />
@@ -167,30 +123,9 @@ async function submit(): Promise<void> {
         </div>
 
         <template v-if="tab === 'new'">
-          <div v-if="groupItems.length === 0" class="text-body-2 text-medium-emphasis">
-            This configuration has no groups. Add a group in the Soundstage first.
-          </div>
-          <template v-else>
-            <VSelect
-              v-model="groupId"
-              :items="groupItems"
-              label="Group"
-              variant="outlined"
-              density="compact"
-              class="mb-2"
-            />
-            <VTextField
-              v-model="name"
-              label="Comp name"
-              variant="outlined"
-              density="compact"
-              autofocus
-              @keydown.enter="submit"
-            />
-            <div class="text-caption text-medium-emphasis">
-              Makes a comp with one shuffle track; each selection becomes a clip on it.
-            </div>
-          </template>
+          <VSelect v-model="boardId" :items="boardItems" label="Add to board (optional)" clearable variant="outlined" density="compact" class="mb-2" />
+          <VTextField v-model="name" label="Track name" variant="outlined" density="compact" autofocus @keydown.enter="submit" />
+          <div class="text-caption text-medium-emphasis">Creates a reusable shuffle track; each selection becomes a clip.</div>
         </template>
 
         <template v-else>
@@ -204,6 +139,7 @@ async function submit(): Promise<void> {
             item-title="title"
             item-value="value"
             label="Track"
+            :custom-filter="(value, query, item) => (item?.raw.searchText ?? value).includes(query.trim().normalize('NFKC').toLocaleLowerCase())"
             hint="Already-present clips are skipped"
             persistent-hint
             variant="outlined"
@@ -224,7 +160,7 @@ async function submit(): Promise<void> {
         <VSpacer />
         <VBtn text="Cancel" variant="plain" :disabled="busy" @click="emit('update:modelValue', false)" />
         <VBtn
-          :text="tab === 'new' ? 'Create comp' : 'Add clips'"
+          :text="tab === 'new' ? 'Create track' : 'Add clips'"
           color="primary"
           variant="tonal"
           :loading="busy"

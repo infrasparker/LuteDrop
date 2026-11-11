@@ -254,7 +254,13 @@ impl AnalyzerClient for HttpAnalyzer {
             .timeout(SCORE_TIMEOUT)
             .send_json(req)
             .map_err(describe)?;
-        read_json(response)
+        let result: ScoreResponse = read_json(response)?;
+        for values in result.mood.values() {
+            if req.profiles.keys().any(|id| !values.learned.contains_key(id)) {
+                return Err("The analyzer did not return the saved learned scores; update the analyzer before scoring this profile".into());
+            }
+        }
+        Ok(result)
     }
 
     fn similar(&self, query: &[String], candidates: &[String], limit: u32) -> Result<Vec<HashScore>, String> {

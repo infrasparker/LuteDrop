@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::actions;
 use crate::models::{
     AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, LibraryEntryUsage, MoodResetImpact, MoodTunePrefs, MoodVocabulary, AcceptedLines, MoodFlagRow, ClearedFlag,
-    Role, TrackUpdates, ScryHit, ScryPoint, EnergyPreview, TuneMode, TuneResult};
+    Role, TrackUpdates, SceneTrack, SceneReference, ScryHit, ScryPoint, EnergyPreview, TuneMode, TuneResult};
 use crate::autotag::tune::TuneInputs;
 use crate::state::AppStateContainer;
 use crate::waveform;
@@ -22,44 +22,84 @@ pub fn load_data(state: State<'_, Arc<AppStateContainer>>) -> Result<AppState, S
 }
 
 #[tauri::command]
-pub fn add_group(state: State<'_, Arc<AppStateContainer>>, name: String) -> Result<AppState, String> {
-    actions::add_group(&state, name)
+pub fn add_board(state: State<'_, Arc<AppStateContainer>>, name: String) -> Result<AppState, String> {
+    actions::add_board(&state, name)
 }
 
 #[tauri::command]
-pub fn delete_group(state: State<'_, Arc<AppStateContainer>>, group_id: String) -> Result<AppState, String> {
-    actions::delete_group(&state, &group_id)
+pub fn delete_board(state: State<'_, Arc<AppStateContainer>>, board_id: String) -> Result<AppState, String> {
+    actions::delete_board(&state, &board_id)
 }
 
 #[tauri::command]
-pub fn rename_group(state: State<'_, Arc<AppStateContainer>>, group_id: String, name: String) -> Result<AppState, String> {
-    actions::rename_group(&state, &group_id, name)
+pub fn rename_board(state: State<'_, Arc<AppStateContainer>>, board_id: String, name: String) -> Result<AppState, String> {
+    actions::rename_board(&state, &board_id, name)
 }
 
 #[tauri::command]
-pub fn rename_comp(state: State<'_, Arc<AppStateContainer>>, comp_id: String, name: String) -> Result<AppState, String> {
-    actions::rename_comp(&state, &comp_id, name)
+pub fn rename_scene(state: State<'_, Arc<AppStateContainer>>, scene_id: String, name: String) -> Result<AppState, String> {
+    actions::rename_scene(&state, &scene_id, name)
 }
 
 #[tauri::command]
-pub fn add_comp(state: State<'_, Arc<AppStateContainer>>, group_id: String, name: String) -> Result<AppState, String> {
-    actions::add_comp(&state, &group_id, name)
+pub fn add_scene(state: State<'_, Arc<AppStateContainer>>, board_id: String, name: String, tracks: Vec<SceneTrack>, mark_active: Option<bool>) -> Result<AppState, String> {
+    actions::add_scene(&state, &board_id, name, tracks, mark_active.unwrap_or(true))
 }
 
 #[tauri::command]
-pub fn delete_comp(state: State<'_, Arc<AppStateContainer>>, comp_id: String) -> Result<AppState, String> {
-    actions::delete_comp(&state, &comp_id)
+pub fn delete_scene(state: State<'_, Arc<AppStateContainer>>, scene_id: String) -> Result<AppState, String> {
+    actions::delete_scene(&state, &scene_id)
 }
 
 #[tauri::command]
-pub fn add_track(state: State<'_, Arc<AppStateContainer>>, comp_id: String, name: String) -> Result<AppState, String> {
-    actions::add_track(&state, &comp_id, name)
+pub fn add_track(state: State<'_, Arc<AppStateContainer>>, board_id: Option<String>, scene_id: Option<String>, name: String, library_entry_ids: Option<Vec<String>>, mode: Option<String>) -> Result<AppState, String> {
+    actions::add_track(&state, board_id.as_deref(), scene_id.as_deref(), name, library_entry_ids.unwrap_or_default(), mode)
 }
 
 #[tauri::command]
-pub fn delete_track(state: State<'_, Arc<AppStateContainer>>, track_id: String) -> Result<AppState, String> {
-    actions::delete_track(&state, &track_id)
+pub fn attach_scene_track(state:State<'_,Arc<AppStateContainer>>,scene_id:String,track_id:String)->Result<AppState,String>{actions::attach_scene_track(&state,&scene_id,&track_id)}
+#[tauri::command]
+pub fn detach_scene_track(state:State<'_,Arc<AppStateContainer>>,scene_id:String,track_id:String)->Result<AppState,String>{actions::detach_scene_track(&state,&scene_id,&track_id)}
+#[tauri::command]
+pub fn reorder_scene_track(state:State<'_,Arc<AppStateContainer>>,scene_id:String,track_id:String,new_index:usize)->Result<AppState,String>{actions::reorder_scene_track(&state,&scene_id,&track_id,new_index)}
+
+#[tauri::command]
+pub fn delete_track(state: State<'_, Arc<AppStateContainer>>, track_id: String, remove_from_scenes: bool) -> Result<AppState, String> {
+    actions::delete_track(&state, &track_id, remove_from_scenes)
 }
+
+#[tauri::command]
+pub fn reorder_scene(state: State<'_, Arc<AppStateContainer>>, scene_id: String, new_index: usize) -> Result<AppState, String> {
+    actions::reorder_scene(&state, &scene_id, new_index)
+}
+
+#[tauri::command]
+pub fn reorder_track(state: State<'_, Arc<AppStateContainer>>, board_id: String, track_id: String, new_index: usize) -> Result<AppState, String> {
+    actions::reorder_track(&state, &board_id, &track_id, new_index)
+}
+
+#[tauri::command]
+pub fn move_scene(state: State<'_, Arc<AppStateContainer>>, scene_id: String, destination_board_id: String) -> Result<AppState, String> {
+    actions::move_scene(&state, &scene_id, &destination_board_id)
+}
+
+#[tauri::command]
+pub fn copy_scene(state: State<'_, Arc<AppStateContainer>>, scene_id: String, destination_board_id: String, name: String) -> Result<AppState, String> {
+    actions::copy_scene(&state, &scene_id, &destination_board_id, name)
+}
+
+#[tauri::command]
+pub fn duplicate_track(state:State<'_,Arc<AppStateContainer>>,track_id:String,name:String)->Result<AppState,String>{actions::duplicate_track(&state,&track_id,name)}
+#[tauri::command]
+pub fn attach_track(state:State<'_,Arc<AppStateContainer>>,board_id:String,track_id:String)->Result<AppState,String>{actions::attach_track(&state,&board_id,&track_id)}
+#[tauri::command]
+pub fn detach_track(state:State<'_,Arc<AppStateContainer>>,board_id:String,track_id:String,remove_from_scenes:Option<bool>)->Result<AppState,String>{actions::detach_track(&state,&board_id,&track_id,remove_from_scenes.unwrap_or(false))}
+#[tauri::command]
+pub fn make_scene_track_independent(state:State<'_,Arc<AppStateContainer>>,scene_id:String,track_id:String)->Result<AppState,String>{actions::make_scene_track_independent(&state,&scene_id,&track_id)}
+#[tauri::command]
+pub fn save_scene(state:State<'_,Arc<AppStateContainer>>,scene_id:String,tracks:Vec<SceneTrack>)->Result<AppState,String>{actions::save_scene(&state,&scene_id,tracks)}
+#[tauri::command]
+pub fn get_track_references(state:State<'_,Arc<AppStateContainer>>,track_id:String,clip_id:Option<String>)->Result<Vec<SceneReference>,String>{actions::get_track_references(&state,&track_id,clip_id.as_deref())}
 
 #[tauri::command]
 pub fn update_track(state: State<'_, Arc<AppStateContainer>>, track_id: String, updates: TrackUpdates) -> Result<AppState, String> {
@@ -77,8 +117,8 @@ pub fn add_clips(state: State<'_, Arc<AppStateContainer>>, track_id: String, lib
 }
 
 #[tauri::command]
-pub fn delete_clip(state: State<'_, Arc<AppStateContainer>>, track_id: String, clip_id: String) -> Result<AppState, String> {
-    actions::delete_clip(&state, &track_id, &clip_id)
+pub fn delete_clip(state: State<'_, Arc<AppStateContainer>>, track_id: String, clip_id: String, replacement_clip_id: Option<String>, disable_affected_scenes: Option<bool>) -> Result<AppState, String> {
+    actions::delete_clip(&state, &track_id, &clip_id, replacement_clip_id.as_deref(), disable_affected_scenes.unwrap_or(false))
 }
 
 // --- Configuration commands ---
@@ -164,23 +204,23 @@ pub fn set_library_volume(state: State<'_, Arc<AppStateContainer>>, volume: f64)
 }
 
 #[tauri::command]
-pub fn activate_comp(state: State<'_, Arc<AppStateContainer>>, comp_id: String) -> Result<(), String> {
-    actions::activate_comp_audio(&state, &comp_id)
+pub fn activate_scene(state: State<'_, Arc<AppStateContainer>>, scene_id: String, add_to_mix: Option<bool>) -> Result<(), String> {
+    actions::apply_scene_audio(&state, &scene_id, add_to_mix.unwrap_or(false))
 }
 
 #[tauri::command]
-pub fn stop_comp(state: State<'_, Arc<AppStateContainer>>, comp_id: String) -> Result<(), String> {
-    actions::stop_comp_audio(&state, &comp_id)
+pub fn stop_scene(state: State<'_, Arc<AppStateContainer>>, scene_id: String) -> Result<(), String> {
+    actions::stop_scene_audio(&state, &scene_id)
 }
 
 #[tauri::command]
-pub fn pause_comp(state: State<'_, Arc<AppStateContainer>>, comp_id: String) -> Result<(), String> {
-    actions::pause_comp_audio(&state, &comp_id)
+pub fn pause_scene(state: State<'_, Arc<AppStateContainer>>, scene_id: String) -> Result<(), String> {
+    actions::pause_scene_audio(&state, &scene_id)
 }
 
 #[tauri::command]
-pub fn resume_comp(state: State<'_, Arc<AppStateContainer>>, comp_id: String) -> Result<(), String> {
-    actions::resume_comp_audio(&state, &comp_id)
+pub fn resume_scene(state: State<'_, Arc<AppStateContainer>>, scene_id: String) -> Result<(), String> {
+    actions::resume_scene_audio(&state, &scene_id)
 }
 
 #[tauri::command]
@@ -357,9 +397,11 @@ pub async fn tune_mood(
     exclude_words: Vec<String>,
     mode: TuneMode,
     candidates: Vec<Vec<String>>,
+    profile_versions: Option<Vec<Option<crate::models::LearnedMoodProfile>>>,
+    rebuild: Option<bool>,
 ) -> Result<TuneResult, String> {
     let container = state.inner().clone();
-    let inputs = TuneInputs { extra_words, bank, focus_entry_id, exclude_words, mode, candidates };
+    let inputs = TuneInputs { extra_words, bank, focus_entry_id, exclude_words, mode, candidates, profile_versions: profile_versions.unwrap_or_default(), rebuild: rebuild.unwrap_or(false) };
     tokio::task::spawn_blocking(move || actions::tune_mood(&container, &mood_id, &inputs))
         .await
         .map_err(|e| format!("Tune failed: {e}"))?
@@ -373,8 +415,10 @@ pub fn accept_tuned_lines(
     lines: Vec<String>,
     holding_entry_ids: Vec<String>,
     reached_bars: Option<std::collections::HashMap<String, f64>>,
+    profile: Option<crate::models::LearnedMoodProfile>,
+    review_signature: Option<String>,
 ) -> Result<AcceptedLines, String> {
-    actions::accept_tuned_lines(&state, mood_id, lines_tuned_from, lines, holding_entry_ids, reached_bars.unwrap_or_default())
+    actions::accept_tuned_lines(&state, mood_id, lines_tuned_from, lines, holding_entry_ids, reached_bars.unwrap_or_default(), profile, review_signature)
 }
 
 #[tauri::command]
@@ -390,8 +434,10 @@ pub fn undo_tuned_lines(
     lines: Vec<String>,
     holding_entry_ids: Vec<String>,
     restore: Vec<MoodFlagRow>,
+    profile: Option<crate::models::LearnedMoodProfile>,
+    expected_profile_id: Option<String>,
 ) -> Result<AppState, String> {
-    actions::undo_tuned_lines(&state, mood_id, lines_tuned_from, lines, holding_entry_ids, restore)
+    actions::undo_tuned_lines(&state, mood_id, lines_tuned_from, lines, holding_entry_ids, restore, profile, expected_profile_id)
 }
 
 #[tauri::command]
@@ -404,6 +450,11 @@ pub fn load_mood_tune_prefs(
     state: State<'_, Arc<AppStateContainer>>,
 ) -> Result<std::collections::BTreeMap<String, MoodTunePrefs>, String> {
     actions::load_mood_tune_prefs(&state)
+}
+
+#[tauri::command]
+pub fn set_mood_comparisons(state: State<'_, Arc<AppStateContainer>>, mood: String, pairs: Vec<[String; 2]>) -> Result<std::collections::BTreeMap<String, MoodTunePrefs>, String> {
+    actions::set_mood_comparisons(&state, mood, pairs)
 }
 
 #[tauri::command]
@@ -609,8 +660,8 @@ pub fn toggle_clip_mute(state: State<'_, Arc<AppStateContainer>>, clip_id: Strin
 }
 
 #[tauri::command]
-pub fn toggle_comp_mute(state: State<'_, Arc<AppStateContainer>>, comp_id: String) -> Result<bool, String> {
-    actions::toggle_comp_mute(&state, &comp_id)
+pub fn toggle_scene_mute(state: State<'_, Arc<AppStateContainer>>, scene_id: String) -> Result<bool, String> {
+    actions::toggle_scene_mute(&state, &scene_id)
 }
 
 #[tauri::command]

@@ -20,6 +20,7 @@ const {
 
 const modeOptions = [
   { title: 'Seamless', value: 'seamless' },
+  { title: 'One shot', value: 'oneShot' },
   { title: 'Sequence', value: 'sequence' },
   { title: 'Shuffle', value: 'shuffle' },
 ];
@@ -31,7 +32,7 @@ const transitionOptions = [
 ];
 
 const modeType = computed(() => props.track.mode.type);
-const showsTransition = computed(() => modeType.value !== 'seamless');
+const showsTransition = computed(() => modeType.value === 'sequence' || modeType.value === 'shuffle');
 const transitionType = computed(() =>
   hasTransition(props.track.mode) ? props.track.mode.transition.type : 'gapless',
 );
@@ -44,9 +45,8 @@ const repeat = computed(() => (hasTransition(props.track.mode) ? props.track.mod
 </script>
 
 <template>
-  <!-- Order: Mode, Transition, Fade In, Fade Out, Loop Start, Loop End, Repeat, Gap/Crossfade -->
   <div class="d-flex flex-wrap ga-3 mb-3 align-center">
-    <div style="min-width: 130px; max-width: 150px;">
+    <div style="width: 220px; max-width: 100%;">
       <VSelect
         :model-value="modeType"
         @update:model-value="updateMode"
@@ -96,6 +96,16 @@ const repeat = computed(() => (hasTransition(props.track.mode) ? props.track.mod
     </template>
 
     <VCheckbox
+      v-if="showsTransition"
+      :model-value="repeat"
+      @update:model-value="updateRepeat"
+      label="Repeat"
+      density="compact"
+      hide-details
+    />
+  </div>
+  <div class="d-flex align-center ga-5 mb-4">
+    <VCheckbox
       :model-value="track.fadeIn > 0"
       @update:model-value="toggleFadeIn"
       label="Fade In"
@@ -111,14 +121,7 @@ const repeat = computed(() => (hasTransition(props.track.mode) ? props.track.mod
       hide-details
     />
 
-    <VCheckbox
-      v-if="showsTransition"
-      :model-value="repeat"
-      @update:model-value="updateRepeat"
-      label="Repeat"
-      density="compact"
-      hide-details
-    />
   </div>
+
 
 </template>

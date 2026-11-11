@@ -1,0 +1,818 @@
+{
+  "id": "muq-feel-v2-df3639cd68bb",
+  "modelRevision": "2e01c796b71dca71b45251384c04cd7b237c9020",
+  "layers": [
+    3,
+    6,
+    9,
+    12
+  ],
+  "heads": [
+    {
+      "label": "Eerie",
+      "members": [
+        {
+          "layer": 3,
+          "coefficient": "head_0_0",
+          "intercept": -1.1236490539131512,
+          "calibration": [
+            1.5818167633405875,
+            -1.327904947795246
+          ]
+        },
+        {
+          "layer": 6,
+          "coefficient": "head_0_1",
+          "intercept": -1.2318204082059723,
+          "calibration": [
+            1.5627291671713568,
+            -1.3578975581215567
+          ]
+        },
+        {
+          "layer": 9,
+          "coefficient": "head_0_2",
+          "intercept": -1.3734183620625717,
+          "calibration": [
+            1.5321979564188668,
+            -1.370778449735008
+          ]
+        },
+        {
+          "layer": 12,
+          "coefficient": "head_0_3",
+          "intercept": -1.4851415310149927,
+          "calibration": [
+            1.329396215953189,
+            -1.408549913404387
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Unnerving",
+      "members": [
+        {
+          "layer": 3,
+          "coefficient": "head_1_0",
+          "intercept": -1.1431375787220428,
+          "calibration": [
+            1.9772350272357953,
+            -1.3259535248566994
+          ]
+        },
+        {
+          "layer": 6,
+          "coefficient": "head_1_1",
+          "intercept": -1.1660568432690512,
+          "calibration": [
+            1.9005466594082094,
+            -1.3871134188027185
+          ]
+        },
+        {
+          "layer": 9,
+          "coefficient": "head_1_2",
+          "intercept": -1.3206912959476849,
+          "calibration": [
+            1.7486824068729718,
+            -1.36707786720306
+          ]
+        },
+        {
+          "layer": 12,
+          "coefficient": "head_1_3",
+          "intercept": -1.4875582285241502,
+          "calibration": [
+            1.5443309258951956,
+            -1.3902901050407024
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Suspenseful",
+      "members": [
+        {
+          "layer": 3,
+          "coefficient": "head_2_0",
+          "intercept": -1.6941240569815113,
+          "calibration": [
+            1.38158915511585,
+            -1.8259083295539775
+          ]
+        },
+        {
+          "layer": 6,
+          "coefficient": "head_2_1",
+          "intercept": -1.6776062371696532,
+          "calibration": [
+            1.330834106964984,
+            -1.8679350159719432
+          ]
+        },
+        {
+          "layer": 9,
+          "coefficient": "head_2_2",
+          "intercept": -1.7007662200742801,
+          "calibration": [
+            1.3751030454900475,
+            -1.8652989639888564
+          ]
+        },
+        {
+          "layer": 12,
+          "coefficient": "head_2_3",
+          "intercept": -2.035120831875032,
+          "calibration": [
+            1.4566312935925416,
+            -1.9033919103347372
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Dark",
+      "members": [
+        {
+          "layer": 3,
+          "coefficient": "head_3_0",
+          "intercept": -0.6233878571142035,
+          "calibration": [
+            1.613579846523697,
+            -0.5305008039880293
+          ]
+        },
+        {
+          "layer": 6,
+          "coefficient": "head_3_1",
+          "intercept": -0.6508282940966575,
+          "calibration": [
+            1.5869776183893418,
+            -0.5467829684912202
+          ]
+        },
+        {
+          "layer": 9,
+          "coefficient": "head_3_2",
+          "intercept": -0.8063980445234604,
+          "calibration": [
+            1.592590993261442,
+            -0.5489043524887219
+          ]
+        },
+        {
+          "layer": 12,
+          "coefficient": "head_3_3",
+          "intercept": -1.1608260056036313,
+          "calibration": [
+            1.53007420364542,
+            -0.543935984686037
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Somber",
+      "members": [
+        {
+          "layer": 3,
+          "coefficient": "head_4_0",
+          "intercept": -1.7959173175711152,
+          "calibration": [
+            1.7596894650236727,
+            -1.5156495940636625
+          ]
+        },
+        {
+          "layer": 6,
+          "coefficient": "head_4_1",
+          "intercept": -1.9780711503485446,
+          "calibration": [
+            1.708744780528828,
+            -1.5347081536441716
+          ]
+        },
+        {
+          "layer": 9,
+          "coefficient": "head_4_2",
+          "intercept": -2.167078390983108,
+          "calibration": [
+            1.7852638778921526,
+            -1.549633103034416
+          ]
+        },
+        {
+          "layer": 12,
+          "coefficient": "head_4_3",
+          "intercept": -2.5384521631979724,
+          "calibration": [
+            1.8294638022785366,
+            -1.6535858536383512
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Calming",
+      "members": [
+        {
+          "layer": 3,
+          "coefficient": "head_5_0",
+          "intercept": -0.7063436434879478,
+          "calibration": [
+            1.6931879658502125,
+            -1.0517872762195346
+          ]
+        },
+        {
+          "layer": 6,
+          "coefficient": "head_5_1",
+          "intercept": -0.6357075122841468,
+          "calibration": [
+            1.6469872734327984,
+            -1.0643902172007638
+          ]
+        },
+        {
+          "layer": 9,
+          "coefficient": "head_5_2",
+          "intercept": -0.5734379470769458,
+          "calibration": [
+            1.6115021878965687,
+            -1.0551229490248963
+          ]
+        },
+        {
+          "layer": 12,
+          "coefficient": "head_5_3",
+          "intercept": -0.06362724838020319,
+          "calibration": [
+            1.562014229160515,
+            -1.032874379483802
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Relaxed",
+      "members": [
+        {
+          "layer": 3,
+          "coefficient": "head_6_0",
+          "intercept": -0.5256740922676781,
+          "calibration": [
+            1.6066827578370195,
+            -1.1194931410733415
+          ]
+        },
+        {
+          "layer": 6,
+          "coefficient": "head_6_1",
+          "intercept": -0.4361842110135865,
+          "calibration": [
+            1.5423586044401005,
+            -1.1352867148241372
+          ]
+        },
+        {
+          "layer": 9,
+          "coefficient": "head_6_2",
+          "intercept": -0.4225526242852648,
+          "calibration": [
+            1.5652430999743836,
+            -1.1358759744763693
+          ]
+        },
+        {
+          "layer": 12,
+          "coefficient": "head_6_3",
+          "intercept": -0.05477379046351161,
+          "calibration": [
+            1.642025583795952,
+            -1.1403260853244985
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Uplifting",
+      "members": [
+        {
+          "layer": 3,
+          "coefficient": "head_7_0",
+          "intercept": -0.4621887967455385,
+          "calibration": [
+            1.3393101403713426,
+            -1.7925661363204335
+          ]
+        },
+        {
+          "layer": 6,
+          "coefficient": "head_7_1",
+          "intercept": -0.557390011430219,
+          "calibration": [
+            1.1936266084679135,
+            -1.8395850693265783
+          ]
+        },
+        {
+          "layer": 9,
+          "coefficient": "head_7_2",
+          "intercept": -0.6418170788849099,
+          "calibration": [
+            1.1310250116879415,
+            -1.8389878236865573
+          ]
+        },
+        {
+          "layer": 12,
+          "coefficient": "head_7_3",
+          "intercept": -0.547581947323609,
+          "calibration": [
+            0.9637901714657885,
+            -1.8662029796635693
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Action",
+      "members": [
+        {
+          "layer": 3,
+          "coefficient": "head_8_0",
+          "intercept": -2.0370371947764525,
+          "calibration": [
+            1.5412638684791307,
+            -1.6793012078207956
+          ]
+        },
+        {
+          "layer": 6,
+          "coefficient": "head_8_1",
+          "intercept": -2.057078579874214,
+          "calibration": [
+            1.549076462774779,
+            -1.7033368818402173
+          ]
+        },
+        {
+          "layer": 9,
+          "coefficient": "head_8_2",
+          "intercept": -2.0355858181554485,
+          "calibration": [
+            1.603301174294474,
+            -1.718879329046221
+          ]
+        },
+        {
+          "layer": 12,
+          "coefficient": "head_8_3",
+          "intercept": -1.905940886210418,
+          "calibration": [
+            1.6471633513655497,
+            -1.733391785714067
+          ]
+        }
+      ],
+      "sourcePositives": 38,
+      "crossfitAuc": 0.8789674568099638
+    },
+    {
+      "label": "Aggressive",
+      "members": [
+        {
+          "layer": 3,
+          "coefficient": "head_9_0",
+          "intercept": -2.1907518641361428,
+          "calibration": [
+            1.498844050522134,
+            -2.403461182949673
+          ]
+        },
+        {
+          "layer": 6,
+          "coefficient": "head_9_1",
+          "intercept": -2.0533127221882115,
+          "calibration": [
+            1.5420353645634461,
+            -2.4537501485713125
+          ]
+        },
+        {
+          "layer": 9,
+          "coefficient": "head_9_2",
+          "intercept": -1.852342138884352,
+          "calibration": [
+            1.5750911905570806,
+            -2.469897688094217
+          ]
+        },
+        {
+          "layer": 12,
+          "coefficient": "head_9_3",
+          "intercept": -2.041082507362648,
+          "calibration": [
+            1.634777749289801,
+            -2.49778641118894
+          ]
+        }
+      ],
+      "sourcePositives": 16,
+      "crossfitAuc": 0.9044894366197183
+    },
+    {
+      "label": "Bouncy",
+      "members": [
+        {
+          "layer": 3,
+          "coefficient": "head_10_0",
+          "intercept": 0.24392755197150234,
+          "calibration": [
+            2.2587116466822184,
+            -1.3848245732275575
+          ]
+        },
+        {
+          "layer": 6,
+          "coefficient": "head_10_1",
+          "intercept": 0.09682894563972651,
+          "calibration": [
+            2.1232036158573635,
+            -1.3663692754109316
+          ]
+        },
+        {
+          "layer": 9,
+          "coefficient": "head_10_2",
+          "intercept": 0.06451070691283682,
+          "calibration": [
+            2.176923417505335,
+            -1.397282792033017
+          ]
+        },
+        {
+          "layer": 12,
+          "coefficient": "head_10_3",
+          "intercept": -0.2442489041464193,
+          "calibration": [
+            1.8916514784930907,
+            -1.462293693875653
+          ]
+        }
+      ],
+      "sourcePositives": 48,
+      "crossfitAuc": 0.9542824074074074
+    },
+    {
+      "label": "Bright",
+      "members": [
+        {
+          "layer": 3,
+          "coefficient": "head_11_0",
+          "intercept": 0.35740945908013433,
+          "calibration": [
+            1.7123125980541014,
+            -1.405768117411762
+          ]
+        },
+        {
+          "layer": 6,
+          "coefficient": "head_11_1",
+          "intercept": 0.45554883122745454,
+          "calibration": [
+            1.5628400712151276,
+            -1.4170990073642702
+          ]
+        },
+        {
+          "layer": 9,
+          "coefficient": "head_11_2",
+          "intercept": 0.4604804914818162,
+          "calibration": [
+            1.5996445898145641,
+            -1.4134018869716591
+          ]
+        },
+        {
+          "layer": 12,
+          "coefficient": "head_11_3",
+          "intercept": 0.3853695830790015,
+          "calibration": [
+            1.387064585832106,
+            -1.4477191141957464
+          ]
+        }
+      ],
+      "sourcePositives": 48,
+      "crossfitAuc": 0.8856646825396826
+    },
+    {
+      "label": "Driving",
+      "members": [
+        {
+          "layer": 3,
+          "coefficient": "head_12_0",
+          "intercept": -1.0636928367268548,
+          "calibration": [
+            1.7552045236912808,
+            -1.4798551061045488
+          ]
+        },
+        {
+          "layer": 6,
+          "coefficient": "head_12_1",
+          "intercept": -1.1355397856805358,
+          "calibration": [
+            1.739841807215136,
+            -1.4978655743029428
+          ]
+        },
+        {
+          "layer": 9,
+          "coefficient": "head_12_2",
+          "intercept": -1.0889235492914906,
+          "calibration": [
+            1.738391252636025,
+            -1.5009586446444931
+          ]
+        },
+        {
+          "layer": 12,
+          "coefficient": "head_12_3",
+          "intercept": -1.3486804050236916,
+          "calibration": [
+            1.7220331894788306,
+            -1.5056669777257268
+          ]
+        }
+      ],
+      "sourcePositives": 48,
+      "crossfitAuc": 0.9020337301587302
+    },
+    {
+      "label": "Epic",
+      "members": [
+        {
+          "layer": 3,
+          "coefficient": "head_13_0",
+          "intercept": -2.318225295504975,
+          "calibration": [
+            1.465193776693502,
+            -1.7092450611171026
+          ]
+        },
+        {
+          "layer": 6,
+          "coefficient": "head_13_1",
+          "intercept": -2.410255063612464,
+          "calibration": [
+            1.4410521908186342,
+            -1.7371221456842945
+          ]
+        },
+        {
+          "layer": 9,
+          "coefficient": "head_13_2",
+          "intercept": -2.371234922721017,
+          "calibration": [
+            1.5471342220275606,
+            -1.7540451061101627
+          ]
+        },
+        {
+          "layer": 12,
+          "coefficient": "head_13_3",
+          "intercept": -2.6230911390224785,
+          "calibration": [
+            1.5961437665441092,
+            -1.7825161144950692
+          ]
+        }
+      ],
+      "sourcePositives": 38,
+      "crossfitAuc": 0.8626958617918843
+    },
+    {
+      "label": "Grooving",
+      "members": [
+        {
+          "layer": 3,
+          "coefficient": "head_14_0",
+          "intercept": -0.32986064904156925,
+          "calibration": [
+            1.6785613542205322,
+            -1.443439301750395
+          ]
+        },
+        {
+          "layer": 6,
+          "coefficient": "head_14_1",
+          "intercept": 0.016419850942629398,
+          "calibration": [
+            1.645666402548109,
+            -1.4582856899304557
+          ]
+        },
+        {
+          "layer": 9,
+          "coefficient": "head_14_2",
+          "intercept": 0.2808649108928334,
+          "calibration": [
+            1.6386145447586964,
+            -1.4575809943865865
+          ]
+        },
+        {
+          "layer": 12,
+          "coefficient": "head_14_3",
+          "intercept": 0.3968602063129029,
+          "calibration": [
+            1.5137963444986817,
+            -1.4901678306051083
+          ]
+        }
+      ],
+      "sourcePositives": 45,
+      "crossfitAuc": 0.8942919389978213
+    },
+    {
+      "label": "Humorous",
+      "members": [
+        {
+          "layer": 3,
+          "coefficient": "head_15_0",
+          "intercept": -0.643264127908955,
+          "calibration": [
+            1.84533092440095,
+            -1.511553501131738
+          ]
+        },
+        {
+          "layer": 6,
+          "coefficient": "head_15_1",
+          "intercept": -0.8220602272033729,
+          "calibration": [
+            1.7107919952294226,
+            -1.5889775732353437
+          ]
+        },
+        {
+          "layer": 9,
+          "coefficient": "head_15_2",
+          "intercept": -0.8148475170956913,
+          "calibration": [
+            1.8156480269098347,
+            -1.5476555666963043
+          ]
+        },
+        {
+          "layer": 12,
+          "coefficient": "head_15_3",
+          "intercept": -1.003370035259576,
+          "calibration": [
+            1.6938718909699606,
+            -1.5901357985926552
+          ]
+        }
+      ],
+      "sourcePositives": 36,
+      "crossfitAuc": 0.9159301346801346
+    },
+    {
+      "label": "Intense",
+      "members": [
+        {
+          "layer": 3,
+          "coefficient": "head_16_0",
+          "intercept": -1.361788712307986,
+          "calibration": [
+            1.1651161947313824,
+            -1.2941808053848862
+          ]
+        },
+        {
+          "layer": 6,
+          "coefficient": "head_16_1",
+          "intercept": -1.4081414752043226,
+          "calibration": [
+            1.2190943076261975,
+            -1.3088525402737916
+          ]
+        },
+        {
+          "layer": 9,
+          "coefficient": "head_16_2",
+          "intercept": -1.2154414695306346,
+          "calibration": [
+            1.2467939359591622,
+            -1.3040601941611412
+          ]
+        },
+        {
+          "layer": 12,
+          "coefficient": "head_16_3",
+          "intercept": -1.1941089194319428,
+          "calibration": [
+            1.2834338279681097,
+            -1.2972385293206448
+          ]
+        }
+      ],
+      "sourcePositives": 59,
+      "crossfitAuc": 0.7785357620085801
+    },
+    {
+      "label": "Mysterious",
+      "members": [
+        {
+          "layer": 3,
+          "coefficient": "head_17_0",
+          "intercept": -1.3362703169184733,
+          "calibration": [
+            1.4795617434569597,
+            -1.2763324294669809
+          ]
+        },
+        {
+          "layer": 6,
+          "coefficient": "head_17_1",
+          "intercept": -1.5429136679606792,
+          "calibration": [
+            1.4230194063324377,
+            -1.3134869852342328
+          ]
+        },
+        {
+          "layer": 9,
+          "coefficient": "head_17_2",
+          "intercept": -1.6528647629788302,
+          "calibration": [
+            1.4692261518639569,
+            -1.3119029844154864
+          ]
+        },
+        {
+          "layer": 12,
+          "coefficient": "head_17_3",
+          "intercept": -1.771827522303663,
+          "calibration": [
+            1.2832125639893222,
+            -1.3452831042906677
+          ]
+        }
+      ],
+      "sourcePositives": 56,
+      "crossfitAuc": 0.776273419203747
+    },
+    {
+      "label": "Mystical",
+      "members": [
+        {
+          "layer": 3,
+          "coefficient": "head_18_0",
+          "intercept": -0.981484695757996,
+          "calibration": [
+            1.5792084339334278,
+            -1.547514202555907
+          ]
+        },
+        {
+          "layer": 6,
+          "coefficient": "head_18_1",
+          "intercept": -1.345987104804304,
+          "calibration": [
+            1.539293731554694,
+            -1.5779807765813314
+          ]
+        },
+        {
+          "layer": 9,
+          "coefficient": "head_18_2",
+          "intercept": -1.5077087618053946,
+          "calibration": [
+            1.4672357012283317,
+            -1.5975154663716156
+          ]
+        },
+        {
+          "layer": 12,
+          "coefficient": "head_18_3",
+          "intercept": -1.316795426571295,
+          "calibration": [
+            1.418921379421195,
+            -1.6186068658606545
+          ]
+        }
+      ],
+      "sourcePositives": 41,
+      "crossfitAuc": 0.7567567567567568
+    }
+  ],
+  "weightsSha256": "df3639cd68bb7c0cc27c23231887c1ca938211a750b472867a4b0e8757515506",
+  "source": "incompetech-300-v1 publisher feel tags; no personal library judgments",
+  "compatibleEvidence": [
+    "muq-feel-v1-5af476abdb17"
+  ]
+}

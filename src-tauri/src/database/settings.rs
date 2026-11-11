@@ -221,6 +221,26 @@ pub fn remove_never_suggest(
     load_mood_tune_prefs(conn)
 }
 
+/// Save explicit relative preferences without changing a saved scorer.
+pub fn set_mood_comparisons(conn: &Connection, mood: &str, pairs: Vec<[String; 2]>) -> Result<BTreeMap<String, MoodTunePrefs>, String> {
+    if pairs.len() > 200 { return Err("Keep at most 200 comparisons per mood".into()); }
+    let mut seen = std::collections::HashSet::new();
+    let mut cleaned = Vec::new();
+    for pair in pairs {
+        if pair[0] == pair[1] { return Err("Choose two different songs".into()); }
+        for id in &pair {
+            let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM library_entries WHERE id=?1 AND entry_type='music')", [id], |r| r.get(0)).map_err(|e| e.to_string())?;
+            if !exists { return Err("Choose songs in the music library".into()); }
+        }
+        if seen.contains(&[pair[1].clone(), pair[0].clone()]) { return Err("Remove the opposite comparison first".into()); }
+        if seen.insert(pair.clone()) { cleaned.push(pair); }
+    }
+    let mut prefs = load_mood_tune_prefs(conn)?;
+    prefs.entry(mood.to_owned()).or_default().comparisons = cleaned;
+    save_mood_tune_prefs(conn, &prefs)?;
+    load_mood_tune_prefs(conn)
+}
+
 /// Saves the per-mood Tune preferences as JSON. Words are trimmed, blanks
 /// and repeats (ignoring case) dropped, and moods left with nothing are
 /// left out.
@@ -235,9 +255,9 @@ pub fn save_mood_tune_prefs(conn: &Connection, prefs: &BTreeMap<String, MoodTune
                 .map(|w| w.trim().to_string())
                 .filter(|w| !w.is_empty() && seen.insert(w.to_lowercase()))
                 .collect();
-            (id.clone(), MoodTunePrefs { never_suggest })
+            (id.clone(), MoodTunePrefs { never_suggest, comparisons: p.comparisons.clone() })
         })
-        .filter(|(_, p)| !p.never_suggest.is_empty())
+        .filter(|(_, p)| !p.never_suggest.is_empty() || !p.comparisons.is_empty())
         .collect();
     let text = serde_json::to_string(&cleaned).map_err(|e| format!("Failed to encode Tune preferences: {e}"))?;
     write_meta(conn, KEY_MOOD_TUNE_PREFS, &text)
@@ -376,8 +396,8 @@ mod tests {
         assert!(load_mood_tune_prefs(&conn).unwrap().is_empty());
 
         let mut prefs = BTreeMap::new();
-        prefs.insert("sorrowful".to_string(), MoodTunePrefs { never_suggest: vec![" sad ".into(), "Sad".into(), "".into(), "slow".into()] });
-        prefs.insert("serene".to_string(), MoodTunePrefs { never_suggest: vec![" ".into()] });
+        prefs.insert("sorrowful".to_string(), MoodTunePrefs { comparisons: vec![], never_suggest: vec![" sad ".into(), "Sad".into(), "".into(), "slow".into()] });
+        prefs.insert("serene".to_string(), MoodTunePrefs { comparisons: vec![], never_suggest: vec![" ".into()] });
         save_mood_tune_prefs(&conn, &prefs).unwrap();
         let back = load_mood_tune_prefs(&conn).unwrap();
         assert_eq!(back.len(), 1);

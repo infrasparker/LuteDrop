@@ -5,6 +5,7 @@ import { useAppStore } from '../stores/appStore';
 import FilterChip from './FilterChip.vue';
 import {
   ENERGY_BANDS,
+  cycleMood,
   lensOn,
   moodsOnly,
   sortForLens,
@@ -20,13 +21,10 @@ import {
 /// Role toggle. While the vocabulary needs recalibrating, a marker after the
 /// chips says so and opens the Moods page.
 ///
-/// Every chip here is on/off. Moods that are on rank the list by the weakest
-/// of their scores. Energy bands only filter: a track shows when its Energy
-/// is in any band that is on. Turning on the first mood sorts by the lens
-/// score (highest first); turning off the last one while sorted by it goes
-/// back to the view's `defaultSort`. Sorting itself is done from the list's
-/// column headers. Lenses, bands and role apply to music only, so callers
-/// hide the bar for ambiance.
+/// Moods cycle Off/High/Low (right-click reverses). Their signed scores are
+/// combined with a geometric mean to rank the list, never to exclude tracks.
+/// Energy bands and role remain filters. The first mood selects Match sorting;
+/// clearing the last one restores the view's default sort.
 const filters = defineModel<MoodFilters>({ required: true });
 const sort = defineModel<SortKey>('sort', { required: true });
 const dir = defineModel<SortDir>('dir', { required: true });
@@ -45,8 +43,9 @@ const moods = computed(() => moodsOnly());
 watch(moods, (list) => {
   const known = (id: string): boolean => list.some((m) => m.id === id);
   const lenses = filters.value.lenses;
-  if (lenses.every(known)) return;
-  filters.value = { ...filters.value, lenses: lenses.filter(known) };
+  const lowLenses = filters.value.lowLenses ?? [];
+  if ([...lenses, ...lowLenses].every(known)) return;
+  filters.value = { ...filters.value, lenses: lenses.filter(known), lowLenses: lowLenses.filter(known) };
 });
 
 watch(
@@ -58,8 +57,8 @@ watch(
   },
 );
 
-function toggleLens(id: string): void {
-  filters.value = { ...filters.value, lenses: toggleIn(filters.value.lenses, id) };
+function toggleLens(id: string, direction: 1 | -1): void {
+  filters.value = cycleMood(filters.value, id, direction);
 }
 
 function toggleBand(id: EnergyBand): void {
@@ -78,11 +77,12 @@ function setRole(role: MoodFilters['role']): void {
         v-for="m in moods"
         :key="m.id"
         :label="m.name"
-        :state="filters.lenses.includes(m.id) ? 'include' : 'off'"
+        :state="filters.lenses.includes(m.id) ? 'include' : filters.lowLenses?.includes(m.id) ? 'exclude' : 'off'"
         :size="size"
         off-variant="outlined"
-        toggle
-        @cycle="toggleLens(m.id)"
+        polarity
+        :detail="'Ranks by the geometric mean of High scores and Low complements; no cutoff'"
+        @cycle="(direction) => toggleLens(m.id, direction)"
       />
     </div>
     <div class="d-flex align-center ga-1 energy-bands" role="group" aria-label="Energy bands">

@@ -1,14 +1,13 @@
 <script setup lang="ts">
 import { computed, reactive } from 'vue';
 import type { TuneReview } from '@generated/index';
-import { useAppStore } from '../../stores/appStore';
 import { useLibraryPreview } from '../../composables/useLibraryPreview';
 import { useFlagRemoval } from '../../composables/useFlagRemoval';
-import { mergeTop, movedMost, outRankLabel, rankMove, strongestOtherMood, topTitle } from '../../utils/moodPage';
-import { moodName } from '../../utils/moods';
+import { mergeTop, movedMost, outRankLabel, rankMove, topTitle } from '../../utils/moodPage';
 import MoodSong from './MoodSong.vue';
 
-/// "Top 15 · {version} · n new · n out": first the songs that left the
+/// Top matches stay visible; optional rank-change details follow the list.
+/// Historical layout: first the songs that left the
 /// selected column's top list (old rank → new rank; flagged high songs in
 /// red), then the merged list (rank, bar, rank move, "New · {its strongest
 /// other mood}", ⚑ when flagged), then the unflagged songs that moved most.
@@ -23,7 +22,6 @@ const props = defineProps<{
   highIds: Set<string>;
 }>();
 
-const store = useAppStore();
 const preview = useLibraryPreview();
 const { removeFlag } = useFlagRemoval();
 
@@ -32,14 +30,9 @@ const merged = computed(() =>
 );
 const title = computed(() => (merged.value ? topTitle(props.versionName, merged.value, props.isCurrent) : `Top 15 · ${props.versionName}`));
 const moved = computed(() => (props.review && !props.isCurrent ? movedMost(props.review) : null));
-const fmt = (v: number): string => v.toFixed(2);
+const fmt = (v: number): string => v.toFixed(3);
 const pct = (v: number): string => `${Math.max(0, Math.min(1, v)) * 100}%`;
 
-function otherMood(entryId: string): string | null {
-  const e = store.findLibraryEntry(entryId);
-  const id = e ? strongestOtherMood(e.moods, props.moodId) : null;
-  return id === null ? null : moodName(id);
-}
 
 function moveClass(entryId: string, move: number | null): Record<string, boolean> {
   const flagged = props.flaggedIds.has(entryId);
@@ -67,6 +60,33 @@ function onRowKey(entryId: string, e: KeyboardEvent): void {
     <div class="panel-title">{{ title }}</div>
     <div v-if="!review || !merged" class="text-body-2 text-medium-emphasis px-2">…</div>
     <template v-else>
+
+
+      <ol class="top-list">
+        <li
+          v-for="r in merged.rows"
+          :key="r.entryId"
+          class="song-row"
+          tabindex="0"
+          @keydown="onRowKey(r.entryId, $event)"
+        >
+          <span class="rank">{{ r.rank }}</span>
+          <MoodSong v-model:menu="menus[r.entryId]" :entry-id="r.entryId" :mood-id="moodId" :name="r.name" />
+          <!-- Empty grid cell: the song's own flag button now shows that it is flagged. -->
+          <span class="flag-slot" />
+          <span class="tag-slot">
+            <span v-if="!isCurrent && r.isNew" class="new-tag">
+              New
+            </span>
+            <span v-else-if="!isCurrent" class="move" :class="moveClass(r.entryId, r.move)">{{ rankMove(r.move) }}</span>
+          </span>
+          <span class="bar" aria-hidden="true"><span class="fill" :style="{ width: pct(r.bar) }" /></span>
+          <span class="val">{{ fmt(r.bar) }}</span>
+        </li>
+      </ol>
+
+      <details v-if="!isCurrent && (merged.out.length > 0 || (moved && moved.up.length + moved.down.length > 0))" class="ranking-details">
+        <summary>Ranking changes</summary>
       <template v-if="!isCurrent && merged.out.length > 0">
         <div class="sub-title">Out</div>
         <ul class="top-list">
@@ -96,31 +116,6 @@ function onRowKey(entryId: string, e: KeyboardEvent): void {
         </ul>
         <div class="out-rule" role="separator" />
       </template>
-
-      <div v-if="!isCurrent && merged.same" class="text-body-2 text-medium-emphasis px-2 pb-1">Same as Current</div>
-      <ol v-else class="top-list">
-        <li
-          v-for="r in merged.rows"
-          :key="r.entryId"
-          class="song-row"
-          tabindex="0"
-          @keydown="onRowKey(r.entryId, $event)"
-        >
-          <span class="rank">{{ r.rank }}</span>
-          <MoodSong v-model:menu="menus[r.entryId]" :entry-id="r.entryId" :mood-id="moodId" :name="r.name" />
-          <!-- Empty grid cell: the song's own flag button now shows that it is flagged. -->
-          <span class="flag-slot" />
-          <span class="tag-slot">
-            <span v-if="!isCurrent && r.isNew" class="new-tag">
-              New<template v-if="otherMood(r.entryId)"> · {{ otherMood(r.entryId) }}</template>
-            </span>
-            <span v-else-if="!isCurrent" class="move" :class="moveClass(r.entryId, r.move)">{{ rankMove(r.move) }}</span>
-          </span>
-          <span class="bar" aria-hidden="true"><span class="fill" :style="{ width: pct(r.bar) }" /></span>
-          <span class="val">{{ fmt(r.bar) }}</span>
-        </li>
-      </ol>
-
       <template v-if="moved && (moved.up.length > 0 || moved.down.length > 0)">
         <div class="sub-title">Moved most</div>
         <ul class="top-list">
@@ -140,11 +135,14 @@ function onRowKey(entryId: string, e: KeyboardEvent): void {
           </li>
         </ul>
       </template>
+      </details>
     </template>
   </section>
 </template>
 
 <style scoped>
+.ranking-details { padding: 8px; font-size: .75rem; color: rgba(var(--v-theme-on-surface), .65); }
+.ranking-details > summary { cursor: pointer; }
 .top-panel {
   min-height: 0;
   overflow: auto;
@@ -218,10 +216,10 @@ function onRowKey(entryId: string, e: KeyboardEvent): void {
   text-align: right;
 }
 .move.up {
-  color: #66bb6a;
+  color: rgba(var(--v-theme-on-surface), .65);
 }
 .move.down {
-  color: #ef5350;
+  color: rgba(var(--v-theme-on-surface), .65);
 }
 .new-tag {
   font-size: 0.75rem;
@@ -244,8 +242,5 @@ function onRowKey(entryId: string, e: KeyboardEvent): void {
   height: 100%;
   background: rgba(var(--v-theme-on-surface), 0.45);
 }
-.out-high {
-  color: #ef5350;
-  font-weight: 700;
-}
+.out-high { color: inherit; }
 </style>

@@ -1,0 +1,77 @@
+/* One selection treatment for the Soundstage, its editors, and the remote. */
+.v-application, .v-overlay {
+  --mixer-border: rgba(var(--v-theme-on-surface), .12);
+  --mixer-hover-border: rgba(var(--v-theme-on-surface), .22);
+  --mixer-active-border: rgba(var(--v-theme-primary), .55);
+  --mixer-active-fill: color-mix(in srgb, rgb(var(--v-theme-primary)) 4%, rgb(var(--v-theme-surface)));
+  --mixer-radius: 7px;
+}
+
+.mixer-surface {
+  border: 1px solid var(--mixer-border);
+  border-radius: var(--mixer-radius);
+  background: rgb(var(--v-theme-surface));
+  transition: border-color .12s, background-color .12s;
+}
+.mixer-surface:hover { border-color: var(--mixer-hover-border); }
+.mixer-surface.mixer-active {
+  border-color: var(--mixer-active-border);
+  background: var(--mixer-active-fill);
+}
+.mixer-surface.mixer-missing {
+  border-color: rgba(var(--v-theme-warning), .6);
+  background: rgba(var(--v-theme-warning), .045);
+}
+.mixer-context {
+  border: 1px solid var(--mixer-border);
+  border-radius: var(--mixer-radius);
+  background: rgba(var(--v-theme-on-surface), .025);
+}
+
+.mixer-choice.v-btn--variant-outlined {
+  border-color: var(--mixer-border);
+  color: rgba(var(--v-theme-on-surface), .8);
+  background: transparent;
+}
+.mixer-choice.mixer-choice-active.v-btn--variant-outlined {
+  border-color: var(--mixer-active-border);
+  color: rgb(var(--v-theme-primary));
+  background: var(--mixer-active-fill);
+}
+
+.mixer-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: rgba(var(--v-theme-on-surface), .4);
+  cursor: grab;
+  touch-action: none;
+}
+.mixer-drag-handle:hover {
+  color: rgba(var(--v-theme-on-surface), .85);
+  background: rgba(var(--v-theme-on-surface), .05);
+}
+.mixer-drag-handle:active { cursor: grabbing; }
+.mixer-drag-handle:focus-visible {
+  outline: 2px solid rgb(var(--v-theme-primary));
+  outline-offset: 1px;
+}
+
+/* Sortable's fallback is appended outside the themed application. */
+.stage-drag-preview {
+  --v-theme-on-surface: 232, 228, 220;
+  --v-theme-surface: 20, 20, 24;
+  --v-theme-primary: 240, 168, 48;
+  --v-theme-warning: 191, 54, 12;
+  --mixer-border: #e8e4dc1f;
+  --mixer-active-border: #f0a8308c;
+  --mixer-active-fill: #1d1a19;
+  --mixer-radius: 7px;
+}

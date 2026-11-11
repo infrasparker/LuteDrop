@@ -1,4 +1,7 @@
 import hmac
+import hashlib
+import json
+from datetime import datetime, timezone
 import logging
 import multiprocessing
 import os
@@ -13,7 +16,7 @@ import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field, StringConstraints, model_validator
 
-from . import moods, scry, tune, tune_vocab
+from . import moods, scry, tune, tune_vocab, personal, signed_search, adaptive
 from .embed import Embedder, EmbeddingCache, MuqEmbedder, decode_track
 from .reference import ReferenceSet, load_reference, reference_stats
 from .tune_phrases import PHRASES
@@ -75,6 +78,7 @@ class ScoreRequest(BaseModel):
     # Either one, when given, replaces the matching defaults in `moods.py`.
     mood_prompts: Annotated[dict[MoodKey, PromptList], Field(max_length=MAX_MOODS)] | None = None
     energy_prompts: EnergyPrompts | None = None
+    profiles: dict[MoodKey, personal.Profile] = Field(default_factory=dict, max_length=MAX_MOODS)
 
 
 class PreviewRequest(BaseModel):
@@ -100,6 +104,10 @@ class MapRequest(BaseModel):
 
 class TuneFlag(BaseModel):
     hash: str
+    target: float | None = Field(default=None, ge=0, le=1)
+    polarity: Literal[-1,1] | None = None
+    confidence: float = Field(default=1., ge=1, le=4)
+    pivot: float = Field(default=.5, ge=0, le=1)
     min: float | None = None
     max: float | None = None
     weight: float = 1.0
@@ -118,6 +126,7 @@ class TuneCalibration(BaseModel):
 class OtherMood(BaseModel):
     name: str
     lines: PromptList
+    profile: personal.Profile | None = None
 
 
 class TuneRequest(BaseModel):
@@ -139,11 +148,18 @@ class TuneRequest(BaseModel):
     # arrange: search only the user's typed words and lines (`extra_words`) and the
     #   current lines, split into words and kept whole.
     # suggest: search the bank, other moods' words, PHRASES and the built-in vocabulary too.
-    mode: Literal["compare", "arrange", "suggest"] = "suggest"
+    mode: Literal["compare", "arrange", "suggest", "learn"] = "suggest"
+    scoring_version: int = Field(default=1, ge=1, le=8)
+    rebuild: bool = False
+    comparisons: list[tuple[str,str]] = Field(default_factory=list, max_length=200)
     candidates: Annotated[list[PromptList], Field(max_length=MAX_TUNE_VERSIONS)] = []
+    active_profile: personal.Profile | None = None
+    profile_versions: list[personal.Profile | None] = Field(default_factory=list, max_length=MAX_TUNE_VERSIONS)
 
     @model_validator(mode="after")
     def _compare_needs_versions(self):
+        if self.scoring_version == 3 and any(f.target is None for f in self.flags):
+            raise ValueError("Strength ratings need a target between 0 and 1")
         if self.mode == "compare" and not self.candidates:
             raise ValueError("compare mode needs at least one version in candidates")
         return self
@@ -173,7 +189,9 @@ def create_app(
     token: str,
     executor_factory: Callable[[], Executor] | None = None,
     reference: ReferenceSet | None = None,
+    evidence: personal.Evidence | None = None,
 ) -> FastAPI:
+    feature_cache = personal.FeatureCache(cache.root, evidence) if evidence is not None else None
     # Load the model in the background so /health answers while the weights
     # download on first start. `loaded` is set once loading has finished,
     # whether it worked or not; `load_error` holds the failure, if any.
@@ -221,13 +239,15 @@ def create_app(
 
     @app.get("/health")
     def health():
-        return {
+        result = {
             "model": embedder.name,
             "cache_count": cache.count(),
             "ready": loaded.is_set() and not load_error,
             "error": load_error[0] if load_error else None,
             "reference": {"set": reference.set_id, "tracks": reference.tracks} if reference else None,
         }
+        if evidence: result['learning'] = evidence.id
+        return result
 
     @app.post("/embed")
     def embed(req: EmbedRequest):
@@ -238,7 +258,7 @@ def create_app(
         results: dict[str, dict] = {}
         pending = {}
         for item in req.items:
-            if cache.has(item.hash):
+            if cache.has(item.hash) and (feature_cache is None or feature_cache.get(item.hash) is not None):
                 results[item.hash] = {"hash": item.hash, "ok": True}
             elif item.hash not in pending:
                 try:
@@ -249,7 +269,11 @@ def create_app(
         for hash, (pool, future) in pending.items():
             try:
                 windows = future.result()
-                if not cache.has(hash):
+                if feature_cache is not None and hasattr(embedder, 'embed_audio_features'):
+                    vectors_, hidden = embedder.embed_audio_features(windows)
+                    cache.put(hash, vectors_)
+                    feature_cache.put(hash, hidden)
+                elif not cache.has(hash):
                     cache.put(hash, embedder.embed_windows(windows))
                 results[hash] = {"hash": hash, "ok": True}
             except BrokenProcessPool as e:
@@ -301,6 +325,27 @@ def create_app(
                 text_vecs.update(zip(missing, vecs))
             return {name: np.vstack([text_vecs[t] for t in texts]) for name, texts in groups.items()}
 
+    def hidden_features(hashes):
+        if evidence is None or feature_cache is None:
+            raise HTTPException(status_code=409, detail="This analyzer does not support learned mood profiles")
+        hidden = [feature_cache.get(h) for h in hashes]
+        missing = [h for h, value in zip(hashes, hidden) if value is None]
+        if missing:
+            raise HTTPException(status_code=409, detail=f"Audio features need preparing for {len(missing)} songs; run analysis again")
+        return np.asarray(hidden)
+
+    def audio_features(hashes):
+        return evidence.features(hidden_features(hashes))
+
+    def learned_values(profile, hashes, X, audio=None):
+        if evidence is None or not (evidence.accepts(profile) if hasattr(evidence, 'accepts') else profile.evidence == evidence.id):
+            raise HTTPException(status_code=409, detail="This saved profile needs another audio evidence version")
+        vecs = prompt_vectors({str(i): axis.prompts for i, axis in enumerate(profile.word_axes)})
+        if vecs is None: raise HTTPException(status_code=503, detail="Word evidence could not be embedded")
+        raw = np.column_stack([(X @ vecs[str(i)].T).mean(axis=1) for i in range(len(profile.word_axes))])
+        geometry = personal.audio_geometry(hidden_features(hashes)) if profile.local is not None or profile.adjustment is not None else None
+        return personal.profile_scores(profile, evidence, audio_features(hashes) if audio is None else audio, raw, geometry)
+
     def mood_scores(
         req: ScoreRequest, target_hashes: list[str], X_targets: np.ndarray
     ) -> tuple[dict[str, dict], dict | None] | None:
@@ -329,11 +374,18 @@ def create_app(
             }
             for i, h in enumerate(target_hashes)
         }
+        for mood_id, profile in req.profiles.items():
+            values = learned_values(profile, target_hashes, X_targets)
+            for i, h in enumerate(target_hashes):
+                scores[h]['moods'].pop(mood_id, None)
+                scores[h].setdefault('learned', {})[mood_id] = float(values[i])
         stats = reference_stats(reference, vecs, list(mood_groups)) if reference else None
         return scores, stats
 
     @app.post("/score")
     def score(req: ScoreRequest):
+        if req.profiles and (not loaded.wait(LOAD_WAIT_SECONDS) or load_error):
+            raise HTTPException(status_code=503, detail="The saved scorer is waiting for the audio model")
         target_hashes, X_targets = vectors(req.targets)
         out = {"model": embedder.name}
         mood = mood_scores(req, target_hashes, X_targets)
@@ -392,7 +444,7 @@ def create_app(
         app sent. Waits for the model like /preview."""
         if req.calibration.source == "reference" and reference is None:
             raise HTTPException(status_code=409, detail="The analyzer has no reference set")
-        hashes, X = vectors([*req.targets, *(f.hash for f in req.flags)])
+        hashes, X = vectors([*req.targets, *(f.hash for f in req.flags), *(h for pair in req.comparisons for h in pair)])
         if not hashes:
             raise HTTPException(status_code=409, detail="None of the targets has a cached embedding")
         if not loaded.wait(LOAD_WAIT_SECONDS):
@@ -401,13 +453,129 @@ def create_app(
             raise HTTPException(status_code=503, detail=f"model failed to load: {load_error[0]}")
         X = X.astype(np.float64)
         row = {h: i for i, h in enumerate(hashes)}
+        if any(h not in row for pair in req.comparisons for h in pair):
+            raise HTTPException(status_code=409, detail="Analyze both comparison songs first")
         skipped = [f.hash for f in req.flags if f.hash not in row]
         kept = [f for f in req.flags if f.hash in row]
-        flags = [tune.FlagTarget(row[f.hash], f.min, f.max, f.weight, f.fresh, f.side, f.focus)
+        flags = [tune.FlagTarget(row[f.hash], f.min, f.max, f.weight, f.fresh, f.side, f.focus, f.target if req.scoring_version >= 3 else None, f.polarity if req.scoring_version >= 4 else None, f.confidence, f.pivot, req.scoring_version)
                  for f in kept]
         flag_hashes = [f.hash for f in kept]
         m = tune.Mapping(req.calibration.midpoint_z, req.calibration.slope, req.calibration.source)
         use_ref = req.calibration.source == "reference"
+
+        if req.mode == 'learn' or (req.scoring_version >= 2 and req.mode in ('arrange', 'suggest')):
+            if reference is None:
+                raise HTTPException(status_code=409, detail="Learning needs the fixed reference recordings")
+            pairs = [(row[high],row[low]) for high,low in req.comparisons if high in row and low in row and high != low] if req.scoring_version >= 3 else []
+            audio = audio_features(hashes)
+            hidden = hidden_features(hashes) if req.scoring_version >= 6 else None
+            statistics = {}
+            validation_errors = {}
+            validation_losses = {}
+            def statistics_for(text):
+                if text not in statistics:
+                    vec = prompt_vectors({'axis':[text]})
+                    if vec is None: raise HTTPException(status_code=503, detail="Text signals could not be embedded")
+                    values = (X @ vec['axis'].T).mean(axis=1)
+                    reference_values = (reference.vectors @ vec['axis'].T).mean(axis=1)
+                    mean, sd = float(reference_values.mean()), float(reference_values.std())
+                    if sd <= 1e-9: raise HTTPException(status_code=409, detail="Description could not be calibrated")
+                    statistics[text] = (values, mean, sd, reference_values)
+                return statistics[text]
+            def fit_description(lines, validate=True):
+                # An unchanged description updates feedback around the accepted
+                # foundation. It must not silently reselect a different model.
+                if (req.scoring_version >= 8 and not req.rebuild and req.active_profile is not None
+                        and req.active_profile.version >= 6 and lines == req.current_lines):
+                    foundation = req.active_profile.model_copy(update={'adjustment':None})
+                    old_values = learned_values(foundation,hashes,X,audio)
+                    prior = np.tan(np.pi*(old_values-.5))
+                    try:
+                        correction, values = adaptive.refine(prior,personal.audio_geometry(hidden),flags,
+                            getattr(evidence,'reference_geometry',None),pairs)
+                    except ValueError as error:
+                        raise HTTPException(status_code=409,detail=str(error)) from error
+                    fields = dict(version=8,word_version=foundation.word_version or foundation.version,
+                        adjustment=correction,training_count=len(flags),training_signature='',
+                        created_at=datetime.now(timezone.utc).isoformat())
+                    profile = foundation.model_copy(update=fields)
+                    identity = profile.model_dump(by_alias=True,exclude={'id','created_at','training_signature'})
+                    profile.id = hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()
+                    # The foundation can already contain these judgments, so a
+                    # fresh held-out generalization claim would be misleading.
+                    return profile, values, (0,0)
+                try: axes = personal.description_axes(lines)
+                except ValueError as error: raise HTTPException(status_code=422, detail=str(error)) from error
+                columns = [statistics_for(text) for text,_ in axes]
+                signs = [sign for _,sign in axes]
+                Z = personal.word_features(np.column_stack([raw for raw,_,_,_ in columns]),
+                    [mean for _,mean,_,_ in columns],[sd for _,_,sd,_ in columns],signs,penalty_only=req.scoring_version>=7)
+                anchors = None
+                if req.scoring_version >= 5:
+                    reference_audio = getattr(evidence,'reference_audio',None)
+                    if reference_audio is None or getattr(evidence,'reference_set',None) != reference.set_id or len(reference_audio) != len(reference.vectors):
+                        raise HTTPException(status_code=409,detail="This fit needs matching fixed reference audio anchors")
+                    reference_words = personal.word_features(np.column_stack([raw for _,_,_,raw in columns]),
+                        [mean for _,mean,_,_ in columns],[sd for _,_,sd,_ in columns],signs,penalty_only=req.scoring_version>=7)
+                    anchors = np.column_stack([reference_audio,reference_words])
+                diagnostics = {}
+                fitter = personal.fit_directional if req.scoring_version >= 4 else personal.fit_general
+                try:
+                    if req.scoring_version >= 6:
+                        coefficients,values,loo = adaptive.fit(np.column_stack([audio,Z]),hidden,flags,[sign for _,sign in axes],audio.shape[1],reference_features=anchors,reference_geometry=getattr(evidence,'reference_geometry',None),validate=validate,comparisons=pairs,diagnostics=diagnostics,select=validate)
+                    else:
+                        coefficients, values, loo = fitter(np.column_stack([audio,Z]), flags, [sign for _,sign in axes], audio.shape[1], validate=validate, comparisons=pairs, diagnostics=diagnostics, **({'reference_features':anchors} if req.scoring_version >= 5 else {}))
+                except ValueError as error: raise HTTPException(status_code=409, detail=str(error)) from error
+                n = audio.shape[1]
+                words = [personal.WordAxis(label=text[:64],prompts=[text],mean=columns[i][1],sd=columns[i][2],weight=float(coefficients[1+n+i])) for i,(text,_) in enumerate(axes)]
+                local = diagnostics.get('local')
+                method = diagnostics.get('method')
+                identity = hashlib.sha256(json.dumps([req.scoring_version,evidence.id,coefficients.tolist(),[axis.model_dump() for axis in words],method,local.model_dump() if local else None],sort_keys=True).encode()).hexdigest()
+                profile = personal.Profile(version=max(2,req.scoring_version),id=identity,evidence=evidence.id,createdAt=datetime.now(timezone.utc).isoformat(),trainingCount=len(flags),bias=float(coefficients[0]),audioWeights=coefficients[1:1+n].tolist(),wordAxes=words,method=method,local=local)
+                validation_errors[identity] = diagnostics.get('validation_mae')
+                validation_losses[identity] = diagnostics.get('validation_loss')
+                return profile, values, loo
+            groups = {'current':req.current_lines, **{f'other:{k}':o.lines for k,o in req.other().items()}}
+            vecs = prompt_vectors(groups)
+            if vecs is None: raise HTTPException(status_code=503,detail="Text signals could not be embedded")
+            before = ((X @ vecs['current'].T).mean(axis=1), (reference.vectors @ vecs['current'].T).mean(axis=1) if use_ref else None)
+            before_values = learned_values(req.active_profile, hashes, X, audio) if req.active_profile else tune.bars(before[0], before[0] if before[1] is None else before[1], m)
+            def learned_report(values, profile_, loo_, description):
+                result = tune.build_report(lines=description, after=(values, None), before=(before_values, None),
+                                           flags=flags, flag_hashes=flag_hashes, hashes=hashes, m=m,
+                                           other_raw={k: learned_values(o.profile, hashes, X, audio) if o.profile else (X @ vecs[f'other:{k}'].T).mean(axis=1) for k, o in req.other().items()}, loo=loo_, names=[],
+                                           after_bars=values, before_bars=before_values)
+                if req.scoring_version == 3:
+                    result['loss'] = float(np.mean([(values[f.index]-f.target)**2 for f in flags if f.target is not None])) if flags else 0.
+                    result['loo'] = {'held':0,'total':0}  # ratings have no pass/fail boundary
+                    result['unsatisfied'] = []
+                result['validation_loss'] = validation_losses.get(profile_.id) if profile_ else None
+                result['validation_mae'] = validation_errors.get(profile_.id) if profile_ else None
+                result['profile'] = profile_.model_dump(by_alias=True) if profile_ else None
+                return result
+            if req.mode == 'learn':
+                lines = req.extra_words or req.current_lines
+                profile, values, loo = fit_description(lines)
+                proposals = [learned_report(values,profile,loo,lines)]
+            else:
+                alternatives = signed_search.candidates(req.current_lines,req.extra_words,req.bank,req.mode,req.candidates,req.exclude)
+                def quality(values, lines, loo=(0,0)):
+                    miss = [abs(values[f.index]-f.target) if f.target is not None else max(0,(f.lo or 0)-values[f.index])+max(0,values[f.index]-(1 if f.hi is None else f.hi)) for f in flags]
+                    fit = tune.loss(values,flags) if req.scoring_version >= 4 else (float(np.mean(np.square(miss))) if miss else 0.)
+                    held_cost = .01*(1-loo[0]/loo[1]) if loo[1] and req.scoring_version < 3 else 0.
+                    if pairs: fit += .02*float(np.mean([np.logaddexp(0., -(values[a]-values[b])*5) for a,b in pairs]))
+                    return fit + .002*float(np.mean((values-before_values)**2)) + .00003*len(lines) + held_cost
+                screened = []
+                for lines in alternatives:
+                    profile,values,_ = fit_description(lines,validate=False)
+                    screened.append((quality(values,lines),lines))
+                finalists = []
+                for _,lines in sorted(screened,key=lambda x:x[0])[:3]:
+                    profile,values,loo = fit_description(lines)
+                    finalists.append((quality(values,lines,loo),learned_report(values,profile,loo,lines)))
+                proposals = [value for _,value in sorted(finalists,key=lambda x:x[0])[:1]]
+            return {'baseline':learned_report(before_values,req.active_profile,(0,0),req.current_lines),'proposals':proposals,'split':None,'skipped':skipped}
+
 
         # Units: the words and lines in play, each with where it came from, less any
         # holding a word the user left out. Arrange mode takes only the user's typed
@@ -458,12 +626,14 @@ def create_app(
         before = raws(vecs["current"])
         # The current lines' bars: the search pays for moving unflagged songs away from them.
         b_before = tune.bars(before[0], before[0] if before[1] is None else before[1], m)
+        if req.active_profile is not None:
+            b_before = learned_values(req.active_profile, hashes, X)
         other_raw = {k: raws(vecs[f"other:{k}"])[0] for k in others}
 
-        # Only the built-in vocabulary's best words alone stay in the search.
+        # Mostly the best built-in words alone, with bounded flag-specialist slots.
         vocab_rows = [i for i, u in enumerate(units) if u in vocab]
         if len(vocab_rows) > VOCAB_KEEP:
-            best = set(tune.best_rows(U_lib, U_ref, vocab_rows, flags, m, VOCAB_KEEP, before=b_before))
+            best = set(tune.diverse_rows(U_lib, U_ref, vocab_rows, flags, m, VOCAB_KEEP, before=b_before))
             dropped = set(vocab_rows) - best
             keep = [i for i in range(len(units)) if i not in dropped]
             units = [units[i] for i in keep]
@@ -477,27 +647,32 @@ def create_app(
 
         loo_memo: dict = {}
 
-        def report(lines, after, sub_flags, sub_hashes, proposed=True, names_from=candidates):
+        def report(lines, after, sub_flags, sub_hashes, proposed=True, names_from=candidates, values=None, profile=None):
             # Leave-one-out and name suggestions only make sense for a proposal.
             loo, names = (0, 0), []
             if proposed:
                 loo = tune.leave_one_out(U_lib, U_ref, units, sub_flags, m, tune.Combo(tuple(lines), 0.0),
                                          seeds=[current_rows], memo=loo_memo, before=b_before)
                 names = tune.name_suggestions(U_lib, units, names_from, after[0])
-            return tune.build_report(
+            result = tune.build_report(
                 lines=lines, after=after, before=before, flags=sub_flags, flag_hashes=sub_hashes,
                 hashes=hashes, m=m, other_raw=other_raw, loo=loo, names=names, sources=sources,
+                after_bars=values, before_bars=b_before,
             )
+            if profile: result['profile'] = profile.model_dump(by_alias=True)
+            return result
 
-        baseline = report(req.current_lines, before, flags, flag_hashes, proposed=False)
+        baseline = report(req.current_lines, before, flags, flag_hashes, proposed=False, values=b_before, profile=req.active_profile)
         proposals, split = [], None
         if req.mode == "compare":
             # Each version as written, in order, whether or not it beats the current lines.
             for i, lines in enumerate(req.candidates):
                 for line in lines:
                     sources[line] = ["your version"]
+                profile = req.profile_versions[i] if i < len(req.profile_versions) else None
+                values = learned_values(profile, hashes, X) if profile else None
                 proposals.append(report(list(lines), raws(vecs[f"version:{i}"]), flags, flag_hashes,
-                                        proposed=False))
+                                        proposed=False, values=values, profile=profile))
         elif flags and units:
             # Blends of the best single units join the pool as extra units. A blend's
             # sources are "blend" and then its members'.
@@ -588,6 +763,7 @@ def factory() -> FastAPI:
         EmbeddingCache(Path(os.environ.get("TAGGER_CACHE_DIR", "/cache"))),
         os.environ.get("LUTEDROP_TAGGER_TOKEN", ""),
         reference=load_reference(Path(__file__).parent / "reference", MuqEmbedder.name),
+        evidence=personal.Evidence.load(Path(__file__).parent / "reference"),
     )
 
 

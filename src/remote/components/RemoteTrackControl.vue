@@ -1,107 +1,30 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import type { Track } from '@generated/index';
 import { useRemote } from '../composables/useRemote';
 import { useLocalVolume } from '../../shared/useLocalVolume';
-import RemoteClipRow from './RemoteClipRow.vue';
-
-const props = defineProps<{
-  track: Track;
-}>();
-
+import { playbackLabel } from '../../utils/soundstage';
+const props = defineProps<{ track: Track }>();
 const remote = useRemote();
-const playbackState = computed(() => remote.playbackStates.get(props.track.id));
-const isPlaying = computed(() => playbackState.value?.isPlaying ?? false);
-const isActive = computed(() => isPlaying.value || (playbackState.value?.isPaused ?? false));
-
-const { local: localVolume, set: setVolume } = useLocalVolume(() => props.track.volume, (v) => remote.setTrackVolume(props.track.id, v));
-
-const currentClipName = computed(() => {
-  const clipId = playbackState.value?.currentClipId;
-  if (!clipId) return null;
-  return props.track.clips.find((c) => c.id === clipId)?.name ?? null;
-});
+const expanded = ref(false);
+const playback = computed(() => remote.playbackStates.get(props.track.id));
+const active = computed(() => !!(playback.value?.isPlaying || playback.value?.isPaused));
+const liveMix = computed(() => remote.mix.value.find((state) => state.trackId === props.track.id));
+const selected = computed(() => playback.value?.currentClipId ?? liveMix.value?.selectedClipId ?? props.track.clips[0]?.id);
+const { local: volume, set: setVolume } = useLocalVolume(() => liveMix.value?.volume ?? props.track.volume, (value) => remote.setTrackVolume(props.track.id, value));
 </script>
-
 <template>
-  <div :class="{ 'track-wrapper': true, 'track-active': isActive }">
-    <VExpansionPanels>
-      <VExpansionPanel
-        color="surface-light"
-        rounded="0"
-        elevation="0"
-      >
-        <template #title>
-          <div class="d-flex align-center ga-2" style="width: 100%;">
-            <VBtn
-              :icon="isPlaying ? 'mdi-pause' : 'mdi-play'"
-              variant="tonal"
-              size="small"
-              rounded="circle"
-              @click.stop="isPlaying ? remote.pauseTrack(track.id) : remote.playTrack(track.id)"
-            />
-            <VBtn
-              icon="mdi-stop"
-              variant="tonal"
-              size="small"
-              rounded="circle"
-              @click.stop="remote.stopTrack(track.id)"
-            />
-
-            <span class="text-subtitle-2 font-weight-bold text-truncate">{{ track.name }}</span>
-
-            <VSpacer />
-
-            <span v-if="currentClipName" class="text-caption text-primary d-none d-md-inline" style="white-space: nowrap;">
-              {{ currentClipName }}
-            </span>
-            <span class="text-caption text-medium-emphasis d-none d-md-inline" style="white-space: nowrap;">
-              {{ track.clips.length }} clip{{ track.clips.length !== 1 ? 's' : '' }}
-            </span>
-
-            <VSlider
-              :model-value="localVolume"
-              @update:model-value="setVolume"
-              @click.stop
-              @mousedown.stop
-              @touchstart.stop
-              :min="0"
-              :max="1"
-              :step="0.01"
-              hide-details
-              density="compact"
-              class="mr-4"
-              style="flex: 0 0 120px;"
-            />
-          </div>
-        </template>
-
-        <template #text>
-          <div v-if="track.clips.length > 0" class="pt-2">
-            <RemoteClipRow
-              v-for="clip in track.clips"
-              :key="clip.id"
-              :clip="clip"
-              :track-id="track.id"
-            />
-          </div>
-          <div v-else class="text-medium-emphasis text-center pa-4">
-            No clips.
-          </div>
-        </template>
-      </VExpansionPanel>
-    </VExpansionPanels>
-  </div>
+  <article class="remote-track mixer-surface" :class="{ 'mixer-active': active }">
+    <div class="d-flex align-center ga-3"><VBtn :icon="active ? 'mdi-stop' : 'mdi-play'" :aria-label="`${active ? 'Stop' : 'Play'} ${track.name}`" :color="active ? 'primary' : undefined" variant="tonal" size="small" :disabled="!track.clips.length" @click="active ? remote.stopTrack(track.id) : remote.playTrack(track.id)" /><div class="track-name"><strong>{{ track.name }}</strong><div class="text-caption text-medium-emphasis">{{ playbackLabel(track.mode) }}</div></div><span class="text-caption">{{ Math.round(volume * 100) }}%</span></div>
+    <VSlider :model-value="volume" :aria-label="`${track.name} volume`" @update:model-value="setVolume" :min="0" :max="1" :step=".01" hide-details density="compact" class="my-3" />
+    <div class="clip-choices"><VBtn v-for="clip in track.clips.slice(0, expanded ? undefined : 5)" :key="clip.id" :text="clip.name" :title="clip.name" :aria-label="`Play ${clip.name} on ${track.name}`" variant="outlined" class="mixer-choice" :class="{ 'mixer-choice-active': active && selected === clip.id }" :color="active && selected === clip.id ? 'primary' : undefined" size="small" :disabled="remote.isEntryMissing(clip.libraryEntryId)" @click="remote.playTrackClip(track.id, clip.id)" /><VBtn v-if="track.clips.length > 5" :text="expanded ? 'Show fewer' : `+${track.clips.length - 5} clips`" variant="text" size="small" @click="expanded = !expanded" /></div>
+  </article>
 </template>
-
 <style scoped>
-.track-wrapper {
-  border-left: 3px solid transparent;
-}
-.track-active {
-  border-left: 3px solid #F0A830;
-}
-.track-active :deep(.v-expansion-panel-title) {
-  background: rgba(240, 168, 48, 0.08);
-}
+.remote-track { padding: 16px; margin-bottom: 12px; }
+.track-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.track-name strong { font-weight: 500; font-size: 14px; }
+.clip-choices { display: flex; flex-wrap: wrap; gap: 6px; }
+.clip-choices :deep(.v-btn) { text-transform: none; max-width: 100%; letter-spacing: 0; min-height: 36px; }
+.clip-choices :deep(.v-btn__content) { overflow: hidden; display: block; text-overflow: ellipsis; }
 </style>

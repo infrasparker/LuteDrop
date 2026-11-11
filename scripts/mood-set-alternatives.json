@@ -1,0 +1,54 @@
+{
+  "peaceful": [
+    ["warm, gentle, peaceful, reassuring, tender, softly flowing music"],
+    ["tender, intimate, inspiring", "gentle, reflective, comforting, pastoral music"],
+    ["serene, tranquil, peaceful, gentle, restful music"]
+  ],
+  "sorrowful": [
+    ["melancholic, sad, sorrowful, lonely, grieving music"],
+    ["wistful, melancholic, remembrance, loss, longing, sad music"],
+    ["somber, mournful, tragic, heartbroken music"]
+  ],
+  "wondrous": [
+    ["reverent, transcendent, sacred, awe-inspiring, spiritual music"],
+    ["wonder, awe, majesty, expansive, beautiful, soaring music"],
+    ["solemn, devotional, prayerful, celestial, sacred music"]
+  ],
+  "joyful": [
+    ["festive, cheerful, merry, celebratory, joyful, lively folk dance music"],
+    ["jaunty, merry, drinking song, folk dance, tavern music"],
+    ["joyful, playful, celebratory, buoyant music"]
+  ],
+  "quirky": [
+    ["quirky, offbeat, mischievous, odd, puzzling, curious music"],
+    ["groovy, funky, syncopated, bouncy, rhythmic music"],
+    ["city, groovy, funky, quirky, offbeat music"]
+  ],
+  "whimsical": [
+    ["whimsical, fanciful, playful, impish, curious, fairy music"],
+    ["whimsical, magical, enchanted, playful, delicate music"],
+    ["playful, mischievous, quirky, cheeky music"]
+  ],
+  "mysterious": [
+    ["mysterious, enigmatic, cryptic, curious, intrigue, secretive music"],
+    ["mysterious, dreamy, ethereal, magical, shimmering music"],
+    ["dreamy, magical, shimmering, ethereal, mystical music"],
+    ["mysterious, curious, sparse isolated notes, chimes, celesta, music box"]
+  ],
+  "grim": [
+    ["ominous, unsettling, eerie, haunted, menacing, dread music"],
+    ["sinister, unnatural, uncanny, eldritch, horror music"],
+    ["horror, terror, fear, scary, dark, haunted house, an ominous presence"]
+  ],
+  "heroic": [
+    ["heroic, noble, courageous, bold, valiant, uplifting music"],
+    ["heroic, triumphant, rousing, victorious, noble, motivational music"],
+    ["adventurous, epic, brave, noble, inspiring, orchestral music"]
+  ],
+  "battle": [
+    ["combat, battle, warlike, fierce, clash, war drums, fantasy battle music"],
+    ["aggressive, hostile, ferocious, relentless, confrontational, battle music"],
+    ["urgent, driving, intense, forceful, pounding percussion, combat music"],
+    ["combat, battle, warlike, fierce, clash, war drums, fantasy battle music", "brass, brass fanfare"]
+  ]
+}

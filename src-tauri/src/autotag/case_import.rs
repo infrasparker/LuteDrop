@@ -158,7 +158,7 @@ pub fn import_into(conn: &Connection, json: &str) -> Result<CaseImportReport, St
         .unchecked_transaction()
         .map_err(|e| format!("Failed to begin flag import: {e}"))?;
     for f in &flags {
-        let lines = lines_sig(&vocabulary.prompt_signature(&f.mood).unwrap_or_default());
+        let lines = lines_sig(&vocabulary.flag_signature(&f.mood).unwrap_or_default());
         set_flag(&tx, &f.entry_id, &f.mood, FlagKind::Band, Some(f.band), f.bound, None, None, &lines)?;
     }
     tx.commit().map_err(|e| format!("Failed to commit flag import: {e}"))?;

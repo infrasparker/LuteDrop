@@ -10,7 +10,7 @@ const { configurations, activeConfigurationId } = storeToRefs(store);
 
 // Dialog state
 const showNewDialog = ref(false);
-const showSaveAsDialog = ref(false);
+const showDuplicateDialog = ref(false);
 const showRenameDialog = ref(false);
 const showDeleteConfirm = ref(false);
 
@@ -27,7 +27,7 @@ async function createNew(name: string): Promise<void> {
   await store.command('create_configuration', { name });
 }
 
-async function saveAs(name: string): Promise<void> {
+async function duplicateConfig(name: string): Promise<void> {
   await store.command('duplicate_configuration', { name });
 }
 
@@ -38,8 +38,8 @@ async function renameConfig(name: string): Promise<void> {
   });
 }
 
-function openSaveAsDialog(): void {
-  showSaveAsDialog.value = true;
+function openDuplicateDialog(): void {
+  showDuplicateDialog.value = true;
 }
 
 function openRenameDialog(): void {
@@ -82,9 +82,9 @@ async function deleteConfig(): Promise<void> {
       </VList>
     </VMenu>
 
-    <VBtn icon="mdi-content-save-plus" variant="text" size="x-small" title="Save As" @click="openSaveAsDialog" />
-    <VBtn icon="mdi-pencil" variant="text" size="x-small" title="Rename" @click="openRenameDialog" />
-    <VBtn icon="mdi-delete" variant="text" size="x-small" title="Delete" :disabled="configurations.length <= 1" color="error" @click="showDeleteConfirm = true" />
+    <VBtn icon="mdi-content-duplicate" variant="text" size="x-small" title="Duplicate configuration" @click="openDuplicateDialog" />
+    <VBtn icon="mdi-pencil" variant="text" size="x-small" title="Rename configuration" @click="openRenameDialog" />
+    <VBtn icon="mdi-delete" variant="text" size="x-small" title="Delete configuration" :disabled="configurations.length <= 1" color="error" @click="showDeleteConfirm = true" />
 
     <PromptDialog
       v-model="showNewDialog"
@@ -95,11 +95,12 @@ async function deleteConfig(): Promise<void> {
     />
 
     <PromptDialog
-      v-model="showSaveAsDialog"
-      title="Save Configuration As"
+      v-model="showDuplicateDialog"
+      title="Duplicate configuration"
+      confirm-label="Duplicate"
       label="New Name"
       :initial="(activeConfig?.name ?? '') + ' Copy'"
-      @submit="saveAs"
+      @submit="duplicateConfig"
     />
 
     <PromptDialog
@@ -114,7 +115,7 @@ async function deleteConfig(): Promise<void> {
     <ConfirmDialog
       v-model="showDeleteConfirm"
       title="Delete Configuration"
-      :message="`Are you sure you want to delete &quot;${activeConfig?.name}&quot;? All groups, compositions, and tracks in it will be permanently removed.`"
+      :message="`Are you sure you want to delete &quot;${activeConfig?.name}&quot;? Its boards and scenes will be removed. Shared tracks stay in the inventory; audio files stay in the Library.`"
       confirm-label="Delete"
       confirm-color="error"
       @confirm="deleteConfig"

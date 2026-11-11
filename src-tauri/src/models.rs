@@ -111,13 +111,118 @@ pub const ENERGY_ID: &str = "energy";
 /// for. The id is stored in `library_entry_moods.mood` and never changes once
 /// created; the name is what the UI shows; the prompts are the text the
 /// analyzer compares tracks with.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
 pub struct MoodDef {
     pub id: String,
     pub name: String,
     pub prompts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub profile: Option<LearnedMoodProfile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct LearnedWordAxis {
+    pub label: String,
+    pub prompts: Vec<String>,
+    pub mean: f64,
+    pub sd: f64,
+    pub weight: f64,
+}
+
+/// Immutable accepted weights. Feedback and new imports never refit these.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct LocalMoodCorrection {
+    pub width: f64,
+    pub dimensions: usize,
+    pub coefficients: Vec<f64>,
+    pub vectors: String,
+}
+
+/// Immutable accepted weights. Feedback and new imports never refit these.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct LearnedMoodProfile {
+    pub version: u32,
+    pub id: String,
+    pub evidence: String,
+    pub created_at: String,
+    #[serde(default)]
+    pub training_signature: String,
+    pub training_count: usize,
+    pub bias: f64,
+    pub audio_weights: Vec<f64>,
+    pub word_axes: Vec<LearnedWordAxis>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub method: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub local: Option<LocalMoodCorrection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub word_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub adjustment: Option<LocalMoodCorrection>,
+}
+
+impl LearnedMoodProfile {
+    pub fn validate(&self) -> Result<(), String> {
+          if !(1..=8).contains(&self.version) || self.id.is_empty() || self.evidence.is_empty()
+              || self.training_count > 500 || self.audio_weights.is_empty() || self.audio_weights.len() > 64
+              || self.word_axes.is_empty() || self.word_axes.len() > 16
+              || (self.version == 1 && (self.audio_weights.len() != 8 || self.word_axes.len() != 8))
+            || !self.bias.is_finite() || self.audio_weights.iter().any(|v| !v.is_finite()) {
+            return Err("Invalid learned mood profile".into());
+        }
+        for axis in &self.word_axes {
+            check_prompts("Word evidence", &axis.prompts)?;
+            if !axis.mean.is_finite() || !axis.sd.is_finite() || axis.sd <= 1e-9 || !axis.weight.is_finite() {
+                return Err("Invalid learned word calibration".into());
+            }
+        }
+        if self.version < 6 && (self.local.is_some() || self.method.is_some())
+            || self.version >= 6 && (!matches!(self.method.as_deref(), Some("words" | "local" | "global"))
+                || (self.method.as_deref() == Some("local")) != self.local.is_some()) {
+            return Err("Invalid learned scoring method".into());
+        }
+        if self.version < 8 && (self.word_version.is_some() || self.adjustment.is_some())
+            || self.word_version.is_some_and(|v| !(6..=8).contains(&v)) {
+            return Err("Invalid feedback foundation version".into());
+        }
+        for local in self.local.iter().chain(self.adjustment.iter()) {
+            use base64::Engine;
+            if !local.width.is_finite() || local.width <= 0. || local.width > 1.
+                || local.dimensions == 0 || local.dimensions > 4096
+                || local.coefficients.is_empty() || local.coefficients.len() > 900
+                || local.coefficients.iter().any(|v| !v.is_finite()) || local.vectors.len() > 20_000_000 {
+                return Err("Invalid local mood correction".into());
+            }
+            let bytes = base64::engine::general_purpose::STANDARD.decode(&local.vectors)
+                .map_err(|_| "Invalid local audio exemplars".to_string())?;
+            if bytes.len() != local.coefficients.len() * local.dimensions * 4 {
+                return Err("Invalid local audio exemplar dimensions".into());
+            }
+            for row in bytes.chunks_exact(local.dimensions * 4) {
+                let mut norm = 0.;
+                for value in row.chunks_exact(4) {
+                    let v = f32::from_le_bytes(value.try_into().unwrap()) as f64;
+                    if !v.is_finite() { return Err("Invalid local audio exemplar".into()); }
+                    norm += v*v;
+                }
+                if (norm.sqrt()-1.).abs() > 1e-5 { return Err("Invalid local audio normalization".into()); }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Energy's prompts: Energy is scored two-sided, the mean similarity with
@@ -133,7 +238,7 @@ pub struct EnergyPrompts {
 /// The app's mood vocabulary, edited in Settings → Moods and stored as JSON
 /// in the `mood_vocabulary` meta row: the moods in display order, plus the
 /// fixed Energy entry. It is sent to the analyzer with every `/score`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
 pub struct MoodVocabulary {
@@ -175,6 +280,14 @@ fn check_prompts(what: &str, prompts: &[String]) -> Result<(), String> {
 }
 
 impl MoodVocabulary {
+    /// Flags track the accepted scorer as well as the mood's wording.
+    pub fn flag_signature(&self, id: &str) -> Option<Vec<String>> {
+        let mut lines = self.prompt_signature(id)?;
+        if let Some(profile) = self.moods.iter().find(|m| m.id == id).and_then(|m| m.profile.as_ref()) {
+            lines.push(format!("@learned:{}", profile.id));
+        }
+        Some(lines)
+    }
     /// The defaults the database is seeded with (since schema v13, each mood
     /// and each side of Energy is one prompt: a cluster of tag words; the
     /// set was settled track by track against a real library on 2026-11-06,
@@ -187,6 +300,7 @@ impl MoodVocabulary {
             id: id.to_string(),
             name: name.to_string(),
             prompts: strings(prompts),
+            profile: None,
         };
         Self {
             moods: vec![
@@ -268,7 +382,8 @@ impl MoodVocabulary {
             }
             let prompts = clean_prompts(&m.prompts);
             check_prompts(&name, &prompts)?;
-            moods.push(MoodDef { id, name, prompts });
+            if let Some(profile) = &m.profile { profile.validate()?; }
+            moods.push(MoodDef { id, name, prompts, profile: m.profile.clone() });
         }
         let energy = EnergyPrompts {
             positive: clean_prompts(&self.energy.positive),
@@ -526,6 +641,9 @@ pub struct AcceptedLines {
 #[serde(rename_all = "camelCase", default)]
 pub struct MoodTunePrefs {
     pub never_suggest: Vec<String>,
+    /// Entry IDs, [stronger, weaker]. Explicit preferences, never inferred from playback.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub comparisons: Vec<[String; 2]>,
 }
 
 /// A suggested name word, with how closely its own ranking follows the lines'.
@@ -544,6 +662,14 @@ pub struct TuneNameIdea {
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
 pub struct TuneReview {
+    #[serde(default)]
+    pub validation_mae: Option<f64>,
+    #[serde(default)]
+    pub validation_loss: Option<f64>,
+    #[serde(default)]
+    pub target_signature: String,
+    #[serde(default)]
+    pub profile: Option<LearnedMoodProfile>,
     pub lines: Vec<String>,
     /// Where each line came from ("word bank", "phrase list", "Mysterious
     /// words", "blend" then its parts' sources, ...), aligned with `lines`.
@@ -603,6 +729,7 @@ pub struct TuneSplitReview {
 pub enum TuneMode {
     Compare,
     Arrange,
+    Learn,
     #[default]
     Suggest,
 }
@@ -777,6 +904,7 @@ pub enum TrackTransition {
 #[ts(export, export_to = "../../generated/")]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum TrackMode {
+    OneShot,
     Seamless {
         #[serde(rename = "loopStart")]
         loop_start: f64,
@@ -808,18 +936,52 @@ pub struct Track {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
-pub struct Comp {
+pub struct Scene {
     pub id: String,
     pub name: String,
-    pub tracks: Vec<Track>,
+    pub tracks: Vec<SceneTrack>,
+}
+
+/// A scene owns only its mix settings. Track definitions and clips are shared.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct SceneTrack {
+    pub track_id: String,
+    pub enabled: bool,
+    pub volume: f64,
+    pub selected_clip_id: Option<String>,
+}
+
+/// The current mix is separate from track defaults and saved scenes.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct TrackMix {
+    pub track_id: String,
+    pub volume: f64,
+    pub selected_clip_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../generated/")]
-pub struct Group {
+#[serde(rename_all = "camelCase")]
+pub struct SceneReference {
+    pub scene_id: String,
+    pub scene_name: String,
+    pub board_name: String,
+    pub configuration_name: String,
+    pub selected_clip_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../generated/")]
+#[serde(rename_all = "camelCase")]
+pub struct Board {
     pub id: String,
     pub name: String,
-    pub comps: Vec<Comp>,
+    pub scenes: Vec<Scene>,
+    pub track_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -835,7 +997,10 @@ pub struct Configuration {
 #[ts(export, export_to = "../../generated/")]
 #[serde(rename_all = "camelCase")]
 pub struct AppState {
-    pub groups: Vec<Group>,
+    pub boards: Vec<Board>,
+    pub tracks: Vec<Track>,
+    pub mix: Vec<TrackMix>,
+    pub active_scene_id: Option<String>,
     pub library_entries: Vec<LibraryEntry>,
     pub tags: Vec<String>,
     pub configurations: Vec<Configuration>,
@@ -858,7 +1023,10 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
-            groups: Vec::new(),
+            boards: Vec::new(),
+            tracks: Vec::new(),
+            mix: Vec::new(),
+            active_scene_id: None,
             library_entries: Vec::new(),
             tags: Vec::new(),
             configurations: Vec::new(),
@@ -895,7 +1063,7 @@ pub struct TrackPlaybackState {
 #[serde(rename_all = "camelCase")]
 pub struct LibraryEntryUsage {
     pub clip_id: String,
-    pub comp_name: String,
+    pub scene_name: String,
     pub track_name: String,
 }
 

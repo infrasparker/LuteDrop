@@ -109,7 +109,7 @@ impl TransitionManager {
                     let transition = match t.mode {
                         TrackMode::Sequence { transition, .. } => transition.clone(),
                         TrackMode::Shuffle { transition, .. } => transition.clone(),
-                        TrackMode::Seamless { .. } => TrackTransition::Gapless,
+                        TrackMode::Seamless { .. } | TrackMode::OneShot => TrackTransition::Gapless,
                     };
                     match transition {
                         TrackTransition::Gapless => {
@@ -212,6 +212,17 @@ impl TransitionManager {
     pub fn has_pending(&self) -> bool {
         matches!(self.state, TransitionState::Gap(_))
     }
+
+    /// Rebind a queued clip after a shared track edit, keeping its original deadline.
+    pub fn remap_pending(&mut self, next: Option<usize>) {
+        if let TransitionState::Gap(pending) = &mut self.state {
+            if let Some(index) = next {
+                pending.clip_index = index;
+            } else {
+                self.state = TransitionState::Idle;
+            }
+        }
+    }
 }
 
 /// Determine the next clip index given the current playback mode.
@@ -231,7 +242,7 @@ pub fn pick_next_clip_index(
         return None;
     }
     match mode {
-        TrackMode::Seamless { .. } => None,
+        TrackMode::Seamless { .. } | TrackMode::OneShot => None,
         TrackMode::Sequence { repeat, .. } => {
             let current = current_index.unwrap_or(0);
             let next = current + 1;

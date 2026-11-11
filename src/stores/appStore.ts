@@ -1,13 +1,16 @@
+import { captureSceneTracks } from '../utils/soundstage';
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import type {
-  Group,
-  Comp,
+  Board,
+  Scene,
   Track,
+  TrackMix,
+  SceneTrack,
   AppState,
   TrackPlaybackState,
-  CompStatus,
+  SceneStatus,
   LibraryEntry,
   Configuration,
   BulkImportProgress,
@@ -17,7 +20,7 @@ import type {
   TuneSplitReview,
 } from '@generated/index';
 import { useToast } from '../composables/useToast';
-import { compStatus, LIBRARY_PLAYBACK_ID } from '../shared/playback';
+import { sceneStatus, LIBRARY_PLAYBACK_ID } from '../shared/playback';
 import { setMoodVocabulary } from '../utils/moods';
 
 /// One version column on the Moods page: its lines as typed, the review
@@ -28,7 +31,8 @@ export interface MoodDraft {
   name: string;
   /// typed / arranged / suggested / before (the lines Use replaced), or a
   /// split's column.
-  source: 'typed' | 'arranged' | 'suggested' | 'before' | 'split';
+  source: 'typed' | 'arranged' | 'suggested' | 'learned' | 'before' | 'split';
+  profile?: import('@generated/index').LearnedMoodProfile | null;
   text: string;
   review: TuneReview | null;
   /// The lines (joined by new lines) `review` was made from.
@@ -39,14 +43,17 @@ export interface MoodDraft {
   reviewedFlags: string | null;
   evaluating: boolean;
   /// Arrange / Suggest still searching for this column.
-  running: 'arrange' | 'suggest' | null;
+  running: 'arrange' | 'suggest' | 'learn' | null;
   error: string | null;
   /// A suggested column's split offer, or the split column's halves.
   split: TuneSplitReview | null;
 }
 
 export const useAppStore = defineStore('app', () => {
-  const groups = ref<Group[]>([]);
+  const boards = ref<Board[]>([]);
+  const tracks = ref<Track[]>([]);
+  const mix = ref<TrackMix[]>([]);
+  const activeSceneId = ref<string | null>(null);
   const playbackStates = ref<Map<string, TrackPlaybackState>>(new Map());
   const libraryEntries = ref<LibraryEntry[]>([]);
   const tags = ref<string[]>([]);
@@ -89,7 +96,10 @@ export const useAppStore = defineStore('app', () => {
   // --- Hydrate from Rust state ---
 
   function hydrate(state: AppState): void {
-    groups.value = state.groups;
+    boards.value = state.boards;
+    tracks.value = state.tracks;
+    mix.value = state.mix;
+    activeSceneId.value = state.activeSceneId;
     libraryEntries.value = state.libraryEntries;
     tags.value = state.tags;
     configurations.value = state.configurations;
@@ -102,13 +112,9 @@ export const useAppStore = defineStore('app', () => {
     setMoodVocabulary(state.moodVocabulary);
 
     // Prune playback states for tracks that no longer exist (deleted
-    // tracks/comps/configs previously leaked entries forever).
+    // tracks/scenes/configs previously leaked entries forever).
     const validIds = new Set<string>([LIBRARY_PLAYBACK_ID]);
-    for (const g of state.groups) {
-      for (const c of g.comps) {
-        for (const t of c.tracks) validIds.add(t.id);
-      }
-    }
+    for (const track of state.tracks) validIds.add(track.id);
     for (const key of [...playbackStates.value.keys()]) {
       if (!validIds.has(key)) playbackStates.value.delete(key);
     }
@@ -134,28 +140,47 @@ export const useAppStore = defineStore('app', () => {
     playbackStates.value.set(trackId, state);
   }
 
-  function getCompStatus(compId: string): CompStatus {
-    return compStatus(findComp(compId), playbackStates.value);
+  function getSceneStatus(sceneId: string): SceneStatus {
+    return sceneStatus(findScene(sceneId), playbackStates.value);
   }
 
   // --- Lookups ---
 
-  function findComp(compId: string): Comp | undefined {
-    for (const group of groups.value) {
-      const comp = group.comps.find((c) => c.id === compId);
-      if (comp) return comp;
+  function findScene(sceneId: string): Scene | undefined {
+    for (const board of boards.value) {
+      const scene = board.scenes.find((c) => c.id === sceneId);
+      if (scene) return scene;
     }
     return undefined;
   }
 
   function findTrack(trackId: string): Track | undefined {
-    for (const group of groups.value) {
-      for (const comp of group.comps) {
-        const track = comp.tracks.find((t) => t.id === trackId);
-        if (track) return track;
+    return tracks.value.find((track) => track.id === trackId);
+  }
+
+  function trackMix(trackId: string): TrackMix {
+    return mix.value.find((state) => state.trackId === trackId)
+      ?? { trackId, volume: findTrack(trackId)?.volume ?? 1, selectedClipId: null };
+  }
+
+  function setMix(trackId: string, patch: Partial<TrackMix>): void {
+    const current = mix.value.find((state) => state.trackId === trackId);
+    if (current) Object.assign(current, patch);
+    else mix.value.push({ ...trackMix(trackId), ...patch });
+  }
+
+  function setClipVolume(clipId: string, volume: number): void {
+    for (const track of tracks.value) {
+      const clip = track.clips.find((item) => item.id === clipId);
+      if (clip) {
+        clip.volume = volume;
+        return;
       }
     }
-    return undefined;
+  }
+
+  function captureScene(boardId: string, sceneId: string | null = null): SceneTrack[] {
+    return captureSceneTracks(boards.value.find((board) => board.id === boardId), sceneId, tracks.value, mix.value, playbackStates.value);
   }
 
   function findLibraryEntry(entryId: string): LibraryEntry | undefined {
@@ -196,14 +221,21 @@ export const useAppStore = defineStore('app', () => {
     return mutedClips.value.has(clipId);
   }
 
-  function isCompMuted(compId: string): boolean {
-    const comp = findComp(compId);
-    if (!comp || comp.tracks.length === 0) return false;
-    return comp.tracks.every((t) => mutedTracks.value.has(t.id));
+  function isSceneMuted(sceneId: string): boolean {
+    const scene = findScene(sceneId);
+    if (!scene || scene.tracks.length === 0) return false;
+    return scene.tracks.every((t) => mutedTracks.value.has(t.trackId));
   }
 
   return {
-    groups,
+    boards,
+    tracks,
+    mix,
+    activeSceneId,
+    trackMix,
+    setMix,
+    setClipVolume,
+    captureScene,
     playbackStates,
     libraryEntries,
     tags,
@@ -227,8 +259,8 @@ export const useAppStore = defineStore('app', () => {
     hydrate,
     command,
     setTrackPlaybackState,
-    getCompStatus,
-    findComp,
+    getSceneStatus,
+    findScene,
     findTrack,
     findLibraryEntry,
     isEntryMissing,
@@ -237,6 +269,6 @@ export const useAppStore = defineStore('app', () => {
     setClipMuted,
     isTrackMuted,
     isClipMuted,
-    isCompMuted,
+    isSceneMuted,
   };
 });

@@ -11,7 +11,7 @@ const emit = defineEmits<{ set: [kind: FlagKind, band: FlagBand | null]; open: [
 
 <template>
   <VList density="compact">
-    <VListItem v-for="b in FLAG_BANDS" :key="b.band" :title="b.label" @click="emit('set', 'band', b.band)" />
+    <VListItem v-for="b in FLAG_BANDS" :key="b.band" :title="b.menuLabel" @click="emit('set', 'band', b.band)" />
     <VDivider />
     <VListItem title="Higher" @click="emit('set', 'higher', null)" />
     <VListItem title="Lower" @click="emit('set', 'lower', null)" />

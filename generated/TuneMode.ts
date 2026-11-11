@@ -6,4 +6,4 @@
  * lines; suggest also searches the word bank, other moods' words, the
  * phrase list and the analyzer's built-in vocabulary.
  */
-export type TuneMode = "compare" | "arrange" | "suggest";
+export type TuneMode = "compare" | "arrange" | "learn" | "suggest";

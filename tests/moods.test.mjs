@@ -9,6 +9,8 @@ import {
   canSortBy,
   chipState,
   cycleChip,
+  cycleMood,
+  lensOn,
   emptyChipSelection,
   emptyMoodFilters,
   energyBand,
@@ -98,13 +100,13 @@ test('mood chips are on/off: toggling twice turns a mood off again', () => {
   assert.deepEqual(toggleIn(toggleIn(['grim'], 'heroic'), 'heroic'), ['grim']);
 });
 
-test('several moods rank by the weakest; a mood lens never filters', () => {
+test('several moods rank by their geometric mean; a mood lens never filters', () => {
   const f = filters({ lenses: ['heroic', 'grim'] });
-  assert.equal(lensScore(entry('a', { heroic: 0.9, grim: 0.3 }), f), 0.3);
+  assert.ok(Math.abs(lensScore(entry('a', { heroic: 0.9, grim: 0.3 }), f) - Math.sqrt(.9 * .3)) < 1e-9);
   assert.equal(lensScore(entry('b', { heroic: 0.2 }), f), null);
   assert.equal(matchesMoodFilters(entry('c', { heroic: 0.9, grim: 0.9 }), f), true);
-  assert.equal(lensLabel(f), 'weakest of Heroic, Grim');
-  assert.equal(lensLabel(filters({ lenses: ['grim'] })), 'Grim');
+  assert.equal(lensLabel(f), 'combined High Heroic, High Grim');
+  assert.equal(lensLabel(filters({ lenses: ['grim'] })), 'High Grim');
 });
 
 test('lens ranking does not depend on Energy, within the bands that are on', () => {
@@ -180,4 +182,61 @@ test('calibrationLabel says where the calibration came from', () => {
   const ref = calibrationLabel({ calibratedAt: '1700000000000', tracks: 300, source: 'reference', referenceSet: 'incompetech-300-v1' });
   assert.ok(ref.includes('reference set') && ref.includes('300') && ref.includes('incompetech-300-v1'));
   assert.equal(calibrationLabel(null), "Not calibrated yet. The next analysis run calibrates, against the analyzer's reference set, or once it covers 50 music tracks of your library.");
+});
+
+
+test('mood cycles support high and low preferences in either direction', () => {
+  let f = filters();
+  f = cycleMood(f, 'heroic');
+  assert.deepEqual(f.lenses, ['heroic']);
+  f = cycleMood(f, 'heroic');
+  assert.deepEqual(f.lenses, []);
+  assert.deepEqual(f.lowLenses, ['heroic']);
+  assert.equal(lensOn(f), true);
+  assert.equal(canSortBy('energy', f), false);
+  f = cycleMood(f, 'heroic');
+  assert.equal(lensOn(f), false);
+  f = cycleMood(f, 'grim', -1);
+  assert.deepEqual(f.lowLenses, ['grim']);
+  f = cycleMood(f, 'grim', -1);
+  assert.deepEqual(f.lenses, ['grim']);
+  assert.deepEqual(f.lowLenses, []);
+  f = cycleMood(f, 'grim', -1);
+  assert.equal(lensOn(f), false);
+  assert.equal(chipState(cycleChip(emptyChipSelection(), 'boss', -1), 'boss'), 'exclude');
+});
+
+test('mixed high/low moods combine desired directions without penalizing energy', () => {
+  const f = filters({ lenses: ['heroic'], lowLenses: ['grim'] });
+  const best = entry('balanced', { heroic: .8, grim: .1, energy: .2 });
+  const bad = entry('too scary', { heroic: .99, grim: .9, energy: 1 });
+  assert.ok(Math.abs(lensScore(best, f) - Math.sqrt(.8 * .9)) < 1e-9);
+  assert.ok(Math.abs(lensScore(bad, f) - Math.sqrt(.99 * .1)) < 1e-9);
+  assert.equal(lensScore(entry('unknown', { heroic: 1 }), f), null);
+  assert.deepEqual(sortByKey([bad, best], 'lens', 'desc', f, e => e).map(e => e.name), ['balanced', 'too scary']);
+  assert.equal(lensLabel(f), 'combined High Heroic, Low Grim');
+  assert.equal(matchesMoodFilters(entry('rain', { type: 'ambiance' }), filters({ lowLenses: ['grim'] })), false);
+});
+
+test('low-only preferences respect manual levels and invert suggested tie breakers', () => {
+  const f = filters({ lowLenses: ['heroic'] });
+  const a = entry('a', { heroic: .9, heroicUser: .25 });
+  const b = entry('b', { heroic: .2, heroicUser: .25 });
+  assert.equal(lensScore(a, f), .75);
+  assert.deepEqual(sortByKey([a, b, entry('unknown')], 'lens', 'desc', f, e => e).map(e => e.name), ['b', 'a', 'unknown']);
+});
+
+
+test('two high and two low requests use a normalized cross-product, including zero and unknown cases', () => {
+  const f = filters({ lenses: ['heroic', 'festive'], lowLenses: ['grim', 'sorrowful'] });
+  const e = entry('balanced', { heroic: .9, grim: .2 });
+  e.moods.push({ mood: 'festive', auto: .8, user: null }, { mood: 'sorrowful', auto: .1, user: null });
+  const score = lensScore(e, f);
+  assert.ok(Math.abs(score - Math.pow(.9 * .8 * (1-.2) * (1-.1), .25)) < 1e-9);
+  assert.equal(matchesMoodFilters(e, f), true, 'preference scores never exclude tracks');
+  assert.ok(Math.abs(score - lensScore(e, filters({ lenses: ['festive', 'heroic'], lowLenses: ['sorrowful', 'grim'] }))) < 1e-9);
+  e.moods.find(m => m.mood === 'grim').user = 1;
+  assert.equal(lensScore(e, f), 0);
+  assert.equal(matchesMoodFilters(e, f), true, 'zero fit still stays in the ranking');
+  assert.equal(lensScore(entry('unknown'), f), null);
 });

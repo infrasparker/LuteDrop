@@ -371,8 +371,10 @@ pub fn load_flags(
     let mut out = HashMap::new();
     for row in rows {
         let f = row.map_err(|e| format!("Failed to read flag: {e}"))?;
-        let Some(current) = vocabulary.prompt_signature(&f.mood) else { continue };
-        let reason = stale_reason(&f, &lines_sig(&current), stats.get(&f.mood).copied());
+        let Some(current) = vocabulary.flag_signature(&f.mood) else { continue };
+        let stable_preference = vocabulary.moods.iter()
+            .any(|m| m.id == f.mood && m.profile.as_ref().is_some_and(|p| p.version >= 2));
+        let reason = if stable_preference { None } else { stale_reason(&f, &lines_sig(&current), stats.get(&f.mood).copied()) };
         out.insert(
             (f.entry_id, f.mood),
             MoodFlag {
@@ -390,11 +392,12 @@ pub fn load_flags(
 }
 
 /// The bound a band flag set in the app gets: Definitely and Understandable
-/// mean "at least" that band, Stretch and No mean "in" it.
+/// mean "at least" that band; Stretch means "at most", and No has only a ceiling.
 pub fn app_bound(band: FlagBand) -> FlagBound {
     match band {
         FlagBand::Definitely | FlagBand::Understandable => FlagBound::AtLeast,
-        FlagBand::Stretch | FlagBand::No => FlagBound::In,
+        FlagBand::Stretch => FlagBound::AtMost,
+        FlagBand::No => FlagBound::In,
     }
 }
 
@@ -402,7 +405,7 @@ pub fn app_bound(band: FlagBand) -> FlagBound {
 /// song, against the current vocabulary and calibration.
 ///
 /// A `band` flag needs a band (Definitely and Understandable mean "at least"
-/// that band, Stretch and No mean "in" it). `higher` and `lower` carry no band
+/// that band; Stretch means "at most", and No has only a ceiling). `higher` and `lower` carry no band
 /// and record the song's suggested bar for the mood (the analyzer's value, not
 /// the user's level) and the mood's calibration (`calibration_mark`), so the
 /// tuner can read them against the bar as it was.
@@ -417,7 +420,7 @@ pub fn set_flag_for_entry(
     if mood == ENERGY_ID || !vocabulary.contains(mood) {
         return Err(format!("There is no mood \"{mood}\" to flag"));
     }
-    let lines = lines_sig(&vocabulary.prompt_signature(mood).unwrap_or_default());
+    let lines = lines_sig(&vocabulary.flag_signature(mood).unwrap_or_default());
     match (kind, band) {
         (FlagKind::Band, None) => Err("Pick a band for this flag".to_string()),
         (FlagKind::Higher | FlagKind::Lower, Some(_)) => {
@@ -451,7 +454,7 @@ pub fn set_flag_for_entry(
 /// was made at stays). A mood no longer in the vocabulary is refused.
 pub fn keep_flag(conn: &Connection, entry_id: &str, mood: &str) -> Result<(), String> {
     let lines = settings::load_mood_vocabulary(conn)?
-        .prompt_signature(mood)
+        .flag_signature(mood)
         .ok_or_else(|| format!("There is no mood \"{mood}\""))?;
     refresh_flag(conn, entry_id, mood, &lines_sig(&lines))?;
     if let Some(stat) = current_stat(conn, mood)? {
@@ -650,13 +653,13 @@ mod tests {
     }
 
     #[test]
-    fn set_mood_flag_band_definitely_is_at_least() {
+    fn app_band_flags_use_floors_for_positive_and_ceilings_for_negative_judgments() {
         let conn = open_memory_db();
         let a = entry(&conn, "a");
         let want = [
             (FlagBand::Definitely, FlagBound::AtLeast),
             (FlagBand::Understandable, FlagBound::AtLeast),
-            (FlagBand::Stretch, FlagBound::In),
+            (FlagBand::Stretch, FlagBound::AtMost),
             (FlagBand::No, FlagBound::In),
         ];
         for (band, bound) in want {
@@ -664,7 +667,7 @@ mod tests {
             let f = &flags_for_mood(&conn, "peaceful").unwrap()[0];
             assert_eq!((f.band, f.bound, f.bar_at_flag), (Some(band), bound, None));
         }
-        let sig = lines_sig(&MoodVocabulary::defaults().prompt_signature("peaceful").unwrap());
+        let sig = lines_sig(&MoodVocabulary::defaults().flag_signature("peaceful").unwrap());
         assert_eq!(flags_for_mood(&conn, "peaceful").unwrap()[0].lines_sig, sig);
     }
 
@@ -809,7 +812,7 @@ mod tests {
         let a = entry(&conn, "a");
         band_flag(&conn, &a, "peaceful", FlagBand::Stretch, "old lines");
         keep_flag(&conn, &a, "peaceful").unwrap();
-        let sig = lines_sig(&MoodVocabulary::defaults().prompt_signature("peaceful").unwrap());
+        let sig = lines_sig(&MoodVocabulary::defaults().flag_signature("peaceful").unwrap());
         assert_eq!(flags_for_mood(&conn, "peaceful").unwrap()[0].lines_sig, sig);
         assert!(keep_flag(&conn, &a, "nosuchmood").is_err());
     }

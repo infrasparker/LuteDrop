@@ -1,0 +1,302 @@
+[
+  {
+    "name": "Tense",
+    "kind": "feel",
+    "meaning": "Anxious anticipation and emotional strain.",
+    "sets": [
+      "tense, anxious, suspenseful, nervous anticipation, apprehensive music",
+      "tense music with suspense, uncertainty and restrained nervous energy",
+      "tense, uneasy, restless, urgent, anticipatory music"
+    ]
+  },
+  {
+    "name": "Reflective",
+    "kind": "feel",
+    "meaning": "Inward thought without requiring sadness.",
+    "sets": [
+      "reflective, contemplative, introspective, thoughtful, pensive music",
+      "quietly reflective music, inward, thoughtful and contemplative",
+      "reflective, meditative, wistful, pensive instrumental music"
+    ]
+  },
+  {
+    "name": "Ethereal",
+    "kind": "feel",
+    "meaning": "Delicate, weightless, and otherworldly.",
+    "sets": [
+      "ethereal, delicate, weightless, otherworldly, floating music",
+      "dreamy, magical and shimmering, ethereal, mystical music",
+      "ethereal music, floating and suspended, luminous and otherworldly"
+    ]
+  },
+  {
+    "name": "Brooding",
+    "kind": "feel",
+    "meaning": "Troubled, darkly inward thought.",
+    "sets": [
+      "brooding, moody, darkly introspective, troubled, pensive music",
+      "brooding music, dwelling on troubled thoughts, dark and introspective",
+      "brooding, ominous, somber, restless, inward music"
+    ]
+  },
+  {
+    "name": "Solemn",
+    "kind": "feel",
+    "meaning": "Grave seriousness and dignity.",
+    "sets": [
+      "solemn, grave, dignified, serious, ceremonial music",
+      "solemn music with gravity, reverence and restrained dignity",
+      "solemn, somber, stately, serious, respectful music"
+    ]
+  },
+  {
+    "name": "Yearning",
+    "kind": "feel",
+    "meaning": "Longing for something absent.",
+    "sets": [
+      "yearning, longing, wistful, tender desire, emotionally longing music",
+      "music expressing longing for something absent, wistful and yearning",
+      "yearning, nostalgic, bittersweet, longing, heartfelt music"
+    ]
+  },
+  {
+    "name": "Restless",
+    "kind": "feel",
+    "meaning": "Unsettled and unable to settle into calm.",
+    "sets": [
+      "restless, uneasy, unsettled, agitated, fidgety music",
+      "restless music with nervous movement and unsettled energy",
+      "restless, insistent, anxious, shifting, unresolved music"
+    ]
+  },
+  {
+    "name": "Driven",
+    "kind": "character",
+    "meaning": "Persistent forward rhythmic momentum.",
+    "sets": [
+      "driving, propulsive, insistent, persistent rhythm, forward momentum music",
+      "music with a steady driving pulse and persistent forward motion",
+      "rhythmic, propulsive, determined, driving instrumental music"
+    ]
+  },
+  {
+    "name": "Sneaky",
+    "kind": "feel",
+    "meaning": "Cautious, secretive movement and sly intent.",
+    "sets": [
+      "sneaky, stealthy, sly, secretive, cautious music",
+      "music for sneaking quietly, secretive and cautiously tiptoeing",
+      "sneaky, mischievous, furtive, sly, suspenseful music"
+    ]
+  },
+  {
+    "name": "Stately",
+    "kind": "feel",
+    "meaning": "Measured dignity and formal poise.",
+    "sets": [
+      "stately, dignified, measured, regal, ceremonial music",
+      "elegant and formal music with a dignified measured procession",
+      "stately music with poise, restraint and gravitas"
+    ]
+  },
+  {
+    "name": "Lively",
+    "kind": "feel",
+    "meaning": "Animated, spirited vitality.",
+    "sets": [
+      "lively, spirited, animated, buoyant, energetic music",
+      "lively music, animated and full of spirited movement",
+      "lively, sprightly, upbeat, cheerful instrumental music"
+    ]
+  },
+  {
+    "name": "Pastoral",
+    "kind": "feel",
+    "meaning": "Peaceful rural simplicity.",
+    "sets": [
+      "pastoral, rustic, rural peace, gentle countryside, idyllic music",
+      "music evoking the peaceful simplicity of country life",
+      "pastoral music, peaceful fields and rural life, gentle and simple"
+    ]
+  },
+  {
+    "name": "Sparse",
+    "kind": "character",
+    "meaning": "Few musical events with space between them.",
+    "sets": [
+      "sparse, minimal, isolated notes, spacious, restrained music",
+      "music with few instruments and isolated notes separated by space",
+      "sparse instrumental music, minimal textures, widely spaced notes"
+    ]
+  },
+  {
+    "name": "Atmospheric",
+    "kind": "character",
+    "meaning": "An immersive background texture rather than a prominent tune.",
+    "sets": [
+      "atmospheric, ambient, sparse, spacious, drifting, subtle music",
+      "ambient soundscape, sustained tones, spacious and atmospheric instrumental music",
+      "atmospheric music with slowly shifting layers and an unobtrusive background presence"
+    ]
+  },
+  {
+    "name": "Lyrical",
+    "kind": "character",
+    "meaning": "Expressive flowing melody.",
+    "sets": [
+      "lyrical, expressive, flowing melody, graceful, singing instrumental music",
+      "instrumental music with an expressive singing melody and graceful phrasing",
+      "melodic, lyrical, expressive, flowing instrumental music"
+    ]
+  },
+  {
+    "name": "Choral",
+    "kind": "character",
+    "meaning": "A group of human voices singing together.",
+    "sets": [
+      "choral, choir, ensemble voices, hymn, chant music",
+      "music featuring a choir or a group of singing voices",
+      "choral music, layered human voices singing together"
+    ]
+  },
+  {
+    "name": "Uncanny",
+    "kind": "feel",
+    "meaning": "Eerily unfamiliar and unsettling.",
+    "sets": [
+      "uncanny, eerie, strangely unfamiliar, unsettling music",
+      "music that feels eerily unfamiliar, strange and troubling",
+      "uncanny, otherworldly, unnerving, unnatural music"
+    ]
+  },
+  {
+    "name": "Melancholic",
+    "kind": "feel",
+    "meaning": "Quietly pensive sadness.",
+    "sets": [
+      "melancholic, pensive sadness, wistful, somber music",
+      "music that is quietly and pensively sad, melancholic and subdued",
+      "melancholic, reflective, lonely, subdued sadness music"
+    ]
+  },
+  {
+    "name": "Hopeful",
+    "kind": "feel",
+    "meaning": "Expectation that something good remains possible.",
+    "sets": [
+      "hopeful, optimistic, encouraging, expectant, uplifting music",
+      "music expressing hope and the possibility of a better future",
+      "hopeful, tender optimism, encouragement, inspiring music"
+    ]
+  },
+  {
+    "name": "Enchanted",
+    "kind": "feel",
+    "meaning": "Spellbound by magical delight.",
+    "sets": [
+      "enchanted, magical, spellbound, wondrous, delighted music",
+      "music evoking enchanted wonder and magical delight",
+      "enchanted, mystical, shimmering, fanciful, magical music"
+    ]
+  },
+  {
+    "name": "Playful",
+    "kind": "feel",
+    "meaning": "Lighthearted amusement.",
+    "sets": [
+      "playful, lighthearted, amusing, spirited, fun music",
+      "music that feels playful, lighthearted and amusing",
+      "playful, mischievous, bouncy, impish instrumental music"
+    ]
+  },
+  {
+    "name": "Comical",
+    "kind": "feel",
+    "meaning": "Humorous, silly, or amusingly absurd.",
+    "sets": [
+      "comical, humorous, goofy, silly, playful music",
+      "music that sounds funny and comical, humorous and lighthearted",
+      "comical, cartoonish, slapstick, absurd, amusing music"
+    ]
+  },
+  {
+    "name": "Jovial",
+    "kind": "feel",
+    "meaning": "Warmly good-humored and sociable.",
+    "sets": [
+      "jovial, good-humored, merry, convivial music",
+      "mirthful, cheerful, sociable and lighthearted music",
+      "jovial and exuberant music, lively and cheerfully sociable"
+    ]
+  },
+  {
+    "name": "Rowdy",
+    "kind": "feel",
+    "meaning": "Boisterous, rough-edged merrymaking.",
+    "sets": [
+      "rowdy, boisterous, raucous, unruly, lively tavern music",
+      "rowdy music, rough and cheerful group merrymaking",
+      "boisterous drinking song, bawdy, raucous, rollicking music"
+    ]
+  },
+  {
+    "name": "Swaggering",
+    "kind": "feel",
+    "meaning": "Cocky confidence with a playful strut.",
+    "sets": [
+      "swaggering, jaunty, cheeky, confident, strutting music",
+      "music that feels self-assured and cocky, with bold playful swagger",
+      "rhythmically strutting, sly, swaggering, jaunty music"
+    ]
+  },
+  {
+    "name": "Nostalgic",
+    "kind": "feel",
+    "meaning": "Affectionate longing for the past.",
+    "sets": [
+      "nostalgic, fond memories, remembering, wistful, longing for the past music",
+      "music expressing affectionate longing for a remembered past",
+      "nostalgic, sentimental, warm memories, bittersweet music"
+    ]
+  },
+  {
+    "name": "Resolute",
+    "kind": "feel",
+    "meaning": "Unwavering determination.",
+    "sets": [
+      "resolute, determined, steadfast, unwavering, purposeful music",
+      "music expressing firm determination and unwavering purpose",
+      "resolute, persistent, determined, confident, purposeful music"
+    ]
+  },
+  {
+    "name": "Tragic",
+    "kind": "feel",
+    "meaning": "Overwhelming sorrow and an irreversible loss.",
+    "sets": [
+      "tragic, devastating sorrow, grief, despair, loss music",
+      "music expressing overwhelming sadness after irreversible loss",
+      "tragic, mournful, heartbreaking, grieving, sorrowful music"
+    ]
+  },
+  {
+    "name": "Vocal",
+    "kind": "character",
+    "meaning": "Human singing voices are a prominent part of the music.",
+    "sets": [
+      "vocal, singing, sung melody, human voice music",
+      "music featuring human singing voices",
+      "a song with vocals, a singing voice carrying the melody"
+    ]
+  },
+  {
+    "name": "Ritualistic",
+    "kind": "feel",
+    "meaning": "Solemn repeated ceremony or invocation.",
+    "sets": [
+      "ritualistic, ceremonial, chanting, solemn, arcane invocation music",
+      "music evoking an ancient ritual, solemn and repeated chanting",
+      "ritual, chant, ceremony, solemn invocation, droning music"
+    ]
+  }
+]

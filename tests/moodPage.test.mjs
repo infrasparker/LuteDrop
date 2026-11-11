@@ -45,7 +45,7 @@ test('band words: at least the top bands read as the band itself', () => {
   assert.equal(bandWord(flag({ band: 'stretch', bound: 'in' }), null), 'Stretch');
   assert.equal(bandWord(flag({ band: 'no', bound: 'in' }), null), 'No');
   assert.equal(bandWord(flag({ band: 'stretch', bound: 'at_least' }), null), 'Stretch or more');
-  assert.equal(bandWord(flag({ band: 'stretch', bound: 'at_most' }), null), 'Stretch or less');
+  assert.equal(bandWord(flag({ band: 'stretch', bound: 'at_most' }), null), 'Stretch');
   assert.equal(bandWord(flag({ kind: 'higher', band: null }), null), 'Higher');
   assert.equal(bandWord(flag({ kind: 'lower', band: null }), null), 'Lower');
   assert.equal(bandWord(null, 0.75), 'Set by you');
@@ -55,8 +55,8 @@ test('band words abbreviate for narrow layouts', () => {
   assert.equal(bandWord(flag({ band: 'definitely' }), null, true), 'Def');
   assert.equal(bandWord(flag({ band: 'understandable' }), null, true), 'Und');
   assert.equal(bandWord(flag({ band: 'stretch', bound: 'in' }), null, true), 'Str');
-  assert.equal(bandWord(flag({ band: 'stretch', bound: 'at_most' }), null, true), '≤Str');
-  assert.equal(bandWord(flag({ band: 'stretch', bound: 'at_least' }), null, true), '≥Str');
+  assert.equal(bandWord(flag({ band: 'stretch', bound: 'at_most' }), null, true), 'Str');
+  assert.equal(bandWord(flag({ band: 'stretch', bound: 'at_least' }), null, true), 'Str or more');
   assert.equal(bandWord(flag({ band: 'no', bound: 'in' }), null, true), 'No');
 });
 
@@ -71,6 +71,8 @@ test('flag bounds mirror the tuner: bands by bound, directions past the bar, lev
   const stale = flagBounds(flag({ kind: 'lower', band: null, barAtFlag: 0.9, stale: true, staleReason: 'calibration' }), null, 0.6);
   assert.ok(Math.abs(stale.max - 0.5) < 1e-9);
   assert.deepEqual(flagBounds(null, 1, 0.5), { min: 0.9, max: null });
+  assert.deepEqual(flagBounds(null, 0.5, 0.2), { min: null, max: 0.75 });
+  assert.deepEqual(flagBounds(flag({ band: 'stretch', bound: 'at_most' }), null, 0.2), { min: null, max: 0.75 });
   assert.deepEqual(flagBounds(null, 0.25, 0.5), { min: null, max: 0.5 });
   assert.equal(flagBounds(null, null, 0.5), null);
 });
@@ -90,7 +92,7 @@ test('cell state: holds, closer, worse, broken now; a newly broken flag is worse
 
 // --- Regressions and the confirm ---
 
-test('regressions: flags that hold under Current and break, plus held high songs that leave the top', () => {
+test('regressions: flags that hold under Current and break, top-list movement alone is not a preference miss', () => {
   const base = {
     flags: [
       outcome('a', 0.8, 0.8, true),
@@ -114,37 +116,37 @@ test('regressions: flags that hold under Current and break, plus held high songs
   const high = new Set(['c', 'w']);
   // w was already broken under Current: it never counts, not even for leaving the top.
   const r = regressions(v, base, high);
-  assert.deepEqual(r.map((x) => [x.outcome.song.entryId, x.leftTop]), [['a', false], ['c', true]]);
+  assert.deepEqual(r.map((x) => [x.outcome.song.entryId, x.leftTop]), [['a', false]]);
   assert.deepEqual(regressions(v, base, new Set()).map((x) => x.outcome.song.entryId), ['a']);
 });
 
 test('confirm copy', () => {
-  assert.equal(confirmTitle(1), 'Break 1 flag?');
-  assert.equal(confirmTitle(3), 'Break 3 flags?');
+  assert.equal(confirmTitle(1), 'Review 1 preference tradeoff');
+  assert.equal(confirmTitle(3), 'Review 3 preference tradeoffs');
   assert.equal(confirmLine('White Orchard', 0.81, 0.72, 'Understandable'), 'White Orchard: 0.81 → 0.72 (Understandable)');
   assert.equal(
     confirmLine('Burial Isle', 0.78, 0.74, 'Understandable', true),
     'Burial Isle: 0.78 → 0.74 (Understandable, out of top 15)',
   );
-  assert.equal(useLabel(0), 'Use');
-  assert.equal(useLabel(2), 'Use anyway');
-  assert.equal(breaksLabel(1), '1 break');
-  assert.equal(breaksLabel(2), '2 breaks');
+  assert.equal(useLabel(0), 'Apply preview');
+  assert.equal(useLabel(2), 'Apply preview');
+  assert.equal(breaksLabel(1), '1 newly outside preferences');
+  assert.equal(breaksLabel(2), '2 newly outside preferences');
 });
 
 // --- Verdict and chips ---
 
 test('verdict: "hold" with songs and change; Current says how many are broken now', () => {
   const r = { flags: [outcome('a', 0, 0, true), outcome('b', 0, 0, false)], firesBefore: 35, firesAfter: 38 };
-  assert.equal(verdictText(r, false), '1/2 hold · 38 songs (+3)');
-  assert.equal(verdictText({ ...r, firesAfter: 33 }, false), '1/2 hold · 33 songs (−2)');
-  assert.equal(verdictText({ ...r, firesAfter: 35 }, false), '1/2 hold · 35 songs (±0)');
+  assert.equal(verdictText(r, false), '1/2 within preferences · 38 songs (+3)');
+  assert.equal(verdictText({ ...r, firesAfter: 33 }, false), '1/2 within preferences · 33 songs (−2)');
+  assert.equal(verdictText({ ...r, firesAfter: 35 }, false), '1/2 within preferences · 35 songs (±0)');
   // Current: held / total and how many are broken now (its songs are in the header).
-  assert.equal(verdictText(r, true), '1/2 hold · 1 broken');
-  assert.equal(verdictText({ ...r, flags: [outcome('a', 0, 0, true)] }, true), '1/1 hold');
+  assert.equal(verdictText(r, true), '1/2 within preferences · 1 outside');
+  assert.equal(verdictText({ ...r, flags: [outcome('a', 0, 0, true)] }, true), '1/1 within preferences');
   assert.equal(verdictText({ flags: [], firesBefore: 4, firesAfter: 4 }, true), '');
   assert.equal(verdictText({ flags: [], firesBefore: 4, firesAfter: 5 }, false), '5 songs (+1)');
-  assert.equal(verdictText({ flags: [outcome('a', 0, 0, true)], firesBefore: 1, firesAfter: 1 }, false), '1/1 hold · 1 song (±0)');
+  assert.equal(verdictText({ flags: [outcome('a', 0, 0, true)], firesBefore: 1, firesAfter: 1 }, false), '1/1 within preferences · 1 song (±0)');
 });
 
 test('chips: shaky under 5 flags (not with none) or weak leave-one-out, overlap rises, reads like another mood', () => {

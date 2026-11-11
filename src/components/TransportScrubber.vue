@@ -9,7 +9,7 @@ import { formatDuration } from '../shared/format';
 // Now-playing + scrubber for the one thing that is playing or paused: a
 // library preview or a single track. It always renders at the same size so
 // the footer never changes height: when there is nothing to scrub (nothing
-// active, several tracks active — a comp, where one position bar would be
+// active, several tracks active — a scene, where one position bar would be
 // ambiguous — or a gap between clips) it shows a muted status line and a
 // disabled slider instead.
 

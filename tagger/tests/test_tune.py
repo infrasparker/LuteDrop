@@ -11,6 +11,53 @@ from tagger.tune import (
 from tagger import tune
 
 
+def test_diverse_pool_preserves_complementary_flag_specialists():
+    # Each specialist is a poor solo answer; together they fix all three flags.
+    U = np.array([[1.4, 1.4, -1.2]] * 10 + [[4., -1., -4.], [-1., 4., -4.]])
+    ref = np.tile([-1., 1.], (len(U), 1))
+    m = Mapping(0., 1., 'reference')
+    flags = [FlagTarget(0, .8, None, 1, True, 'high'),
+             FlagTarget(1, .8, None, 1, True, 'high'),
+             FlagTarget(2, None, .2, 1, True, 'low')]
+    assert tune.best_rows(U, ref, list(range(12)), flags, m, 6) == list(range(6))
+    pool = tune.diverse_rows(U, ref, list(range(12)), flags, m, 6)
+    assert len(pool) == len(set(pool)) == 6
+    assert {10, 11} <= set(pool)
+    got = beam_search(U, ref, [f'word{i}' for i in range(12)], flags, m,
+                      top_units=6, beam=6, max_lines=2)
+    assert got[0].lines == ('word10', 'word11')
+    assert not broken(tune._combo_bars(U, ref, [10, 11], m), flags)
+
+
+def test_diversity_keeps_small_and_unflagged_searches_unchanged():
+    U = np.random.default_rng(20).normal(size=(20, 8))
+    flags = [FlagTarget(0, .8, None, 1, True, 'high')]
+    for targets, k in [(flags, 6), (flags * 2, 2), ([], 8)]:
+        assert tune.diverse_rows(U, None, list(range(20)), targets, M_LIB, k) == tune.best_rows(U, None, list(range(20)), targets, M_LIB, k)
+
+
+def test_specialist_blends_are_bounded_and_include_complements():
+    U = np.array([[1.4, 1.4, -1.2]] * 10 + [[4., -1., -4.], [-1., 4., -4.]])
+    ref = np.tile([-1., 1.], (12, 1))
+    flags = [FlagTarget(0, .8, None, 1, True, 'high'), FlagTarget(1, .8, None, 1, True, 'high')]
+    groups = tune.blend_groups(U, ref, [f'word{i}' for i in range(12)], flags, Mapping(0, 1, 'reference'), top=3)
+    assert any(set(rows) == {10, 11} for _, rows in groups)
+    assert len(groups) <= math.comb(3, 2) + math.comb(3, 3) + math.comb(6, 2)
+
+
+@pytest.mark.parametrize('repair_second, offered', [(.801, True), (.79, False)])
+def test_repair_alternative_keeps_winner_and_does_not_trade_flag_failures(repair_second, offered):
+    b = np.array([[.799, .99]] * 3 + [[.801, repair_second]])
+    U = np.log(b / (1 - b))
+    ref = np.tile([-1., 1.], (4, 1))
+    flags = [FlagTarget(i, .8, None, 1, True, 'high') for i in range(2)]
+    got = beam_search(U, ref, ['first', 'second', 'third', 'repair'], flags,
+                      Mapping(0, 1, 'reference'), max_lines=1, keep=3)
+    assert got[0].lines == ('first',)
+    assert any(c.lines == ('repair',) for c in got) == offered
+    assert [c.loss for c in got] == sorted(c.loss for c in got)
+
+
 def test_split_units_dedupes_and_strips():
     assert split_units(["Sad, grief ,sad", "", "a sad farewell"]) == ["sad", "grief", "a sad farewell"]
 

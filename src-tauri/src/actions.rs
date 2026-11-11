@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::audio::util::{is_audio_path, is_file_usable};
 use crate::database;
-use crate::database::{configurations, hierarchy, library, DbError};
+use crate::database::{configurations, hierarchy, library, soundstage, DbError};
 use crate::autotag::client::{AnalyzerClient, HttpAnalyzer};
 use crate::autotag::scry;
 use crate::autotag::tune;
@@ -13,7 +13,7 @@ use crate::database::settings::{self as broadcast_settings, BroadcastSettings};
 use crate::database::settings as autotag_settings;
 use crate::models::{
     AppState, AutoTagReport, CaseImportReport, FlagBand, FlagKind, AutoTagSettings, BroadcastStatus, BulkImportProgress, EntryType,
-    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodResetImpact, MoodVocabulary, Role, Track, TrackUpdates, ScryHit,
+    FixMissingReport, LibraryEntry, LibraryEntryUsage, MissingEntryCandidates, MoodResetImpact, MoodVocabulary, Role, Track, TrackUpdates, SceneTrack, SceneReference, TrackMode, ScryHit,
     ScryPoint, EnergyPreview, TuneResult, MoodTunePrefs, AcceptedLines, MoodFlagRow, ClearedFlag};
 use crate::relink;
 use crate::state::AppStateContainer;
@@ -49,11 +49,11 @@ where
 }
 
 pub fn find_track_ref(container: &AppStateContainer, track_id: &str) -> Result<Track, String> {
-    with_db(container, |conn| database::load_track_by_id(conn, track_id))
+    with_db(container, |conn| soundstage::load_for_playback(conn, track_id))
 }
 
-pub fn find_comp_tracks(container: &AppStateContainer, comp_id: &str) -> Result<Vec<Track>, String> {
-    with_db(container, |conn| database::load_tracks_for_comp(conn, comp_id))
+pub fn find_scene_tracks(container: &AppStateContainer, scene_id: &str) -> Result<Vec<Track>, String> {
+    with_db(container, |conn| database::load_tracks_for_scene(conn, scene_id))
 }
 
 /// Volumes from any caller (IPC or remote) are clamped to [0, 1] before they
@@ -72,65 +72,90 @@ pub fn load_data(container: &AppStateContainer) -> Result<AppState, String> {
     load_state(container)
 }
 
-pub fn add_group(container: &AppStateContainer, name: String) -> Result<AppState, String> {
+pub fn add_board(container: &AppStateContainer, name: String) -> Result<AppState, String> {
     mutate_and_reload(container, |conn| {
         let config_id = database::get_active_configuration_id(conn)?;
-        hierarchy::insert_group(conn, &name, &config_id)?;
+        hierarchy::insert_board(conn, &name, &config_id)?;
         Ok(())
     })
 }
 
-pub fn delete_group(container: &AppStateContainer, group_id: &str) -> Result<AppState, String> {
+pub fn delete_board(container: &AppStateContainer, board_id: &str) -> Result<AppState, String> {
     mutate_and_reload(container, |conn| {
-        hierarchy::delete_group(conn, group_id)?;
+        conn.execute("DELETE FROM meta WHERE key='active_scene_id' AND value IN (SELECT id FROM scenes WHERE board_id=?1)",[board_id]).map_err(|e|e.to_string())?;
+        hierarchy::delete_board(conn, board_id)?;
         Ok(())
     })
 }
 
-pub fn rename_group(container: &AppStateContainer, group_id: &str, name: String) -> Result<AppState, String> {
+pub fn rename_board(container: &AppStateContainer, board_id: &str, name: String) -> Result<AppState, String> {
     mutate_and_reload(container, |conn| {
-        hierarchy::rename_group(conn, group_id, &name)?;
+        hierarchy::rename_board(conn, board_id, &name)?;
         Ok(())
     })
 }
 
-pub fn add_comp(container: &AppStateContainer, group_id: &str, name: String) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| {
-        hierarchy::insert_comp(conn, group_id, &name)?;
-        Ok(())
+pub fn add_scene(container:&AppStateContainer,board_id:&str,name:String,tracks:Vec<SceneTrack>,mark_active:bool)->Result<AppState,String> {
+    mutate_and_reload(container,|conn|{
+        let tx=conn.unchecked_transaction().map_err(|e|e.to_string())?;
+        let id=hierarchy::insert_scene(conn,board_id,&name)?;
+        soundstage::save_scene_inner(conn,&id,&tracks)?;
+        if mark_active {conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('active_scene_id',?1)",[&id]).map_err(|e|e.to_string())?;}
+        tx.commit().map_err(|e|e.to_string())
     })
 }
-
-pub fn delete_comp(container: &AppStateContainer, comp_id: &str) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| {
-        hierarchy::delete_comp(conn, comp_id)?;
-        Ok(())
+pub fn save_scene(container:&AppStateContainer,scene_id:&str,tracks:Vec<SceneTrack>)->Result<AppState,String> {
+    mutate_and_reload(container,|conn|soundstage::save_scene(conn,scene_id,&tracks))
+}
+pub fn delete_scene(container:&AppStateContainer,scene_id:&str)->Result<AppState,String>{
+    mutate_and_reload(container,|conn|{
+        conn.execute("DELETE FROM meta WHERE key='active_scene_id' AND value=?1",[scene_id]).map_err(|e|e.to_string())?;
+        hierarchy::delete_scene(conn,scene_id)
     })
 }
-
-pub fn rename_comp(container: &AppStateContainer, comp_id: &str, name: String) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| {
-        hierarchy::rename_comp(conn, comp_id, &name)?;
-        Ok(())
+pub fn rename_scene(container:&AppStateContainer,scene_id:&str,name:String)->Result<AppState,String>{mutate_and_reload(container,|conn|hierarchy::rename_scene(conn,scene_id,&name))}
+pub fn add_track(container:&AppStateContainer,board_id:Option<&str>,scene_id:Option<&str>,name:String,library_entry_ids:Vec<String>,mode:Option<String>)->Result<AppState,String>{
+    mutate_and_reload(container,|conn|{
+        let tx=conn.unchecked_transaction().map_err(|e|e.to_string())?;
+        if name.trim().is_empty(){return Err("Enter a track name".into());}
+        let mode=mode.as_deref().unwrap_or("seamless");
+        if !["seamless","sequence","shuffle","oneShot"].contains(&mode){return Err("Unknown track playback mode".into());}
+        let id=soundstage::create_track(conn,name.trim())?;
+        hierarchy::update_track_mode(conn,&id,mode,Some(true),Some("gapless"),None,None)?;
+        for entry_id in &library_entry_ids {hierarchy::insert_clip(conn,&id,entry_id)?;}
+        if let Some(board)=board_id{soundstage::attach_track(conn,board,&id)?;}
+        if let Some(scene)=scene_id{soundstage::attach_scene_track_inner(conn,scene,&id)?;}
+        tx.commit().map_err(|e|e.to_string())
     })
 }
-
-pub fn add_track(container: &AppStateContainer, comp_id: &str, name: String) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| {
-        hierarchy::insert_track(conn, comp_id, &name)?;
-        Ok(())
-    })
+pub fn attach_track(container:&AppStateContainer,board_id:&str,track_id:&str)->Result<AppState,String>{mutate_and_reload(container,|conn|soundstage::attach_track(conn,board_id,track_id))}
+pub fn detach_track(container:&AppStateContainer,board_id:&str,track_id:&str,remove_from_scenes:bool)->Result<AppState,String>{mutate_and_reload(container,|conn|if remove_from_scenes{soundstage::remove_board_track(conn,board_id,track_id)}else{soundstage::detach_track(conn,board_id,track_id)})}
+pub fn attach_scene_track(container:&AppStateContainer,scene_id:&str,track_id:&str)->Result<AppState,String>{mutate_and_reload(container,|conn|soundstage::attach_scene_track(conn,scene_id,track_id))}
+pub fn detach_scene_track(container:&AppStateContainer,scene_id:&str,track_id:&str)->Result<AppState,String>{
+    let loaded=with_db(container,|conn|{
+        let loaded:bool=conn.query_row("SELECT COUNT(*)>0 FROM meta WHERE key='active_scene_id' AND value=?1",[scene_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+        soundstage::detach_scene_track(conn,scene_id,track_id)?;Ok(loaded)
+    })?;
+    if loaded {container.lock_audio().stop_track(track_id)?;}
+    load_state(container)
 }
-
-pub fn delete_track(container: &AppStateContainer, track_id: &str) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| {
-        hierarchy::delete_track(conn, track_id)?;
-        Ok(())
-    })
+pub fn reorder_scene_track(container:&AppStateContainer,scene_id:&str,track_id:&str,new_index:usize)->Result<AppState,String>{mutate_and_reload(container,|conn|soundstage::set_scene_track_order(conn,scene_id,track_id,new_index))}
+pub fn make_scene_track_independent(container:&AppStateContainer,scene_id:&str,track_id:&str)->Result<AppState,String>{mutate_and_reload(container,|conn|soundstage::make_scene_track_independent(conn,scene_id,track_id).map(|_|()))}
+pub fn reorder_scene(container:&AppStateContainer,scene_id:&str,new_index:usize)->Result<AppState,String>{mutate_and_reload(container,|conn|hierarchy::reorder_scene(conn,scene_id,new_index))}
+pub fn reorder_track(container:&AppStateContainer,board_id:&str,track_id:&str,new_index:usize)->Result<AppState,String>{mutate_and_reload(container,|conn|soundstage::set_board_track_order(conn,board_id,track_id,new_index))}
+pub fn move_scene(container:&AppStateContainer,scene_id:&str,destination_board_id:&str)->Result<AppState,String>{mutate_and_reload(container,|conn|hierarchy::move_scene(conn,scene_id,destination_board_id))}
+pub fn copy_scene(container:&AppStateContainer,scene_id:&str,destination_board_id:&str,name:String)->Result<AppState,String>{mutate_and_reload(container,|conn|hierarchy::copy_scene(conn,scene_id,destination_board_id,&name).map(|_|()))}
+pub fn duplicate_track(container:&AppStateContainer,track_id:&str,name:String)->Result<AppState,String>{mutate_and_reload(container,|conn|soundstage::duplicate_track(conn,track_id,&name).map(|_|()))}
+pub fn get_track_references(container:&AppStateContainer,track_id:&str,clip_id:Option<&str>)->Result<Vec<SceneReference>,String>{with_db(container,|conn|soundstage::references(conn,track_id,clip_id))}
+pub fn delete_track(container:&AppStateContainer,track_id:&str,remove_from_scenes:bool)->Result<AppState,String>{
+    with_db(container,|conn|soundstage::delete_track(conn,track_id,remove_from_scenes))?;
+    container.lock_audio().stop_track(track_id)?;
+    load_state(container)
 }
 
 pub fn update_track(container: &AppStateContainer, track_id: &str, updates: TrackUpdates) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| {
+    let mode_changed = updates.mode.is_some();
+    with_db(container, |conn| {
         // NOTE: no outer transaction here — `hierarchy::set_clip_order` below
         // opens its own `unchecked_transaction` on `conn`, and SQLite rejects a
         // nested BEGIN. The other updates are independent single-statement
@@ -173,18 +198,36 @@ pub fn update_track(container: &AppStateContainer, track_id: &str, updates: Trac
             hierarchy::set_clip_order(conn, track_id, &ordered_ids)?;
         }
         Ok(())
-    })
+    })?;
+    refresh_shared_track(container, track_id, mode_changed)?;
+    load_state(container)
+}
+
+fn refresh_shared_track(container: &AppStateContainer, track_id: &str, restart_mode: bool) -> Result<(), String> {
+    let config = find_track_ref(container, track_id)?;
+    let mut audio = container.lock_audio();
+    if !audio.has_track(track_id) { return Ok(()); }
+    let previous = audio.get_all_playback_states().into_iter().find(|state|state.track_id==track_id);
+    audio.update_track_config(&config);
+    if restart_mode {
+        if let Some(state) = previous.filter(|s|s.is_playing||s.is_paused) {
+            audio.play_track_from(track_id,state.current_clip_id.as_deref(),state.current_time,state.is_paused)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn add_clip(container: &AppStateContainer, track_id: &str, library_entry_id: &str) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| {
+    with_db(container, |conn| {
         hierarchy::insert_clip(conn, track_id, library_entry_id)?;
         Ok(())
-    })
+    })?;
+    refresh_shared_track(container,track_id,false)?;
+    load_state(container)
 }
 
 pub fn add_clips(container: &AppStateContainer, track_id: &str, library_entry_ids: &[String]) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| {
+    with_db(container, |conn| {
         let tx = conn
             .unchecked_transaction()
             .map_err(|e| format!("Failed to begin add_clips transaction: {e}"))?;
@@ -193,14 +236,23 @@ pub fn add_clips(container: &AppStateContainer, track_id: &str, library_entry_id
         }
         tx.commit().map_err(|e| format!("Failed to commit add_clips: {e}"))?;
         Ok(())
-    })
+    })?;
+    refresh_shared_track(container,track_id,false)?;
+    load_state(container)
 }
 
-pub fn delete_clip(container: &AppStateContainer, _track_id: &str, clip_id: &str) -> Result<AppState, String> {
-    mutate_and_reload(container, |conn| {
-        hierarchy::delete_clip(conn, clip_id)?;
-        Ok(())
-    })
+pub fn delete_clip(container:&AppStateContainer,track_id:&str,clip_id:&str,replacement_clip_id:Option<&str>,disable_affected_scenes:bool)->Result<AppState,String>{
+    with_db(container,|conn|soundstage::remove_clip(conn,track_id,clip_id,replacement_clip_id,disable_affected_scenes))?;
+    let config=find_track_ref(container,track_id)?;
+    let mut audio=container.lock_audio();
+    let playing=audio.get_all_playback_states().into_iter().find(|s|s.track_id==track_id);
+    if playing.as_ref().and_then(|s|s.current_clip_id.as_deref())==Some(clip_id){
+        audio.stop_track(track_id)?;
+        if playing.as_ref().is_some_and(|s|s.is_playing) {
+            if let Some(replacement)=replacement_clip_id{ensure_track_ready(&mut audio,&config)?;audio.play_track_clip(track_id,replacement)?;}
+        }
+    }else if audio.has_track(track_id){audio.update_track_config(&config);}
+    drop(audio);load_state(container)
 }
 
 // --- Configuration actions (return updated AppState) ---
@@ -230,6 +282,7 @@ pub fn load_configuration(container: &AppStateContainer, config_id: String) -> R
     }
     with_db(container, |conn| {
         configurations::set_active_configuration(conn, &config_id)?;
+        conn.execute("DELETE FROM meta WHERE key='active_scene_id'",[]).map_err(|e|e.to_string())?;
         Ok(())
     })?;
     load_state(container)
@@ -447,10 +500,12 @@ pub fn accept_tuned_lines(
     lines: Vec<String>,
     holding_entry_ids: Vec<String>,
     reached_bars: HashMap<String, f64>,
+    profile: Option<crate::models::LearnedMoodProfile>,
+    review_signature: Option<String>,
 ) -> Result<AcceptedLines, String> {
     let mut converted = Vec::new();
     let state = mutate_and_reload(container, |conn| {
-        converted = tune::accept_lines(conn, &mood_id, &lines_tuned_from, &lines, &holding_entry_ids, &reached_bars)?;
+        converted = tune::accept_version(conn, &mood_id, &lines_tuned_from, &lines, &holding_entry_ids, &reached_bars, profile.clone(), review_signature.as_deref())?;
         Ok(())
     })?;
     Ok(AcceptedLines { state, converted: converted.into_iter().map(Into::into).collect() })
@@ -475,6 +530,8 @@ pub fn undo_tuned_lines(
     lines: Vec<String>,
     holding_entry_ids: Vec<String>,
     restore: Vec<MoodFlagRow>,
+    profile: Option<crate::models::LearnedMoodProfile>,
+    expected_profile_id: Option<String>,
 ) -> Result<AppState, String> {
     let rows: Vec<_> = restore
         .into_iter()
@@ -484,7 +541,7 @@ pub fn undo_tuned_lines(
         })
         .collect();
     mutate_and_reload(container, |conn| {
-        tune::undo_accept(conn, &mood_id, &lines_tuned_from, &lines, &holding_entry_ids, &rows)
+        tune::undo_version(conn, &mood_id, &lines_tuned_from, &lines, &holding_entry_ids, &rows, profile.clone(), expected_profile_id.as_deref())
     })
 }
 
@@ -505,6 +562,10 @@ pub fn load_mood_tune_prefs(
     container: &AppStateContainer,
 ) -> Result<std::collections::BTreeMap<String, MoodTunePrefs>, String> {
     with_db(container, autotag_settings::load_mood_tune_prefs)
+}
+
+pub fn set_mood_comparisons(container: &AppStateContainer, mood: String, pairs: Vec<[String; 2]>) -> Result<std::collections::BTreeMap<String, MoodTunePrefs>, String> {
+    with_db(container, |conn| autotag_settings::set_mood_comparisons(conn, &mood, pairs))
 }
 
 pub fn add_never_suggest(
@@ -1304,20 +1365,23 @@ fn ensure_track_ready(audio: &mut crate::audio::AudioEngine, track: &Track) -> R
     Ok(())
 }
 
-pub fn play_track_audio(container: &AppStateContainer, track_id: &str) -> Result<(), String> {
-    let track_config = find_track_ref(container, track_id)?;
-    update_clip_file_state(container, &track_config);
-    let mut audio = container.lock_audio();
-    ensure_track_ready(&mut audio, &track_config)?;
+pub fn play_track_audio(container:&AppStateContainer,track_id:&str)->Result<(),String>{
+    let config=find_track_ref(container,track_id)?;
+    let selected:Option<String>=with_db(container,|conn|Ok(conn.query_row("SELECT selected_clip_id FROM track_mix WHERE track_id=?1",[track_id],|r|r.get(0)).ok().flatten()))?;
+    update_clip_file_state(container,&config);
+    let mut audio=container.lock_audio();ensure_track_ready(&mut audio,&config)?;
+    if matches!(config.mode,TrackMode::Seamless{..}|TrackMode::OneShot){if let Some(clip)=selected{return audio.play_track_clip(track_id,&clip);}}
     audio.play_track(track_id)
 }
 
-pub fn play_track_clip(container: &AppStateContainer, track_id: &str, clip_id: &str) -> Result<(), String> {
-    let track_config = find_track_ref(container, track_id)?;
-    update_clip_file_state(container, &track_config);
-    let mut audio = container.lock_audio();
-    ensure_track_ready(&mut audio, &track_config)?;
-    audio.play_track_clip(track_id, clip_id)
+pub fn play_track_clip(container:&AppStateContainer,track_id:&str,clip_id:&str)->Result<(),String>{
+    with_db(container,|conn|soundstage::set_mix(conn,track_id,None,Some(Some(clip_id))))?;
+    let config=find_track_ref(container,track_id)?;update_clip_file_state(container,&config);
+    let mut audio=container.lock_audio();
+    let same=matches!(config.mode,TrackMode::Seamless{..})&&audio.get_all_playback_states().iter().any(|s|s.track_id==track_id&&s.is_playing&&s.current_clip_id.as_deref()==Some(clip_id));
+    if same{return Ok(());}
+    ensure_track_ready(&mut audio,&config)?;audio.play_track_clip(track_id,clip_id)?;
+    container.mark_state_dirty();Ok(())
 }
 
 /// `paused = true` seeks without un-pausing: the track ends up paused at
@@ -1352,7 +1416,7 @@ pub fn set_track_volume(container: &AppStateContainer, track_id: &str, volume: f
     // Persist to DB (cheap, no full state reload)
     {
         let conn = container.db.lock().map_err(|e| e.to_string())?;
-        hierarchy::update_track_volume(&conn, track_id, volume)?;
+        soundstage::set_mix(&conn, track_id, Some(volume), None)?;
     }
     container.mark_state_dirty();
     // Update audio engine only if track is currently active
@@ -1383,21 +1447,44 @@ pub fn set_library_volume(container: &AppStateContainer, volume: f64) -> Result<
     Ok(())
 }
 
-pub fn activate_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result<(), String> {
-    let track_configs = find_comp_tracks(container, comp_id)?;
-    for track in &track_configs {
-        update_clip_file_state(container, track);
-    }
-    let mut audio = container.lock_audio();
-    for track in &track_configs {
-        ensure_track_ready(&mut audio, track)?;
-        audio.play_track(&track.id)?;
-    }
-    Ok(())
+pub fn activate_scene_audio(container:&AppStateContainer,scene_id:&str)->Result<(),String>{
+    apply_scene_audio(container,scene_id,false)
 }
 
-pub fn stop_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result<(), String> {
-    let track_configs = find_comp_tracks(container, comp_id)?;
+pub fn apply_scene_audio(container:&AppStateContainer,scene_id:&str,add_to_mix:bool)->Result<(),String>{
+    let configs=with_db(container,|conn|{
+        let mut states=soundstage::scene_tracks(conn,scene_id)?;
+        if add_to_mix { states.retain(|state|state.enabled); }
+        // Validate before changing either saved live levels or the engine.
+        for state in &states{if state.enabled&&database::load_track_by_id(conn,&state.track_id)?.clips.is_empty(){return Err("A scene contains an enabled track with no clips. Add clips or save it disabled.".into());}}
+        let tx=conn.unchecked_transaction().map_err(|e|e.to_string())?;
+        for state in &states{soundstage::set_mix(conn,&state.track_id,Some(state.volume),Some(state.selected_clip_id.as_deref()))?;}
+        if add_to_mix {
+            conn.execute("DELETE FROM meta WHERE key='active_scene_id'",[]).map_err(|e|e.to_string())?;
+        } else {
+            conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('active_scene_id',?1)",[scene_id]).map_err(|e|e.to_string())?;
+        }
+        let configs=states.into_iter().filter(|state|state.enabled).map(|state|Ok((soundstage::load_for_playback(conn,&state.track_id)?,state.selected_clip_id))).collect::<Result<Vec<_>,String>>()?;
+        tx.commit().map_err(|e|e.to_string())?;Ok(configs)
+    })?;
+    for (track,_) in &configs{update_clip_file_state(container,track);}
+    let mut audio=container.lock_audio();
+    let previous=audio.get_all_playback_states();
+    if !add_to_mix { for old in &previous{if old.track_id!="__library"&&!configs.iter().any(|(t,_)|t.id==old.track_id){audio.stop_track(&old.track_id)?;}} }
+    for (track,selected) in configs{
+        let old=previous.iter().find(|s|s.track_id==track.id);
+        let keep=old.is_some_and(|s|(s.is_playing||s.is_paused)&&(selected.is_none()||s.current_clip_id==selected));
+        ensure_track_ready(&mut audio,&track)?;
+        audio.set_track_volume(&track.id,track.volume)?;
+        if keep {
+            if old.is_some_and(|s|s.is_paused){audio.resume_track(&track.id)?;}
+        } else if let Some(clip)=selected {audio.play_track_clip(&track.id,&clip)?;} else {audio.play_track(&track.id)?;}
+    }
+    container.mark_state_dirty();Ok(())
+}
+
+pub fn stop_scene_audio(container: &AppStateContainer, scene_id: &str) -> Result<(), String> {
+    let track_configs = find_scene_tracks(container, scene_id)?;
     let mut audio = container.lock_audio();
     for track in &track_configs {
         if audio.has_track(&track.id) {
@@ -1407,8 +1494,8 @@ pub fn stop_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result<(
     Ok(())
 }
 
-pub fn pause_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result<(), String> {
-    let track_configs = find_comp_tracks(container, comp_id)?;
+pub fn pause_scene_audio(container: &AppStateContainer, scene_id: &str) -> Result<(), String> {
+    let track_configs = find_scene_tracks(container, scene_id)?;
     let mut audio = container.lock_audio();
     for track in &track_configs {
         if audio.has_track(&track.id) {
@@ -1418,8 +1505,8 @@ pub fn pause_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result<
     Ok(())
 }
 
-pub fn resume_comp_audio(container: &AppStateContainer, comp_id: &str) -> Result<(), String> {
-    let track_configs = find_comp_tracks(container, comp_id)?;
+pub fn resume_scene_audio(container: &AppStateContainer, scene_id: &str) -> Result<(), String> {
+    let track_configs = find_scene_tracks(container, scene_id)?;
     let mut audio = container.lock_audio();
     for track in &track_configs {
         if audio.has_track(&track.id) {
@@ -1516,17 +1603,17 @@ pub fn toggle_clip_mute(container: &AppStateContainer, clip_id: &str) -> Result<
     Ok(audio.toggle_clip_mute(clip_id))
 }
 
-pub fn toggle_comp_mute(container: &AppStateContainer, comp_id: &str) -> Result<bool, String> {
+pub fn toggle_scene_mute(container: &AppStateContainer, scene_id: &str) -> Result<bool, String> {
     let track_ids = {
         let state = with_db(container, |conn| database::load_full_state(conn))?;
-        state.groups.iter()
-            .flat_map(|g| g.comps.iter())
-            .find(|c| c.id == comp_id)
-            .map(|c| c.tracks.iter().map(|t| t.id.clone()).collect::<Vec<_>>())
-            .ok_or_else(|| format!("Comp not found: {}", comp_id))?
+        state.boards.iter()
+            .flat_map(|g| g.scenes.iter())
+            .find(|c| c.id == scene_id)
+            .map(|c| c.tracks.iter().map(|t| t.track_id.clone()).collect::<Vec<_>>())
+            .ok_or_else(|| format!("Scene not found: {}", scene_id))?
     };
     let mut audio = container.lock_audio();
-    Ok(audio.toggle_comp_mute(&track_ids))
+    Ok(audio.toggle_scene_mute(&track_ids))
 }
 
 pub fn get_mute_state(container: &AppStateContainer) -> Result<serde_json::Value, String> {
@@ -1744,6 +1831,83 @@ mod tests {
         crate::database::ensure_default_configuration(&conn).unwrap();
         let dir = tempfile::tempdir().unwrap().keep();
         AppStateContainer::new(conn, crate::audio::AudioEngine::new().unwrap(), dir.join("peaks"), dir.join("db"))
+    }
+
+    #[test]
+    fn scene_changes_keep_common_audio_and_replace_other_layers() {
+        use crate::database::{hierarchy, soundstage};
+        use crate::models::SceneTrack;
+        let c = test_container();
+        // A silent PCM file keeps this real-engine regression test inaudible.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("silence.wav");
+        let sample_bytes = 48000u32 * 2 * 3;
+        let mut wav = Vec::new();
+        wav.extend(b"RIFF"); wav.extend((36 + sample_bytes).to_le_bytes()); wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes()); wav.extend(1u16.to_le_bytes()); wav.extend(1u16.to_le_bytes());
+        wav.extend(48000u32.to_le_bytes()); wav.extend(96000u32.to_le_bytes());
+        wav.extend(2u16.to_le_bytes()); wav.extend(16u16.to_le_bytes());
+        wav.extend(b"data"); wav.extend(sample_bytes.to_le_bytes()); wav.resize(44 + sample_bytes as usize, 0);
+        std::fs::write(&path, wav).unwrap();
+        let (scene_a, scene_b, scene_c, weather, old_layer, new_layer, light, heavy) = with_db(&c, |conn| {
+            let config = database::get_active_configuration_id(conn)?;
+            let board = hierarchy::insert_board(conn,"Wilderness",&config)?;
+            let a = hierarchy::insert_scene(conn,&board,"Trail")?;
+            let b = hierarchy::insert_scene(conn,&board,"Clearing")?;
+            let d = hierarchy::insert_scene(conn,&board,"Storm")?;
+            let entry = library::insert_library_entry(conn,path.to_str().unwrap(),None,"Silent test",None,None,None,"ambiance")?;
+            let mut tracks=Vec::new();
+            for name in ["Weather","Trail sounds","Clearing sounds"] {
+                let id=soundstage::create_track(conn,name)?;
+                soundstage::attach_track(conn,&board,&id)?;
+                hierarchy::insert_clip(conn,&id,&entry)?;
+                tracks.push(id);
+            }
+            let light=database::load_track_by_id(conn,&tracks[0])?.clips[0].id.clone();
+            let heavy=hierarchy::insert_clip(conn,&tracks[0],&entry)?;
+            let setting=|id:&str,clip:Option<&str>|SceneTrack{track_id:id.into(),enabled:true,volume:0.5,selected_clip_id:clip.map(str::to_string)};
+            soundstage::save_scene(conn,&a,&[setting(&tracks[0],Some(&light)),setting(&tracks[1],None)])?;
+            soundstage::save_scene(conn,&b,&[setting(&tracks[0],Some(&light)),setting(&tracks[2],None)])?;
+            soundstage::save_scene(conn,&d,&[setting(&tracks[0],Some(&heavy))])?;
+            Ok((a,b,d,tracks[0].clone(),tracks[1].clone(),tracks[2].clone(),light,heavy))
+        }).unwrap();
+        super::activate_scene_audio(&c,&scene_a).unwrap();
+        c.lock_audio().play_track_from(&weather,Some(&light),1.2,false).unwrap();
+        super::activate_scene_audio(&c,&scene_b).unwrap();
+        let states=c.lock_audio().get_all_playback_states();
+        assert!(states.iter().find(|s|s.track_id==weather).unwrap().current_time>=1.15,"common rain restarted");
+        assert!(!states.iter().find(|s|s.track_id==old_layer).unwrap().is_playing);
+        assert!(states.iter().find(|s|s.track_id==new_layer).unwrap().is_playing);
+        super::activate_scene_audio(&c,&scene_c).unwrap();
+        let states=c.lock_audio().get_all_playback_states();
+        let changed=states.iter().find(|s|s.track_id==weather).unwrap();
+        assert_eq!(changed.current_clip_id.as_deref(),Some(heavy.as_str()));
+        assert!(changed.current_time<0.5,"different rain should start at its beginning");
+        assert!(!states.iter().find(|s|s.track_id==new_layer).unwrap().is_playing);
+        super::play_track_audio(&c,&old_layer).unwrap();
+        super::apply_scene_audio(&c,&scene_b,true).unwrap();
+        let states=c.lock_audio().get_all_playback_states();
+        assert!(states.iter().find(|s|s.track_id==old_layer).unwrap().is_playing,"adding a scene stopped an unrelated layer");
+        assert!(states.iter().find(|s|s.track_id==new_layer).unwrap().is_playing);
+        assert!(super::load_data(&c).unwrap().active_scene_id.is_none());
+        c.lock_audio().stop_all();
+        with_db(&c,|conn| {
+            hierarchy::update_track_mode(conn,&weather,"shuffle",Some(true),Some("gapless"),None,None)?;
+            soundstage::save_scene(conn,&scene_c,&[SceneTrack{track_id:weather.clone(),enabled:true,volume:0.0,selected_clip_id:None}])
+        }).unwrap();
+        let mut starts=std::collections::HashSet::new();
+        for _ in 0..40 {
+            super::activate_scene_audio(&c,&scene_c).unwrap();
+            starts.insert(c.lock_audio().get_all_playback_states().into_iter().find(|s|s.track_id==weather).unwrap().current_clip_id);
+            c.lock_audio().stop_all();
+        }
+        assert_eq!(starts.len(),2,"shuffle scene always started with the same clip");
+        with_db(&c,|conn|soundstage::save_scene(conn,&scene_c,&[SceneTrack{track_id:weather.clone(),enabled:true,volume:0.0,selected_clip_id:Some(heavy.clone())}])).unwrap();
+        for _ in 0..3 {
+            super::activate_scene_audio(&c,&scene_c).unwrap();
+            assert_eq!(c.lock_audio().get_all_playback_states().into_iter().find(|s|s.track_id==weather).unwrap().current_clip_id.as_deref(),Some(heavy.as_str()));
+            c.lock_audio().stop_all();
+        }
     }
 
     #[test]

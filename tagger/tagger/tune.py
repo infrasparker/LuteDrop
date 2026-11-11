@@ -40,6 +40,11 @@ class FlagTarget:
     fresh: bool
     side: str            # "high" | "low" | "mid"; mid flags skip the order penalty
     focus: bool = False  # the flag the user is tuning around: its weight counts FOCUS_WEIGHT times
+    target: float | None = None  # continuous strength rating; no interval dead zone
+    polarity: int | None = None  # +1 belongs, -1 does not belong
+    confidence: float = 1.0
+    pivot: float = .5  # Higher/Lower keep their original comparison anchor
+    feedback_version: int = 0
 
 
 @dataclass(frozen=True)
@@ -152,6 +157,12 @@ def _loss_fn(flags: list[FlagTarget]):
     the high song reads at or below the low one; a pair is only as sure as its
     shakier flag, so it counts at the smaller of the two weights.
     """
+    if any(f.polarity is not None or f.feedback_version >= 4 for f in flags):
+        from .personal import directional_losses
+        weight = np.array([f.weight*f.confidence for f in flags],dtype=float); weight /= max(1.,weight.sum())
+        return lambda b: float(weight@directional_losses(np.tan(np.pi*(np.clip(np.asarray(b)[[f.index for f in flags]],1e-12,1-1e-12)-.5)),flags)[0])
+    if flags and all(f.target is not None for f in flags):
+        return lambda b: float(np.mean([(b[f.index]-f.target)**2 for f in flags]))
     idx = np.array([f.index for f in flags], dtype=int)
     lo = np.array([np.nan if f.lo is None else f.lo + AIM_MARGIN for f in flags])
     hi = np.array([np.nan if f.hi is None else f.hi - AIM_MARGIN for f in flags])
@@ -212,6 +223,7 @@ def broken(b: np.ndarray, flags: list[FlagTarget]) -> list[int]:
     """Positions (in `flags`) whose bar falls outside [lo, hi]."""
     out = []
     for pos, f in enumerate(flags):
+        if f.target is not None or f.polarity is not None or f.feedback_version >= 4: continue  # preferences cannot pass or fail
         v = b[f.index]
         if (f.lo is not None and v < f.lo) or (f.hi is not None and v > f.hi):
             out.append(pos)
@@ -235,6 +247,33 @@ def best_rows(U_lib: np.ndarray, U_ref: np.ndarray | None, rows: list[int], flag
     return [r for _, r in sorted((_score((r,), U_lib, U_ref, loss_fn, m), r) for r in rows)[:k]]
 
 
+def diverse_rows(U_lib, U_ref, rows, flags, m, k, *, before=None):
+    """Keep mostly overall winners, reserving at most a third for flag specialists.
+
+    A weak standalone unit can complement another unit. Pruning exclusively by
+    aggregate loss discards it before combinations are tested. Specialist slots
+    use the same band loss, focus and stale weights; final proposals still pay
+    the full stability cost. Small searches retain their original ordering.
+    """
+    ranked = best_rows(U_lib, U_ref, rows, flags, m, k, before=before)
+    if len(flags) < 2 or k < 3 or len(rows) <= k:
+        return ranked
+    reserve = k // 3
+    chosen = ranked[:k - reserve]
+    unit_bars = {r: _combo_bars(U_lib, U_ref, [r], m) for r in rows}
+    order = {r: i for i, r in enumerate(best_rows(U_lib, U_ref, rows, flags, m, len(rows), before=before))}
+    targets = sorted(flags, key=lambda f: (not f.focus, not f.fresh, -f.weight, f.index))
+    for f in itertools.islice(itertools.cycle(targets), len(targets) * reserve):
+        if len(chosen) >= k:
+            break
+        candidates = [r for r in rows if r not in chosen]
+        if not candidates:
+            break
+        # Overall rank breaks specialist ties so stability still guides selection.
+        chosen.append(min(candidates, key=lambda r: (loss(unit_bars[r], [f]), order[r])))
+    return chosen
+
+
 def beam_search(U_lib: np.ndarray, U_ref: np.ndarray | None, units: list[str],
                 flags: list[FlagTarget], m: Mapping, *, top_units: int = 60,
                 beam: int = 24, max_lines: int = 6, keep: int = 3,
@@ -242,8 +281,9 @@ def beam_search(U_lib: np.ndarray, U_ref: np.ndarray | None, units: list[str],
     """Best prompt combinations by loss (plus `stability` against `before`, the current
     lines' bars, when given, and LINE_COST per line).
 
-    Scores every unit alone, keeps the best `top_units` as the pool, then grows
-    combinations one unit at a time, keeping `beam` per depth. Each seed (a tuple
+    Scores every unit alone, keeps mostly the best `top_units` plus flag specialists
+    within that budget, then grows combinations one unit at a time, keeping `beam`
+    per depth with a minority reserved for distinct flag failures. Each seed (a tuple
     of rows, such as the mood's current lines) and each seed less one line also
     join the frontier at their depth, so "the current lines plus, minus or with one
     line swapped" is always explored even when those lines are outside the pool.
@@ -254,7 +294,7 @@ def beam_search(U_lib: np.ndarray, U_ref: np.ndarray | None, units: list[str],
     words = [words_of(u) for u in units]
     loss_fn = _search_loss_fn(flags, before)
     solo = sorted((_score((i,), U_lib, U_ref, loss_fn, m), (i,)) for i in range(len(units)))
-    pool = [rows[0] for _, rows in solo[:top_units]]
+    pool = diverse_rows(U_lib, U_ref, list(range(len(units))), flags, m, top_units, before=before)
     seen = {rows for _, rows in solo}
     seeded: dict[tuple[int, ...], float] = {}
     for seed in seeds:
@@ -271,7 +311,28 @@ def beam_search(U_lib: np.ndarray, U_ref: np.ndarray | None, units: list[str],
         extra = [(l, c) for c, l in seeded.items() if len(c) == depth]
         return top + [e for e in extra if e not in top]
 
-    frontier = with_seeds(solo[:beam], 1)
+    def frontier_rows(candidates):
+        # Preserve distinct ways of missing flags, rather than spending the whole
+        # beam on near-identical candidates. The majority remains loss-ranked.
+        if len(flags) < 2 or beam < 3:
+            return candidates[:beam]
+        selected = list(candidates[:beam - beam // 3])
+        signatures = {tuple(broken(_combo_bars(U_lib, U_ref, list(c), m), flags)) for _, c in selected}
+        for item in candidates[len(selected):]:
+            signature = tuple(broken(_combo_bars(U_lib, U_ref, list(item[1]), m), flags))
+            if signature not in signatures:
+                selected.append(item)
+                signatures.add(signature)
+                if len(selected) == beam:
+                    break
+        for item in candidates:
+            if len(selected) >= beam:
+                break
+            if item not in selected:
+                selected.append(item)
+        return selected
+
+    frontier = with_seeds(frontier_rows(solo), 1)
     for depth in range(2, max_lines + 1):
         grown = []
         for _, rows in frontier:
@@ -284,12 +345,25 @@ def beam_search(U_lib: np.ndarray, U_ref: np.ndarray | None, units: list[str],
                 seen.add(cand)
                 grown.append((_score(cand, U_lib, U_ref, loss_fn, m), cand))
         grown.sort()
-        frontier = with_seeds(grown[:beam], depth)
+        frontier = with_seeds(frontier_rows(grown), depth)
         if not frontier:
             break
         best += grown
     best.sort()
-    return [Combo(tuple(units[i] for i in rows), l) for l, rows in best[:keep]]
+    selected = best[:keep]
+    # Keep the loss winner. If the other slots all repeat its flag failures,
+    # expose a repair that holds a strict superset of its fresh flags. The API
+    # still rejects proposals worse than Current and reports stability separately.
+    if keep > 1 and selected and flags:
+        def fresh_misses(item):
+            return frozenset(p for p in broken(_combo_bars(U_lib, U_ref, list(item[1]), m), flags) if flags[p].fresh)
+        primary = fresh_misses(selected[0])
+        if primary and all(fresh_misses(c) == primary for c in selected):
+            repair = next((c for c in best[len(selected):] if fresh_misses(c) < primary), None)
+            if repair is not None:
+                selected[-1] = repair
+                selected.sort()
+    return [Combo(tuple(units[i] for i in rows), l) for l, rows in selected]
 
 
 # --- report pieces -----------------------------------------------------------
@@ -330,17 +404,21 @@ def blend_groups(U_lib, U_ref, units: list[str], flags: list[FlagTarget], m: Map
                  top: int = 8, *, before: np.ndarray | None = None) -> list[tuple[str, tuple[int, ...]]]:
     """Comma blends ("a, b" and "a, b, c") of every pair and triple of the `top`
     best single units (by the search's loss, so with `stability` against `before`
-    when given), each with the rows of the units it is made of. A unit that is itself
+    when given), plus pairs from a pool of at most twice `top` with specialist slots,
+    each with the rows of the units it is made of. A unit that is itself
     a comma list adds its parts, and a part that repeats, or whose words (`words_of`)
     are all in the parts before it, is left out. Blends with fewer than two distinct
     parts, over the line length limit, or already in `units` are dropped."""
     loss_fn = _search_loss_fn(flags, before)
     solo = sorted((_score((i,), U_lib, U_ref, loss_fn, m), i) for i in range(len(units)))
     best = [i for _, i in solo[:top]]
+    # Keep the existing pairs/triples, then try pairs involving specialists.
+    # These are real comma-text embeddings at the caller, not averaged vectors.
+    diverse = diverse_rows(U_lib, U_ref, list(range(len(units))), flags, m, top * 2, before=before) if top >= 3 else best
     taken = set(units)
     out: list[tuple[str, tuple[int, ...]]] = []
-    for n in (2, 3):
-        for group in itertools.combinations(best, n):
+    for members, n in ((best, 2), (best, 3), (diverse, 2)):
+        for group in itertools.combinations(members, n):
             parts: list[str] = []
             covered: set[str] = set()
             for p in (p.strip() for i in group for p in units[i].split(",")):
@@ -452,7 +530,8 @@ def _top(b: np.ndarray, hashes: list[str]) -> list[dict]:
 def build_report(*, lines, after, before, flags: list[FlagTarget], flag_hashes: list[str],
                  hashes: list[str], m: Mapping, other_raw: dict[str, np.ndarray],
                  loo: tuple[int, int], names: list[tuple[str, float]],
-                 sources: dict[str, list[str]] | None = None) -> dict:
+                 sources: dict[str, list[str]] | None = None,
+                 after_bars: np.ndarray | None = None, before_bars: np.ndarray | None = None) -> dict:
     """One review report (the JSON shape /tune returns).
 
     `after` and `before` are (library raw, reference raw or None) for this combination
@@ -461,8 +540,8 @@ def build_report(*, lines, after, before, flags: list[FlagTarget], flag_hashes: 
     each line came from (`line_sources`, aligned with `lines`; [] when unknown).
     """
     sources = sources or {}
-    b_after = bars(after[0], after[0] if after[1] is None else after[1], m)
-    b_before = bars(before[0], before[0] if before[1] is None else before[1], m)
+    b_after = bars(after[0], after[0] if after[1] is None else after[1], m) if after_bars is None else after_bars
+    b_before = bars(before[0], before[0] if before[1] is None else before[1], m) if before_bars is None else before_bars
     broken_after = set(broken(b_after, flags))
     stab = stability(b_after, b_before, flags)
     flagged = {f.index for f in flags}
@@ -500,7 +579,7 @@ def build_report(*, lines, after, before, flags: list[FlagTarget], flag_hashes: 
         "fires_before": int((b_before >= 0.5).sum()),
         "fires_after": int((b_after >= 0.5).sum()),
         "overlap": [
-            {"mood_id": mood_id, "before": spearman(before[0], raw), "after": spearman(after[0], raw)}
+            {"mood_id": mood_id, "before": spearman(b_before, raw), "after": spearman(b_after, raw)}
             for mood_id, raw in other_raw.items()
         ],
         "loo": {"held": loo[0], "total": loo[1]},

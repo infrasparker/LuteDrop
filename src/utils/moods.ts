@@ -64,11 +64,12 @@ export function stepLevel(value: number | null, step: 1 | -1): number {
 // --- Lenses and filters ---
 
 /// A tag chip's state. Tag chips cycle off → include → exclude → off. (Mood
-/// and Energy chips are plain on/off toggles; see `MoodFilters`.)
+/// chips use the same cycle for high/low preferences; Energy stays on/off.)
 export type ChipState = 'off' | 'include' | 'exclude';
 
-export function nextChipState(state: ChipState): ChipState {
-  return state === 'off' ? 'include' : state === 'include' ? 'exclude' : 'off';
+export function nextChipState(state: ChipState, direction: 1 | -1 = 1): ChipState {
+  const states: ChipState[] = ['off', 'include', 'exclude'];
+  return states[(states.indexOf(state) + direction + states.length) % states.length];
 }
 
 /// Included and excluded tag chips.
@@ -86,8 +87,8 @@ export function chipState(sel: ChipSelection, id: string): ChipState {
 }
 
 /// The selection with `id` moved to its next state.
-export function cycleChip(sel: ChipSelection, id: string): ChipSelection {
-  const next = nextChipState(chipState(sel, id));
+export function cycleChip(sel: ChipSelection, id: string, direction: 1 | -1 = 1): ChipSelection {
+  const next = nextChipState(chipState(sel, id), direction);
   const include = sel.include.filter((x) => x !== id);
   const exclude = sel.exclude.filter((x) => x !== id);
   if (next === 'include') include.push(id);
@@ -127,31 +128,31 @@ export function energyBand(value: number): EnergyBand {
 }
 
 export interface MoodFilters {
-  /// Mood lenses that are on, in the order they were picked. They rank the
-  /// list by the weakest of their scores.
+  /// Moods to rank high, in the order they were picked.
   lenses: MoodId[];
+  /// Moods to rank low. Missing for callers created before directional lenses.
+  lowLenses?: MoodId[];
   /// Energy bands that are on. None on means no Energy filter.
   bands: EnergyBand[];
   role: RoleChoice;
 }
 
 export function emptyMoodFilters(): MoodFilters {
-  return { lenses: [], bands: [], role: 'all' };
+  return { lenses: [], lowLenses: [], bands: [], role: 'all' };
 }
 
 /// True while at least one mood lens is on (the list is ranked).
-export const lensOn = (f: Pick<MoodFilters, 'lenses'>): boolean => f.lenses.length > 0;
+export const lensOn = (f: Pick<MoodFilters, 'lenses' | 'lowLenses'>): boolean => f.lenses.length > 0 || (f.lowLenses?.length ?? 0) > 0;
 
-/// The entry's score under the lenses that are on: the weakest of them, so a
-/// track ranks high only when it is high in every one. Null when no lens is
-/// on, for ambiance, and for music missing a value for one of the lenses.
-/// Energy plays no part.
-export function lensScore(entry: LibraryEntry, f: Pick<MoodFilters, 'lenses'>): number | null {
-  const ids = f.lenses;
-  if (ids.length === 0 || entry.entryType !== 'music') return null;
-  const values = ids.map((id) => moodValue(entry, id));
+/// Product-based fit: geometric mean of each requested High score or Low
+/// complement (1-score). The root keeps the range at 0..1 for any number of
+/// preferences. Poor fits reduce the combined rank without a hard cutoff.
+/// Missing values rank last; Energy remains a separate band filter.
+export function lensScore(entry: LibraryEntry, f: Pick<MoodFilters, 'lenses' | 'lowLenses'>): number | null {
+  if (!lensOn(f) || entry.entryType !== 'music') return null;
+  const values = [...f.lenses.map((id) => moodValue(entry, id)), ...(f.lowLenses ?? []).map((id) => { const value = moodValue(entry, id); return value === null ? null : 1 - value; })];
   if (values.some((v) => v === null)) return null;
-  return Math.min(...(values as number[]));
+  return geometricFit(values as number[]);
 }
 
 /// True when the entry's Energy (set by you, else suggested) is in one of
@@ -168,7 +169,7 @@ export function matchesEnergyBands(entry: LibraryEntry, bands: readonly EnergyBa
 /// in a lens's mood stays, ranked last. A role choice shows music with that
 /// role (ambiance has none).
 export function matchesMoodFilters(entry: LibraryEntry, f: MoodFilters): boolean {
-  const anyOn = f.lenses.length > 0 || f.bands.length > 0;
+  const anyOn = lensOn(f) || f.bands.length > 0;
   if (anyOn && entry.entryType !== 'music') return false;
   if (!matchesEnergyBands(entry, f.bands)) return false;
   if (f.role === 'all') return true;
@@ -178,11 +179,10 @@ export function matchesMoodFilters(entry: LibraryEntry, f: MoodFilters): boolean
 /// The title of the column that shows the lens score, in the Library and Scry.
 export const LENS_COLUMN_TITLE = 'Match';
 
-/// Hover text for the lens column: what the score is, e.g. "Heroic" or
-/// "weakest of Heroic, Grim".
-export function lensLabel(f: Pick<MoodFilters, 'lenses'>): string {
-  const names = f.lenses.map(moodName);
-  return names.length > 1 ? `weakest of ${names.join(', ')}` : (names[0] ?? '');
+/// Hover text names every requested direction.
+export function lensLabel(f: Pick<MoodFilters, 'lenses' | 'lowLenses'>): string {
+  const names = [...f.lenses.map((id) => `High ${moodName(id)}`), ...(f.lowLenses ?? []).map((id) => `Low ${moodName(id)}`)];
+  return names.length > 1 ? `combined ${names.join(', ')}` : (names[0] ?? '');
 }
 
 /// True when an entry with `tags` passes the tag chips: it has at least one
@@ -216,7 +216,7 @@ export const DEFAULT_DIR: Record<SortKey, SortDir> = {
 
 /// False for a header that does not sort in the current state: Energy while
 /// a mood lens is on, so the ranking never depends on Energy then.
-export function canSortBy(key: SortKey, f: Pick<MoodFilters, 'lenses'>): boolean {
+export function canSortBy(key: SortKey, f: Pick<MoodFilters, 'lenses' | 'lowLenses'>): boolean {
   return !(key === 'energy' && lensOn(f));
 }
 
@@ -254,7 +254,7 @@ function compareNullable(a: number | null, b: number | null, dir: SortDir): numb
 function sortValue(
   e: LibraryEntry,
   key: Exclude<SortKey, 'match' | 'name'>,
-  filters: Pick<MoodFilters, 'lenses'>,
+  filters: Pick<MoodFilters, 'lenses' | 'lowLenses'>,
   isMissing: (e: LibraryEntry) => boolean,
 ): number | null {
   switch (key) {
@@ -273,17 +273,17 @@ function sortValue(
   }
 }
 
-/// The suggestion behind a lens or Energy value: the weakest suggested score
-/// over the lenses that are on, or the suggested Energy. Levels set by hand are
+/// The suggestion behind a lens or Energy value: the combined suggested fit
+/// over the directional preferences, or the suggested Energy. Levels set by hand are
 /// coarse (five steps), so tracks set to the same level tie; this orders them
 /// within the level by what the analyzer thinks, without changing the value
 /// shown. For a track with no level set it equals the value itself.
-function suggestionBehind(e: LibraryEntry, key: SortKey, filters: Pick<MoodFilters, 'lenses'>): number | null {
-  const ids = key === 'lens' ? filters.lenses : key === 'energy' ? [ENERGY_ID] : [];
+function suggestionBehind(e: LibraryEntry, key: SortKey, filters: Pick<MoodFilters, 'lenses' | 'lowLenses'>): number | null {
+  const ids = key === 'lens' ? [...filters.lenses, ...(filters.lowLenses ?? [])] : key === 'energy' ? [ENERGY_ID] : [];
   if (ids.length === 0) return null;
-  const autos = ids.map((id) => moodLayers(e, id).auto);
+  const autos = ids.map((id) => { const value = moodLayers(e, id).auto; return value !== null && key === 'lens' && filters.lowLenses?.includes(id) ? 1 - value : value; });
   if (autos.some((a) => a === null)) return null;
-  return Math.min(...(autos as number[]));
+  return geometricFit(autos as number[]);
 }
 
 /// A sorted copy of `items` (stable). `entryOf` picks the library entry from
@@ -296,7 +296,7 @@ export function sortByKey<T>(
   items: T[],
   key: SortKey,
   dir: SortDir,
-  filters: Pick<MoodFilters, 'lenses'>,
+  filters: Pick<MoodFilters, 'lenses' | 'lowLenses'>,
   entryOf: (item: T) => LibraryEntry,
   isMissing: (e: LibraryEntry) => boolean = () => false,
 ): T[] {
@@ -328,4 +328,14 @@ export function calibrationLabel(info: MoodCalibrationInfo | null): string {
   }
   const date = new Date(Number(info.calibratedAt)).toLocaleString();
   return `Calibrated against your library: ${date}, ${info.tracks} tracks`;
+}
+
+/** A mood can ask for high or low, never both. Reverse clicks traverse backwards. */
+export function cycleMood(filters: MoodFilters, id: MoodId, direction: 1 | -1 = 1): MoodFilters {
+  const next = cycleChip({ include: filters.lenses, exclude: filters.lowLenses ?? [] }, id, direction);
+  return { ...filters, lenses: next.include, lowLenses: next.exclude };
+}
+
+function geometricFit(values: number[]): number {
+  return Math.exp(values.reduce((sum, value) => sum + Math.log(value), 0) / values.length);
 }

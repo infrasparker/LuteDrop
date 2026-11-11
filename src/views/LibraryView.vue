@@ -15,6 +15,7 @@ import FixMissingDialog from '../components/FixMissingDialog.vue';
 import AutoTaggingDialog from '../components/AutoTaggingDialog.vue';
 import ConfirmDialog from '../components/ConfirmDialog.vue';
 import type { LibraryEntry, LibraryEntryUsage, Role } from '@generated/index';
+import RoleToggle from '../components/RoleToggle.vue';
 import MoodFilters from '../components/MoodFilters.vue';
 import MoodProfile from '../components/MoodProfile.vue';
 import {
@@ -72,11 +73,6 @@ function searchFields(entry: LibraryEntry): string[] {
   // Empty segments and a leading drive letter are dropped, so "c:" matches nothing.
   // The last part is the file itself.
   return [entry.name, parts[parts.length - 2] ?? '', parts[parts.length - 3] ?? ''];
-}
-
-/// Music always has a role (ambiance has none and shows no role cell).
-function roleLabel(role: Role): string {
-  return role === 'combat' ? 'Combat' : 'Non-combat';
 }
 
 watch(tags, (current) => {
@@ -480,9 +476,7 @@ async function relocateEntry(entryId: string): Promise<void> {
       </template>
 
       <template #item.role="{ item }">
-        <VIcon v-if="item.role" size="small" :title="roleLabel(item.role)">
-          {{ item.role === 'combat' ? 'mdi-sword-cross' : 'mdi-music-note' }}
-        </VIcon>
+        <RoleToggle :entry="item" />
       </template>
 
       <template #header.lens="{ column, getSortIcon }">
@@ -683,7 +677,7 @@ async function relocateEntry(entryId: string): Promise<void> {
           density="compact"
         >
           <VListItemTitle>
-            {{ usage.compName }} <VIcon size="x-small">mdi-chevron-right</VIcon> {{ usage.trackName }}
+            {{ usage.sceneName }} <VIcon size="x-small">mdi-chevron-right</VIcon> {{ usage.trackName }}
           </VListItemTitle>
         </VListItem>
       </VList>
@@ -708,8 +702,8 @@ async function relocateEntry(entryId: string): Promise<void> {
 }
 
 :deep(.preview-active) {
-  background: rgba(240, 168, 48, 0.08) !important;
-  border-left: 3px solid #F0A830;
+  background: var(--mixer-active-fill) !important;
+  box-shadow: inset 0 0 0 1px var(--mixer-active-border);
 }
 
 .lens-cell {

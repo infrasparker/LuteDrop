@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
-import { isGroupActive } from '../shared/playback';
+import { isBoardActive } from '../shared/playback';
 import { useRemote } from './composables/useRemote';
 import RemotePlaybackView from './views/RemotePlaybackView.vue';
 
@@ -116,15 +116,15 @@ function stopAll(): void {
       />
 
       <template #extension>
-        <VTabs v-model="activeTab" color="primary" density="compact" v-if="remote.groups.value.length > 0" class="app-bar-tabs" show-arrows>
+        <VTabs v-model="activeTab" color="primary" density="compact" v-if="remote.boards.value.length > 0" class="app-bar-tabs" show-arrows>
           <VTab
-            v-for="(group, i) in remote.groups.value"
-            :key="group.id"
+            v-for="(board, i) in remote.boards.value"
+            :key="board.id"
             :value="i"
-            :class="{ 'tab-active': isGroupActive(group, remote.playbackStates) }"
+            :class="{ 'tab-active': isBoardActive(board, remote.playbackStates) }"
             size="small"
           >
-            {{ group.name }}
+            {{ board.name }}
           </VTab>
         </VTabs>
       </template>
@@ -142,8 +142,7 @@ function stopAll(): void {
 
 <style>
 .tab-active {
-  border-left: 3px solid #F0A830;
-  background: rgba(240, 168, 48, 0.08);
+  background: var(--mixer-active-fill);
 }
 .app-bar-tabs {
   height: 100%;
