@@ -3662,13 +3662,16 @@ static int start_decoder(vorb *f)
    if (f->comment_list_length > 0)
    {
       f->comment_list = (char**) setup_malloc(f, sizeof(char*) * (f->comment_list_length));
-      if (f->comment_list == NULL)                  return error(f, VORBIS_outofmem);
+      // LuteDrop patch: vorbis_deinit frees comment_list[0..comment_list_length),
+      // so on failure the count must match what was allocated (a corrupt
+      // header with a huge count made it walk a NULL list and crash).
+      if (f->comment_list == NULL) { f->comment_list_length = 0; return error(f, VORBIS_outofmem); }
    }
 
    for(i=0; i < f->comment_list_length; ++i) {
       len = get32_packet(f);
       f->comment_list[i] = (char*)setup_malloc(f, sizeof(char) * (len+1));
-      if (f->comment_list[i] == NULL)               return error(f, VORBIS_outofmem);
+      if (f->comment_list[i] == NULL) { f->comment_list_length = i; return error(f, VORBIS_outofmem); }  // LuteDrop patch, as above
 
       for(j=0; j < len; ++j) {
          f->comment_list[i][j] = get8_packet(f);

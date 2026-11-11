@@ -8,8 +8,23 @@
 #define MA_NO_GENERATION
 #include "miniaudio.h"
 
+// stb_vorbis's implementation, with its assert() calls compiled out: they
+// check stream invariants a malformed .ogg can break, and a failed assert
+// aborts the whole app. With them off, stb_vorbis reports the bad stream as a
+// decode error instead. NDEBUG is what turns assert() off; <assert.h> re-reads
+// it each time it is included, so asserts are switched back on (if they were
+// on) for everything after this block.
 #undef STB_VORBIS_HEADER_ONLY
+#ifndef NDEBUG
+#define LD_ASSERTS_WERE_ON
+#define NDEBUG
+#endif
 #include "stb_vorbis.c"
+#ifdef LD_ASSERTS_WERE_ON
+#undef NDEBUG
+#undef LD_ASSERTS_WERE_ON
+#endif
+#include <assert.h>
 // stb_vorbis leaves these one-letter macros defined; Windows headers included
 // after this point (Media Foundation's) use them as field names.
 #undef L

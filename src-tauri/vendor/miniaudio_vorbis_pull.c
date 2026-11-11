@@ -16,6 +16,7 @@ typedef struct
     ma_uint32 sampleRate;
     ma_uint64 cursor;           /* Next frame read() will return. */
     ma_uint64 length;           /* Total frames, from the last Ogg page's granule position. */
+    ma_bool32 broken;           /* A failed seek left the position unknown: reads return nothing. */
 } ld_vorbis;
 
 static ma_result ld_vorbis_read(ma_data_source* pDataSource, void* pFramesOut, ma_uint64 frameCount, ma_uint64* pFramesRead)
@@ -24,6 +25,10 @@ static ma_result ld_vorbis_read(ma_data_source* pDataSource, void* pFramesOut, m
     float* out = (float*)pFramesOut;
     ma_uint64 done = 0;
 
+    if (v->broken) {
+        if (pFramesRead != NULL) *pFramesRead = 0;
+        return MA_AT_END;
+    }
     /* stb_vorbis takes an int sample count, so read in bounded chunks. */
     while (done < frameCount) {
         ma_uint64 want = frameCount - done;
@@ -46,8 +51,20 @@ static ma_result ld_vorbis_seek(ma_data_source* pDataSource, ma_uint64 frameInde
     if (frameIndex > 0x7FFFFFFF) return MA_INVALID_ARGS;   /* stb_vorbis positions are 32-bit. */
     /* Pull-mode stb_vorbis_seek finds the page holding the target through the
        Ogg granule positions, then decodes and discards up to the exact sample. */
-    if (!stb_vorbis_seek(v->stb, (unsigned int)frameIndex)) return MA_ERROR;
+    if (!stb_vorbis_seek(v->stb, (unsigned int)frameIndex)) {
+        /* A failed seek can leave the decoder anywhere. Go back to the start
+           so the cursor matches what read() returns next; if even that fails,
+           end the stream rather than hand out audio from an unknown place. */
+        if (stb_vorbis_seek_start(v->stb)) {
+            v->cursor = 0;
+        } else {
+            v->cursor = v->length;
+            v->broken = MA_TRUE;
+        }
+        return MA_ERROR;
+    }
     v->cursor = frameIndex;
+    v->broken = MA_FALSE;
     return MA_SUCCESS;
 }
 

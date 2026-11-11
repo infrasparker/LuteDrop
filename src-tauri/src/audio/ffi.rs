@@ -1129,6 +1129,41 @@ mod tests {
         }
     }
 
+    /// Damaged Ogg Vorbis data must fail as a decode error or garbled audio,
+    /// never take the process down. Flips 1-30 random bytes (anywhere past
+    /// the first page) in 150 copies of the fixture and decodes, seeks and
+    /// reads each through both opens. Round 118 of this exact sequence used to
+    /// crash: its comment header claims a huge comment count, and
+    /// stb_vorbis's cleanup then walked a list that was never allocated (fixed
+    /// in vendor/stb_vorbis.c, "LuteDrop patch"). Other rounds stand in for
+    /// the asserts, now compiled out (shim.c), that a bad stream could trip.
+    #[test]
+    fn corrupt_vorbis_never_crashes() {
+        let clean = std::fs::read(fixture_path("vorbis.ogg")).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = 0x2545_f491_u32;
+        for round in 0..150 {
+            let mut bytes = clean.clone();
+            for _ in 0..(1 + round % 30) {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                let at = 60 + state as usize % (bytes.len() - 60);
+                bytes[at] ^= (state >> 24) as u8 | 1;
+            }
+            let path = dir.path().join(format!("bad{round}.ogg"));
+            std::fs::write(&path, &bytes).unwrap();
+            let path = path.to_str().unwrap();
+            for open in [StreamingDecoder::open as fn(&str) -> Result<StreamingDecoder, String>, StreamingDecoder::open_like_playback] {
+                if let Ok(mut dec) = open(path) {
+                    while let Ok(Some(_)) = dec.read_chunk() {}
+                    let _ = dec.seek(20_000);
+                    let _ = dec.read_frames(1_024);
+                }
+            }
+        }
+    }
+
     #[test]
     fn engine_creates_and_loads_fixture() {
         let eng = Engine::new().expect("engine");
