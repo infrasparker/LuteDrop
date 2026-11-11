@@ -65,6 +65,12 @@ extern "C" {
     fn ld_decoder_open(path: *const u16, out_channels: *mut u32, out_sample_rate: *mut u32) -> *mut LdDecoder;
     fn ld_decoder_read(d: *mut LdDecoder, out: *mut f32, max_frames: u64) -> i64;
     fn ld_decoder_close(d: *mut LdDecoder);
+    #[cfg(test)]
+    fn ld_decoder_seek(d: *mut LdDecoder, frame: u64) -> c_int;
+    #[cfg(test)]
+    fn ld_decoder_length(d: *mut LdDecoder) -> u64;
+    #[cfg(test)]
+    fn ld_decoder_open_callbacks(path: *const u16, out_channels: *mut u32, out_sample_rate: *mut u32) -> *mut LdDecoder;
     fn ld_file_duration_secs(path: *const u16) -> f64;
 
     fn ld_engine_create() -> *mut LdEngine;
@@ -627,9 +633,23 @@ pub struct StreamingDecoder {
 
 impl StreamingDecoder {
     pub fn open(path: &str) -> Result<Self, String> {
+        Self::open_with(path, ld_decoder_open)
+    }
+
+    /// Opens through miniaudio's read/seek/tell callbacks, as the playback
+    /// resource manager does, instead of by path (see `ld_decoder_open_callbacks`).
+    #[cfg(test)]
+    fn open_like_playback(path: &str) -> Result<Self, String> {
+        Self::open_with(path, ld_decoder_open_callbacks)
+    }
+
+    fn open_with(
+        path: &str,
+        open: unsafe extern "C" fn(*const u16, *mut u32, *mut u32) -> *mut LdDecoder,
+    ) -> Result<Self, String> {
         let wide = to_wide(path);
         let (mut channels, mut sample_rate) = (0u32, 0u32);
-        let ptr = unsafe { ld_decoder_open(wide.as_ptr(), &mut channels, &mut sample_rate) };
+        let ptr = unsafe { open(wide.as_ptr(), &mut channels, &mut sample_rate) };
         if ptr.is_null() {
             return Err(format!("Failed to open audio decoder for {path}"));
         }
@@ -655,6 +675,48 @@ impl StreamingDecoder {
         }
         let samples = (n as usize) * self.channels.max(1) as usize;
         Ok(Some(&self.buf[..samples]))
+    }
+}
+
+#[cfg(test)]
+impl StreamingDecoder {
+    /// Moves the read position to frame `frame`.
+    fn seek(&mut self, frame: u64) -> Result<(), String> {
+        match unsafe { ld_decoder_seek(self.ptr, frame) } {
+            0 => Ok(()),
+            _ => Err(format!("seek to frame {frame} failed")),
+        }
+    }
+
+    /// Length in frames as the decoder reports it (0 = unknown).
+    fn length_frames(&self) -> u64 {
+        unsafe { ld_decoder_length(self.ptr) }
+    }
+
+    /// Reads to the end; returns all remaining interleaved samples.
+    fn read_all(&mut self) -> Vec<f32> {
+        let mut all = Vec::new();
+        while let Some(chunk) = self.read_chunk().expect("read chunk") {
+            all.extend_from_slice(chunk);
+        }
+        all
+    }
+
+    /// Reads up to `frames` frames from the current position.
+    fn read_frames(&mut self, frames: usize) -> Vec<f32> {
+        let want = frames * self.channels as usize;
+        let mut out = Vec::with_capacity(want);
+        while out.len() < want {
+            let n = unsafe {
+                ld_decoder_read(self.ptr, self.buf.as_mut_ptr(), DECODE_CHUNK_FRAMES.min((want - out.len()) / self.channels as usize) as u64)
+            };
+            assert!(n >= 0, "decode error");
+            if n == 0 {
+                break;
+            }
+            out.extend_from_slice(&self.buf[..n as usize * self.channels as usize]);
+        }
+        out
     }
 }
 
@@ -918,6 +980,153 @@ mod tests {
             frames += c.len() as u64 / 2;
         }
         assert!((frames as i64 - 24_000).abs() < 2_000, "≈0.5 s at 48 kHz, got {frames}");
+    }
+
+    /// One short fixture per format the custom decoding backends cover. Each
+    /// was made with ffmpeg from the same 1 s two-tone chirp (mono for the
+    /// ADTS one), so 1 s = 44_100 or 48_000 frames of real audio.
+    struct FormatFixture {
+        file: &'static str,
+        channels: u32,
+        sample_rate: u32,
+        /// Frames a full decode yields.
+        frames: u64,
+        /// Allowed gap between the length the decoder reports up front and
+        /// `frames`.
+        length_slack: u64,
+        /// Largest sample difference allowed between reading after a seek and
+        /// the same frames from a straight decode.
+        seek_tolerance: f32,
+    }
+
+    const FORMAT_FIXTURES: &[FormatFixture] = &[
+        FormatFixture { file: "vorbis.ogg", channels: 2, sample_rate: 44_100, frames: 44_100, length_slack: 0, seek_tolerance: 1e-4 },
+        // Opus in a .ogg file: must reach libopus, not stb_vorbis. Opus
+        // re-primes its decoder after a seek, so the frames after one come out
+        // close to, but not bit-identical with, a straight decode.
+        FormatFixture { file: "opus_in.ogg", channels: 2, sample_rate: 48_000, frames: 48_000, length_slack: 0, seek_tolerance: 0.1 },
+        // The MP4 edit list trims the AAC encoder's priming and padding.
+        FormatFixture { file: "aac.m4a", channels: 2, sample_rate: 44_100, frames: 44_100, length_slack: 0, seek_tolerance: 1e-4 },
+        // Raw ADTS records no trim, so the 1024 priming frames and the padding
+        // to a whole packet stay in (ffmpeg decodes it the same: 48 x 1024).
+        FormatFixture { file: "adts.aac", channels: 1, sample_rate: 48_000, frames: 49_152, length_slack: 0, seek_tolerance: 1e-4 },
+        FormatFixture { file: "alac.m4a", channels: 2, sample_rate: 44_100, frames: 44_100, length_slack: 0, seek_tolerance: 1e-4 },
+        // ffmpeg's WMA encoder drops the final partial 2048-frame block (it
+        // decodes the same 21 x 2048 frames itself), and the duration it
+        // writes in the ASF header is ~21 ms short of that.
+        FormatFixture { file: "wma.wma", channels: 2, sample_rate: 44_100, frames: 43_008, length_slack: 1_024, seek_tolerance: 1e-4 },
+    ];
+
+    fn fixture_path(file: &str) -> String {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(file).to_str().unwrap().to_string()
+    }
+
+    /// Largest absolute difference between two equally long sample slices.
+    fn max_diff(a: &[f32], b: &[f32]) -> f32 {
+        assert_eq!(a.len(), b.len());
+        a.iter().zip(b).fold(0.0f32, |m, (x, y)| m.max((x - y).abs()))
+    }
+
+    /// Sum of squared differences between two equally long sample slices.
+    fn sse(a: &[f32], b: &[f32]) -> f64 {
+        assert_eq!(a.len(), b.len());
+        a.iter().zip(b).map(|(x, y)| ((x - y) as f64).powi(2)).sum()
+    }
+
+    /// Opens `f` with `open`, checks format and length, decodes it all, then
+    /// seeks around (forward, backward, back to 0) and checks each seek
+    /// against that full decode: the frames read must match the straight
+    /// decode at the target, and match it better there than one frame either
+    /// side (the chirp changes enough per frame that an off-by-one shows).
+    fn check_format(f: &FormatFixture, open: fn(&str) -> Result<StreamingDecoder, String>, how: &str) {
+        let ctx = format!("{} ({how})", f.file);
+        let mut dec = open(&fixture_path(f.file)).unwrap_or_else(|e| panic!("{ctx}: {e}"));
+        assert_eq!(dec.channels, f.channels, "{ctx}: channels");
+        assert_eq!(dec.sample_rate, f.sample_rate, "{ctx}: sample rate");
+        let ch = f.channels as usize;
+
+        let reported = dec.length_frames();
+        let full = dec.read_all();
+        let decoded = (full.len() / ch) as u64;
+        assert_eq!(decoded, f.frames, "{ctx}: frames decoded");
+        assert!(reported.abs_diff(decoded) <= f.length_slack, "{ctx}: reported length {reported}, decoded {decoded}");
+        assert!(peak(&full) > 0.1, "{ctx}: decoded audio is silent");
+
+        // 20_000 after 30_000 jumps back further than the MF backend's 0.25 s
+        // pre-roll, so MP4 files take the reposition-by-timestamp path.
+        let n = 2_048usize;
+        for target in [1_000u64, 12_345, 30_000, 20_000, 0, 7] {
+            dec.seek(target).unwrap_or_else(|e| panic!("{ctx}: {e}"));
+            let got = dec.read_frames(n);
+            assert_eq!(got.len(), n * ch, "{ctx}: frames read after seek to {target}");
+            let at = |frame: u64| &full[frame as usize * ch..(frame as usize + n) * ch];
+            let diff = max_diff(&got, at(target));
+            assert!(diff <= f.seek_tolerance, "{ctx}: seek to {target} differs from a straight decode by {diff}");
+            let here = sse(&got, at(target));
+            if target > 0 {
+                assert!(here < sse(&got, at(target - 1)), "{ctx}: seek to {target} matches frame {} better", target - 1);
+            }
+            assert!(here < sse(&got, at(target + 1)), "{ctx}: seek to {target} matches frame {} better", target + 1);
+        }
+    }
+
+    #[test]
+    fn decodes_and_seeks_every_format_by_path() {
+        for f in FORMAT_FIXTURES {
+            check_format(f, StreamingDecoder::open, "path");
+        }
+    }
+
+    /// The same checks through the open the playback resource manager uses
+    /// (read/seek/tell callbacks, so each backend's onInit, not onInitFileW).
+    #[test]
+    fn decodes_and_seeks_every_format_like_playback() {
+        for f in FORMAT_FIXTURES {
+            check_format(f, StreamingDecoder::open_like_playback, "callbacks");
+        }
+    }
+
+    /// Expected reported length in seconds, and the allowed slack.
+    fn expected_secs(f: &FormatFixture) -> (f64, f64) {
+        let sr = f.sample_rate as f64;
+        (f.frames as f64 / sr, (f.length_slack as f64 / sr).max(0.001))
+    }
+
+    #[test]
+    fn duration_probe_covers_every_format() {
+        for f in FORMAT_FIXTURES {
+            let secs = file_duration_secs(&fixture_path(f.file)).unwrap_or_else(|| panic!("{}: no duration", f.file));
+            let (want, slack) = expected_secs(f);
+            assert!((secs - want).abs() <= slack, "{}: duration {secs}, want {want}", f.file);
+        }
+    }
+
+    /// Every format loads through `ld_sound_create`, both fully decoded up
+    /// front and streamed, and the streamed one actually plays audio (heard
+    /// through the broadcast tap on the silent test engine).
+    #[test]
+    fn playback_loads_and_plays_every_format() {
+        let eng = Engine::new().expect("engine");
+        let on_bus = eng.create_group(GroupRoute::ProgramBus).unwrap();
+        for f in FORMAT_FIXTURES {
+            let path = fixture_path(f.file);
+            let (want, slack) = expected_secs(f);
+
+            let loaded = eng.create_sound(Some(&on_bus), &path, false).unwrap_or_else(|e| panic!("{}: {e}", f.file));
+            assert!((loaded.length_secs() - want).abs() <= slack, "{}: loaded length {}", f.file, loaded.length_secs());
+            drop(loaded);
+
+            let s = eng.create_sound(Some(&on_bus), &path, true).unwrap_or_else(|e| panic!("{}: {e}", f.file));
+            assert!((s.length_secs() - want).abs() <= slack, "{}: streamed length {}", f.file, s.length_secs());
+            eng.tap_set_enabled(true);
+            drain(&eng);
+            s.play(0.2, 0.0).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let heard = drain(&eng);
+            eng.tap_set_enabled(false);
+            s.stop(0.0);
+            assert!(peak(&heard) > 0.05, "{}: played silence", f.file);
+        }
     }
 
     #[test]

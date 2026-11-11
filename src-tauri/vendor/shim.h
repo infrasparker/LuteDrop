@@ -22,6 +22,15 @@ ld_decoder* ld_decoder_open(const wchar_t* path, uint32_t* out_channels, uint32_
 // Returns frames read (0 = end of stream), or -1 on a hard mid-stream decode error.
 int64_t ld_decoder_read(ld_decoder*, float* out, uint64_t max_frames);
 void ld_decoder_close(ld_decoder*);
+// Moves the read position to an exact frame. 0 on success.
+int ld_decoder_seek(ld_decoder*, uint64_t frame);
+// Total length in frames as the decoder reports it (0 = unknown).
+uint64_t ld_decoder_length(ld_decoder*);
+// Like ld_decoder_open, but opens the file the way the playback resource
+// manager does: through miniaudio's read/seek/tell callbacks rather than a
+// path, so each backend's onInit runs instead of onInitFileW. Lets tests
+// check the playback decode path frame by frame.
+ld_decoder* ld_decoder_open_callbacks(const wchar_t* path, uint32_t* out_channels, uint32_t* out_sample_rate);
 
 // Cheap duration probe: inits a decoder (same custom backends as
 // ld_decoder_open), reads the PCM frame count via ma_decoder_get_length_in_pcm_frames

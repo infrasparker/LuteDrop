@@ -83,6 +83,31 @@ void ld_decoder_close(ld_decoder* d) {
     free(d);
 }
 
+int ld_decoder_seek(ld_decoder* d, uint64_t frame) {
+    if (d == NULL) return -1;
+    return (ma_decoder_seek_to_pcm_frame(&d->dec, frame) == MA_SUCCESS) ? 0 : -1;
+}
+
+uint64_t ld_decoder_length(ld_decoder* d) {
+    ma_uint64 total = 0;
+    if (d == NULL || ma_decoder_get_length_in_pcm_frames(&d->dec, &total) != MA_SUCCESS) return 0;
+    return total;
+}
+
+ld_decoder* ld_decoder_open_callbacks(const wchar_t* path, uint32_t* out_channels, uint32_t* out_sample_rate) {
+    ld_decoder* d = (ld_decoder*)malloc(sizeof(ld_decoder));
+    if (d == NULL) return NULL;
+    ma_decoding_backend_vtable* backends[] = LD_BACKENDS;
+    ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 0, 0);
+    cfg.ppCustomBackendVTables = backends;
+    cfg.customBackendCount = sizeof(backends) / sizeof(backends[0]);
+    // The call the resource manager makes (with its default VFS = NULL).
+    if (ma_decoder_init_vfs_w(NULL, path, &cfg, &d->dec) != MA_SUCCESS) { free(d); return NULL; }
+    *out_channels = d->dec.outputChannels;
+    *out_sample_rate = d->dec.outputSampleRate;
+    return d;
+}
+
 double ld_file_duration_secs(const wchar_t* path) {
     ma_decoder dec;
     if (ld_make_decoder(path, &dec) != MA_SUCCESS) return -1.0;
