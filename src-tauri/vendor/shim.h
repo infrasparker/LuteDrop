@@ -23,7 +23,7 @@ ld_decoder* ld_decoder_open(const wchar_t* path, uint32_t* out_channels, uint32_
 int64_t ld_decoder_read(ld_decoder*, float* out, uint64_t max_frames);
 void ld_decoder_close(ld_decoder*);
 
-// Cheap duration probe: inits a decoder (libopus backend registered, same as
+// Cheap duration probe: inits a decoder (same custom backends as
 // ld_decoder_open), reads the PCM frame count via ma_decoder_get_length_in_pcm_frames
 // and divides by the output sample rate -- NO full decode. Returns the duration in
 // seconds, or a negative value if the file can't be opened or its length is unknown

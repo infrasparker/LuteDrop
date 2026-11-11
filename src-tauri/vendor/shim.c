@@ -1,26 +1,55 @@
+// stb_vorbis (Ogg Vorbis decoder) is a single file: declarations first, the
+// implementation further down. Its declarations must come before miniaudio.h,
+// which switches on its own built-in Vorbis decoder when it sees them.
+#define STB_VORBIS_HEADER_ONLY
+#include "stb_vorbis.c"
+
 #define MINIAUDIO_IMPLEMENTATION
 #define MA_NO_GENERATION
 #include "miniaudio.h"
+
+#undef STB_VORBIS_HEADER_ONLY
+#include "stb_vorbis.c"
+// stb_vorbis leaves these one-letter macros defined; Windows headers included
+// after this point use them as identifiers.
+#undef L
+#undef C
+#undef R
+
 #include "miniaudio_libopus.h"
 #include "miniaudio_libopus.c"
+#include "miniaudio_vorbis_pull.h"
+#include "miniaudio_vorbis_pull.c"
 #include "shim.h"
 #include <stdlib.h>
 
-// Registers the libopus backend so .opus decodes alongside built-ins.
+// The custom decoding backends, in the order miniaudio tries them. miniaudio
+// offers every file to these BEFORE its built-in WAV/FLAC/MP3/Vorbis decoders,
+// moving to the next backend when one rejects the file:
+//   1. libopus: Ogg Opus (.opus, and .ogg files that hold Opus).
+//   2. stb_vorbis in pull mode: Ogg Vorbis, with exact length and fast seeks
+//      (see miniaudio_vorbis_pull.h for why not miniaudio's built-in one).
+// Both Ogg backends check the codec header and reject the other codec, so an
+// .ogg file reaches the right one whichever it contains.
 //
-// NOTE: `ma_decoding_backend_libopus` is declared in miniaudio_libopus.h as
-// `extern ma_decoding_backend_vtable*` -- it is ALREADY a pointer, so the
-// backends array holds it directly (NOT its address).
+// Both decoder setups below (ld_make_decoder for analysis, the resource
+// manager for playback) must use this same list.
+//
+// NOTE: each `ld_decoding_backend_*` / `ma_decoding_backend_libopus` is declared
+// as `extern ma_decoding_backend_vtable*` -- ALREADY a pointer, so the array
+// holds it directly (NOT its address).
+#define LD_BACKENDS { ma_decoding_backend_libopus, ld_decoding_backend_vorbis }
+
 // Path is a wide (UTF-16) string and we call miniaudio's `_w` file APIs. On
 // Windows, miniaudio's narrow file APIs route the path through fopen, which
 // interprets the bytes in the ANSI/locale codepage rather than UTF-8 -- so any
 // non-ASCII UTF-8 path fails to open. The wide APIs go straight to _wfopen, so
 // Unicode paths (smart quotes, accents, CJK, etc.) open correctly.
 static ma_result ld_make_decoder(const wchar_t* path, ma_decoder* dec) {
-    ma_decoding_backend_vtable* backends[] = { ma_decoding_backend_libopus };
+    ma_decoding_backend_vtable* backends[] = LD_BACKENDS;
     ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, 0, 0);
     cfg.ppCustomBackendVTables = backends;
-    cfg.customBackendCount = 1;
+    cfg.customBackendCount = sizeof(backends) / sizeof(backends[0]);
     return ma_decoder_init_file_w(path, &cfg, dec);
 }
 
@@ -211,15 +240,16 @@ static ld_engine* ld_engine_create_impl(int silent) {
         e->has_context = 1;
     }
 
-    // Register the libopus backend on the resource manager so streamed .opus
-    // decodes natively. `ma_decoding_backend_libopus` is ALREADY a
-    // ma_decoding_backend_vtable* (a pointer) -- store it directly (NO &).
-    ma_decoding_backend_vtable* backends[] = { ma_decoding_backend_libopus };
+    // Same custom backends as ld_make_decoder (see LD_BACKENDS). The resource
+    // manager opens files through ma_decoder_init_vfs_w, which only calls each
+    // backend's onInit (read/seek/tell callbacks), never onInitFileW.
+    // miniaudio copies this array, so a stack array is fine.
+    ma_decoding_backend_vtable* backends[] = LD_BACKENDS;
 
     ma_resource_manager_config rmcfg = ma_resource_manager_config_init();
     rmcfg.decodedFormat = ma_format_f32;
     rmcfg.ppCustomDecodingBackendVTables = backends;
-    rmcfg.customDecodingBackendCount = 1;
+    rmcfg.customDecodingBackendCount = sizeof(backends) / sizeof(backends[0]);
     if (ma_resource_manager_init(&rmcfg, &e->resource_manager) != MA_SUCCESS) {
         if (e->has_context) ma_context_uninit(&e->context);
         free(e);
