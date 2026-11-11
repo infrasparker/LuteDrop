@@ -991,30 +991,47 @@ mod tests {
         sample_rate: u32,
         /// Frames a full decode yields.
         frames: u64,
+        /// Whether the decoder knows the length before decoding. Fragmented
+        /// MP4 files often don't say; the decoder then reports 0 and the
+        /// app's duration probe counts decoded frames instead.
+        length_known: bool,
         /// Allowed gap between the length the decoder reports up front and
         /// `frames`.
         length_slack: u64,
         /// Largest sample difference allowed between reading after a seek and
         /// the same frames from a straight decode.
         seek_tolerance: f32,
+        /// How many frames off a seek may land. 0 = exact.
+        seek_slack: u64,
     }
 
     const FORMAT_FIXTURES: &[FormatFixture] = &[
-        FormatFixture { file: "vorbis.ogg", channels: 2, sample_rate: 44_100, frames: 44_100, length_slack: 0, seek_tolerance: 1e-4 },
+        FormatFixture { file: "vorbis.ogg", channels: 2, sample_rate: 44_100, frames: 44_100, length_known: true, length_slack: 0, seek_tolerance: 1e-4, seek_slack: 0 },
         // Opus in a .ogg file: must reach libopus, not stb_vorbis. Opus
         // re-primes its decoder after a seek, so the frames after one come out
         // close to, but not bit-identical with, a straight decode.
-        FormatFixture { file: "opus_in.ogg", channels: 2, sample_rate: 48_000, frames: 48_000, length_slack: 0, seek_tolerance: 0.1 },
+        FormatFixture { file: "opus_in.ogg", channels: 2, sample_rate: 48_000, frames: 48_000, length_known: true, length_slack: 0, seek_tolerance: 0.1, seek_slack: 0 },
         // The MP4 edit list trims the AAC encoder's priming and padding.
-        FormatFixture { file: "aac.m4a", channels: 2, sample_rate: 44_100, frames: 44_100, length_slack: 0, seek_tolerance: 1e-4 },
+        FormatFixture { file: "aac.m4a", channels: 2, sample_rate: 44_100, frames: 44_100, length_known: true, length_slack: 0, seek_tolerance: 1e-4, seek_slack: 0 },
         // Raw ADTS records no trim, so the 1024 priming frames and the padding
         // to a whole packet stay in (ffmpeg decodes it the same: 48 x 1024).
-        FormatFixture { file: "adts.aac", channels: 1, sample_rate: 48_000, frames: 49_152, length_slack: 0, seek_tolerance: 1e-4 },
-        FormatFixture { file: "alac.m4a", channels: 2, sample_rate: 44_100, frames: 44_100, length_slack: 0, seek_tolerance: 1e-4 },
+        FormatFixture { file: "adts.aac", channels: 1, sample_rate: 48_000, frames: 49_152, length_known: true, length_slack: 0, seek_tolerance: 1e-4, seek_slack: 0 },
+        FormatFixture { file: "alac.m4a", channels: 2, sample_rate: 44_100, frames: 44_100, length_known: true, length_slack: 0, seek_tolerance: 1e-4, seek_slack: 0 },
         // ffmpeg's WMA encoder drops the final partial 2048-frame block (it
         // decodes the same 21 x 2048 frames itself), and the duration it
-        // writes in the ASF header is ~21 ms short of that.
-        FormatFixture { file: "wma.wma", channels: 2, sample_rate: 44_100, frames: 43_008, length_slack: 1_024, seek_tolerance: 1e-4 },
+        // writes in the ASF header is ~21 ms short of that. ASF timestamps are
+        // whole milliseconds, so a seek that makes MF jump can land up to
+        // about a millisecond (44 frames) off.
+        FormatFixture { file: "wma.wma", channels: 2, sample_rate: 44_100, frames: 43_008, length_known: true, length_slack: 1_024, seek_tolerance: 1e-4, seek_slack: 44 },
+        // Fragmented MP4 (ffmpeg -movflags frag_keyframe+empty_moov+delay_moov
+        // -use_editlist 1): no duration anywhere, but an edit list whose start
+        // trim (the 1024 priming frames) still applies.
+        FormatFixture { file: "frag_editlist.m4a", channels: 2, sample_rate: 44_100, frames: 45_056, length_known: false, length_slack: 0, seek_tolerance: 1e-4, seek_slack: 0 },
+        // ffmpeg -f ismv: the track duration is all ones, meaning "unknown".
+        FormatFixture { file: "frag_ismv.m4a", channels: 2, sample_rate: 44_100, frames: 46_080, length_known: false, length_slack: 0, seek_tolerance: 1e-4, seek_slack: 0 },
+        // frag_ismv.m4a with a "mehd" box added by hand, stating 1045 ms (ffmpeg
+        // never writes one); the length comes from it, to the millisecond.
+        FormatFixture { file: "frag_mehd.m4a", channels: 2, sample_rate: 44_100, frames: 46_080, length_known: true, length_slack: 44, seek_tolerance: 1e-4, seek_slack: 0 },
     ];
 
     fn fixture_path(file: &str) -> String {
@@ -1035,9 +1052,10 @@ mod tests {
 
     /// Opens `f` with `open`, checks format and length, decodes it all, then
     /// seeks around (forward, backward, back to 0) and checks each seek
-    /// against that full decode: the frames read must match the straight
-    /// decode at the target, and match it better there than one frame either
-    /// side (the chirp changes enough per frame that an off-by-one shows).
+    /// against that full decode. Exact formats must match the straight decode
+    /// at the target, and match it better there than one frame either side
+    /// (the chirp changes enough per frame that an off-by-one shows). Formats
+    /// with `seek_slack` must match it somewhere within that many frames.
     fn check_format(f: &FormatFixture, open: fn(&str) -> Result<StreamingDecoder, String>, how: &str) {
         let ctx = format!("{} ({how})", f.file);
         let mut dec = open(&fixture_path(f.file)).unwrap_or_else(|e| panic!("{ctx}: {e}"));
@@ -1049,24 +1067,38 @@ mod tests {
         let full = dec.read_all();
         let decoded = (full.len() / ch) as u64;
         assert_eq!(decoded, f.frames, "{ctx}: frames decoded");
-        assert!(reported.abs_diff(decoded) <= f.length_slack, "{ctx}: reported length {reported}, decoded {decoded}");
+        if f.length_known {
+            assert!(reported.abs_diff(decoded) <= f.length_slack, "{ctx}: reported length {reported}, decoded {decoded}");
+        } else {
+            assert_eq!(reported, 0, "{ctx}: an unknown length must read as 0, not a guess");
+        }
         assert!(peak(&full) > 0.1, "{ctx}: decoded audio is silent");
 
         // 20_000 after 30_000 jumps back further than the MF backend's 0.25 s
-        // pre-roll, so MP4 files take the reposition-by-timestamp path.
+        // pre-roll, so MP4 and ASF files make MF reposition and ADTS files
+        // restart at a frame mark.
         let n = 2_048usize;
         for target in [1_000u64, 12_345, 30_000, 20_000, 0, 7] {
             dec.seek(target).unwrap_or_else(|e| panic!("{ctx}: {e}"));
             let got = dec.read_frames(n);
             assert_eq!(got.len(), n * ch, "{ctx}: frames read after seek to {target}");
             let at = |frame: u64| &full[frame as usize * ch..(frame as usize + n) * ch];
-            let diff = max_diff(&got, at(target));
-            assert!(diff <= f.seek_tolerance, "{ctx}: seek to {target} differs from a straight decode by {diff}");
-            let here = sse(&got, at(target));
-            if target > 0 {
-                assert!(here < sse(&got, at(target - 1)), "{ctx}: seek to {target} matches frame {} better", target - 1);
+            if f.seek_slack == 0 {
+                let diff = max_diff(&got, at(target));
+                assert!(diff <= f.seek_tolerance, "{ctx}: seek to {target} differs from a straight decode by {diff}");
+                let here = sse(&got, at(target));
+                if target > 0 {
+                    assert!(here < sse(&got, at(target - 1)), "{ctx}: seek to {target} matches frame {} better", target - 1);
+                }
+                assert!(here < sse(&got, at(target + 1)), "{ctx}: seek to {target} matches frame {} better", target + 1);
+            } else {
+                let lo = target.saturating_sub(f.seek_slack);
+                let landed = (lo..=target + f.seek_slack)
+                    .min_by(|&a, &b| sse(&got, at(a)).total_cmp(&sse(&got, at(b))))
+                    .unwrap();
+                let diff = max_diff(&got, at(landed));
+                assert!(diff <= f.seek_tolerance, "{ctx}: seek to {target} matches no frame within {} (best {landed}, diff {diff})", f.seek_slack);
             }
-            assert!(here < sse(&got, at(target + 1)), "{ctx}: seek to {target} matches frame {} better", target + 1);
         }
     }
 
@@ -1086,18 +1118,29 @@ mod tests {
         }
     }
 
-    /// Expected reported length in seconds, and the allowed slack.
+    /// Expected length in seconds, and the allowed slack.
     fn expected_secs(f: &FormatFixture) -> (f64, f64) {
         let sr = f.sample_rate as f64;
         (f.frames as f64 / sr, (f.length_slack as f64 / sr).max(0.001))
     }
 
+    /// The cheap probe answers when the length is known (and not otherwise),
+    /// and the app's probe, which falls back to counting decoded frames,
+    /// answers for every file.
     #[test]
     fn duration_probe_covers_every_format() {
         for f in FORMAT_FIXTURES {
-            let secs = file_duration_secs(&fixture_path(f.file)).unwrap_or_else(|| panic!("{}: no duration", f.file));
+            let path = fixture_path(f.file);
             let (want, slack) = expected_secs(f);
-            assert!((secs - want).abs() <= slack, "{}: duration {secs}, want {want}", f.file);
+            match file_duration_secs(&path) {
+                Some(secs) => {
+                    assert!(f.length_known, "{}: guessed a duration of {secs}", f.file);
+                    assert!((secs - want).abs() <= slack, "{}: duration {secs}, want {want}", f.file);
+                }
+                None => assert!(!f.length_known, "{}: no duration", f.file),
+            }
+            let secs = crate::audio::util::probe_duration(&path).unwrap_or_else(|| panic!("{}: probe failed", f.file));
+            assert!((secs - want).abs() <= slack, "{}: probed {secs}, want {want}", f.file);
         }
     }
 
@@ -1113,11 +1156,15 @@ mod tests {
             let (want, slack) = expected_secs(f);
 
             let loaded = eng.create_sound(Some(&on_bus), &path, false).unwrap_or_else(|e| panic!("{}: {e}", f.file));
-            assert!((loaded.length_secs() - want).abs() <= slack, "{}: loaded length {}", f.file, loaded.length_secs());
+            if f.length_known {
+                assert!((loaded.length_secs() - want).abs() <= slack, "{}: loaded length {}", f.file, loaded.length_secs());
+            }
             drop(loaded);
 
             let s = eng.create_sound(Some(&on_bus), &path, true).unwrap_or_else(|e| panic!("{}: {e}", f.file));
-            assert!((s.length_secs() - want).abs() <= slack, "{}: streamed length {}", f.file, s.length_secs());
+            if f.length_known {
+                assert!((s.length_secs() - want).abs() <= slack, "{}: streamed length {}", f.file, s.length_secs());
+            }
             eng.tap_set_enabled(true);
             drain(&eng);
             s.play(0.2, 0.0).unwrap();
@@ -1126,6 +1173,50 @@ mod tests {
             eng.tap_set_enabled(false);
             s.stop(0.0);
             assert!(peak(&heard) > 0.05, "{}: played silence", f.file);
+        }
+    }
+
+    /// A seek deep into a long ADTS file must not decode its way there: the
+    /// resource manager decodes every stream on one thread, so a slow seek
+    /// starves the others. The long file is the ADTS fixture repeated (ADTS
+    /// frames are self-contained, so the copies form one valid ~2 min stream).
+    /// The seek must still land on the exact frame, and cost far less than
+    /// the full decode.
+    #[test]
+    fn adts_seek_deep_into_a_long_file_is_fast_and_exact() {
+        let one = std::fs::read(fixture_path("adts.aac")).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("long.aac");
+        std::fs::write(&path, one.repeat(120)).unwrap();
+        let path = path.to_str().unwrap();
+
+        for (how, open) in [("path", StreamingDecoder::open as fn(&str) -> Result<StreamingDecoder, String>), ("callbacks", StreamingDecoder::open_like_playback)] {
+            let mut dec = open(path).unwrap();
+            let started = std::time::Instant::now();
+            let full = dec.read_all();
+            let full_time = started.elapsed();
+            assert_eq!(full.len() as u64, 49_152 * 120, "{how}: frames decoded");
+
+            let n = 2_048usize;
+            for target in [full.len() as u64 * 9 / 10 + 777, full.len() as u64 / 3] {
+                let started = std::time::Instant::now();
+                dec.seek(target).unwrap();
+                let got = dec.read_frames(n);
+                let seek_time = started.elapsed();
+                // Exact position: the frames match the straight decode better
+                // at the target than one frame either side. The samples
+                // themselves may differ slightly near the joins between
+                // copies (measured: up to 0.006), where the encoder coded
+                // some bands as noise ("PNS"): the decoder fills those from a
+                // random generator whose state depends on where decoding
+                // started, so a fresh start does not reproduce them.
+                let at = |frame: u64| &full[frame as usize..frame as usize + n];
+                let here = sse(&got, at(target));
+                assert!(here < sse(&got, at(target - 1)) && here < sse(&got, at(target + 1)), "{how}: seek to {target} landed off target");
+                let diff = max_diff(&got, at(target));
+                assert!(diff <= 0.02, "{how}: seek to {target} differs from a straight decode by {diff}");
+                assert!(seek_time * 10 < full_time, "{how}: seek to {target} took {seek_time:?}, a full decode {full_time:?}");
+            }
         }
     }
 

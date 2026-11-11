@@ -4,8 +4,9 @@ using Windows Media Foundation, the system's built-in media framework. Windows
 ships decoders for all of these, so nothing extra is bundled.
 
 Media Foundation (MF) pieces used:
-  - IMFByteStream: MF's view of a file. Opened from a path with MFCreateFile, or
-    wrapped around miniaudio's read/seek/tell callbacks (see onInit below).
+  - IMFByteStream: MF's view of a file. Made with MFCreateMFByteStreamOnStream
+    from a minimal COM IStream of our own, which reads either a Win32 file
+    handle (path open) or miniaudio's read/seek callbacks (see onInit below).
   - IMFSourceReader: parses the container, runs the decoder, and hands back
     decoded audio in chunks ("samples", each with a start timestamp in 100 ns
     units). Asked to output float32 PCM at the file's own rate and channels.
@@ -22,8 +23,7 @@ Both miniaudio entry points are implemented:
     the duration probe.
   - onInit (read/seek/tell callbacks): the resource manager, i.e. playback,
     opens every file through ma_decoder_init_vfs_w, which only ever calls
-    onInit. The callbacks are wrapped in a minimal COM IStream, which
-    MFCreateMFByteStreamOnStream turns into an IMFByteStream.
+    onInit, with only those callbacks to read the file through.
 */
 #ifndef miniaudio_mf_h
 #define miniaudio_mf_h
